@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\10harbad\Documents\win10xbox\build-win32\CMakeFiles\24923f73623e98a88fa141fa15ca1fab\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{B9231F15-B81B-36A5-98FB-5E9A73EE7F6C}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

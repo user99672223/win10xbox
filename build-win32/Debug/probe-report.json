@@ -1,0 +1,21 @@
+{
+  "schema": "xbox-probe/1",
+  "environment": {"host":"win32","environment":"baseline-win32","device":"MS717873","os_build":"10.0.26200.9445","arch":"x64","note":"Windows 10 Education 25H2","started_utc":"2026-10-20T23:15:18Z"},
+  "records": [
+    {"category":"stub","name":"register_A_dynamic_code","status":"SKIPPED","errorcode":0,"detail":"module not yet implemented (register_A_dynamic_code)","value":""},
+    {"category":"stub","name":"register_B_dll_inventory","status":"SKIPPED","errorcode":0,"detail":"module not yet implemented (register_B_dll_inventory)","value":""},
+    {"category":"stub","name":"register_B_ntdll_stubs","status":"SKIPPED","errorcode":0,"detail":"module not yet implemented (register_B_ntdll_stubs)","value":""},
+    {"category":"stub","name":"register_C_syscalls","status":"SKIPPED","errorcode":0,"detail":"module not yet implemented (register_C_syscalls)","value":""},
+    {"category":"stub","name":"register_D_veh_trap","status":"SKIPPED","errorcode":0,"detail":"module not yet implemented (register_D_veh_trap)","value":""},
+    {"category":"stub","name":"register_E_cpu_identity","status":"SKIPPED","errorcode":0,"detail":"module not yet implemented (register_E_cpu_identity)","value":""},
+    {"category":"stub","name":"register_F_filesystem","status":"SKIPPED","errorcode":0,"detail":"module not yet implemented (register_F_filesystem)","value":""},
+    {"category":"stub","name":"register_G_registry","status":"SKIPPED","errorcode":0,"detail":"module not yet implemented (register_G_registry)","value":""},
+    {"category":"stub","name":"register_H_token","status":"SKIPPED","errorcode":0,"detail":"module not yet implemented (register_H_token)","value":""},
+    {"category":"stub","name":"register_I_graphics","status":"SKIPPED","errorcode":0,"detail":"module not yet implemented (register_I_graphics)","value":""},
+    {"category":"stub","name":"register_J_audio","status":"SKIPPED","errorcode":0,"detail":"module not yet implemented (register_J_audio)","value":""},
+    {"category":"stub","name":"register_K_network","status":"SKIPPED","errorcode":0,"detail":"module not yet implemented (register_K_network)","value":""},
+    {"category":"stub","name":"register_L_processes","status":"SKIPPED","errorcode":0,"detail":"module not yet implemented (register_L_processes)","value":""},
+    {"category":"stub","name":"register_M_system","status":"SKIPPED","errorcode":0,"detail":"module not yet implemented (register_M_system)","value":""},
+    {"category":"stub","name":"register_N_winrt","status":"SKIPPED","errorcode":0,"detail":"module not yet implemented (register_N_winrt)","value":""}
+  ]
+}

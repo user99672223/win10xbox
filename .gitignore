@@ -1,0 +1,13 @@
+build/
+out/
+*.appx
+*.msix
+*.pfx
+*.cer
+.vs/
+CMakeFiles/
+CMakeCache.txt
+generated/
+*.pdb
+*.ilk
+*.obj
