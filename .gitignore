@@ -15,3 +15,8 @@ build-win32/
 build-uwp/
 *.appxupload
 AppPackages/
+# packaging intermediates
+uwp-host/AppX/
+uwp-host/AppPackages/
+uwp-host/*.pfx
+uwp-host/*.cer
