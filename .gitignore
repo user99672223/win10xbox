@@ -11,3 +11,7 @@ generated/
 *.pdb
 *.ilk
 *.obj
+build-win32/
+build-uwp/
+*.appxupload
+AppPackages/

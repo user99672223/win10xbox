@@ -19,3 +19,12 @@ target_link_libraries(probe_win32 PRIVATE
     advapi32 ole32 oleaut32 ws2_32 shlwapi
 )
 set_target_properties(probe_win32 PROPERTIES OUTPUT_NAME "xbox-probe-win32")
+
+# Payload DLL loaded out-of-package by category A. Must land next to the exe.
+add_library(probe_payload SHARED ${CMAKE_CURRENT_SOURCE_DIR}/../probe-core/probe_payload.cpp)
+set_target_properties(probe_payload PROPERTIES
+    OUTPUT_NAME "probe_payload"
+    LIBRARY_OUTPUT_DIRECTORY $<TARGET_FILE_DIR:probe_win32>
+    RUNTIME_OUTPUT_DIRECTORY $<TARGET_FILE_DIR:probe_win32>
+)
+add_dependencies(probe_win32 probe_payload)
