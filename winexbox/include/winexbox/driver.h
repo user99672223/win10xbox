@@ -21,6 +21,10 @@
 //      [PRESENT]       needed once pixels must reach a screen (D3D12 backend)
 //      [DEFERRED]      Wine has a hook, the null driver's default is acceptable
 //                      until a real backend needs it
+//  * Method names deliberately avoid Win32 API names (WindowCreate, not
+//    CreateWindow; CursorSet, not SetCursor): <windows.h> #defines many of the
+//    latter to their ...W variants, which would silently rename or break an
+//    interface method in any TU that includes both.
 //  * Threading: methods are called by win32u on the thread that owns the
 //    window, except InjectInput()/WakeHandle() which may be called from any
 //    thread (input pump, UI thread, tests).
@@ -101,7 +105,7 @@ struct DisplayConfig {              // everything UpdateDisplayDevices() reports
     std::vector<MonitorInfo> monitors;
 };
 
-// Subset of GetDeviceCaps() answers for the display DC (dc_funcs.pGetDeviceCaps).
+// Subset of QueryDeviceCaps() answers for the display DC (dc_funcs.pGetDeviceCaps).
 struct DeviceCaps {
     std::int32_t horz_res = 0, vert_res = 0;          // HORZRES / VERTRES
     std::int32_t horz_size_mm = 0, vert_size_mm = 0;  // HORZSIZE / VERTSIZE
@@ -223,16 +227,16 @@ public:
     // NtUserCreateWindowEx (window.c) for every window, including the desktop
     // window. Return false to fail the CreateWindow. message-only windows
     // (HWND_MESSAGE parent) are also announced; a backend may ignore them.
-    virtual bool CreateWindow(WindowId hwnd) = 0;
+    virtual bool WindowCreate(WindowId hwnd) = 0;
 
     // [M3-REQUIRED] pDestroyWindow(HWND). Release every resource for `hwnd`,
     // including its surface reference.
-    virtual void DestroyWindow(WindowId hwnd) = 0;
+    virtual void WindowDestroy(WindowId hwnd) = 0;
 
     // [M3-REQUIRED] pSetDesktopWindow(HWND) / pCreateDesktop(name, w, h).
     // The desktop window is the root whose rect is the virtual screen.
-    virtual void SetDesktopWindow(WindowId hwnd) = 0;
-    virtual bool CreateDesktop(const std::u16string& name, std::uint32_t width, std::uint32_t height) = 0;
+    virtual void DesktopSetWindow(WindowId hwnd) = 0;
+    virtual bool DesktopCreate(const std::u16string& name, std::uint32_t width, std::uint32_t height) = 0;
 
     // [M3-REQUIRED] pWindowPosChanging(hwnd, swp_flags, shaped, rects): about
     // to change geometry. Return false => win32u does not allocate a surface
@@ -249,30 +253,30 @@ public:
 
     // [M3-REQUIRED] pShowWindow(hwnd, cmd, &rect, swp): return kShowDefault or
     // the SWP flags to use instead.
-    virtual std::uint32_t ShowWindow(WindowId hwnd, ShowCmd cmd, Rect* new_rect, std::uint32_t swp) = 0;
+    virtual std::uint32_t WindowShow(WindowId hwnd, ShowCmd cmd, Rect* new_rect, std::uint32_t swp) = 0;
 
     // [M3-REQUIRED] pSetParent(hwnd, new_parent, old_parent).
-    virtual void SetParent(WindowId hwnd, WindowId new_parent, WindowId old_parent) = 0;
+    virtual void WindowSetParent(WindowId hwnd, WindowId new_parent, WindowId old_parent) = 0;
 
     // [M3-REQUIRED] pSetWindowStyle(hwnd, offset(GWL_STYLE/GWL_EXSTYLE), style).
-    virtual void SetWindowStyle(WindowId hwnd, std::int32_t offset, std::uint32_t new_style,
+    virtual void WindowSetStyle(WindowId hwnd, std::int32_t offset, std::uint32_t new_style,
                                 std::uint32_t old_style) = 0;
 
     // [M3-REQUIRED] pSetWindowText(hwnd, text).
-    virtual void SetWindowText(WindowId hwnd, const std::u16string& text) = 0;
+    virtual void WindowSetText(WindowId hwnd, const std::u16string& text) = 0;
 
     // [M3-REQUIRED] pSetWindowRgn(hwnd, hrgn, redraw). `region` null clears it.
-    virtual void SetWindowRgn(WindowId hwnd, const Region* region, bool redraw) = 0;
+    virtual void WindowSetRegion(WindowId hwnd, const Region* region, bool redraw) = 0;
 
     // [PRESENT] pSetLayeredWindowAttributes / pUpdateLayeredWindow: layered
     // (per-window alpha / colour key) composition. Headless stores nothing.
-    virtual void SetLayeredWindowAttributes(WindowId hwnd, std::uint32_t color_key,
+    virtual void WindowSetLayered(WindowId hwnd, std::uint32_t color_key,
                                             std::uint8_t alpha, std::uint32_t flags) = 0;
 
     // [M3-REQUIRED] pActivateWindow(hwnd, previous): foreground change.
-    virtual void ActivateWindow(WindowId hwnd, WindowId previous) = 0;
+    virtual void WindowActivate(WindowId hwnd, WindowId previous) = 0;
     // [M3-REQUIRED] pSetCapture(hwnd, gui_flags).
-    virtual void SetCapture(WindowId hwnd, std::uint32_t gui_flags) = 0;
+    virtual void WindowSetCapture(WindowId hwnd, std::uint32_t gui_flags) = 0;
     // [DEFERRED] pFlashWindowEx, pSetWindowIcons, pSysCommand, pWindowMessage,
     // pDesktopWindowProc, pGetWindowStyleMasks, pGetWindowStateUpdates,
     // pMoveWindowBits: null-driver defaults are fine until a host shell exists.
@@ -292,14 +296,14 @@ public:
 
     // [M3-REQUIRED] dc_funcs.pCreateDC / pDeleteDC / pGetDeviceCaps for the
     // "DISPLAY" device: the driver reports caps; win32u/dibdrv does the drawing.
-    virtual DeviceCaps GetDeviceCaps() const = 0;
+    virtual DeviceCaps QueryDeviceCaps() const = 0;
 
     // [M3-REQUIRED] pGetDC(hdc, hwnd, top_win, win_rect, top_rect, flags) /
     // pReleaseDC(hwnd, hdc): a window DC was handed out / returned. The
     // headless driver tracks the count only; X11 uses it to pick a drawable.
-    virtual void GetDC(std::uint64_t hdc, WindowId hwnd, WindowId top_win,
+    virtual void DcAcquire(std::uint64_t hdc, WindowId hwnd, WindowId top_win,
                        const Rect& win_rect, const Rect& top_rect, std::uint32_t flags) = 0;
-    virtual void ReleaseDC(WindowId hwnd, std::uint64_t hdc) = 0;
+    virtual void DcRelease(WindowId hwnd, std::uint64_t hdc) = 0;
 
     // [PRESENT] Flush every dirty surface to the screen. In Wine this is
     // window_surface_funcs::flush driven by win32u after painting; the
@@ -343,14 +347,14 @@ public:
     virtual void InjectWindowEvent(WindowId hwnd, IEventSink::WindowEvent ev, const Rect& rect) = 0;
 
     // [M3-REQUIRED] Pointer: pGetCursorPos / pSetCursorPos / pClipCursor.
-    virtual bool GetCursorPos(Point* pt) = 0;
-    virtual bool SetCursorPos(std::int32_t x, std::int32_t y) = 0;
-    virtual bool ClipCursor(const Rect* clip, bool reset) = 0;
+    virtual bool CursorGetPos(Point* pt) = 0;
+    virtual bool CursorSetPos(std::int32_t x, std::int32_t y) = 0;
+    virtual bool CursorClip(const Rect* clip, bool reset) = 0;
     // [PRESENT] pSetCursor(hwnd, hcursor) / pDestroyCursorIcon(hcursor): which
     // cursor image to show. Headless remembers the id only.
-    virtual void SetCursor(WindowId hwnd, CursorId cursor) = 0;
-    virtual void DestroyCursorIcon(CursorId cursor) = 0;
-    virtual CursorId CurrentCursor() const = 0;
+    virtual void CursorSet(WindowId hwnd, CursorId cursor) = 0;
+    virtual void CursorDestroy(CursorId cursor) = 0;
+    virtual CursorId CursorCurrent() const = 0;
     // [DEFERRED] Keyboard layout hooks (pActivateKeyboardLayout, pToUnicodeEx,
     // pMapVirtualKeyEx, pGetKeyNameText, pKbdLayerDescriptor...): win32u falls
     // back to its built-in US tables when these report "use default".
