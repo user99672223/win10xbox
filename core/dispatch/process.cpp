@@ -432,14 +432,16 @@ NTSTATUS BuildProcessParameters(const LaunchOptions& o, const std::wstring& imag
         At<SIZE_T>(params, pp::EnvironmentSize) = block.size() * sizeof(wchar_t);
     }
     if (old) {
-        // Inherit the host's standard handles so the guest's stdio reaches the
-        // same pipe/console. Do NOT inherit ConsoleHandle: on real Windows it is
-        // a genuine ConDrv handle that Wine's kernelbase cannot drive (it speaks
-        // Wine's own console protocol), and when present it hijacks the std
-        // handles so the guest's output vanishes. With ConsoleHandle = 0 Wine
-        // treats StdOutput as a plain file/pipe and WriteFile's to it directly.
-        At<HANDLE>(params, pp::ConsoleHandle) = nullptr;
-        At<ULONG>(params, pp::ConsoleFlags) = 0;
+        // Inherit the host's console and standard handles so the guest's stdio
+        // reaches the same pipe/console. NOTE (real-Windows bring-up): with
+        // these inherited the guest runs to completion (exit code is correct)
+        // but its stdout is not captured on a real-Windows host; nulling
+        // ConsoleHandle instead makes Wine's kernelbase fault. Tracked as the
+        // real-Windows guest-stdio follow-up in docs/STATUS.md; under Wine the
+        // guest end-to-end path (boot -> printf -> exit) works and is gated on
+        // the linux-cross CI job.
+        At<HANDLE>(params, pp::ConsoleHandle) = At<HANDLE>(old, pp::ConsoleHandle);
+        At<ULONG>(params, pp::ConsoleFlags) = At<ULONG>(old, pp::ConsoleFlags);
         At<HANDLE>(params, pp::StdInput) = At<HANDLE>(old, pp::StdInput);
         At<HANDLE>(params, pp::StdOutput) = At<HANDLE>(old, pp::StdOutput);
         At<HANDLE>(params, pp::StdError) = At<HANDLE>(old, pp::StdError);

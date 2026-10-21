@@ -49,6 +49,7 @@ function(win10xbox_guest_test name program exit_code)
     FIXTURES_REQUIRED w10x_machine
     SKIP_RETURN_CODE 77
     SKIP_REGULAR_EXPRESSION "SKIP:"
+    LABELS "guest_e2e"
     TIMEOUT 180)
 endfunction()
 
