@@ -1,0 +1,5 @@
+; WDFLDR.SYS exports a KMDF client stub binds to.
+LIBRARY wdfldr.sys
+EXPORTS
+WdfVersionBind
+WdfVersionUnbind

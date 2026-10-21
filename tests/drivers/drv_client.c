@@ -100,10 +100,13 @@ int main(void) {
 
     /* 7. the driver exercises ntoskrnl from kernel mode */
     {
-        DWORD mask = 0, ret = 0;
-        BOOL ok = DeviceIoControl(h, IOCTL_OTD_SELFTEST, NULL, 0, &mask, sizeof mask, &ret, NULL);
-        snprintf(msg, sizeof msg, "ok=%d mask=%08lx expected=%08x", ok, mask, OTD_SELFTEST_ALL);
-        report(ok && mask == OTD_SELFTEST_ALL, "in-kernel api self test", msg);
+        OTD_SELFTEST_OUT r;
+        DWORD ret = 0;
+        BOOL ok;
+        memset(&r, 0, sizeof r);
+        ok = DeviceIoControl(h, IOCTL_OTD_SELFTEST, NULL, 0, &r, sizeof r, &ret, NULL);
+        snprintf(msg, sizeof msg, "ok=%d assertions=%lu failed=%lu skipped=%lu", ok, r.Executed, r.Failed, r.Skipped);
+        report(ok && ret == sizeof r && r.Executed >= OTD_SELFTEST_MIN_ASSERTIONS && r.Failed == 0, "in-kernel api self test", msg);
     }
 
     /* 8. what the driver sees of the caller */

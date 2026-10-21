@@ -46,11 +46,46 @@ win10xbox_add_test_driver(OurTestDevice SOURCES OurTestDevice.c)
 win10xbox_add_test_driver(OurStubProbe SOURCES OurStubProbe.c)
 win10xbox_add_test_driver(OurFailDriver SOURCES OurStubProbe.c DEFINES PROBE_FAIL=1)
 
+# ---- KMDF driver: Microsoft's public KMDF headers on top of the mingw-w64 ddk headers -----------------------------------
+# (the WDK's own km headers are not needed on Linux; MSVC builds would use the WDK instead and are not wired here).
+if(NOT MSVC)
+  find_path(WIN10XBOX_DDK_INCLUDE ntddk.h PATH_SUFFIXES ddk)
+  if(WIN10XBOX_DDK_INCLUDE AND EXISTS ${WIN10XBOX_WDF_INCLUDE}/wdf.h)
+    win10xbox_import_lib(_wdfldr_implib wdfldr_host ${CMAKE_CURRENT_SOURCE_DIR}/wdfldr_imports.def wdfldr.sys)
+    add_executable(OurKmdfDevice OurKmdfDevice.c kmdf_stub.c)
+    set_target_properties(OurKmdfDevice PROPERTIES OUTPUT_NAME OurKmdfDevice SUFFIX ".sys" PREFIX ""
+      RUNTIME_OUTPUT_DIRECTORY ${WIN10XBOX_DRIVER_OUT} C_STANDARD 11)
+    target_include_directories(OurKmdfDevice PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_include_directories(OurKmdfDevice SYSTEM PRIVATE ${WIN10XBOX_DDK_INCLUDE} ${WIN10XBOX_WDF_INCLUDE}
+      ${WIN10XBOX_KMDF_COMPAT_DIR})
+    target_compile_definitions(OurKmdfDevice PRIVATE _AMD64_ KMDF_VERSION_MAJOR=1 KMDF_VERSION_MINOR=33)
+    target_compile_options(OurKmdfDevice PRIVATE -ffreestanding -fno-stack-protector -Wno-unused-function)
+    target_link_options(OurKmdfDevice PRIVATE -nostdlib -nostartfiles -Wl,--entry,FxDriverEntry -Wl,--subsystem,native
+      -Wl,--dynamicbase -Wl,--nxcompat -Qunused-arguments)
+    target_link_libraries(OurKmdfDevice PRIVATE ${_ntoskrnl_implib} ${_wdfldr_implib})
+    add_dependencies(OurKmdfDevice ntoskrnl_host_implib wdfldr_host_implib)
+    set(WIN10XBOX_HAVE_KMDF_DRIVER ON)
+  else()
+    message(STATUS "tests/drivers: ddk or KMDF headers missing, OurKmdfDevice.sys not built")
+  endif()
+endif()
+
 # ---- guest client + host -----------------------------------------------------------------------------------
 add_executable(drv_client drv_client.c)
 set_target_properties(drv_client PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/guest PREFIX "")
 target_include_directories(drv_client PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(drv_client PRIVATE _CRT_SECURE_NO_WARNINGS)
+
+if(NOT MSVC)
+  target_link_options(drv_client PRIVATE -Qunused-arguments)
+endif()
+if(WIN10XBOX_HAVE_KMDF_DRIVER)
+  add_executable(drv_kmdf_client drv_kmdf_client.c)
+  set_target_properties(drv_kmdf_client PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/guest PREFIX "")
+  target_include_directories(drv_kmdf_client PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  target_compile_definitions(drv_kmdf_client PRIVATE _CRT_SECURE_NO_WARNINGS)
+  target_link_options(drv_kmdf_client PRIVATE -Qunused-arguments)
+endif()
 
 add_executable(drv_host drv_host.cpp)
 target_link_libraries(drv_host PRIVATE win10xbox_drivers)
@@ -67,6 +102,11 @@ if(NOT MSVC)
   target_compile_options(test_drivers PRIVATE -Wno-invalid-offsetof)
 endif()
 add_dependencies(test_drivers OurTestDevice OurStubProbe OurFailDriver)
+if(WIN10XBOX_HAVE_KMDF_DRIVER)
+  add_dependencies(test_drivers OurKmdfDevice)
+  target_compile_definitions(test_drivers PRIVATE WIN10XBOX_HAVE_KMDF_DRIVER=1)
+  target_include_directories(test_drivers PRIVATE ${WIN10XBOX_GENERATED_DIR})
+endif()
 add_test(NAME drivers.unit COMMAND test_drivers ${WIN10XBOX_DRIVER_OUT})
 set_tests_properties(drivers.unit PROPERTIES LABELS "drivers" TIMEOUT 180)
 
@@ -75,9 +115,18 @@ if(NOT MSVC)
   find_path(WIN10XBOX_DDK_INCLUDE ntddk.h PATH_SUFFIXES ddk)
   if(WIN10XBOX_DDK_INCLUDE)
     add_executable(layout_check layout_main.c layout_ntk.c layout_ddk.c)
+    target_link_options(layout_check PRIVATE -Qunused-arguments)
     target_include_directories(layout_check PRIVATE ${CMAKE_SOURCE_DIR}/drivers/include ${CMAKE_CURRENT_SOURCE_DIR})
     set_source_files_properties(layout_ddk.c PROPERTIES INCLUDE_DIRECTORIES "${WIN10XBOX_DDK_INCLUDE}"
       COMPILE_OPTIONS "-w")
+    if(WIN10XBOX_HAVE_KMDF_DRIVER)
+      target_sources(layout_check PRIVATE layout_wdf_shim.c layout_wdf_real.c)
+      target_include_directories(layout_check PRIVATE ${CMAKE_SOURCE_DIR}/drivers)
+      target_compile_definitions(layout_check PRIVATE HAVE_WDF=1)
+      set_source_files_properties(layout_wdf_real.c PROPERTIES
+        INCLUDE_DIRECTORIES "${WIN10XBOX_DDK_INCLUDE};${WIN10XBOX_WDF_INCLUDE};${WIN10XBOX_KMDF_COMPAT_DIR}"
+        COMPILE_DEFINITIONS "_AMD64_" COMPILE_OPTIONS "-w")
+    endif()
     set_source_files_properties(layout_ntk.c PROPERTIES COMPILE_OPTIONS "-Wno-unused-function")
     # ntk.h is compiled without the ddk path; ddk's own (different) type names stay out of that TU.
     add_test(NAME drivers.layout COMMAND layout_check)
@@ -107,3 +156,21 @@ set_tests_properties(integration.driver_ioctl PROPERTIES
   LABELS "driver_e2e"
   TIMEOUT 240)
 add_dependencies(drv_host OurTestDevice drv_client)
+
+if(WIN10XBOX_HAVE_KMDF_DRIVER)
+  add_test(NAME integration.driver_kmdf_ioctl
+    COMMAND ${CMAKE_COMMAND}
+      -DHOST=$<TARGET_FILE:drv_host>
+      -DMACHINE=${WIN10XBOX_MACHINE_DIR}
+      -DDRIVER=$<TARGET_FILE:OurKmdfDevice>
+      -DCLIENT=$<TARGET_FILE:drv_kmdf_client>
+      -DGUEST_NAME=drv_kmdf_client.exe
+      -DEXPECT_EXIT=0
+      "-DEXPECT_REGEX=driver loaded: .Driver.OurKmdfDevice;kmdf: all checks passed;OK   kmdf request parameters and contexts"
+      "-DFORBID_REGEX=FAIL "
+      -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/run_driver_e2e.cmake)
+  set_tests_properties(integration.driver_kmdf_ioctl PROPERTIES
+    FIXTURES_REQUIRED w10x_machine SKIP_RETURN_CODE 77 SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "driver_e2e" TIMEOUT 240)
+  add_dependencies(drv_host OurKmdfDevice drv_kmdf_client)
+endif()

@@ -9,11 +9,14 @@
 #include "win10xbox/drivers.h"
 #include "ntoskrnl/internal.h"
 #include "our_test_device.h"
+#include "our_kmdf_device.h"
+#include <atomic>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <thread>
+#include <vector>
 
 #define CHECK_ST(a, b) CHECK_EQ(static_cast<NTSTATUS>(a), static_cast<NTSTATUS>(b))
 
@@ -214,14 +217,44 @@ TEST(close_cancels_pending_request) {
     CloseHandle(ev);
 }
 
+TEST(concurrent_requests_from_many_threads) {
+    Loaded d(L"OurTestDevice.sys");
+    if (!NT_SUCCESS(d.st)) { CHECK(false); return; }
+    std::atomic<int> failures{0};
+    std::vector<std::thread> threads;
+    HANDLE shared;
+    CHECK_ST(Open(L"\\??\\OurTestDevice", &shared), STATUS_SUCCESS);   // one handle used by every thread, plus one per thread
+    for (int t = 0; t < 8; ++t)
+        threads.emplace_back([&, t] {
+            HANDLE h;
+            if (!NT_SUCCESS(Open(L"\\Device\\OurTestDevice", &h))) { ++failures; return; }
+            for (int i = 0; i < 250; ++i) {
+                unsigned char in[32], out[32];
+                for (int k = 0; k < 32; ++k) in[k] = static_cast<unsigned char>(t * 31 + i + k);
+                HANDLE use = (i & 1) ? shared : h;
+                if (Ioctl(use, IOCTL_OTD_XOR, in, 32, out, 32) != STATUS_SUCCESS) { ++failures; continue; }
+                for (int k = 0; k < 32; ++k)
+                    if (out[k] != (in[k] ^ OTD_XOR_KEY)) { ++failures; break; }
+            }
+            Drv_NtClose(h);
+        });
+    for (auto& th : threads) th.join();
+    CHECK_EQ(failures.load(), 0);
+    OTD_INFO info{};
+    CHECK_ST(Ioctl(shared, IOCTL_OTD_INFO, nullptr, 0, &info, sizeof info), STATUS_SUCCESS);
+    CHECK_EQ(info.OpenCount, 1ul);
+    Drv_NtClose(shared);
+}
+
 TEST(kernel_selftest_all_checks_pass) {
     Loaded d(L"OurTestDevice.sys");
     if (!NT_SUCCESS(d.st)) { CHECK(false); return; }
     HANDLE h;
     CHECK_ST(Open(L"\\??\\OurTestDevice", &h), STATUS_SUCCESS);
-    ULONG mask = 0;
-    CHECK_ST(Ioctl(h, IOCTL_OTD_SELFTEST, nullptr, 0, &mask, sizeof mask), STATUS_SUCCESS);
-    CHECK_MSG(mask == OTD_SELFTEST_ALL, "mask %08lx missing %08lx", mask, OTD_SELFTEST_ALL & ~mask);
+    OTD_SELFTEST_OUT r{};
+    CHECK_ST(Ioctl(h, IOCTL_OTD_SELFTEST, nullptr, 0, &r, sizeof r), STATUS_SUCCESS);
+    CHECK_MSG(r.Failed == 0, "%lu of %lu in-kernel assertions failed", r.Failed, r.Executed);
+    CHECK_MSG(r.Executed >= OTD_SELFTEST_MIN_ASSERTIONS, "only %lu assertions ran", r.Executed);
     Drv_NtClose(h);
 }
 
@@ -357,7 +390,7 @@ TEST(import_definitions_are_all_implemented) {
     // Every name the test drivers import, except the one stubbed on purpose.
     const char* names[] = {
         "DbgPrint", "ExAcquireFastMutex", "ExAcquireResourceExclusiveLite", "ExAcquireResourceSharedLite",
-        "ExAllocatePoolWithTag", "ExDeleteResourceLite", "ExFreePoolWithTag", "ExGetPreviousMode",
+        "ExAllocatePoolWithTag", "ExDeleteResourceLite", "ExFreePool", "ExFreePoolWithTag", "KeResetEvent", "ExGetPreviousMode",
         "ExInitializeResourceLite", "ExReleaseFastMutex", "ExReleaseResourceLite", "IoCreateDevice",
         "IoCreateSymbolicLink", "IoDeleteDevice", "IoDeleteSymbolicLink", "IoGetCurrentProcess", "IofCompleteRequest",
         "KeCancelTimer", "KeDelayExecutionThread", "KeGetCurrentIrql", "KeInitializeDpc", "KeInitializeEvent",
@@ -547,6 +580,120 @@ TEST(dispatcher_hooks_chain_to_previous_implementation) {
     RemoveDispatcherHooks();
     CHECK(dispatch::LookupByName("NtCreateFile")->policy != dispatch::Policy::Todo);
 }
+
+#ifdef WIN10XBOX_HAVE_KMDF_DRIVER
+TEST(kmdf_driver_binds_to_the_wdf_shim_and_serves_requests) {
+    Loaded d(L"OurKmdfDevice.sys");
+    CHECK_MSG(NT_SUCCESS(d.st), "LoadDriver status %08lx", static_cast<unsigned long>(d.st));
+    if (!NT_SUCCESS(d.st)) return;
+    CHECK_EQ(d.info.stubbed_imports, 0u);   // WdfVersionBind/Unbind come from the shim, the rest from ntoskrnl
+    std::wstring dev;
+    CHECK(ResolveName(L"\\??\\OurKmdfDevice", &dev));
+    CHECK(dev == L"\\Device\\OurKmdfDevice");
+
+    HANDLE h1, h2;
+    CHECK_ST(Open(L"\\??\\OurKmdfDevice", &h1), STATUS_SUCCESS);   // EvtDeviceFileCreate allocates a file context
+    CHECK_ST(Open(L"\\??\\OurKmdfDevice", &h2), STATUS_SUCCESS);
+    unsigned char in[] = {1, 2, 3, 250}, out[4] = {};
+    ULONG_PTR info = 0;
+    CHECK_ST(Ioctl(h1, IOCTL_OKD_XOR, in, 4, out, 4, &info), STATUS_SUCCESS);
+    CHECK_EQ(info, 4u);
+    CHECK(out[0] == (1 ^ OKD_XOR_KEY) && out[3] == (250 ^ OKD_XOR_KEY));
+    CHECK_ST(Ioctl(h1, IOCTL_OKD_XOR, in, 4, out, 2), STATUS_BUFFER_TOO_SMALL);   // WdfRequestRetrieveOutputBuffer minimum
+    static unsigned char big[5000];
+    unsigned char pat = 0x6B;
+    CHECK_ST(Ioctl(h1, IOCTL_OKD_FILL, &pat, 1, big, sizeof big, &info), STATUS_SUCCESS);
+    CHECK_EQ(info, sizeof big);
+    bool all = true;
+    for (unsigned char c : big) all = all && c == 0x6B;
+    CHECK(all);
+    OKD_STATS st1{}, st2{};
+    CHECK_ST(Ioctl(h1, IOCTL_OKD_STATS, nullptr, 0, &st1, sizeof st1), STATUS_SUCCESS);
+    CHECK_ST(Ioctl(h2, IOCTL_OKD_STATS, nullptr, 0, &st2, sizeof st2), STATUS_SUCCESS);
+    CHECK_EQ(st1.Opens, 2ul);
+    CHECK_EQ(st1.ParamIoctlCode, static_cast<unsigned long>(IOCTL_OKD_STATS));
+    CHECK_EQ(st1.WdmIoctl, static_cast<unsigned long>(IOCTL_OKD_STATS));
+    CHECK_EQ(st1.ParamInputLength, 0ul);
+    CHECK_EQ(st1.ParamOutputLength, static_cast<unsigned long>(sizeof st1));
+    CHECK_EQ(st1.RequestorMode, 0ul);
+    CHECK_EQ(st1.FileCtx, 1ul);   // per-file-object contexts are distinct
+    CHECK_EQ(st2.FileCtx, 2ul);
+    CHECK(st2.Ioctls > st1.Ioctls);
+    // write goes to EvtIoWrite, read has no handler and no default: the shim answers like the framework would
+    IO_STATUS_BLOCK iosb{};
+    CHECK_ST(Drv_NtWriteFile(h1, nullptr, nullptr, nullptr, &iosb, in, 4, nullptr, nullptr), STATUS_SUCCESS);
+    CHECK_EQ(iosb.Information, 4u);
+    CHECK_ST(Drv_NtReadFile(h1, nullptr, nullptr, nullptr, &iosb, out, 4, nullptr, nullptr), STATUS_INVALID_DEVICE_REQUEST);
+    CHECK_ST(Ioctl(h1, CTL_CODE(0x22, 0xFFF, METHOD_BUFFERED, FILE_ANY_ACCESS), nullptr, 0, nullptr, 0), STATUS_INVALID_DEVICE_REQUEST);
+    Drv_NtClose(h2);
+    CHECK_ST(Ioctl(h1, IOCTL_OKD_STATS, nullptr, 0, &st2, sizeof st2), STATUS_SUCCESS);
+    CHECK_EQ(st2.Closes, 1ul);    // EvtFileClose ran for the closed handle
+    Drv_NtClose(h1);
+    std::uint32_t id = d.info.id;
+    (void)id;
+}
+
+TEST(kmdf_unload_runs_evt_unload_and_frees_framework_objects) {
+    {
+        Loaded d(L"OurKmdfDevice.sys");
+        CHECK(NT_SUCCESS(d.st));
+    }   // ~Loaded unloads: WdfDriver unload -> EvtDriverUnload, device + link deleted, globals unbound
+    std::wstring dev;
+    CHECK(!ResolveName(L"\\??\\OurKmdfDevice", &dev));
+    CHECK_EQ(PoolBlocksOutstandingForTag(NTK_TAG('W', 'd', 'f', 'C')), 0ull);   // object contexts
+    CHECK_EQ(PoolBlocksOutstandingForTag(NTK_TAG('W', 'd', 'f', 'G')), 0ull);   // WDF_DRIVER_GLOBALS
+}
+
+namespace {
+ULONG WdfIndex(const char* name) {
+    struct E { const char* n; ULONG i; };
+    static const E e[] = {
+#define WDF_FUNC(n, i) {#n, i},
+#include "wdf_func_index.inc"
+#undef WDF_FUNC
+        {nullptr, 0}};
+    for (const E* p = e; p->n; ++p)
+        if (!std::strcmp(p->n, name)) return p->i;
+    return 0xFFFFFFFF;
+}
+}  // namespace
+
+TEST(wdf_function_table_stubs_are_named_and_loud) {
+    // WdfTimerCreate is not implemented by the shim: calling its table slot must hit a stub that names it.
+    Loaded d(L"OurKmdfDevice.sys");
+    if (!NT_SUCCESS(d.st)) { CHECK(false); return; }
+    struct BindInfo { ULONG size; PWCHAR comp; ULONG maj, min, build; ULONG count; const void** table; PVOID module; } bi{};
+    using BindFn = NTSTATUS(NTAPI*)(PDRIVER_OBJECT, PUNICODE_STRING, BindInfo*, void**);
+    using UnbindFn = NTSTATUS(NTAPI*)(PUNICODE_STRING, BindInfo*, void*);
+    auto bind = reinterpret_cast<BindFn>(dt::FindExport("WdfVersionBind"));
+    auto unbind = reinterpret_cast<UnbindFn>(dt::FindExport("WdfVersionUnbind"));
+    CHECK(bind && unbind);
+    if (!bind) return;
+    const void* table = nullptr;
+    wchar_t comp[] = L"KmdfLibrary";
+    bi.size = sizeof bi;
+    bi.comp = comp;
+    bi.maj = 1; bi.min = 33;
+    bi.count = 458;
+    bi.table = &table;
+    UNICODE_STRING reg = Us(L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\Probe");
+    void* globals = nullptr;
+    CHECK_ST(bind(static_cast<PDRIVER_OBJECT>(d.info.driver_object), &reg, &bi, &globals), STATUS_SUCCESS);
+    CHECK(table != nullptr);
+    ULONG idx = WdfIndex("WdfTimerCreate");
+    CHECK(idx < 458);
+    if (table && idx < 458) {
+        const std::uint64_t before = StubCallCount("WdfTimerCreate");
+        auto fn = reinterpret_cast<NTSTATUS(NTAPI*)(void*, void*, void*, void*)>(const_cast<void*>(static_cast<const void* const*>(table)[idx]));
+        CHECK_ST(fn(globals, nullptr, nullptr, nullptr), STATUS_NOT_IMPLEMENTED);
+        CHECK_EQ(StubCallCount("WdfTimerCreate"), before + 1);
+        // an implemented slot is not a stub
+        ULONG ci = WdfIndex("WdfDriverCreate");
+        CHECK(ci < 458 && static_cast<const void* const*>(table)[ci] != static_cast<const void* const*>(table)[idx]);
+    }
+    unbind(&reg, &bi, globals);
+}
+#endif
 
 int main(int argc, char** argv) {
     if (argc < 2) { std::fputs("usage: test_drivers <driver directory>\n", stderr); return 64; }

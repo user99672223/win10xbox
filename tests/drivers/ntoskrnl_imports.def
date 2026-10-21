@@ -9,6 +9,7 @@ ExAcquireResourceExclusiveLite
 ExAcquireResourceSharedLite
 ExAllocatePoolWithTag
 ExDeleteResourceLite
+ExFreePool
 ExFreePoolWithTag
 ExGetPreviousMode
 ExInitializeResourceLite
@@ -35,6 +36,7 @@ KeQuerySystemTime
 KeReleaseMutex
 KeReleaseSemaphore
 KeReleaseSpinLock
+KeResetEvent
 KeAcquireSpinLockRaiseToDpc
 KeSetEvent
 KeSetTimer
@@ -51,3 +53,4 @@ RtlCopyUnicodeString
 RtlInitUnicodeString
 memcpy
 memset
+

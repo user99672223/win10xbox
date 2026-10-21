@@ -15,6 +15,7 @@
 int wmain(int argc, wchar_t** argv) {
     win10xbox::config::Config cfg;
     std::vector<std::wstring> drivers, rest;
+    std::vector<std::uint32_t> loaded;
     for (int i = 1; i < argc; ++i) {
         std::wstring a = argv[i];
         if (a == L"--machine" && i + 1 < argc) cfg.machine_root = argv[++i];
@@ -42,6 +43,7 @@ int wmain(int argc, wchar_t** argv) {
             win10xbox::drivers::Shutdown();
             return 4;
         }
+        loaded.push_back(info.id);
         std::printf("driver loaded: %ls (%zu stubbed imports)\n", info.name.c_str(), info.stubbed_imports);
     }
     std::fflush(stdout);
@@ -54,10 +56,14 @@ int wmain(int argc, wchar_t** argv) {
     opts.wait = true;
     int rc = win10xbox::process::Launch(opts);
     if (rc < 0) std::fprintf(stderr, "drv_host: could not start %ls: status %08x\n", opts.image_path.c_str(), rc);
-    win10xbox::drivers::PoolStats before = win10xbox::drivers::GetPoolStats();
+    // Unload explicitly (reverse order) to check the drivers gave back everything they allocated.
+    for (size_t i = loaded.size(); i-- > 0;) win10xbox::drivers::UnloadDriver(loaded[i]);
+    std::printf("driver host: after unload, live pool blocks by tag:");
+    for (auto& t : win10xbox::drivers::PoolLiveTags())
+        std::printf(" %.4s=%lld", reinterpret_cast<const char*>(&t.first), static_cast<long long>(t.second));
+    std::printf("\n");
     win10xbox::drivers::Shutdown();
-    std::printf("driver host: %llu pool blocks live at guest exit, shut down cleanly\n",
-                static_cast<unsigned long long>(before.blocks_outstanding));
+    std::printf("driver host: shut down cleanly\n");
     std::fflush(stdout);
     win10xbox::dispatch::Shutdown();
     win10xbox::Shutdown();

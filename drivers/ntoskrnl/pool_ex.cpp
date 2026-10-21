@@ -107,6 +107,15 @@ std::uint64_t PoolBlocksOutstandingForTag(std::uint32_t tag) {
     ReleaseSRWLockShared(&g_tag_lock);
     return n < 0 ? 0 : static_cast<std::uint64_t>(n);
 }
+std::vector<std::pair<std::uint32_t, std::int64_t>> PoolLiveTags() {
+    using namespace detail;
+    std::vector<std::pair<std::uint32_t, std::int64_t>> out;
+    AcquireSRWLockShared(&g_tag_lock);
+    for (auto& kv : TagBlocks())
+        if (kv.second > 0) out.emplace_back(kv.first, kv.second);
+    ReleaseSRWLockShared(&g_tag_lock);
+    return out;
+}
 }  // namespace win10xbox::drivers
 
 namespace ntk {

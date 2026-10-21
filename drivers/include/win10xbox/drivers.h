@@ -113,6 +113,8 @@ void SetBugCheckHandler(BugCheckHandler h, void* ctx);
 struct PoolStats { std::uint64_t allocations, frees, blocks_outstanding, bytes_outstanding; };
 PoolStats GetPoolStats();
 std::uint64_t PoolBlocksOutstandingForTag(std::uint32_t tag);
+// {tag, blocks} for every tag with live blocks (tag in memory order: 'Tag1' prints as such).
+std::vector<std::pair<std::uint32_t, std::int64_t>> PoolLiveTags();
 // Times a loud stub (an ntoskrnl import with no implementation) was called.
 std::uint64_t StubCallCount(const char* api_name);
 // True if `name` is an implemented ntoskrnl/hal export (not a stub).

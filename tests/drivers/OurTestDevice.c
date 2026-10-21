@@ -8,6 +8,7 @@
  */
 #include "ntk/ntk.h"
 #include "our_test_device.h"
+#include "kmtest.h"
 
 #define TAG NTK_TAG('O', 'T', 's', 't')
 
@@ -27,7 +28,7 @@ typedef struct _DEVICE_EXT {
 } DEVICE_EXT, *PDEVICE_EXT;
 
 static PDEVICE_OBJECT g_device;
-static WCHAR g_reg_path[64];
+static WCHAR g_reg_path[96];
 static ULONG g_reg_len;
 
 static NTSTATUS Complete(PIRP irp, NTSTATUS status, ULONG_PTR info) {
@@ -117,98 +118,138 @@ static VOID NTAPI TimerDpc(PKDPC dpc, PVOID context, PVOID a1, PVOID a2) {
     Complete(irp, STATUS_SUCCESS, sizeof(ULONG));
 }
 
-/* Kernel API checks that run in kernel mode; bit i set = check i passed. */
-static ULONG SelfTest(PDEVICE_EXT ext) {
-    ULONG ok = 0;
+KMT_RESULTS KmtResults;
+
+/* Kernel API checks that run in kernel mode, kmtest style. */
+static void SelfTest(PDEVICE_EXT ext) {
     KEVENT ev, sev;
     KSEMAPHORE sem;
     KMUTEX mtx;
     KSPIN_LOCK spin;
-    KIRQL old;
+    KIRQL old, old2;
     LARGE_INTEGER zero, t0, t1, d;
     ERESOURCE res;
     LIST_ENTRY head, a, b;
     UNICODE_STRING us, us2;
     WCHAR buf[16];
-    PVOID p;
+    PVOID p, q;
     NTSTATUS st;
+    int i;
     zero.QuadPart = 0;
+    KMT_RESET();
 
+    ok_irql(PASSIVE_LEVEL);
+
+    /* events */
     KeInitializeEvent(&ev, NotificationEvent, FALSE);
     KeInitializeEvent(&sev, SynchronizationEvent, TRUE);
-    if (KeWaitForSingleObject(&ev, Executive, KernelMode, FALSE, &zero) == STATUS_TIMEOUT) ok |= 1u << 0;
-    KeSetEvent(&ev, 0, FALSE);
-    if (KeWaitForSingleObject(&ev, Executive, KernelMode, FALSE, &zero) == STATUS_SUCCESS) ok |= 1u << 1;
-    /* a synchronization event releases exactly one waiter and resets */
-    if (KeWaitForSingleObject(&sev, Executive, KernelMode, FALSE, &zero) == STATUS_SUCCESS &&
-        KeWaitForSingleObject(&sev, Executive, KernelMode, FALSE, &zero) == STATUS_TIMEOUT) ok |= 1u << 2;
+    ok_eq_hex(KeWaitForSingleObject(&ev, Executive, KernelMode, FALSE, &zero), STATUS_TIMEOUT);
+    ok_eq_int(KeSetEvent(&ev, 0, FALSE), 0);
+    ok_eq_int(KeSetEvent(&ev, 0, FALSE), 1);               /* returns the previous state */
+    ok_eq_hex(KeWaitForSingleObject(&ev, Executive, KernelMode, FALSE, &zero), STATUS_SUCCESS);
+    ok_eq_hex(KeWaitForSingleObject(&ev, Executive, KernelMode, FALSE, &zero), STATUS_SUCCESS);   /* notification: stays set */
+    ok_eq_int(KeResetEvent(&ev), 1);
+    ok_eq_hex(KeWaitForSingleObject(&ev, Executive, KernelMode, FALSE, &zero), STATUS_TIMEOUT);
+    ok_eq_hex(KeWaitForSingleObject(&sev, Executive, KernelMode, FALSE, &zero), STATUS_SUCCESS);   /* auto-reset: one waiter */
+    ok_eq_hex(KeWaitForSingleObject(&sev, Executive, KernelMode, FALSE, &zero), STATUS_TIMEOUT);
 
+    /* semaphore */
     KeInitializeSemaphore(&sem, 1, 2);
-    if (KeWaitForSingleObject(&sem, Executive, KernelMode, FALSE, &zero) == STATUS_SUCCESS &&
-        KeWaitForSingleObject(&sem, Executive, KernelMode, FALSE, &zero) == STATUS_TIMEOUT) {
-        KeReleaseSemaphore(&sem, 0, 1, FALSE);
-        if (KeWaitForSingleObject(&sem, Executive, KernelMode, FALSE, &zero) == STATUS_SUCCESS) ok |= 1u << 3;
-    }
+    ok_eq_hex(KeWaitForSingleObject(&sem, Executive, KernelMode, FALSE, &zero), STATUS_SUCCESS);
+    ok_eq_hex(KeWaitForSingleObject(&sem, Executive, KernelMode, FALSE, &zero), STATUS_TIMEOUT);
+    ok_eq_int(KeReleaseSemaphore(&sem, 0, 1, FALSE), 0);
+    ok_eq_hex(KeWaitForSingleObject(&sem, Executive, KernelMode, FALSE, &zero), STATUS_SUCCESS);
 
+    /* mutex is recursive for its owner */
     KeInitializeMutex(&mtx, 0);
-    if (KeWaitForSingleObject(&mtx, Executive, KernelMode, FALSE, &zero) == STATUS_SUCCESS &&
-        KeWaitForSingleObject(&mtx, Executive, KernelMode, FALSE, &zero) == STATUS_SUCCESS) { /* recursive */
-        KeReleaseMutex(&mtx, FALSE);
-        KeReleaseMutex(&mtx, FALSE);
-        ok |= 1u << 4;
-    }
+    ok_eq_hex(KeWaitForSingleObject(&mtx, Executive, KernelMode, FALSE, &zero), STATUS_SUCCESS);
+    ok_eq_hex(KeWaitForSingleObject(&mtx, Executive, KernelMode, FALSE, &zero), STATUS_SUCCESS);
+    ok_eq_int(KeReleaseMutex(&mtx, FALSE), -1);
+    ok_eq_int(KeReleaseMutex(&mtx, FALSE), 0);
 
+    /* spin lock + IRQL */
     KeInitializeSpinLock(&spin);
     KeAcquireSpinLock(&spin, &old);
-    if (KeGetCurrentIrql() == DISPATCH_LEVEL) ok |= 1u << 5;
+    ok_irql(DISPATCH_LEVEL);
+    ok_eq_int(old, PASSIVE_LEVEL);
     KeReleaseSpinLock(&spin, old);
-    if (KeGetCurrentIrql() == old && old == PASSIVE_LEVEL) ok |= 1u << 6;
-
+    ok_irql(PASSIVE_LEVEL);
     KeRaiseIrql(APC_LEVEL, &old);
-    if (KeGetCurrentIrql() == APC_LEVEL) ok |= 1u << 7;
+    ok_irql(APC_LEVEL);
+    KeRaiseIrql(DISPATCH_LEVEL, &old2);
+    ok_irql(DISPATCH_LEVEL);
+    ok_eq_int(old2, APC_LEVEL);
+    KeLowerIrql(old2);
+    ok_irql(APC_LEVEL);
     KeLowerIrql(old);
+    ok_irql(PASSIVE_LEVEL);
 
+    /* fast mutex runs at APC_LEVEL */
     ExAcquireFastMutex(&ext->Lock);
-    if (KeGetCurrentIrql() == APC_LEVEL) ok |= 1u << 8;
+    ok_irql(APC_LEVEL);
     ExReleaseFastMutex(&ext->Lock);
+    ok_irql(PASSIVE_LEVEL);
 
-    ExInitializeResourceLite(&res);
-    if (ExAcquireResourceExclusiveLite(&res, FALSE) && ExAcquireResourceSharedLite(&res, FALSE)) {
-        ExReleaseResourceLite(&res);
-        ExReleaseResourceLite(&res);
-        ok |= 1u << 9;
-    }
+    /* resources: exclusive owner may re-enter shared */
+    st = ExInitializeResourceLite(&res);
+    ok_ntstatus(st, STATUS_SUCCESS);
+    ok(ExAcquireResourceExclusiveLite(&res, FALSE), "exclusive acquire");
+    ok(ExAcquireResourceSharedLite(&res, FALSE), "shared acquire by the exclusive owner");
+    ExReleaseResourceLite(&res);
+    ExReleaseResourceLite(&res);
+    ok(ExAcquireResourceSharedLite(&res, FALSE), "shared acquire");
+    ExReleaseResourceLite(&res);
     ExDeleteResourceLite(&res);
 
+    /* pool */
     p = ExAllocatePoolWithTag(NonPagedPool, 100, TAG);
+    ok(p != NULL, "pool allocation");
     if (p) {
+        int zeroed = 1;
+        for (i = 0; i < 100; ++i) if (((PUCHAR)p)[i]) zeroed = 0;
+        ok(zeroed, "fresh pool is zeroed in this host");
+        ok_eq_int(((ULONG_PTR)p) % 16, 0);
         memset(p, 0xAB, 100);
         ExFreePoolWithTag(p, TAG);
-        ok |= 1u << 10;
     }
+    q = ExAllocatePoolWithTag(PagedPool, 4096, TAG);
+    ok(q != NULL, "paged pool allocation");
+    ExFreePool(q);
 
+    /* lists */
     InitializeListHead(&head);
+    ok(IsListEmpty(&head), "empty list");
     InsertTailList(&head, &a);
     InsertHeadList(&head, &b);
-    if (RemoveHeadList(&head) == &b && RemoveTailList(&head) == &a && IsListEmpty(&head)) ok |= 1u << 11;
+    ok(RemoveHeadList(&head) == &b, "head");
+    ok(RemoveTailList(&head) == &a, "tail");
+    ok(IsListEmpty(&head), "empty again");
 
+    /* unicode strings */
     RtlInitUnicodeString(&us, L"Hello");
+    ok_eq_int(us.Length, 10);
+    ok_eq_int(us.MaximumLength, 12);
     us2.Buffer = buf; us2.Length = 0; us2.MaximumLength = sizeof(buf);
     RtlCopyUnicodeString(&us2, &us);
-    if (us2.Length == 10 && us2.Buffer[0] == L'H' && us2.Buffer[4] == L'o') ok |= 1u << 12;
+    ok_eq_int(us2.Length, 10);
+    ok_eq_wstr(us2.Buffer, L"Hello");
 
+    /* time and delays */
     KeQuerySystemTime(&t0);
-    d.QuadPart = -200000; /* 20 ms relative */
-    KeDelayExecutionThread(KernelMode, FALSE, &d);
+    d.QuadPart = -200000;   /* 20 ms relative */
+    ok_eq_hex(KeDelayExecutionThread(KernelMode, FALSE, &d), STATUS_SUCCESS);
     KeQuerySystemTime(&t1);
-    if ((t1.QuadPart - t0.QuadPart) >= 150000) ok |= 1u << 13;
+    ok((t1.QuadPart - t0.QuadPart) >= 150000, "KeDelayExecutionThread slept");
 
-    st = ObReferenceObjectByHandle((HANDLE)(LONG_PTR)-1, 0, NULL, KernelMode, &p, NULL);
-    if (st == STATUS_SUCCESS && p == IoGetCurrentProcess()) { ObfDereferenceObject(p); ok |= 1u << 14; }
+    /* objects */
+    st = ObReferenceObjectByHandle((HANDLE)(LONG_PTR)-1, 0, NULL, KernelMode, &p, NULL);   /* NtCurrentProcess() */
+    ok_ntstatus(st, STATUS_SUCCESS);
+    ok(p == IoGetCurrentProcess(), "current process object");
+    ObfDereferenceObject(p);
+    ok(MmIsAddressValid(&st), "stack address valid");
+    ok(!MmIsAddressValid((PVOID)(ULONG_PTR)0x10), "null page invalid");
 
-    DbgPrint("OurTestDevice: self test, mask %08lx\n", (unsigned long)ok);
-    if (MmIsAddressValid(&ok)) ok |= 1u << 15;
-    return ok;
+    DbgPrint("OurTestDevice: self test, %lu assertions, %lu failed\n", KmtResults.Executed, KmtResults.Failed);
 }
 
 static NTSTATUS DispatchControl(PDEVICE_OBJECT dev, PIRP irp) {
@@ -273,9 +314,10 @@ static NTSTATUS DispatchControl(PDEVICE_OBJECT dev, PIRP irp) {
     }
 
     case IOCTL_OTD_SELFTEST:
-        if (outl < sizeof(ULONG)) return Complete(irp, STATUS_BUFFER_TOO_SMALL, 0);
-        *(PULONG)sysbuf = SelfTest(ext);
-        return Complete(irp, STATUS_SUCCESS, sizeof(ULONG));
+        if (outl < sizeof(OTD_SELFTEST_OUT)) return Complete(irp, STATUS_BUFFER_TOO_SMALL, 0);
+        SelfTest(ext);
+        memcpy(sysbuf, &KmtResults, sizeof(OTD_SELFTEST_OUT));
+        return Complete(irp, STATUS_SUCCESS, sizeof(OTD_SELFTEST_OUT));
 
     case IOCTL_OTD_INFO: {
         OTD_INFO* info = (OTD_INFO*)sysbuf;
@@ -316,7 +358,7 @@ NTSTATUS NTAPI DriverEntry(PDRIVER_OBJECT drv, PUNICODE_STRING registry_path) {
 
     DbgPrint("OurTestDevice: DriverEntry, registry path %wZ\n", registry_path);
     g_reg_len = registry_path->Length / sizeof(WCHAR);
-    if (g_reg_len > 63) g_reg_len = 63;
+    if (g_reg_len > 95) g_reg_len = 95;
     memcpy(g_reg_path, registry_path->Buffer, g_reg_len * sizeof(WCHAR));
 
     RtlInitUnicodeString(&name, L"\\Device\\OurTestDevice");

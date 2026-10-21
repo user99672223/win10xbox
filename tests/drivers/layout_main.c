@@ -1,25 +1,33 @@
-/* Compares ntk.h layouts with the ddk headers; prints every mismatch. Exit 0 when identical. */
+/* Compares ntk.h / wdf_types.h layouts with Microsoft's headers (mingw-w64 ddk, KMDF 1.33); prints every mismatch. */
 #include <stdio.h>
 #include <string.h>
 #include "layout_table.h"
 
-int main(void) {
+static int compare(const char* what, const layout_entry* a, const layout_entry* b) {
     int bad = 0, n = 0;
-    for (; ntk_layout[n].name && ddk_layout[n].name; ++n) {
-        if (strcmp(ntk_layout[n].name, ddk_layout[n].name) != 0) {
-            printf("FAIL table mismatch at %d: %s vs %s\n", n, ntk_layout[n].name, ddk_layout[n].name);
-            return 2;
+    for (; a[n].name && b[n].name; ++n) {
+        if (strcmp(a[n].name, b[n].name) != 0) {
+            printf("FAIL %s: table mismatch at %d: %s vs %s\n", what, n, a[n].name, b[n].name);
+            return 1000;
         }
-        if (ntk_layout[n].value != ddk_layout[n].value) {
-            printf("FAIL %s: ntk %llu (0x%llx), ddk %llu (0x%llx)\n", ntk_layout[n].name, ntk_layout[n].value,
-                   ntk_layout[n].value, ddk_layout[n].value, ddk_layout[n].value);
+        if (a[n].value != b[n].value) {
+            printf("FAIL %s %s: ours %llu (0x%llx), Microsoft's %llu (0x%llx)\n", what, a[n].name, a[n].value, a[n].value,
+                   b[n].value, b[n].value);
             ++bad;
         }
     }
-    if (ntk_layout[n].name != ddk_layout[n].name && (ntk_layout[n].name || ddk_layout[n].name)) {
-        printf("FAIL tables differ in length\n");
-        return 2;
+    if (a[n].name || b[n].name) {
+        printf("FAIL %s: tables differ in length\n", what);
+        return 1000;
     }
-    printf("%d layout facts compared, %d mismatches\n", n, bad);
+    printf("%s: %d layout facts compared, %d mismatches\n", what, n, bad);
+    return bad;
+}
+
+int main(void) {
+    int bad = compare("ntk.h vs ddk", ntk_layout, ddk_layout);
+#ifdef HAVE_WDF
+    bad += compare("wdf_types.h vs KMDF 1.33", wdf_shim_layout, wdf_real_layout);
+#endif
     return bad ? 1 : 0;
 }

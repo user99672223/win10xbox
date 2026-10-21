@@ -18,7 +18,7 @@
 #define IOCTL_OTD_DEFERRED CTL_CODE(OTD_DEVICE_TYPE, 0x804, METHOD_BUFFERED, FILE_ANY_ACCESS)
 /* METHOD_BUFFERED, input ULONG milliseconds, completes from a kernel timer + DPC */
 #define IOCTL_OTD_TIMER CTL_CODE(OTD_DEVICE_TYPE, 0x805, METHOD_BUFFERED, FILE_ANY_ACCESS)
-/* METHOD_BUFFERED: runs kernel API checks inside the driver, output ULONG bit mask (OTD_SELFTEST_ALL when all pass) */
+/* METHOD_BUFFERED: runs the kmtest-style kernel API checks inside the driver, output OTD_SELFTEST_OUT */
 #define IOCTL_OTD_SELFTEST CTL_CODE(OTD_DEVICE_TYPE, 0x806, METHOD_BUFFERED, FILE_ANY_ACCESS)
 /* METHOD_BUFFERED: output OTD_INFO */
 #define IOCTL_OTD_INFO CTL_CODE(OTD_DEVICE_TYPE, 0x807, METHOD_BUFFERED, FILE_ANY_ACCESS)
@@ -40,9 +40,14 @@ typedef struct _OTD_INFO {
     unsigned long ThreadId;
     unsigned long OpenCount;
     unsigned long RegistryPathChars;
-    unsigned short RegistryPath[64];
+    unsigned short RegistryPath[96];
 } OTD_INFO;
 
-#define OTD_SELFTEST_ALL 0x0000FFFFu
+typedef struct _OTD_SELFTEST_OUT {
+    unsigned long Executed;   /* ok() assertions evaluated in kernel mode */
+    unsigned long Failed;
+    unsigned long Skipped;
+} OTD_SELFTEST_OUT;
+#define OTD_SELFTEST_MIN_ASSERTIONS 40
 
 #endif
