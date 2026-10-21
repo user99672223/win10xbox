@@ -302,22 +302,18 @@ std::string ModuleExportName(const void* image_base);
 // Short human label of a section / view ("C:\Windows\System32\kernel32.dll",
 // else "kernel32.dll", else the host path, else "<unnamed image>").
 std::wstring ImageLabel(const ImageSection* sec);
-// The guest's own loaded-module list (Wine's PEB->Ldr, walked read-only) next to
-// the views this layer mapped, flagging kernel32/kernelbase when absent.
+// The guest's own loaded-module list (Wine's PEB->Ldr, walked read-only),
+// flagging ntdll/kernel32/kernelbase presence. kernelbase absent at guest entry
+// is the forwarder bug this diagnostic exists to catch.
 void DumpGuestModules(const char* why);
-// The main image's import address table after Wine's fixup: how many slots point
-// into a module we mapped and how many are dangling (Wine's "no implementation"
-// stubs). Independent of any Wine debug-channel setting. Returns the number of
-// unresolved slots.
-unsigned ReportImportResolution(const char* why);
-// Called with every complete Wine debug line: counts import-resolution
-// failures and dumps the module list at the first one.
-void NoteWineDebugLine(const char* line);
 // Called by NtContinue(Ex) before it switches to the guest: when this is the
-// main guest thread's launch continuation (Rip == RtlUserThreadStart), dumps
-// the module list and import report and logs the "guest entry reached" marker
-// that hosts watch for through trace::AddSink. Once per process.
+// main guest thread's launch continuation (Rip == the guest RtlUserThreadStart),
+// dumps the module list once per process. The "guest entry reached" trace line
+// it emits is the marker hosts watch for through trace::AddSink.
 void NoteGuestEntry(const CONTEXT* ctx);
+// Address of the guest's RtlUserThreadStart thunk (set in process.cpp while
+// mapping the guest ntdll), so NoteGuestEntry can recognise the launch continuation.
+void* GuestEntryThunk();
 
 // ---- Guest threads / exit (process.cpp) -----------------------------------------
 NTSTATUS CreateGuestThread(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr, PVOID start, PVOID arg,

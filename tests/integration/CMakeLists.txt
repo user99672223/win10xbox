@@ -57,3 +57,14 @@ win10xbox_guest_test(guest_hello "C:\\guest\\guest_hello.exe" 42 "hello from gue
 # CPUID.1:ECX bit 31 (hypervisor present) clear: first hex digit 0-7.
 win10xbox_guest_test(guest_cpuid "C:\\guest\\guest_cpuid.exe" 0
   "cpuid\\.1\\.ecx=[0-7][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]" "vendor=${_vendor}")
+
+# Regression guard for the Xbox kernel32-forwarder bug. WIN10XBOX_TEST_NO_HOST_PATHS
+# makes HostPathOfHandle fail the way GetFinalPathNameByHandleW does inside the
+# console's AppContainer, so image identity falls to SameImageFile's content
+# comparison instead of host-path equality. Before the fix, empty==empty aliased
+# every Wine builtin to ntdll, kernelbase never really loaded, and the guest died
+# with 92 unresolved KERNEL32 imports; this proves kernelbase still loads and the
+# guest runs. Reproduces the on-console failure condition under Wine, so it gates here.
+win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
+set_tests_properties(integration.guest_hello_appcontainer_sim PROPERTIES
+  ENVIRONMENT "WIN10XBOX_TEST_NO_HOST_PATHS=1")

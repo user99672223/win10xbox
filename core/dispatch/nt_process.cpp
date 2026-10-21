@@ -287,6 +287,7 @@ static NTSTATUS NTAPI Xl_NtRaiseHardError(NTSTATUS error, ULONG nparams, ULONG s
 // ---- Context switches: the TEB must show the guest view when guest code resumes ----
 
 static NTSTATUS NTAPI Xl_NtContinue(PCONTEXT ctx, BOOLEAN alert) {
+    NoteGuestEntry(ctx);   // dumps the guest module list once, at the launch continuation
     std::uint32_t d = LeaveToGuestView();
     NTSTATUS s = Host().NtContinue(ctx, alert);
     ReenterHostView(d);
@@ -294,6 +295,7 @@ static NTSTATUS NTAPI Xl_NtContinue(PCONTEXT ctx, BOOLEAN alert) {
 }
 
 static NTSTATUS NTAPI Xl_NtContinueEx(PCONTEXT ctx, PVOID arg) {
+    NoteGuestEntry(ctx);
     std::uint32_t d = LeaveToGuestView();
     NTSTATUS s = Host().NtContinueEx(ctx, arg);
     ReenterHostView(d);

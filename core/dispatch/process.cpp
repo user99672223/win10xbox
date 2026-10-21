@@ -681,6 +681,11 @@ NTSTATUS CreateGuestThread(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTE
     return s;
 }
 
+// The guest's RtlUserThreadStart thunk, captured while mapping the guest ntdll
+// (process::G()). Defined here, in detail, so NoteGuestEntry (nt_section.cpp) can
+// recognise the launch continuation; external linkage matches internal.h.
+void* GuestEntryThunk() { return process::G().user_thread_start; }
+
 [[noreturn]] void GuestThreadExit(NTSTATUS code) {
     ThreadState* self = CurrentThreadState();
     std::size_t guests = GuestThreads().size();

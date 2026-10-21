@@ -258,6 +258,38 @@ bool SameImageFile(const ImageSection& a, const ImageSection& b, const char** ho
     return eq;
 }
 
+void DumpGuestModules(const char* why) {
+    const char* w = why ? why : "";
+    auto* peb = reinterpret_cast<PPEB>(__readgsqword(0x60));   // x64 TEB->ProcessEnvironmentBlock
+    if (!peb || !peb->Ldr) { WARN(modules, "guest module list (%s): no PEB->Ldr yet", w); return; }
+    PLIST_ENTRY head = &peb->Ldr->InMemoryOrderModuleList;
+    bool ntdll = false, k32 = false, kbase = false;
+    unsigned n = 0;
+    for (PLIST_ENTRY e = head->Flink; e && e != head && n < 512; e = e->Flink, ++n) {
+        auto* m = CONTAINING_RECORD(e, LDR_DATA_TABLE_ENTRY, InMemoryOrderLinks);
+        std::wstring_view name(m->FullDllName.Buffer ? m->FullDllName.Buffer : L"",
+                               m->FullDllName.Buffer ? m->FullDllName.Length / sizeof(wchar_t) : 0);
+        TRACE(modules, "  [%u] %p %.*ls", n, m->DllBase, static_cast<int>(name.size()), name.data());
+        std::wstring_view bn = name;
+        if (auto pos = bn.find_last_of(L"\\/"); pos != std::wstring_view::npos) bn = bn.substr(pos + 1);
+        if (IEqualsW(bn, L"ntdll.dll")) ntdll = true;
+        else if (IEqualsW(bn, L"kernel32.dll")) k32 = true;
+        else if (IEqualsW(bn, L"kernelbase.dll")) kbase = true;
+    }
+    TRACE(modules, "guest module list (%s): %u modules; ntdll=%d kernel32=%d kernelbase=%d%s", w, n, ntdll, k32, kbase,
+          kbase ? "" : "  <-- KERNELBASE MISSING (kernel32 forwarders will dangle)");
+}
+
+void NoteGuestEntry(const CONTEXT* ctx) {
+    if (!ctx) return;
+    void* thunk = GuestEntryThunk();
+    if (!thunk || ctx->Rip != reinterpret_cast<DWORD64>(thunk)) return;   // not the main-thread launch continuation
+    static volatile LONG done = 0;
+    if (InterlockedExchange(&done, 1)) return;                            // once per process
+    TRACE(modules, "guest entry reached (RtlUserThreadStart at %p)", thunk);
+    DumpGuestModules("guest entry");
+}
+
 NTSTATUS MapImageView(const std::shared_ptr<ImageSection>& sec, const MapOptions& opts, ImageView** out) {
     auto view = std::make_unique<ImageView>();
     view->section = sec;
