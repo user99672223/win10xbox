@@ -194,10 +194,31 @@ std::wstring GuestWin32ToDevicePath(std::wstring_view g) {
     return L"\\Device\\HarddiskVolume" + std::to_wstring(volume) + std::wstring(g.substr(2));
 }
 
-std::wstring HostPathOfHandle(HANDLE file) {
+// WIN10XBOX_TEST_NO_HOST_PATHS=1 makes HostPathOfHandle fail the way it does in
+// the console's AppContainer (GetFinalPathNameByHandleW(VOLUME_NAME_DOS) cannot
+// reach the mount manager there), so Wine and desktop-Windows runs can exercise
+// the "host path unknown" paths that only the console hits otherwise. Test hook.
+static bool HostPathsForcedUnknown() {
+    static const bool forced = [] {
+        wchar_t v[8];
+        const DWORD n = GetEnvironmentVariableW(L"WIN10XBOX_TEST_NO_HOST_PATHS", v, 8);
+        return n != 0 && n < 8 && v[0] != L'0';
+    }();
+    return forced;
+}
+
+std::wstring HostPathOfHandle(HANDLE file, DWORD* error) {
+    if (error) *error = 0;
+    if (HostPathsForcedUnknown()) {
+        if (error) *error = ERROR_ACCESS_DENIED;
+        return {};
+    }
     wchar_t buf[1024];
     DWORD n = GetFinalPathNameByHandleW(file, buf, 1024, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
-    if (!n || n >= 1024) return {};
+    if (!n || n >= 1024) {
+        if (error) *error = n ? ERROR_INSUFFICIENT_BUFFER : GetLastError();
+        return {};
+    }
     std::wstring s(buf, n);
     if (IStartsWith(s, L"\\\\?\\UNC\\")) return L"\\\\" + s.substr(8);
     if (IStartsWith(s, L"\\\\?\\")) return s.substr(4);

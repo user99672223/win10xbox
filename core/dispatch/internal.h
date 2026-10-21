@@ -15,6 +15,9 @@
 
 WIN10XBOX_EXTERN_CHANNEL(wine);
 WIN10XBOX_EXTERN_CHANNEL(process);
+// DLL/module loading: opens of image files, sections, views, identity checks,
+// the guest's loaded-module list and its import resolution (nt_section.cpp).
+WIN10XBOX_EXTERN_CHANNEL(modules);
 
 namespace win10xbox::dispatch::detail {
 
@@ -241,18 +244,34 @@ bool UntranslateHostWin32Path(std::wstring_view host, std::wstring* guest);
 NTSTATUS TranslateGuestWin32Path(std::wstring_view guest, std::wstring* host);
 // Guest "C:\x\y" -> "\Device\HarddiskVolume1\x\y" (what Windows reports for image names).
 std::wstring GuestWin32ToDevicePath(std::wstring_view guest_win32);
-std::wstring HostPathOfHandle(HANDLE file);   // Win32 path, empty on failure
+// Win32 path of an open file, empty on failure (*error then holds the Win32
+// error). Fails routinely inside the console's AppContainer: callers must never
+// treat "path unknown" as "path equal".
+std::wstring HostPathOfHandle(HANDLE file, DWORD* error = nullptr);
 void SetFallbackDrive(wchar_t letter, const std::wstring& host_root);   // no-vfs builds only
 
 // ---- Image sections and views (nt_section.cpp) ---------------------------------
 struct ImageSection {
     std::vector<std::uint8_t> bytes;
-    std::wstring host_path;     // Win32
+    // Win32 path of the file on the host. EMPTY whenever the host cannot tell:
+    // GetFinalPathNameByHandleW fails inside the console's AppContainer. Never
+    // compare two of these without checking for empty first (SameImageFile).
+    std::wstring host_path;
+    unsigned long host_path_error = 0;   // why host_path is empty (Win32 error), else 0
     std::wstring guest_path;    // Win32 guest view ("C:\..."), may be empty
+    std::wstring name;          // export-directory name of a DLL ("kernel32.dll"), empty for EXEs
     std::uint8_t info[0x40];    // SECTION_IMAGE_INFORMATION as Windows fills it
     std::uint32_t size_of_image = 0;
 };
 NTSTATUS CreateImageSectionFromFile(HANDLE file, std::shared_ptr<ImageSection>* out);
+// NtAreMappedFilesTheSame semantics for two image sections. Wine's
+// find_existing_module() treats "same" as "this DLL is already loaded": it
+// unmaps the new view and hands back the existing module, so a false positive
+// aliases one DLL to another (kernel32.dll -> ntdll.dll on the console).
+// Identity order: same section object; both host paths known -> path equality;
+// otherwise (a path is unknown) -> identical size and bytes. Two unknown paths
+// are NEVER treated as equal. *how says which rule decided (for the trace).
+bool SameImageFile(const ImageSection& a, const ImageSection& b, const char** how = nullptr);
 NTSTATUS BuildImageInformation(const std::uint8_t* file, std::size_t size, std::uint8_t out[0x40], std::uint32_t* size_of_image);
 
 struct ImageView {
@@ -278,6 +297,27 @@ void CloseImageSection(const EmulatedObject& o);
 HANDLE DuplicateImageSection(const EmulatedObject& o);
 // Export-directory name of a mapped image ("ntdll.dll"), empty if none.
 std::string ModuleExportName(const void* image_base);
+
+// ---- Module-load diagnostics (channel `modules`, kept permanently) ----------------
+// Short human label of a section / view ("C:\Windows\System32\kernel32.dll",
+// else "kernel32.dll", else the host path, else "<unnamed image>").
+std::wstring ImageLabel(const ImageSection* sec);
+// The guest's own loaded-module list (Wine's PEB->Ldr, walked read-only) next to
+// the views this layer mapped, flagging kernel32/kernelbase when absent.
+void DumpGuestModules(const char* why);
+// The main image's import address table after Wine's fixup: how many slots point
+// into a module we mapped and how many are dangling (Wine's "no implementation"
+// stubs). Independent of any Wine debug-channel setting. Returns the number of
+// unresolved slots.
+unsigned ReportImportResolution(const char* why);
+// Called with every complete Wine debug line: counts import-resolution
+// failures and dumps the module list at the first one.
+void NoteWineDebugLine(const char* line);
+// Called by NtContinue(Ex) before it switches to the guest: when this is the
+// main guest thread's launch continuation (Rip == RtlUserThreadStart), dumps
+// the module list and import report and logs the "guest entry reached" marker
+// that hosts watch for through trace::AddSink. Once per process.
+void NoteGuestEntry(const CONTEXT* ctx);
 
 // ---- Guest threads / exit (process.cpp) -----------------------------------------
 NTSTATUS CreateGuestThread(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr, PVOID start, PVOID arg,

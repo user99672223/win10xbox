@@ -5,7 +5,11 @@
 #include "internal.h"
 #include "win10xbox/config.h"
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
+#include <cwctype>
+
+WIN10XBOX_DECLARE_CHANNEL(modules);
 
 namespace win10xbox::dispatch::detail {
 namespace {
@@ -42,6 +46,41 @@ bool RvaToOffset(const std::uint8_t* file, std::size_t size, std::size_t section
         }
     }
     return false;
+}
+
+// DLL name from the export directory of a raw PE32+ file ("kernel32.dll"), empty
+// when there is none (EXEs) or the file is not a well-formed x64 image. Used to
+// label sections whose host path is unknown.
+std::wstring ExportNameFromFile(const std::uint8_t* file, std::size_t size) {
+    IMAGE_DOS_HEADER dos;
+    if (!ReadAt(file, size, 0, &dos) || dos.e_magic != IMAGE_DOS_SIGNATURE || dos.e_lfanew < 0) return {};
+    const std::size_t nt_off = static_cast<std::size_t>(dos.e_lfanew);
+    DWORD sig;
+    IMAGE_FILE_HEADER fh;
+    IMAGE_OPTIONAL_HEADER64 oh;
+    if (!ReadAt(file, size, nt_off, &sig) || sig != IMAGE_NT_SIGNATURE || !ReadAt(file, size, nt_off + 4, &fh)) return {};
+    const std::size_t opt_off = nt_off + 4 + sizeof(fh);
+    if (!ReadAt(file, size, opt_off, &oh) || oh.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) return {};
+    if (oh.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_EXPORT) return {};
+    const IMAGE_DATA_DIRECTORY dir = oh.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (!dir.VirtualAddress || !dir.Size) return {};
+    const std::size_t sec_off = opt_off + fh.SizeOfOptionalHeader;
+    std::size_t off = 0;
+    IMAGE_EXPORT_DIRECTORY ed;
+    if (!RvaToOffset(file, size, sec_off, fh.NumberOfSections, dir.VirtualAddress, oh.SizeOfHeaders, &off) ||
+        !ReadAt(file, size, off, &ed) || !ed.Name)
+        return {};
+    if (!RvaToOffset(file, size, sec_off, fh.NumberOfSections, ed.Name, oh.SizeOfHeaders, &off)) return {};
+    std::wstring name;
+    for (std::size_t i = 0; i < 64 && off + i < size && file[off + i]; ++i) name.push_back(static_cast<wchar_t>(file[off + i]));
+    return name;
+}
+
+bool IEqualsW(std::wstring_view a, std::wstring_view b) {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i)
+        if (std::towlower(a[i]) != std::towlower(b[i])) return false;
+    return true;
 }
 
 void CloseSectionObject(const EmulatedObject& o) {
@@ -179,10 +218,44 @@ NTSTATUS CreateImageSectionFromFile(HANDLE file, std::shared_ptr<ImageSection>* 
     }
     if (NTSTATUS s = BuildImageInformation(sec->bytes.data(), sec->bytes.size(), sec->info, &sec->size_of_image))
         return s;
-    sec->host_path = HostPathOfHandle(file);
+    sec->host_path = HostPathOfHandle(file, &sec->host_path_error);
     if (!UntranslateHostWin32Path(sec->host_path, &sec->guest_path)) sec->guest_path.clear();
+    sec->name = ExportNameFromFile(sec->bytes.data(), sec->bytes.size());
+    if (sec->host_path.empty()) {
+        // The console's AppContainer: GetFinalPathNameByHandleW is refused. Image
+        // identity then rests on the file contents (SameImageFile), not on paths.
+        static volatile LONG reported = 0;
+        if (InterlockedIncrement(&reported) <= 3)
+            WARN(modules, "host path of image file %ls unavailable (Win32 error %lu): sections are told apart by contents",
+                 sec->name.empty() ? L"<exe>" : sec->name.c_str(), sec->host_path_error);
+    }
     *out = std::move(sec);
     return st::Success;
+}
+
+std::wstring ImageLabel(const ImageSection* sec) {
+    if (!sec) return L"<no section>";
+    if (!sec->guest_path.empty()) return sec->guest_path;
+    if (!sec->name.empty()) return sec->name;
+    if (!sec->host_path.empty()) return sec->host_path;
+    return L"<unnamed image>";
+}
+
+bool SameImageFile(const ImageSection& a, const ImageSection& b, const char** how) {
+    const char* dummy = nullptr;
+    if (!how) how = &dummy;
+    if (&a == &b) { *how = "same section object"; return true; }
+    if (!a.host_path.empty() && !b.host_path.empty()) {
+        const bool eq = CompareStringOrdinal(a.host_path.c_str(), -1, b.host_path.c_str(), -1, TRUE) == CSTR_EQUAL;
+        *how = eq ? "same host path" : "different host paths";
+        return eq;
+    }
+    // At least one path is unknown. Two unknowns are not "equal" (that made every
+    // Wine builtin look like ntdll.dll on the console): compare what we hold.
+    if (a.bytes.size() != b.bytes.size()) { *how = "host path unknown, file sizes differ"; return false; }
+    const bool eq = a.bytes.empty() || std::memcmp(a.bytes.data(), b.bytes.data(), a.bytes.size()) == 0;
+    *how = eq ? "host path unknown, contents identical" : "host path unknown, contents differ";
+    return eq;
 }
 
 NTSTATUS MapImageView(const std::shared_ptr<ImageSection>& sec, const MapOptions& opts, ImageView** out) {
@@ -282,6 +355,7 @@ static bool UnmapView(const void* base) {
     ReleaseSRWLockExclusive(&g_view_lock);
     if (!victim) return false;
     TRACE(dispatch, "unmapping %ls at %p", victim->image.path.c_str(), base);
+    TRACE(modules, "unmap %ls at %p", ImageLabel(victim->section.get()).c_str(), base);
     loader::UnmapImage(victim->image);
     return true;
 }
@@ -303,6 +377,8 @@ NTSTATUS NTAPI Xl_NtCreateSection(PHANDLE handle, ACCESS_MASK access, POBJECT_AT
     if (!h) return st::NoMemory;
     *handle = h;
     TRACE(dispatch, "image section %p for %ls", h, sec->host_path.c_str());
+    TRACE(modules, "section %p: %ls (%zu bytes, host path %ls)", h, ImageLabel(sec.get()).c_str(), sec->bytes.size(),
+          sec->host_path.empty() ? L"<unknown>" : sec->host_path.c_str());
     return st::Success;
 }
 
@@ -324,9 +400,14 @@ static NTSTATUS MapOurs(const std::shared_ptr<ImageSection>& sec, HANDLE process
     opts.preferred = base ? *base : nullptr;
     ImageView* view = nullptr;
     NTSTATUS s = MapImageView(sec, opts, &view);
-    if (!NtSuccess(s)) return s;
+    if (!NtSuccess(s)) {
+        WARN(modules, "map of %ls failed: %08lx", ImageLabel(sec.get()).c_str(), static_cast<unsigned long>(s));
+        return s;
+    }
     *base = view->image.base;
     if (view_size) *view_size = view->image.size;
+    TRACE(modules, "map %ls at %p, %zu bytes%s", ImageLabel(sec.get()).c_str(), view->image.base, view->image.size,
+          view->image.relocated ? ", relocated" : "");
     return view->image.relocated ? st::ImageNotAtBase : st::Success;
 }
 
@@ -379,13 +460,20 @@ static NTSTATUS NTAPI Xl_NtQuerySection(HANDLE section, ULONG klass, PVOID buffe
     }
 }
 
+// Wine's find_existing_module() calls this for every loaded module whose
+// TimeDateStamp and CheckSum match a freshly mapped DLL; all of Wine's PE
+// builtins from one build share both, so this answer alone decides whether
+// kernel32.dll "is" ntdll.dll. SUCCESS makes Wine unmap the new view and reuse
+// the old module; it must only be returned for the same file (SameImageFile).
 static NTSTATUS NTAPI Xl_NtAreMappedFilesTheSame(PVOID a, PVOID b) {
     ImageView va, vb;
     bool ha = FindView(a, &va), hb = FindView(b, &vb);
     if (!ha && !hb) return Host().NtAreMappedFilesTheSame(a, b);
-    if (ha && hb && CompareStringOrdinal(va.section->host_path.c_str(), -1, vb.section->host_path.c_str(), -1, TRUE) == CSTR_EQUAL)
-        return st::Success;
-    return st::NotSameDevice;
+    const char* how = "not two image views of ours";
+    const bool same = ha && hb && va.section && vb.section && SameImageFile(*va.section, *vb.section, &how);
+    TRACE(modules, "same file? %ls at %p vs %ls at %p -> %s (%s)", ImageLabel(va.section.get()).c_str(), a,
+          ImageLabel(vb.section.get()).c_str(), b, same ? "SAME" : "different", how);
+    return same ? st::Success : st::NotSameDevice;
 }
 
 std::shared_ptr<ImageSection> ImageSectionFromHandle(HANDLE h) { return SectionFromHandle(h); }
