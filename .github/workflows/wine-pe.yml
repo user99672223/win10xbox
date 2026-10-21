@@ -1,0 +1,101 @@
+name: wine-pe
+
+# Builds Wine's PE ("builtin") DLLs with llvm-mingw and publishes them as the
+# `wine-pe-builtin` artifact. The Windows job in ci.yml downloads the latest
+# successful artifact. Output is LGPL-2.1+ (see wine-pe/README.md).
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "wine-pe/**"
+      - ".github/workflows/wine-pe.yml"
+  schedule:
+    - cron: "23 4 * * 1"   # weekly, Monday 04:23 UTC
+
+concurrency:
+  group: wine-pe-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  LLVM_MINGW_VER: "20250910"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read Wine pin
+        run: |
+          tag="$(sed -n 's/^WINE_TAG="\(.*\)"$/\1/p' wine-pe/fetch-wine.sh)"
+          test -n "$tag"
+          echo "WINE_TAG=$tag" >> "$GITHUB_ENV"
+
+      - name: Cache llvm-mingw
+        id: cache-llvm
+        uses: actions/cache@v4
+        with:
+          path: /opt/llvm-mingw
+          key: llvm-mingw-${{ env.LLVM_MINGW_VER }}-ucrt-ubuntu-22.04
+      - name: Install llvm-mingw
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        run: |
+          sudo mkdir -p /opt/llvm-mingw
+          curl -sSL "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_VER}/llvm-mingw-${LLVM_MINGW_VER}-ucrt-ubuntu-22.04-x86_64.tar.xz" \
+            | sudo tar -xJ -C /opt/llvm-mingw --strip-components=1
+
+      - name: Install host build tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends flex bison gettext ccache build-essential
+
+      # Wine source + configured build tree + ccache. The key changes whenever
+      # the pin, scripts, module list or patches change; restore-keys falls
+      # back to the newest cache of the same Wine tag so rebuilds stay
+      # incremental.
+      - name: Cache Wine source, build tree and ccache
+        uses: actions/cache@v4
+        with:
+          path: |
+            wine-pe/wine-src
+            wine-pe/build
+            ~/.cache/ccache
+          key: wine-pe-${{ env.WINE_TAG }}-${{ hashFiles('wine-pe/*.sh', 'wine-pe/dlls.txt', 'wine-pe/patches/*.patch') }}
+          restore-keys: |
+            wine-pe-${{ env.WINE_TAG }}-
+
+      - name: Fetch Wine and apply patches
+        run: wine-pe/fetch-wine.sh
+
+      - name: Build PE DLLs
+        run: wine-pe/build.sh --jobs "$(nproc)"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### wine-pe builtin DLLs (${WINE_TAG})"
+            echo '```'
+            cat wine-pe/out/builtin/MANIFEST.txt 2>/dev/null || echo "no manifest"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wine-pe-builtin
+          path: wine-pe/out/builtin/
+          if-no-files-found: error
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wine-pe-logs
+          path: wine-pe/build/logs/
+          if-no-files-found: ignore
+          retention-days: 7

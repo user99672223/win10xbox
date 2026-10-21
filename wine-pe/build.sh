@@ -212,6 +212,8 @@ for f in "$OUT/builtin/"*.dll "$OUT/builtin/"*.exe; do
 done
 mv -f "$MANIFEST.tmp" "$MANIFEST"
 cp -f "$SRC/LICENSE" "$OUT/LICENSE.wine"
+# Also next to the DLLs so the uploaded artifact carries its license.
+cp -f "$SRC/LICENSE" "$OUT/builtin/LICENSE.wine"
 T_PHASE[stage]=$(( $(now) - T0 ))
 
 # -------------------------------------------------------------------- summary
