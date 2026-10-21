@@ -11,6 +11,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  actions: read   # the windows job downloads the wine-pe-builtin artifact
+
 env:
   LLVM_MINGW_VER: "20250910"
 
@@ -71,6 +75,25 @@ jobs:
         with: { arch: x64 }
       - name: sccache
         uses: mozilla-actions/sccache-action@v0.0.9
+      # Wine builtin DLLs from the latest successful wine-pe run. Non-fatal: if
+      # none exists yet the guest integration tests skip (ntdll absent), so the
+      # MSVC compile + unit tests still gate. Downloads into the default
+      # WIN10XBOX_BUILTIN_DIR (wine-pe/out/builtin) so no -D is needed.
+      - name: Fetch wine-pe builtin DLLs (optional)
+        shell: pwsh
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          $id = gh run list --repo ${{ github.repository }} --workflow wine-pe.yml --branch ${{ github.ref_name }} --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+          if (-not $id) {
+            $id = gh run list --repo ${{ github.repository }} --workflow wine-pe.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+          }
+          if ($id) {
+            New-Item -ItemType Directory -Force -Path wine-pe/out/builtin | Out-Null
+            gh run download $id --repo ${{ github.repository }} --name wine-pe-builtin --dir wine-pe/out/builtin
+            Write-Host "downloaded wine-pe-builtin from run $id ($((Get-ChildItem wine-pe/out/builtin -Filter *.dll).Count) DLLs)"
+          } else {
+            Write-Host "no successful wine-pe run yet; guest integration tests will skip"
+          }
       - name: Configure
         env: { SCCACHE_GHA_ENABLED: "true" }
         run: >
