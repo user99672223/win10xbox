@@ -45,6 +45,12 @@ AppContainer with 2 privileges ([§5.8](../tools/probe/results/REPORT.md),
 
 ## Probe-v2 queue (console-run later by the owner; built into `tools/probe`)
 
+Status: specified here; module implementation is **deferred**. The content of
+item 3 (a 32-bit far-jump / privileged-instruction detection probe) repeatedly
+tripped the model content classifier during automated authoring, so these
+modules are left for a careful later pass or for the owner to add directly.
+The specification below is complete.
+
 New probe modules to ship in the same `.msix`:
 
 1. Resume a created child process and confirm it runs (D1 caveat).
