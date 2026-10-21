@@ -1,0 +1,20 @@
+RESULT: INCOMPLETE (still running, or the process died: see 'phase' below and trace.log)
+tool=host-uwp-lite (throwaway on-console M1/M2 validator)
+build=Oct 21 2026 17:50:11
+core=0.0.1 (6468741)
+package=win10xbox.uwp.lite_1.0.0.2_x64__eqad6j9zhtw80
+local_state=Q:\Users\UserMgr1\AppData\Local\Packages\win10xbox.uwp.lite_eqad6j9zhtw80\LocalState
+phase=guest running
+guest=smoke.exe
+smoke_env_applied=0
+stage.builtin=copied=0 up-to-date=25 missing=0 failed=0 bytes=0
+stage.guest=copied=0 up-to-date=2 missing=0 failed=0 bytes=0
+stage.nls=copied=0 up-to-date=25 missing=2 failed=0 bytes=0
+stage.dll=copied=0 up-to-date=2 missing=0 failed=0 bytes=0
+stage.nls.not_staged=l_intl.nls(missing),c_10000.nls(missing)
+builtin.ntdll=present
+nls.required_missing=l_intl.nls
+system32.readable_by_name=29/47
+system32.not_readable=vcruntime140.dll(2),vcruntime140_1.dll(2),msvcp140.dll(2),advapi32.dll(2),user32.dll(2),gdi32full.dll(2),imm32.dll(2),comctl32.dll(2),comdlg32.dll(2),shell32.dll(2),shlwapi.dll(2),ole32.dll(2),version.dll(2),winmm.dll(2),setupapi.dll(2),psapi.dll(2),apisetschema.dll(2),kernel32.dll(2)
+initialize=0
+watchdog_sec=600
