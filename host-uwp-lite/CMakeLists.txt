@@ -15,7 +15,11 @@
 #         -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
 #   cmake --build build-uwp-lite
 #   host-uwp-lite\package.cmd build-uwp-lite       -> build-uwp-lite\AppPackages\*.msix + .cer
-# (A Visual Studio generator with -A x64 works too; nothing here is generator specific.)
+# (A Visual Studio generator with -A x64 should work too: nothing here is generator
+# specific, but CI only exercises Ninja, like the main ci.yml.)
+#
+# Helper scripts: sdk.cmake (finds midl/makeappx/makepri/signtool and the platform
+# metadata), stage.cmake (assembles the package layout), package.cmd (packs + signs).
 #
 # What gets built:
 #   host_uwp_lite      win10xbox-uwp-lite.exe  the AppContainer UWP host (/APPCONTAINER, static CRT)

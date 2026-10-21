@@ -892,8 +892,8 @@ bool RunSmokeImpl(const HostInfo& host, Report& rep)
     // ---- 7. wind down (not after a timeout: the guest is still running on the PEB)
     if (!timed_out)
     {
-        win10xbox::dispatch::Shutdown();   // dumps the per-syscall relay statistics into trace.log
-        win10xbox::Shutdown();             // also detaches the trace sink
+        if (init_rc == 0) win10xbox::dispatch::Shutdown();   // dumps the per-syscall relay statistics into trace.log
+        win10xbox::Shutdown();                               // also detaches the trace sink
     }
     if (h_out != INVALID_HANDLE_VALUE)
     {
@@ -930,7 +930,8 @@ bool RunSmokeImpl(const HostInfo& host, Report& rep)
         else if (timed_out)
             hint = "the guest did not exit within the watchdog; the last relay lines in trace.log show where it is stuck";
         else
-            hint = "the guest ran but did not exit with 42; compare trace.log, try guest.txt = smoke_cui.exe";
+            hint = "the guest ran but did not exit with 42; read stdout.txt and trace.log, then try guest.txt = smoke_cui.exe "
+                   "(console subsystem) or 'smoke.exe min' (no DLL probe)";
     }
     if (!hint.empty()) rep.Set("hint", hint);
 
