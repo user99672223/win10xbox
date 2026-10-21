@@ -1,0 +1,22 @@
+win10xbox: keep the host process heap in loader_init()
+
+win10xbox runs Wine's ntdll inside a host process that already owns the
+process heap (PEB->ProcessHeap is pre-populated by the host before
+loader_init() runs). Heap functions (RtlAllocateHeap & co.) are forwarded to
+the host ntdll, so Wine must not replace the heap handle with a heap of its
+own. Only create a process heap when the PEB does not have one yet, which
+keeps stock Wine behaviour for a plain process start.
+
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index b19bf78..57da3d4 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -4445,7 +4445,7 @@ void loader_init( CONTEXT *context, void **entry )
+         peb->TlsBitmap          = &tls_bitmap;
+         peb->TlsExpansionBitmap = &tls_expansion_bitmap;
+         peb->LoaderLock         = &loader_section;
+-        peb->ProcessHeap        = RtlCreateHeap( HEAP_GROWABLE, NULL, 0, 0, NULL, NULL );
++        if (!peb->ProcessHeap) peb->ProcessHeap = RtlCreateHeap( HEAP_GROWABLE, NULL, 0, 0, NULL, NULL );
+ 
+         RtlInitializeBitMap( &tls_bitmap, peb->TlsBitmapBits, sizeof(peb->TlsBitmapBits) * 8 );
+         RtlInitializeBitMap( &tls_expansion_bitmap, peb->TlsExpansionBitmapBits,

@@ -1,0 +1,46 @@
+# Wine PE modules built by build.sh, one per line, in priority order.
+#
+# Syntax:   <name>             -> dlls/<name>/x86_64-windows/<name>.dll
+#           <dir>              -> <dir>/x86_64-windows/<basename>.exe for
+#                                 programs/*, <basename>.dll otherwise
+#           <dir>=<file>       -> explicit output file name
+# Lines starting with '#' and blank lines are ignored.
+#
+# build.sh treats ntdll, kernelbase and kernel32 as CORE: if one of them
+# fails the whole build fails. Any other failure is only reported in the
+# summary table (the log is wine-pe/build/logs/<module>.log).
+
+# --- core -----------------------------------------------------------------
+ntdll
+kernelbase
+kernel32
+
+# --- C runtimes, API sets, window system ----------------------------------
+msvcrt
+ucrtbase
+apisetschema
+win32u
+user32
+gdi32
+
+# --- base services ---------------------------------------------------------
+advapi32
+sechost
+rpcrt4
+comctl32
+shell32
+shlwapi
+version
+imm32
+ws2_32
+winmm
+
+# --- COM -------------------------------------------------------------------
+ole32
+oleaut32
+combase
+
+# --- helpers / programs ----------------------------------------------------
+programs/services
+wbemprox
+programs/wineboot

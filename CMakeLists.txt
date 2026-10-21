@@ -1,5 +1,10 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.25)
 project(win10xbox LANGUAGES C CXX VERSION 0.0.1)
+
+# /Z7 (embedded debug info) instead of /Zi: parallel cl.exe + sccache cannot
+# share a .pdb, and sccache cannot cache /Zi objects at all.
+cmake_policy(SET CMP0141 NEW)
+set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>")
 
 if(NOT WIN32)
   message(FATAL_ERROR "win10xbox builds Windows x64 binaries only. On Linux use -DCMAKE_TOOLCHAIN_FILE=cmake/llvm-mingw.cmake.")
