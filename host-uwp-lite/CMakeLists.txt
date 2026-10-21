@@ -22,7 +22,8 @@
 # metadata), stage.cmake (assembles the package layout), package.cmd (packs + signs).
 #
 # What gets built:
-#   host_uwp_lite      win10xbox-uwp-lite.exe  the AppContainer UWP host (/APPCONTAINER, static CRT)
+#   host_uwp_lite      win10xbox-uwp-lite.exe  the AppContainer UWP host (/APPCONTAINER, static CRT;
+#                                              smoke.cpp harness + crash.cpp crash capture, dbghelp delay-loaded)
 #   smoke_guest        smoke.exe               guest, /SUBSYSTEM:WINDOWS (the default guest)
 #   smoke_guest_cui    smoke_cui.exe           same source, /SUBSYSTEM:CONSOLE (A/B variant)
 #   uwp_lite_winmd     Win10XboxLite.winmd     midl output of App.idl (the Xbox launcher wants it)
@@ -102,8 +103,10 @@ add_executable(host_uwp_lite WIN32
   main.cpp
   App.cpp
   smoke.cpp
+  crash.cpp
   App.h
   smoke.h
+  crash.h
   pch.h)
 set_target_properties(host_uwp_lite PROPERTIES OUTPUT_NAME "win10xbox-uwp-lite")
 target_include_directories(host_uwp_lite PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -111,14 +114,20 @@ target_compile_options(host_uwp_lite PRIVATE /bigobj)
 target_link_libraries(host_uwp_lite PRIVATE
   win10xbox_core
   WindowsApp        # umbrella import lib for the AppContainer-permitted exports (RoInitialize, ...)
-  runtimeobject)
+  runtimeobject
+  dbghelp           # MiniDumpWriteDump for crash.dmp (crash.cpp) ...
+  delayimp)         # ... delay-loaded, see the link options below
 # AppContainer PE flag + WINDOWS subsystem + the wide entry (the link flags the
 # probe's MSBuild project produced). /MANIFEST:NO like MSBuild UWP projects: no
 # embedded Win32 manifest in a UWP exe. No /OPT:ICF on purpose: core keeps tables
 # of its own function addresses, and ci.yml's configurations (/DEBUG implies
 # /OPT:NOICF) never fold functions either.
+# /DELAYLOAD:dbghelp.dll: crash.cpp binds it at startup (__HrLoadAllImportsForDll) and
+# treats a failure as "no crash.dmp". A hard import would stop the whole package from
+# starting if the console could not load dbghelp.dll inside the AppContainer.
 target_link_options(host_uwp_lite PRIVATE
-  /APPCONTAINER /SUBSYSTEM:WINDOWS /ENTRY:wWinMainCRTStartup /MANIFEST:NO /INCREMENTAL:NO)
+  /APPCONTAINER /SUBSYSTEM:WINDOWS /ENTRY:wWinMainCRTStartup /MANIFEST:NO /INCREMENTAL:NO
+  /DELAYLOAD:dbghelp.dll)
 
 # ---------------------------------------------------------------------------
 # The guest programs (plain Win32, NOT AppContainer; static CRT via the global setting)

@@ -10,11 +10,15 @@
 //   3. Initialize -> process::Launch -> dispatch::Shutdown -> Shutdown;
 //   4. write LocalState\result.txt (PASS iff Initialize == 0 and the guest
 //      exits with 42).
+// Around that, crash.cpp leaves crash.txt / crash.dmp when the process dies and
+// entry-reached.txt when the core announces that control is about to enter the guest.
 //
 // Everything runs on the caller's worker thread (probe lesson, DECISIONS.md:
 // never block the CoreWindow thread). Nothing here touches the loader,
 // dispatcher or kernel code: it is an integration harness only.
 #include "smoke.h"
+
+#include "crash.h"
 
 #include "win10xbox/core.h"
 #include "win10xbox/dispatch.h"
@@ -176,13 +180,26 @@ std::vector<std::wstring> ListFiles(const std::wstring& dir)
 // Config::trace_default_on; RunSmoke sets "+all" so the per-syscall `relay`
 // channel is on. core's Shutdown() clears all sinks, hence the harness lines
 // below go straight to the handle and keep working after it.
+//
+// The sink also hands every line to CrashOnTraceLine: the line that announces the
+// guest's entry ("guest entry reached", logged by core/dispatch right before
+// NtContinue switches to guest code) writes entry-reached.txt on the spot.
 // ---------------------------------------------------------------------------
 
 HANDLE g_trace = INVALID_HANDLE_VALUE;
 
+// Wine's loader logs one "No implementation for <dll>.<name> imported from ..." warning per
+// import it could not resolve (channel module, class warn: WIN10XBOX_WINEDEBUG's default
+// here). The first on-console run had 92 of them for KERNEL32.dll; result.txt reports the
+// count so the next run shows "0" without anyone reading trace.log.
+volatile LONG g_no_impl_warnings = 0;
+
 void TraceSink(const char* line, void*)
 {
-    if (line != nullptr) WriteAll(g_trace, line, std::strlen(line));
+    if (line == nullptr) return;
+    WriteAll(g_trace, line, std::strlen(line));
+    CrashOnTraceLine(line);
+    if (std::strstr(line, "No implementation for") != nullptr) InterlockedIncrement(&g_no_impl_warnings);
 }
 
 void HLogV(const char* fmt, va_list ap)
@@ -217,9 +234,6 @@ void HLog(const char* fmt, ...)
 // still tells the owner how far it got ("INCOMPLETE ... phase=...").
 // ---------------------------------------------------------------------------
 
-char g_snapshot[8192];            // last text written to result.txt, for the crash filter
-std::size_t g_snapshot_len = 0;
-
 class Report
 {
 public:
@@ -244,8 +258,7 @@ public:
     {
         std::string text = "RESULT: " + verdict_ + "\n";
         for (const auto& kv : kv_) text += kv.first + "=" + kv.second + "\n";
-        g_snapshot_len = text.size() < sizeof g_snapshot ? text.size() : sizeof g_snapshot;
-        std::memcpy(g_snapshot, text.data(), g_snapshot_len);
+        SetCrashSnapshot(text.data(), text.size());   // crash.txt quotes the latest one
         HANDLE h = CreateFileW(path_.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
                                FILE_ATTRIBUTE_NORMAL, nullptr);
         if (h == INVALID_HANDLE_VALUE) return;
@@ -258,85 +271,6 @@ private:
     std::string verdict_ = "INCOMPLETE";
     std::vector<std::pair<std::string, std::string>> kv_;
 };
-
-// ---------------------------------------------------------------------------
-// Host crash recorder. An AppContainer app that dies leaves nothing behind but
-// a closed window, so install a last-resort filter that records the exception
-// in trace.log and result.txt. No heap use in here (the crash may be inside
-// the heap); the guest installs its own filter later, which then reports
-// through Wine's err channel into the same trace.log.
-// ---------------------------------------------------------------------------
-
-wchar_t g_crash_result_path[1024];
-volatile LONG g_in_crash = 0;
-
-char* PutStr(char* p, const char* s)
-{
-    while (*s) *p++ = *s++;
-    return p;
-}
-
-char* PutHex(char* p, unsigned long long v, int digits)
-{
-    static const char kDigits[] = "0123456789abcdef";
-    for (int i = digits - 1; i >= 0; --i) *p++ = kDigits[(v >> (i * 4)) & 0xf];
-    return p;
-}
-
-LONG WINAPI CrashFilter(EXCEPTION_POINTERS* ep)
-{
-    if (InterlockedExchange(&g_in_crash, 1) != 0 || ep == nullptr || ep->ExceptionRecord == nullptr)
-        return EXCEPTION_CONTINUE_SEARCH;
-    char line[768];
-    char* p = line;
-    const EXCEPTION_RECORD* er = ep->ExceptionRecord;
-    p = PutStr(p, "CRASH: host unhandled exception code=0x");
-    p = PutHex(p, er->ExceptionCode, 8);
-    p = PutStr(p, " address=0x");
-    p = PutHex(p, reinterpret_cast<std::uintptr_t>(er->ExceptionAddress), 16);
-    p = PutStr(p, " thread=0x");
-    p = PutHex(p, GetCurrentThreadId(), 4);
-    if (er->NumberParameters >= 2)
-    {
-        p = PutStr(p, " info0=0x");
-        p = PutHex(p, er->ExceptionInformation[0], 16);
-        p = PutStr(p, " info1=0x");
-        p = PutHex(p, er->ExceptionInformation[1], 16);
-    }
-    if (const CONTEXT* c = ep->ContextRecord)
-    {
-        p = PutStr(p, " rip=0x");
-        p = PutHex(p, c->Rip, 16);
-        p = PutStr(p, " rsp=0x");
-        p = PutHex(p, c->Rsp, 16);
-        p = PutStr(p, " rbp=0x");
-        p = PutHex(p, c->Rbp, 16);
-        p = PutStr(p, " rax=0x");
-        p = PutHex(p, c->Rax, 16);
-        p = PutStr(p, " rcx=0x");
-        p = PutHex(p, c->Rcx, 16);
-        p = PutStr(p, " rdx=0x");
-        p = PutHex(p, c->Rdx, 16);
-    }
-    *p++ = '\n';
-    WriteAll(g_trace, line, static_cast<std::size_t>(p - line));
-    if (g_crash_result_path[0] != 0)
-    {
-        HANDLE h = CreateFileW(g_crash_result_path, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
-                               FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (h != INVALID_HANDLE_VALUE)
-        {
-            static const char kHead[] = "RESULT: FAIL (the host process crashed)\n";
-            WriteAll(h, kHead, sizeof kHead - 1);
-            WriteAll(h, line, static_cast<std::size_t>(p - line));
-            static const char kTail[] = "--- state before the crash ---\n";
-            WriteAll(h, kTail, sizeof kTail - 1);
-            WriteAll(h, g_snapshot, g_snapshot_len);
-            CloseHandle(h);
-        }
-    }
-    return EXCEPTION_CONTINUE_SEARCH;
-}
 
 // ---------------------------------------------------------------------------
 // Staging the machine folder (the guest's C:\) in LocalState
@@ -671,6 +605,22 @@ void SetEnvIfUnset(const wchar_t* name, const wchar_t* value)
         SetEnvironmentVariableW(name, value);
 }
 
+// The "guest entry reached" marker (entry-reached.txt, see crash.h) is logged on the core's
+// `modules` channel, and a channel the owner switched off in smoke.env would silently
+// turn that file off. The harness therefore appends +modules to whatever
+// WIN10XBOX_DEBUG ends up as (the module-load diagnostics are a few dozen lines).
+void EnsureModulesChannel()
+{
+    wchar_t cur[1024];
+    const DWORD n = GetEnvironmentVariableW(L"WIN10XBOX_DEBUG", cur, 1024);
+    if (n >= 1024) return;   // too long for the core to read anyway
+    std::wstring spec = n != 0 ? std::wstring(cur, n) : std::wstring();
+    spec += spec.empty() ? L"+modules" : L",+modules";
+    SetEnvironmentVariableW(L"WIN10XBOX_DEBUG", spec.c_str());
+    HLog("WIN10XBOX_DEBUG=%s (+modules is always added: the guest-entry marker rides on that channel)",
+         Narrow(spec).c_str());
+}
+
 // LocalState\smoke.env: NAME=VALUE lines applied to the host environment before
 // the core is initialised, e.g. WIN10XBOX_DEBUG=+relay,+loader or
 // UWP_LITE_TIMEOUT_SEC=120 (the owner's way to retune a run without a rebuild).
@@ -741,15 +691,30 @@ bool RunSmokeImpl(const HostInfo& host, Report& rep)
     // ---- 0. outputs: trace.log first (so staging is captured), result.txt live
     g_trace = CreateFileW((ls + L"\\trace.log").c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
                           FILE_ATTRIBUTE_NORMAL, nullptr);
-    lstrcpynW(g_crash_result_path, (ls + L"\\result.txt").c_str(), static_cast<int>(sizeof g_crash_result_path / sizeof(wchar_t)));
-    SetUnhandledExceptionFilter(&CrashFilter);
 
     const win10xbox::Version ver = win10xbox::GetVersion();
-    HLog("host-uwp-lite (built %s %s) on core %d.%d.%d (%s)", __DATE__, __TIME__, ver.major, ver.minor, ver.patch,
-         ver.git ? ver.git : "?");
+
+    // Crash capture before anything else can go wrong: crash.txt / crash.dmp (a last-chance
+    // vectored handler, the unhandled-exception filter and a dump thread, see crash.h).
+    {
+        CrashConfig cc;
+        cc.local_state = ls;
+        cc.result_path = ls + L"\\result.txt";
+        cc.build = Fmt("host-uwp-lite %s %s, core %d.%d.%d (%s)", __DATE__, __TIME__, ver.major, ver.minor, ver.patch,
+                       ver.git ? ver.git : "?");
+        const std::string state = InstallCrashCapture(cc, g_trace);
+        HLog("host-uwp-lite (built %s %s) on core %d.%d.%d (%s)", __DATE__, __TIME__, ver.major, ver.minor, ver.patch,
+             ver.git ? ver.git : "?");
+        HLog("%s", state.c_str());
+    }
     HLog("package=%s", host.package_full_name.c_str());
     HLog("local_state=%s", Narrow(ls).c_str());
     HLog("package_dir=%s", Narrow(host.package_dir).c_str());
+
+    // Which genuine system modules this (host) process really has, and from where. Taken now,
+    // before the guest launches: from then on the PEB's loader lists belong to the guest.
+    // The same lines are quoted in crash.txt and entry-reached.txt.
+    for (const std::string& line : DescribeHostModules()) HLog("%s", line.c_str());
 
     rep.Set("tool", "host-uwp-lite (throwaway on-console M1/M2 validator)");
     rep.Set("build", Fmt("%s %s", __DATE__, __TIME__));
@@ -839,6 +804,7 @@ bool RunSmokeImpl(const HostInfo& host, Report& rep)
     // ---- 4. tracing: full channels, sink -> trace.log, plus Wine's own loaddll
     // channel so the log says which modules were loaded native vs builtin.
     SetEnvIfUnset(L"WIN10XBOX_DEBUG", L"+all");
+    EnsureModulesChannel();
     SetEnvIfUnset(L"WIN10XBOX_WINEDEBUG", L"+loaddll,warn+module");
     win10xbox::trace::AddSink(&TraceSink, nullptr);
 
@@ -916,6 +882,16 @@ bool RunSmokeImpl(const HostInfo& host, Report& rep)
                                           : Fmt("%d (%s)", launch_rc, Hex32(launch_rc).c_str()));
     rep.Set("stdout_bytes", Fmt("%llu", out_bytes));
     rep.Set("stdout_has_hello", hello ? "yes" : "no");
+    // What the crash recorder saw (crash.h): entry-reached.txt is written when the core announces
+    // that control is about to enter the guest; crash.txt / crash.dmp only exist if something fatal-looking happened.
+    const CrashStats crash = GetCrashStats();
+    rep.Set("guest.entry_reached", crash.entry_reached ? "yes (entry-reached.txt)" : "no");
+    rep.Set("wine.no_implementation_warnings", Fmt("%ld (imports Wine's loader could not resolve; 0 expected)",
+                                                   static_cast<long>(g_no_impl_warnings)));
+    if (crash.fatal_records != 0)
+        rep.Set("crash.records", Fmt("%ld fatal-looking exception(s) in crash.txt", crash.fatal_records));
+    if (crash.dump_written) rep.Set("crash.dmp", "written");
+    else if (crash.dump_attempted) rep.Set("crash.dmp", Fmt("FAILED (error/code 0x%08lx)", crash.dump_error));
     rep.Set("phase", "finished");
 
     std::string hint;
@@ -932,6 +908,11 @@ bool RunSmokeImpl(const HostInfo& host, Report& rep)
             hint = "process::Launch failed before the guest ran; see the 'process' and 'loader' lines in trace.log";
         else if (timed_out)
             hint = "the guest did not exit within the watchdog; the last relay lines in trace.log show where it is stuck";
+        else if (g_no_impl_warnings != 0)
+            hint = "Wine's loader could not resolve some of the guest's imports ('No implementation for' lines in trace.log); "
+                   "the 'guest module list' line there says whether kernel32.dll / kernelbase.dll were really loaded";
+        else if (crash.fatal_records != 0)
+            hint = "a fatal-looking exception was recorded: read crash.txt (and open crash.dmp), then trace.log around it";
         else
             hint = "the guest ran but did not exit with 42; read stdout.txt and trace.log, then try guest.txt = smoke_cui.exe "
                    "(console subsystem) or 'smoke.exe min' (no DLL probe)";
@@ -949,6 +930,7 @@ bool RunSmokeImpl(const HostInfo& host, Report& rep)
         // The guest still owns the PEB (loader lists, process parameters...):
         // do not return into WinRT code, just end the process.
         HLog("terminating the process (guest still running)");
+        DetachCrashTraceLog();
         CloseHandle(g_trace);
         g_trace = INVALID_HANDLE_VALUE;
         TerminateProcess(GetCurrentProcess(), 0x7E57);
@@ -983,6 +965,7 @@ bool RunSmoke(const HostInfo& host)
     if (g_trace != INVALID_HANDLE_VALUE)
     {
         FlushFileBuffers(g_trace);
+        DetachCrashTraceLog();
         CloseHandle(g_trace);
         g_trace = INVALID_HANDLE_VALUE;
     }

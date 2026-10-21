@@ -41,20 +41,37 @@ nothing outside this directory except the separate workflow
 3. `stdout`/`stderr` of the host are pointed at `LocalState\stdout.txt` (a plain
    file handle, avoiding the real-Windows pipe-capture problem in `docs/STATUS.md`)
    and the core's trace sink at `LocalState\trace.log` (`WIN10XBOX_DEBUG=+all`, so
-   the per-syscall `relay` channel is on; `WIN10XBOX_WINEDEBUG=+loaddll,warn+module`
-   adds Wine's own native-vs-builtin load lines).
+   the per-syscall `relay` channel is on; `+modules` is always appended, see below;
+   `WIN10XBOX_WINEDEBUG=+loaddll,warn+module` adds Wine's own native-vs-builtin load
+   lines and its "No implementation for KERNEL32.dll.<name>" warnings).
 4. `Initialize` with the **defaults** (22H2 version spoof ON, D18 CPU identity,
    `AuthenticAMD`, hypervisor hidden; nothing is switched off), then `Launch`.
    The guest prints facts and returns **42**.
 5. `result.txt` gets the verdict, then the app closes itself.
 
+Two things run around that sequence (both in `crash.cpp`):
+
+* **Crash capture**, installed first thing: a last-chance vectored handler, the
+  unhandled-exception filter and a dump thread. They write `crash.txt` /
+  `crash.dmp` (below). The first on-console run ended with the process simply gone
+  right after `NtContinue` into the guest; this is what makes the next one readable.
+* **Guest-entry marker.** The core logs `guest entry reached` on its `modules`
+  trace channel immediately before `NtContinue` switches to the guest's
+  `RtlUserThreadStart`; the trace sink sees that line and writes
+  `entry-reached.txt` on the spot. The harness appends `+modules` to
+  `WIN10XBOX_DEBUG` (whatever `smoke.env` says) so the marker cannot be switched off
+  by accident.
+
 ## Outputs (all in the app's `LocalState`)
 
 | File | Content |
 |------|---------|
-| `result.txt` | First line `RESULT: PASS` / `FAIL ...` / `INCOMPLETE ...`, then `key=value` facts: `initialize`, `exit_code`, `launch_status`, staging summaries, which NLS/DLL names could not be read, `system32.readable_by_name`, `hint`. PASS iff `Initialize == 0` and the guest exited with 42. It is rewritten at every phase boundary: if the process dies, it still says which `phase` it reached (and a host crash handler adds the exception record). |
+| `result.txt` | First line `RESULT: PASS` / `FAIL ...` / `INCOMPLETE ...`, then `key=value` facts: `initialize`, `exit_code`, `launch_status`, staging summaries, which NLS/DLL names could not be read, `system32.readable_by_name`, `hint`. PASS iff `Initialize == 0` and the guest exited with 42. It is rewritten at every phase boundary: if the process dies, it still says which `phase` it reached (and the unhandled-exception filter rewrites it as `RESULT: FAIL (the host process crashed)` with the exception, then the state before the crash). New keys: `guest.entry_reached`; `wine.no_implementation_warnings` (how many imports Wine's loader could not resolve: the first on-console run had 92 for `KERNEL32.dll`, a working run has **0**; it counts Wine's `warn+module` lines, which the harness switches on by default); and `crash.records` / `crash.dmp` when something fatal-looking was recorded. |
 | `stdout.txt` | Everything the guest wrote to stdout/stderr: `hello from guest`, the OS version as the guest sees it (PEB / `GetVersionExW` / `RtlGetVersion`, expect 10.0.19045), `GetSystemInfo`, CPUID vendor / family / hypervisor bit / leaf `0x40000000` / brand string, rdtsc and QPC progress, and for `ucrtbase.dll` / `msvcrt.dll` whether the VFS handed out the staged **genuine** copy or the **Wine builtin**, with its file version. |
-| `trace.log` | Harness lines (`harness:`, with timestamps) interleaved with the core's trace: `process`, `loader`, `vfs`, `relay` (every syscall with arguments and NTSTATUS), Wine's `loaddll`. Can be large. |
+| `trace.log` | Harness lines (`harness:`, with timestamps) interleaved with the core's trace: `process`, `loader`, `vfs`, `modules` (module-load diagnostics: sections, views, the file-identity decisions, the guest's module list at entry), `relay` (every syscall with arguments and NTSTATUS), Wine's `loaddll`. Can be large. Near the top: whether the crash capture is armed (and whether dbghelp could be bound), and one `harness: module ...` line per `kernel32`, `user32`, `gdi32full`, `shell32`, `comctl32`: the path `GetModuleFileNameW` reports **in the host process** (or `absent`), taken before the guest launches. |
+| `entry-reached.txt` | Exists only if control reached the guest: written the moment the core announces it is about to enter the guest (see above). Holds the marker line, a timestamp, the thread id and the host module paths. **If this file exists and the run still fails, the guest was running** (look at `crash.txt` and the end of `trace.log`); if it does not exist, the failure is in the staging / loader / ntdll initialisation before the guest. `result.txt` repeats it as `guest.entry_reached`. |
+| `crash.txt` | Exists only if something fatal-looking happened. Readable exception records, appended: exception code and name, address (as `module+offset` or the memory region it is in), access-violation details, registers, the bytes at RIP, the stack words with `module+offset` for return addresses, the process's loader module list (while the guest runs that is the guest's list: `smoke.exe`, `ntdll.dll`, `kernelbase.dll`, ... with bases and sizes), the host module paths and `result.txt` as it was. For Wine's `EXCEPTION_WINE_STUB` (a call through an import that did not resolve) it names the DLL and function. Two kinds of record: *first-chance* (seen by the last vectored handler; the guest's own SEH may still handle it, so a record is not proof of a crash) and *UNHANDLED* (the process is about to die). At most 40 records. |
+| `crash.dmp` | A minidump (`MiniDumpWriteDump`, written by a thread created at startup) of the **first** fatal-looking exception on a thread that runs guest code, or of the unhandled exception if nothing was dumped before. Contains the thread stacks and register state, thread and module lists, data segments and all private read-write memory (heaps, the guest's `.data`/`.bss` and stacks). It does **not** contain code pages: open it in WinDbg / Visual Studio and take the guest images from `machine\Windows\builtin` and `machine\guest` (`crash.txt` lists their bases). Can be tens of MB. |
 | `machine\` | The staged machine folder; leave it, the next run reuses it (files whose size matches are skipped). |
 
 ## Build and package
@@ -147,6 +164,19 @@ Anything else the guest needs can be dropped into `LocalState\machine\...` by ha
 * The harness uses `Launch(wait=false)` + `WaitForGuest(timeout)` instead of
   `Launch(wait=true)`: identical (`Launch(wait)` just calls `WaitForGuest(INFINITE)`)
   plus a watchdog.
+* `crash.dmp` needs `dbghelp.dll` inside the AppContainer, which nobody has tried on a
+  console. It is **delay-loaded** (`/DELAYLOAD:dbghelp.dll`) and bound at startup with
+  `__HrLoadAllImportsForDll`, so if the console refuses it the package still starts and
+  `trace.log` says `dbghelp.dll could not be bound (HRESULT ...)`; `crash.txt` and
+  `entry-reached.txt` do not depend on it. If `MiniDumpWriteDump` itself fails, the error
+  is in `crash.txt` and `result.txt` (`crash.dmp=FAILED ...`).
+* The crash handlers only use raw Win32 and fixed buffers (no CRT formatting, no heap),
+  run with the host's TLS/FLS in the TEB (`HostModeScope`), read foreign memory only
+  through `VirtualQuery`-checked copies, and fall back to a thread with a stack of its
+  own when the faulting thread is nearly out of stack (a runaway recursion through the
+  dispatcher is exactly that). A fail-fast (`int 0x29`, e.g. a CRT startup failure) does
+  not run any user-mode handler at all: then `entry-reached.txt` plus the end of
+  `trace.log` are all there is.
 * The probe saw `C:\Windows\system32\kernel32.dll` not openable on the console
   while `ntdll.dll` was. It does not matter here (ntdll/kernelbase/kernel32 are
   never read from the console), but `system32.not_readable` in `result.txt` lists
@@ -167,7 +197,9 @@ App.idl               runtimeclass Win10XboxLite.App -> Win10XboxLite.winmd (mid
 App.h / App.cpp       IFrameworkViewSource + wWinMain (CoreApplication::Run)
 main.cpp              headless IFrameworkView; starts the worker; exits when done
 smoke.h / smoke.cpp   staging, stdout/trace redirection, Initialize/Launch, result.txt
-smoke_guest.c         the guest: facts to stdout, returns 42 (smoke.exe / smoke_cui.exe)
+crash.h / crash.cpp   crash.txt / crash.dmp / entry-reached.txt, host module paths (dbghelp delay-loaded)
+smoke_guest.c         the guest: facts to stdout, returns 42 (smoke.exe / smoke_cui.exe); also compiled
+                      by .github/workflows/host-win32-smoke.yml to check import resolution on real Windows
 pch.h                 umbrella include for the two C++/WinRT files
 assets/               tile images (the probe's)
 ```

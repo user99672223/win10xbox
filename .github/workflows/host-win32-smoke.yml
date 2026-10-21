@@ -1,0 +1,273 @@
+name: host-win32-smoke
+
+# Real-Windows regression proof for the first Xbox run's failure ("92 unresolved
+# KERNEL32 imports"; fix: "core: fix kernel32 forwarder resolution on real Windows
+# (kernelbase aliasing)").
+#
+# The bug: inside the console's AppContainer GetFinalPathNameByHandleW is refused,
+# so every guest image section had an empty host path, NtAreMappedFilesTheSame
+# compared the empty paths as equal, Wine's loader aliased kernelbase.dll onto
+# ntdll.dll, and every KERNEL32 import the guest CRT needs dangled. On a desktop
+# Windows host the path lookup works, so a plain run cannot reproduce it (it would
+# pass on the buggy code too). WIN10XBOX_TEST_NO_HOST_PATHS=1 (nt_file.cpp) makes
+# HostPathOfHandle fail the way the console does, so the "console" run below is the
+# proof; the plain "desktop" run is only a sanity check.
+#
+# What this job does:
+#   1. builds host-win32 (win10xbox.exe) with MSVC (top-level tree, Ninja, sccache);
+#   2. stages a machine folder the way the console package does: the Wine PE
+#      builtins (wine-pe-builtin artifact) + the genuine NLS data, nothing else;
+#   3. compiles host-uwp-lite/smoke_guest.c into a console guest (static CRT, so it
+#      imports only KERNEL32.dll, like the guest that failed on the console);
+#   4. runs it twice with WIN10XBOX_DEBUG=+all and Wine's warn+module channel on
+#      (that is where "No implementation for KERNEL32.dll.<name>" is logged):
+#        console  WIN10XBOX_TEST_NO_HOST_PATHS=1   GATING: zero unresolved + exit 42
+#        desktop  (no hook)                         non-gating sanity check
+#   5. prints "KERNEL32 unresolved: <N>" and fails the job unless N == 0 and the
+#      guest exited with 42 in the console run.
+# The run steps are continue-on-error so the counts always print; the gate step
+# turns them into the job result.
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "core/**"
+      - "host-win32/**"
+      - "host-uwp-lite/smoke_guest.c"
+      - "third_party/**"
+      - "machine/**"
+      - "tests/integration/prepare_machine.cmake"
+      - "CMakeLists.txt"
+      - "cmake/**"
+      - ".github/workflows/host-win32-smoke.yml"
+  pull_request:
+    paths:
+      - "core/**"
+      - "host-win32/**"
+      - "host-uwp-lite/smoke_guest.c"
+      - "third_party/**"
+      - "machine/**"
+      - "tests/integration/prepare_machine.cmake"
+      - "CMakeLists.txt"
+      - "cmake/**"
+      - ".github/workflows/host-win32-smoke.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: host-win32-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read   # the job downloads the wine-pe-builtin artifact
+
+jobs:
+  smoke:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: true }
+      - name: Nested submodules we need (zycore only; speakeasy's test corpora are not needed)
+        run: git submodule update --init --recursive third_party/zydis
+      - uses: ilammy/msvc-dev-cmd@v1
+        with: { arch: x64 }
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      # Wine builtin DLLs from the latest successful wine-pe run, same incantation
+      # as the `windows` job in ci.yml. Non-fatal here: without them the staging step
+      # below stops the job with a clear message (a green run must mean "proved").
+      - name: Fetch wine-pe builtin DLLs (optional)
+        shell: pwsh
+        continue-on-error: true
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          $id = gh run list --repo ${{ github.repository }} --workflow wine-pe.yml --branch ${{ github.ref_name }} --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+          if (-not $id) {
+            $id = gh run list --repo ${{ github.repository }} --workflow wine-pe.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+          }
+          if ($id) {
+            New-Item -ItemType Directory -Force -Path wine-pe/out/builtin | Out-Null
+            gh run download $id --repo ${{ github.repository }} --name wine-pe-builtin --dir wine-pe/out/builtin
+            Write-Host "downloaded wine-pe-builtin from run $id ($((Get-ChildItem wine-pe/out/builtin -Filter *.dll).Count) DLLs)"
+          } else {
+            Write-Host "no successful wine-pe run yet; the smoke cannot run without the Wine builtins"
+          }
+          $global:LASTEXITCODE = 0
+
+      # The top-level tree, configured like ci.yml's `windows` job (cl + Ninja +
+      # sccache) with the options this job needs: tests ON (the prepare_machine
+      # target lives there), the driver host and the UWP host OFF (neither is used).
+      # No -DCMAKE_POLICY_VERSION_MINIMUM: it is unnecessary and breaks configure.
+      - name: Configure
+        env: { SCCACHE_GHA_ENABLED: "true" }
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          -DWIN10XBOX_BUILD_TESTS=ON -DWIN10XBOX_BUILD_DRIVERS=OFF -DWIN10XBOX_BUILD_UWP=OFF
+      - name: Build host-win32
+        env: { SCCACHE_GHA_ENABLED: "true" }
+        run: cmake --build build --target win10xbox
+
+      # Machine folder = what the console package stages: Wine PE builtins
+      # (prepare_machine copies wine-pe/out/builtin and machine.json) + the genuine
+      # NLS data. The empty DLL list keeps the runner's System32 DLLs out, so every
+      # module the guest loads is a Wine builtin, as on the console.
+      - name: Stage the machine folder (Wine builtins + NLS)
+        shell: pwsh
+        env: { SCCACHE_GHA_ENABLED: "true" }
+        run: |
+          cmake --build build --target prepare_machine
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $none = Join-Path $env:RUNNER_TEMP 'no-guest-dlls.txt'
+          Set-Content -Path $none -Value '# NLS data only: the guest DLLs are the Wine builtins'
+          ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine -CI -ListFile $none
+          $machine = 'build/bin/machine'
+          $missing = @()
+          if (-not (Test-Path "$machine/Windows/builtin/ntdll.dll")) { $missing += 'the Wine PE builtins (wine-pe-builtin artifact)' }
+          if (-not (Test-Path "$machine/Windows/System32/c_1252.nls")) { $missing += 'the NLS data (c_1252.nls)' }
+          if ($missing.Count -gt 0) {
+            Write-Host "::error::host-win32-smoke cannot run, missing: $($missing -join '; ')"
+            exit 1
+          }
+          $nb = @(Get-ChildItem "$machine/Windows/builtin" -Filter *.dll).Count
+          $nn = @(Get-ChildItem "$machine/Windows/System32" -Filter *.nls).Count
+          Write-Host "staged $nb Wine builtins and $nn NLS files in $machine"
+
+      # The guest: smoke_guest.c as a console program (no SMOKE_GUI), static CRT
+      # (/MT), C11 like the CMake build of the same file in host-uwp-lite. Compiled
+      # here, not added to the tree. Only KERNEL32.dll is imported.
+      - name: Build the console smoke guest (host-uwp-lite/smoke_guest.c)
+        shell: cmd
+        run: |
+          if not exist build\bin\machine\guest mkdir build\bin\machine\guest
+          cl /nologo /O2 /MT /std:c11 /utf-8 /W3 /D_CRT_SECURE_NO_WARNINGS /Fobuild\smoke_cui.obj /Febuild\bin\machine\guest\smoke_cui.exe host-uwp-lite\smoke_guest.c /link /SUBSYSTEM:CONSOLE
+          if errorlevel 1 exit /b 1
+          rem informational (the gate prints how many symbols the guest imports); never fails the step
+          dumpbin /imports build\bin\machine\guest\smoke_cui.exe > build\smoke_cui.imports.txt || exit /b 0
+
+      # GATING run: the console's condition (host paths unknown). Before eb52c50
+      # this is where kernelbase.dll was aliased onto ntdll.dll and every KERNEL32
+      # import dangled. The exit code of win10xbox.exe is the guest's.
+      - name: Run the smoke guest - console conditions (GATING)
+        shell: bash
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          WIN10XBOX_DEBUG: "+all"
+          WIN10XBOX_WINEDEBUG: "+loaddll,warn+module"
+          WIN10XBOX_TEST_NO_HOST_PATHS: "1"
+        run: |
+          rc=0
+          build/bin/win10xbox.exe --machine build/bin/machine 'C:\guest\smoke_cui.exe' > smoke-console.log 2>&1 || rc=$?
+          echo "$rc" > smoke-console.rc
+          echo "win10xbox.exe exit code: $rc (the guest returns 42 when it ran to completion)"
+
+      # Sanity run: the host paths are available, as on any desktop Windows.
+      # Not gating (the old code passed this one too).
+      - name: Run the smoke guest - desktop conditions (sanity, non-gating)
+        shell: bash
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          WIN10XBOX_DEBUG: "+all"
+          WIN10XBOX_WINEDEBUG: "+loaddll,warn+module"
+        run: |
+          rc=0
+          build/bin/win10xbox.exe --machine build/bin/machine 'C:\guest\smoke_cui.exe' > smoke-desktop.log 2>&1 || rc=$?
+          echo "$rc" > smoke-desktop.rc
+          echo "win10xbox.exe exit code: $rc (the guest returns 42 when it ran to completion)"
+
+      # The proof. Wine logs one "No implementation for KERNEL32.dll.<name> imported
+      # from ..." line per unresolved import (channel module, class warn; the run
+      # steps switch it on with WIN10XBOX_WINEDEBUG - WIN10XBOX_DEBUG=+all alone does
+      # not reach Wine's warn class).
+      - name: Gate - KERNEL32 imports unresolved
+        shell: bash
+        run: |
+          set -u
+          fail=0
+          summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          {
+            echo "### host-win32-smoke"
+            echo
+            echo "| run | KERNEL32 unresolved | guest exit code | guest entry reached | kernelbase loaded | verdict |"
+            echo "|---|---|---|---|---|---|"
+          } >> "$summary"
+
+          imports=unknown
+          if [ -f build/smoke_cui.imports.txt ]; then
+            imports=$(grep -a -E -c '^[[:space:]]+[0-9A-Fa-f]+[[:space:]]+[A-Za-z_?@$][^[:space:]]*[[:space:]]*$' build/smoke_cui.imports.txt || true)
+          fi
+          echo "smoke_cui.exe imports $imports named symbols (dumpbin /imports; only KERNEL32.dll is expected)"
+
+          # check <label> <log> <rc file> <gating: yes|no>
+          check() {
+            local label="$1" log="$2" rcfile="$3" gating="$4"
+            local n rc entry kb verdict="ok"
+            echo
+            echo "=== $label ==="
+            if [ ! -s "$log" ]; then
+              if [ "$gating" = yes ]; then
+                echo "::error::$label: no output captured ($log missing or empty): the run step did not execute"
+                fail=1
+              else
+                echo "::warning::$label (non-gating): no output captured ($log missing or empty)"
+              fi
+              echo "| $label | n/a | n/a | n/a | n/a | NOT RUN |" >> "$summary"
+              return
+            fi
+            n=$(grep -a -i -c 'No implementation for KERNEL32' "$log" || true)
+            rc=$(cat "$rcfile" 2>/dev/null || echo none)
+            entry=$(grep -a -c 'guest entry reached' "$log" || true)
+            kb=$(grep -a -c 'kernelbase=1' "$log" || true)
+            echo "KERNEL32 unresolved: $n   ($label)"
+            echo "guest exit code: $rc (expected 42)"
+            echo "guest entry reached: $([ "$entry" -gt 0 ] && echo yes || echo no)"
+            grep -a 'guest module list' "$log" | tail -n 1 | cut -c1-200 || true
+            if [ "$n" -ne 0 ]; then
+              verdict="UNRESOLVED IMPORTS"
+              echo "first unresolved imports:"
+              grep -a -i 'No implementation for KERNEL32' "$log" | head -n 8 | cut -c1-260
+            fi
+            if [ "$rc" != 42 ]; then
+              [ "$verdict" = ok ] && verdict="EXIT CODE $rc" || verdict="$verdict + EXIT CODE $rc"
+              echo "last lines of the log:"
+              tail -n 25 "$log" | cut -c1-260
+            fi
+            if [ "$verdict" != ok ]; then
+              if [ "$gating" = yes ]; then
+                echo "::error::$label: $verdict"
+                fail=1
+              else
+                echo "::warning::$label (non-gating): $verdict"
+              fi
+            fi
+            echo "| $label | $n | $rc | $([ "$entry" -gt 0 ] && echo yes || echo no) | $([ "$kb" -gt 0 ] && echo yes || echo no) | $verdict |" >> "$summary"
+          }
+
+          check "console conditions (gating)" smoke-console.log smoke-console.rc yes
+          check "desktop conditions (sanity)" smoke-desktop.log smoke-desktop.rc no
+
+          echo
+          if [ "$fail" -ne 0 ]; then
+            echo "host-win32-smoke: FAIL"
+            exit 1
+          fi
+          echo "host-win32-smoke: PASS (zero unresolved KERNEL32 imports, guest exit code 42)"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: host-win32-smoke-logs
+          path: |
+            smoke-console.log
+            smoke-console.rc
+            smoke-desktop.log
+            smoke-desktop.rc
+            build/smoke_cui.imports.txt
+          if-no-files-found: warn
+          retention-days: 7
