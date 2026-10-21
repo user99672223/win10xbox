@@ -48,9 +48,14 @@ jobs:
       - name: Configure
         run: cmake -S . -B build-mingw -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE=cmake/llvm-mingw.cmake
       - name: Build
-        run: cmake --build build-mingw
+        run: cmake --build build-mingw -- -k 0   # keep going so all errors surface
+      - name: Init Wine prefix (must be a dir we own; /tmp is not)
+        env: { WINEDEBUG: "-all", WINEPREFIX: "${{ runner.temp }}/wineprefix" }
+        run: |
+          wineboot --init
+          wineserver -w
       - name: Test under Wine
-        env: { WINEDEBUG: "-all", WINEPREFIX: /tmp/wineprefix }
+        env: { WINEDEBUG: "-all", WINEPREFIX: "${{ runner.temp }}/wineprefix" }
         run: ctest --test-dir build-mingw --output-on-failure
       - uses: actions/upload-artifact@v4
         if: always()
@@ -102,7 +107,7 @@ jobs:
           -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
       - name: Build
         env: { SCCACHE_GHA_ENABLED: "true" }
-        run: cmake --build build
+        run: cmake --build build -- -k 0   # keep going so all compile errors surface in one run
       - name: Populate machine folder from the runner's System32 (never committed)
         shell: pwsh
         run: ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine -CI

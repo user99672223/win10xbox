@@ -1263,7 +1263,7 @@ NTSTATUS Tok_NtPrivilegeCheck(HANDLE ClientToken, PPRIVILEGE_SET RequiredPrivile
 
 NTSTATUS Tok_NtAccessCheck(PSECURITY_DESCRIPTOR SecurityDescriptor, HANDLE ClientToken, ACCESS_MASK DesiredAccess,
                            PGENERIC_MAPPING GenericMapping, PPRIVILEGE_SET PrivilegeSet, PULONG PrivilegeSetLength,
-                           PACCESS_MASK GrantedAccess, PNTSTATUS AccessStatus) {
+                           PACCESS_MASK GrantedAccess, NTSTATUS* AccessStatus) {  // PNTSTATUS undeclared on MSVC
     // A real DACL evaluator (allow/deny ACEs matched against the user and enabled
     // groups, implicit READ_CONTROL|WRITE_DAC for the owner, NULL DACL = full
     // access, empty DACL = none). Not evaluated: mandatory-label ACEs, callback /
