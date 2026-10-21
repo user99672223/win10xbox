@@ -83,7 +83,10 @@ jobs:
           echo "staged $(ls "$sys32"/*.nls 2>/dev/null | wc -l) NLS files"
       - name: Test under Wine
         env: { WINEDEBUG: "-all", WINEPREFIX: "${{ runner.temp }}/wineprefix" }
-        run: ctest --test-dir build-mingw --output-on-failure
+        # wine_conformance (Wine's own test subset) is a recorded fidelity
+        # baseline, not a gate, and needs wine-pe/wine-src which this job does
+        # not clone, so it skips here; exclude it from the gating run.
+        run: ctest --test-dir build-mingw --output-on-failure --label-exclude wine_conformance
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -141,7 +144,7 @@ jobs:
       # Gate: everything except the guest end-to-end tests (label guest_e2e).
       - name: Test
         env: { WIN10XBOX_DEBUG: "+all" }
-        run: ctest --test-dir build --output-on-failure --timeout 300 --label-exclude guest_e2e
+        run: ctest --test-dir build --output-on-failure --timeout 300 --label-exclude "guest_e2e|wine_conformance"
       # Guest end-to-end on real Windows is in bring-up: the guest boots through
       # the full ntdll init and runs to completion, but its stdio is not yet
       # captured on a real-Windows host (works under Wine, gated on linux-cross).
