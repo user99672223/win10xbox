@@ -1,5 +1,19 @@
 # Status
 
+## Milestone commits
+
+Annotated tags `m0`/`m1`/`m2` are created in the repo; if a tag is not visible
+on the remote it is because this session's git credentials pushed branches but
+were refused tag refs (HTTP 403) — re-push the tags with full credentials.
+Milestone commits, so they stay pinpointable regardless:
+
+| Tag | Commit | Milestone |
+|-----|--------|-----------|
+| m0  | `cbcfbab` | repo skeleton, submodules, core + host-win32 hello, CI |
+| m1  | `fc18910` | loader (PE map, stub rewrite, scanner) — green CI |
+| m2  | `fc18910` | dispatcher + subsystems (VFS/registry/clock/token/NLS) — green CI |
+
+
 ## M0 - repo skeleton (tag `m0`)
 
 Layout created per `docs/ARCHITECTURE.md`; the capability probe moved to
