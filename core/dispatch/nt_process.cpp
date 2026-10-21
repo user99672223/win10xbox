@@ -150,8 +150,14 @@ static NTSTATUS NTAPI Xl_NtQueryVirtualMemory(HANDLE process, PVOID addr, ULONG 
     ImageView v;
     if (klass == kMemoryBasicInformation && s == st::Success && length >= sizeof(MEMORY_BASIC_INFORMATION) &&
         FindView(addr, &v)) {
+        // Our views are private memory; report them like SEC_IMAGE views
+        // (Wine's build_ntdll_module takes AllocationBase as the module base).
         auto* mbi = static_cast<MEMORY_BASIC_INFORMATION*>(buffer);
-        if (mbi->State != MEM_FREE) mbi->Type = MEM_IMAGE;
+        if (mbi->State != MEM_FREE) {
+            mbi->Type = MEM_IMAGE;
+            mbi->AllocationBase = v.image.base;
+            mbi->AllocationProtect = PAGE_EXECUTE_WRITECOPY;
+        }
     } else if (klass == kMemoryMappedFilenameInformation && FindView(addr, &v)) {
         std::wstring guest = v.section ? v.section->guest_path : std::wstring();
         if (guest.empty()) return s;

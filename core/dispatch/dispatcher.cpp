@@ -4,6 +4,7 @@
 #include "internal.h"
 #include "win10xbox/config.h"
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -160,6 +161,14 @@ void DetachThreadState() {
     TlsSetValue(S().tls_index, nullptr);
     if (st->thread) CloseHandle(st->thread);
     delete st;
+}
+
+void ForgetGuestThread(DWORD tid) {
+    AcquireSRWLockExclusive(&g_threads_lock);
+    auto& v = Threads();
+    // The thread may still be running briefly; its ThreadState is leaked, not freed.
+    v.erase(std::remove_if(v.begin(), v.end(), [tid](ThreadState* t) { return t->tid == tid; }), v.end());
+    ReleaseSRWLockExclusive(&g_threads_lock);
 }
 
 std::vector<ThreadState*> GuestThreads() {
