@@ -203,6 +203,7 @@ if(NOT UWP_LITE_SKIP_WINMD)
                         "'${UWP_LITE_SDK_VER}'. Install the Windows SDK with its UWP/C++ components.")
   endif()
 
+  list(LENGTH _winmd_refs _n_refs)
   set(_rsp "")
   foreach(_w IN LISTS _winmd_refs)
     file(TO_NATIVE_PATH "${_w}" _wn)
@@ -232,7 +233,7 @@ if(NOT UWP_LITE_SKIP_WINMD)
             "@${_rsp_native}" "${_idl_native}"
     DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/App.idl" "${UWP_LITE_MIDL_RSP}"
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    COMMENT "midl: App.idl -> Win10XboxLite.winmd (Windows SDK ${UWP_LITE_SDK_VER}, ${CMAKE_MATCH_0}${_winmd_refs} refs)"
+    COMMENT "midl: App.idl -> Win10XboxLite.winmd (Windows SDK ${UWP_LITE_SDK_VER}, ${_n_refs} reference winmds)"
     VERBATIM)
   add_custom_target(uwp_lite_winmd ALL DEPENDS "${UWP_LITE_WINMD}")
   set(UWP_LITE_WINMD_TARGET uwp_lite_winmd)
@@ -249,21 +250,28 @@ endif()
 set(UWP_LITE_STAGE_DIR "${CMAKE_BINARY_DIR}/AppX")
 configure_file(Package.appxmanifest "${CMAKE_BINARY_DIR}/AppxManifest.xml" @ONLY)
 
+set(_winmd_for_stage "${UWP_LITE_WINMD}")
+if(UWP_LITE_SKIP_WINMD)
+  set(_winmd_for_stage "")
+endif()
 add_custom_target(stage_appx ALL
   COMMAND ${CMAKE_COMMAND}
           "-DSTAGE=${UWP_LITE_STAGE_DIR}"
           "-DEXE=$<TARGET_FILE:host_uwp_lite>"
           "-DGUEST_GUI=$<TARGET_FILE:smoke_guest>"
           "-DGUEST_CUI=$<TARGET_FILE:smoke_guest_cui>"
-          "-DWINMD=$<$<NOT:$<BOOL:${UWP_LITE_SKIP_WINMD}>>:${UWP_LITE_WINMD}>"
+          "-DWINMD=${_winmd_for_stage}"
           "-DMANIFEST=${CMAKE_BINARY_DIR}/AppxManifest.xml"
           "-DASSETS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/assets"
           "-DBUILTIN_DIR=${UWP_LITE_BUILTIN_DIR}"
           "-DMACHINE_JSON=${WIN10XBOX_ROOT}/machine/machine.default.json"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/stage.cmake"
-  DEPENDS host_uwp_lite smoke_guest smoke_guest_cui ${UWP_LITE_WINMD_TARGET}
   COMMENT "Staging the AppX layout in ${UWP_LITE_STAGE_DIR}"
   VERBATIM)
+add_dependencies(stage_appx host_uwp_lite smoke_guest smoke_guest_cui)
+if(UWP_LITE_WINMD_TARGET)
+  add_dependencies(stage_appx ${UWP_LITE_WINMD_TARGET})
+endif()
 
 # Tool locations for package.cmd (it falls back to PATH when this file is missing).
 file(TO_NATIVE_PATH "${UWP_LITE_MAKEAPPX}" _t_makeappx)
