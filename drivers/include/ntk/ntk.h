@@ -418,7 +418,11 @@ enum { KernelMode = 0, UserMode = 1, MaximumMode = 2 };
 typedef enum _EVENT_TYPE { NotificationEvent = 0, SynchronizationEvent = 1 } EVENT_TYPE;
 typedef enum _TIMER_TYPE_NTK { NotificationTimer = 0, SynchronizationTimer = 1 } TIMER_TYPE;
 typedef enum _WAIT_TYPE_NTK { WaitAll = 0, WaitAny = 1, WaitNotification = 2, WaitDequeue = 3, WaitDpc = 4 } WAIT_TYPE;
-#ifndef _WINDOWS_
+// mingw-w64's <windows.h> chain declares enum _KWAIT_REASON, so skip ours to
+// avoid an enum redefinition; MSVC's user-mode SDK does NOT declare it (it is a
+// WDK/wdm.h type), so define it there. Keyed on the compiler because there is
+// no feature macro for "KWAIT_REASON is already declared".
+#if !defined(_WINDOWS_) || defined(_MSC_VER)
 typedef enum _KWAIT_REASON { Executive = 0, UserRequest = 6, DelayExecution = 4 } KWAIT_REASON;
 #endif
 
