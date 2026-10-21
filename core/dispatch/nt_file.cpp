@@ -8,6 +8,7 @@
 #if WIN10XBOX_HAVE_VFS
 #include "win10xbox/vfs.h"
 #endif
+#include <cstring>
 #include <cwctype>
 #include <map>
 
@@ -20,6 +21,7 @@ bool IStartsWith(std::wstring_view s, std::wstring_view prefix) {
         if (std::towlower(s[i]) != std::towlower(prefix[i])) return false;
     return true;
 }
+#if !WIN10XBOX_HAVE_VFS
 bool IEquals(std::wstring_view a, std::wstring_view b) { return a.size() == b.size() && IStartsWith(a, b); }
 
 struct OwnedOA {
@@ -39,7 +41,6 @@ std::shared_ptr<OwnedOA> MakeOA(const OBJECT_ATTRIBUTES* in, std::wstring path) 
     return o;
 }
 
-#if !WIN10XBOX_HAVE_VFS
 SRWLOCK g_drive_lock = SRWLOCK_INIT;
 std::map<wchar_t, std::wstring>& FallbackDrives() { static std::map<wchar_t, std::wstring> m; return m; }
 

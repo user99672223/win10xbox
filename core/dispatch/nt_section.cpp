@@ -4,6 +4,7 @@
 // are still writable). Non-image sections pass through to the host.
 #include "internal.h"
 #include "win10xbox/config.h"
+#include <algorithm>
 #include <cstring>
 
 namespace win10xbox::dispatch::detail {
@@ -12,6 +13,7 @@ namespace {
 constexpr ULONG kSecImage = 0x1000000;
 constexpr ULONG kSecFile = 0x800000;
 constexpr std::size_t kMaxImageFile = 1ull << 30;
+constexpr DWORD kComImage32BitRequired = 0x2, kComImage32BitPreferred = 0x20000, kComImageIlOnly = 0x1;
 
 SRWLOCK g_view_lock = SRWLOCK_INIT;
 std::vector<std::unique_ptr<ImageView>>& Views() { static std::vector<std::unique_ptr<ImageView>> v; return v; }
@@ -126,11 +128,11 @@ NTSTATUS BuildImageInformation(const std::uint8_t* file, std::size_t size, std::
         std::size_t off;
         IMAGE_COR20_HEADER cor;
         if (RvaToOffset(file, size, sec_off, fh.NumberOfSections, clr.VirtualAddress, headers_size, &off) &&
-            ReadAt(file, size, off, &cor) && (cor.Flags & COMIMAGE_FLAGS_ILONLY)) {
+            ReadAt(file, size, off, &cor) && (cor.Flags & kComImageIlOnly)) {
             flags |= 1u << 1;                           // ComPlusILOnly
             if (magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
-                if (!(cor.Flags & COMIMAGE_FLAGS_32BITREQUIRED)) flags |= 1u << 0;   // ComPlusNativeReady
-                if (cor.Flags & COMIMAGE_FLAGS_32BITPREFERRED) flags |= 1u << 5;     // ComPlusPrefer32bit
+                if (!(cor.Flags & kComImage32BitRequired)) flags |= 1u << 0;   // ComPlusNativeReady
+                if (cor.Flags & kComImage32BitPreferred) flags |= 1u << 5;     // ComPlusPrefer32bit
             }
         }
     }

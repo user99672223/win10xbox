@@ -26,7 +26,7 @@ using namespace win10xbox::dispatch::detail;
 
 // RTL_USER_PROCESS_PARAMETERS (x64) offsets; MSVC's winternl.h hides most fields.
 namespace pp {
-constexpr std::uint32_t Flags = 0x08, ConsoleHandle = 0x10, ConsoleFlags = 0x18, StdInput = 0x20, StdOutput = 0x28,
+constexpr std::uint32_t ConsoleHandle = 0x10, ConsoleFlags = 0x18, StdInput = 0x20, StdOutput = 0x28,
                         StdError = 0x30, DllPath = 0x50, Environment = 0x80, StartingX = 0x88, ShowWindowFlags = 0xA8,
                         EnvironmentSize = 0x3F0;
 }
@@ -312,7 +312,10 @@ NTSTATUS MapGuestNtdll(const std::wstring& root) {
 NTSTATUS MapMainImage(const std::wstring& guest_path, void** base_out, std::shared_ptr<ImageSection>* sec_out) {
     std::wstring nt = L"\\??\\" + guest_path;
     UNICODE_STRING us{static_cast<USHORT>(nt.size() * 2), static_cast<USHORT>(nt.size() * 2), nt.data()};
-    OBJECT_ATTRIBUTES oa{sizeof(oa), nullptr, &us, OBJ_CASE_INSENSITIVE, nullptr, nullptr};
+    OBJECT_ATTRIBUTES oa{};
+    oa.Length = sizeof(oa);
+    oa.ObjectName = &us;
+    oa.Attributes = OBJ_CASE_INSENSITIVE;
     IO_STATUS_BLOCK io{};
     HANDLE file = nullptr;
     NTSTATUS s = Xl_NtOpenFile(&file, GENERIC_READ | SYNCHRONIZE, &oa, &io, FILE_SHARE_READ | FILE_SHARE_DELETE,
