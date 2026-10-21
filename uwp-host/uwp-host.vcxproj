@@ -148,6 +148,16 @@
       <SubType>Designer</SubType>
     </AppxManifest>
 
+    <!-- Payload DLL used by category A's loadlibrary-out-of-package /
+         sec-image-map probes. Pre-built once by the win32 host build (which
+         CMake wires up); here we just ship it as package content so the UWP
+         exe can copy it from the installed package into LocalState and
+         LoadLibraryEx it from there. -->
+    <None Include="..\build-win32\Debug\probe_payload.dll"
+          Condition="Exists('..\build-win32\Debug\probe_payload.dll')">
+      <DeploymentContent>true</DeploymentContent>
+    </None>
+
     <Image Include="Assets\StoreLogo.png" />
     <Image Include="Assets\Square150x150Logo.png" />
     <Image Include="Assets\Square44x44Logo.png" />
