@@ -493,7 +493,8 @@ void* ResolveSlot(const ExportView& v, std::uint32_t idx, std::string* forwarder
     if (rva == 0) return nullptr;                       // hole in a sparse ordinal range
     if (rva >= v.dir_rva && rva < v.dir_rva + v.dir_size) {   // forwarder string
         std::size_t len = 0;
-        const char* s = StringAt(v, rva, &len, std::min<std::uint64_t>(v.image_size, std::uint64_t(v.dir_rva) + v.dir_size));
+        const char* s = StringAt(v, rva, &len,
+                                  static_cast<std::uint32_t>(std::min<std::uint64_t>(v.image_size, std::uint64_t(v.dir_rva) + v.dir_size)));
         if (s && forwarder) forwarder->assign(s, len);
         return nullptr;
     }
