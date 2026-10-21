@@ -3,3 +3,4 @@
 add_subdirectory(guest)
 add_subdirectory(unit)
 add_subdirectory(integration)
+add_subdirectory(wine-tests)   # Wine conformance subset (label wine_conformance)
