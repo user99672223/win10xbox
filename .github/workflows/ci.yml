@@ -1,0 +1,92 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["m*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LLVM_MINGW_VER: "20250910"
+
+jobs:
+  # Fast cross-compile + Wine smoke run. NOT truth for the layer; catches
+  # portability errors and gives a quick signal before the Windows job.
+  linux-cross:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - name: Cache llvm-mingw
+        id: cache-llvm
+        uses: actions/cache@v4
+        with:
+          path: /opt/llvm-mingw
+          key: llvm-mingw-${{ env.LLVM_MINGW_VER }}-ucrt-ubuntu-22.04
+      - name: Install llvm-mingw
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        run: |
+          sudo mkdir -p /opt/llvm-mingw
+          curl -sSL "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_VER}/llvm-mingw-${LLVM_MINGW_VER}-ucrt-ubuntu-22.04-x86_64.tar.xz" \
+            | sudo tar -xJ -C /opt/llvm-mingw --strip-components=1
+      - name: Install Wine + ninja
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends wine64 ninja-build
+      - name: Configure
+        run: cmake -S . -B build-mingw -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE=cmake/llvm-mingw.cmake
+      - name: Build
+        run: cmake --build build-mingw
+      - name: Test under Wine
+        env: { WINEDEBUG: "-all", WINEPREFIX: /tmp/wineprefix }
+        run: ctest --test-dir build-mingw --output-on-failure
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-cross-bin
+          path: build-mingw/bin/
+          retention-days: 3
+
+  # The real Windows test machine: MSVC 2022, host-win32 runs core/ unsandboxed.
+  windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [Debug, RelWithDebInfo]
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: ilammy/msvc-dev-cmd@v1
+        with: { arch: x64 }
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Configure
+        env: { SCCACHE_GHA_ENABLED: "true" }
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.config }}
+          -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+      - name: Build
+        env: { SCCACHE_GHA_ENABLED: "true" }
+        run: cmake --build build
+      - name: Populate machine folder from the runner's System32 (never committed)
+        shell: pwsh
+        run: ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine -CI
+      - name: Test
+        env: { WIN10XBOX_DEBUG: "+all" }
+        run: ctest --test-dir build --output-on-failure --timeout 300
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-${{ matrix.config }}-logs
+          path: |
+            build/Testing/Temporary/
+            build/bin/*.log
+          retention-days: 7

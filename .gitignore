@@ -1,22 +1,26 @@
 build/
+build-*/
 out/
 *.appx
 *.msix
 *.pfx
 *.cer
 .vs/
-CMakeFiles/
-CMakeCache.txt
-generated/
 *.pdb
 *.ilk
 *.obj
-build-win32/
-build-uwp/
 *.appxupload
 AppPackages/
-# packaging intermediates
-uwp-host/AppX/
-uwp-host/AppPackages/
-uwp-host/*.pfx
-uwp-host/*.cer
+# machine folder contents are user-supplied Microsoft binaries: never committed
+machine/default/Windows/
+machine/default/Users/
+machine/default/Program Files*/
+*.dll
+*.exe
+*.sys
+!tests/**/expected/*.txt
+wine-pe/wine-src/
+wine-pe/out/
+drivers/reactos-src/
+.cache/
+__pycache__/

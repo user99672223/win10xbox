@@ -1,0 +1,33 @@
+[submodule "third_party/MemoryModule"]
+	path = third_party/MemoryModule
+	url = https://github.com/fancycode/MemoryModule
+[submodule "third_party/Detours"]
+	path = third_party/Detours
+	url = https://github.com/microsoft/Detours
+[submodule "third_party/minhook"]
+	path = third_party/minhook
+	url = https://github.com/TsudaKageyu/minhook
+[submodule "third_party/zydis"]
+	path = third_party/zydis
+	url = https://github.com/zyantific/zydis
+[submodule "third_party/phnt"]
+	path = third_party/phnt
+	url = https://github.com/winsiderss/phnt
+[submodule "third_party/windows-syscalls"]
+	path = third_party/windows-syscalls
+	url = https://github.com/j00ru/windows-syscalls
+[submodule "third_party/hivex"]
+	path = third_party/hivex
+	url = https://github.com/libguestfs/hivex
+[submodule "third_party/Windows-Driver-Frameworks"]
+	path = third_party/Windows-Driver-Frameworks
+	url = https://github.com/microsoft/Windows-Driver-Frameworks
+[submodule "third_party/speakeasy"]
+	path = third_party/speakeasy
+	url = https://github.com/mandiant/speakeasy
+[submodule "third_party/pafish"]
+	path = third_party/pafish
+	url = https://github.com/a0rtega/pafish
+[submodule "third_party/al-khaser"]
+	path = third_party/al-khaser
+	url = https://github.com/ayoubfaouzi/al-khaser

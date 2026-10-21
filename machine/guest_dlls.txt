@@ -1,0 +1,56 @@
+# Guest DLL set copied by import_windows_dlls.ps1 into <machine>\Windows\System32.
+# Order is irrelevant. Lines starting with # are comments.
+# -- NT / Win32 base
+ntdll.dll
+kernel32.dll
+kernelbase.dll
+# -- CRT
+msvcrt.dll
+ucrtbase.dll
+vcruntime140.dll
+vcruntime140_1.dll
+msvcp140.dll
+# -- security / registry / services
+advapi32.dll
+sechost.dll
+rpcrt4.dll
+cryptbase.dll
+bcrypt.dll
+bcryptprimitives.dll
+# -- user / gdi / shell
+user32.dll
+win32u.dll
+gdi32.dll
+gdi32full.dll
+msvcp_win.dll
+imm32.dll
+comctl32.dll
+comdlg32.dll
+shell32.dll
+shlwapi.dll
+shcore.dll
+windows.storage.dll
+profapi.dll
+powrprof.dll
+umpdc.dll
+# -- COM / OLE
+ole32.dll
+oleaut32.dll
+combase.dll
+# -- misc commonly imported
+version.dll
+winmm.dll
+ws2_32.dll
+nsi.dll
+setupapi.dll
+cfgmgr32.dll
+devobj.dll
+wintrust.dll
+crypt32.dll
+msasn1.dll
+userenv.dll
+netapi32.dll
+psapi.dll
+dbghelp.dll
+# -- apiset schema (needed by the loader to resolve api-ms-win-* names)
+apisetschema.dll

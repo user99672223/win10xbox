@@ -1,0 +1,23 @@
+{
+  "$schema": "./machine.schema.json",
+  "version": 1,
+  "windows": {
+    "major": 10, "minor": 0, "build": 19045, "ubr": 3803,
+    "product_name": "Windows 10 Pro", "display_version": "22H2", "csd": ""
+  },
+  "identity": {
+    "computer_name": "DESKTOP-XBOX",
+    "user_name": "User",
+    "user_sid": "S-1-5-21-1004336348-1177238915-682003330-1001",
+    "domain": "DESKTOP-XBOX"
+  },
+  "dll_overrides": {
+    "*": "native,builtin"
+  },
+  "drives": {
+    "C:": "."
+  },
+  "clock": { "scale": 1.0, "offset_ms": 0, "frozen": false },
+  "cpu": { "hide_hypervisor": true, "vendor": "AuthenticAMD" },
+  "syscall_overrides": {}
+}
