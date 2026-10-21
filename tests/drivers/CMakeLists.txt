@@ -157,7 +157,7 @@ add_test(NAME integration.driver_ioctl
     -DCLIENT=$<TARGET_FILE:drv_client>
     -DGUEST_NAME=drv_client.exe
     -DEXPECT_EXIT=0
-    "-DEXPECT_REGEX=driver loaded: .Driver.OurTestDevice;driver_ioctl: all checks passed;OK   in-kernel api self test;OK   pending completed from DPC;OK   overlapped ioctl"
+    "-DEXPECT_REGEX=driver loaded: .Driver.OurTestDevice;driver_ioctl: all checks passed;OK   in-kernel api self test;OK   privileged-instruction emulation;OK   pending completed from DPC;OK   overlapped ioctl"
     "-DFORBID_REGEX=FAIL "
     -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
     -P ${CMAKE_CURRENT_SOURCE_DIR}/run_driver_e2e.cmake)

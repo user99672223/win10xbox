@@ -109,6 +109,18 @@ int main(void) {
         report(ok && ret == sizeof r && r.Executed >= OTD_SELFTEST_MIN_ASSERTIONS && r.Failed == 0, "in-kernel api self test", msg);
     }
 
+    /* 7b. the driver executes privileged instructions; the host VEH emulates them */
+    {
+        OTD_PRIV_OUT p;
+        DWORD ret = 0;
+        BOOL ok;
+        memset(&p, 0, sizeof p);
+        ok = DeviceIoControl(h, IOCTL_OTD_PRIV, NULL, 0, &p, sizeof p, &ret, NULL);
+        snprintf(msg, sizeof msg, "ok=%d cr8=%lu msr=%lu portio=%lu clisti=%lu", ok, p.Cr8RoundTrip, p.MsrRoundTrip,
+                 p.PortIoOk, p.CliStiOk);
+        report(ok && ret == sizeof p && p.AllOk, "privileged-instruction emulation", msg);
+    }
+
     /* 8. what the driver sees of the caller */
     {
         OTD_INFO info;

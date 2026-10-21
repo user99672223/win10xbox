@@ -64,4 +64,17 @@ typedef struct _OTD_SELFTEST_OUT {
 } OTD_SELFTEST_OUT;
 #define OTD_SELFTEST_MIN_ASSERTIONS 40
 
+/* METHOD_BUFFERED: exercises the privileged-instruction trap-and-emulate VEH by
+ * executing, in the driver at CPL 3, instructions privileged there: mov cr8
+ * (the IRQL), rdmsr/wrmsr, in/out, cli/sti. Each should be emulated and resumed
+ * rather than crash. Output OTD_PRIV_OUT. */
+#define IOCTL_OTD_PRIV CTL_CODE(OTD_DEVICE_TYPE, 0x809, METHOD_BUFFERED, FILE_ANY_ACCESS)
+typedef struct _OTD_PRIV_OUT {
+    unsigned long Cr8RoundTrip;   /* wrote 2 to cr8, read back 2, restored 0 */
+    unsigned long MsrRoundTrip;   /* wrmsr <idx>,v then rdmsr <idx> read v back */
+    unsigned long PortIoOk;       /* in returned 0 and out did not fault */
+    unsigned long CliStiOk;       /* cli then sti executed without faulting */
+    unsigned long AllOk;          /* 1 iff every check above passed */
+} OTD_PRIV_OUT;
+
 #endif

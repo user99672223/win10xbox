@@ -45,6 +45,9 @@ struct Options {
     // IRQL rule violations (lowering below the current level, waiting at
     // DISPATCH_LEVEL ...): false = ERR trace and continue, true = bug check.
     bool strict_irql = false;
+    // Arm the privileged-instruction trap-and-emulate VEH (see below) so a
+    // driver's inline `mov cr8`, rdmsr/wrmsr, in/out, cli/sti ... run in user mode.
+    bool handle_privileged_instructions = true;
 };
 
 // Idempotent. Creates the pool heap, the namespace and the worker thread.
@@ -81,6 +84,17 @@ NTSTATUS UnloadDriver(std::uint32_t id);
 // Return a failure status to abort the load.
 using ImageLoadHook = NTSTATUS (*)(const loader::MappedImage& image, void* ctx);
 void SetImageLoadHook(ImageLoadHook hook, void* ctx);
+
+// Privileged-instruction trap-and-emulate (drivers/host/privileged.cpp): a
+// vectored exception handler that emulates the instructions privileged at
+// CPL 3 - `mov cr8` (the inline KeGetCurrentIrql/KeRaiseIrql/KeLowerIrql) bound
+// to GetVirtualIrql/SetVirtualIrql, rdmsr/wrmsr, in/out, cli/sti, rdpmc, hlt,
+// wbinvd/invd/invlpg - for faults whose RIP lies inside a loaded driver image,
+// so an unmodified kernel-mode image runs in user mode. Faults elsewhere are
+// left untouched. Initialize() arms it when Options::handle_privileged_instructions;
+// it records image ranges through the image-load hook above. Idempotent.
+NTSTATUS InstallPrivilegedInstructionHandler();
+void RemovePrivilegedInstructionHandler();
 
 // ---- Namespace introspection (tests, tools, trace) -------------------------------------
 struct DeviceInfo {

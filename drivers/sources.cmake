@@ -17,6 +17,8 @@ set(WIN10XBOX_DRIVERS_SOURCES
   host/irp_top.cpp
   host/hooks.cpp
   host/host.cpp
+  # privileged-instruction trap-and-emulate (VEH: cr8/msr/port I/O/cli/sti)
+  host/privileged.cpp
   # minimal WDF (KMDF) function-table shim
   kmdf/wdf_shim.cpp
 )

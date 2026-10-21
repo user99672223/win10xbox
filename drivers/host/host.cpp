@@ -30,6 +30,11 @@ NTSTATUS Initialize(const Options* opts) {
     }
     g_initialized = true;
     ReleaseSRWLockExclusive(&g_init_lock);
+    if (o.handle_privileged_instructions) {
+        NTSTATUS st = InstallPrivilegedInstructionHandler();
+        if (!NT_SUCCESS(st))
+            WARN(driver, "privileged-instruction handler not armed: %08lx", static_cast<unsigned long>(st));
+    }
     g_hooks_requested = o.install_dispatcher_hooks;
     if (o.install_dispatcher_hooks) {
         NTSTATUS st = InstallDispatcherHooks();
@@ -44,6 +49,7 @@ void Shutdown() {
     SendShutdownIrps();
     CloseAllHandles();
     DriversUnloadAll();
+    RemovePrivilegedInstructionHandler();
     RemoveDispatcherHooks();
     WorkerStop();
     ObPsMmShutdown();

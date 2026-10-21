@@ -315,6 +315,55 @@ static void RunSeh(OTD_SEH_OUT* out) {
     }
 }
 
+/* Privileged-instruction self-test. Each operation below is privileged at CPL 3
+ * and is expected to be emulated by the driver host's VEH
+ * (drivers/host/privileged.cpp) rather than fault. Portable across MSVC
+ * (intrinsics) and clang (inline asm; MSVC x64 has no inline asm). */
+#if defined(_MSC_VER)
+#include <intrin.h>
+static unsigned __int64 PrivReadCr8(void) { return __readcr8(); }
+static void PrivWriteCr8(unsigned __int64 v) { __writecr8(v); }
+static unsigned __int64 PrivReadMsr(unsigned long i) { return __readmsr(i); }
+static void PrivWriteMsr(unsigned long i, unsigned __int64 v) { __writemsr(i, v); }
+static unsigned char PrivInByte(unsigned short p) { return __inbyte(p); }
+static void PrivOutByte(unsigned short p, unsigned char v) { __outbyte(p, v); }
+static void PrivCli(void) { _disable(); }
+static void PrivSti(void) { _enable(); }
+#else
+static unsigned long long PrivReadCr8(void) { unsigned long long v; __asm__ __volatile__("mov %%cr8, %0" : "=r"(v)); return v; }
+static void PrivWriteCr8(unsigned long long v) { __asm__ __volatile__("mov %0, %%cr8" :: "r"(v)); }
+static unsigned long long PrivReadMsr(unsigned long i) { unsigned int lo, hi; __asm__ __volatile__("rdmsr" : "=a"(lo), "=d"(hi) : "c"(i)); return ((unsigned long long)hi << 32) | lo; }
+static void PrivWriteMsr(unsigned long i, unsigned long long v) { __asm__ __volatile__("wrmsr" :: "a"((unsigned int)v), "d"((unsigned int)(v >> 32)), "c"(i)); }
+static unsigned char PrivInByte(unsigned short p) { unsigned char v; __asm__ __volatile__("inb %1, %0" : "=a"(v) : "Nd"(p)); return v; }
+static void PrivOutByte(unsigned short p, unsigned char v) { __asm__ __volatile__("outb %0, %1" :: "a"(v), "Nd"(p)); }
+static void PrivCli(void) { __asm__ __volatile__("cli"); }
+static void PrivSti(void) { __asm__ __volatile__("sti"); }
+#endif
+
+#define OTD_PRIV_MSR_INDEX 0xC0000101u
+#define OTD_PRIV_MSR_VALUE 0x123456789ABCDEF0ull
+
+static void RunPriv(OTD_PRIV_OUT* out) {
+    unsigned long long msr;
+    memset(out, 0, sizeof(*out));
+    /* cr8 is the IRQL: raise to DISPATCH_LEVEL (2), read it back, restore. */
+    PrivWriteCr8(2);
+    out->Cr8RoundTrip = (PrivReadCr8() == 2) ? 1 : 0;
+    PrivWriteCr8(0);
+    /* MSR round-trip through the host's virtual MSR store. */
+    PrivWriteMsr(OTD_PRIV_MSR_INDEX, OTD_PRIV_MSR_VALUE);
+    msr = PrivReadMsr(OTD_PRIV_MSR_INDEX);
+    out->MsrRoundTrip = (msr == OTD_PRIV_MSR_VALUE) ? 1 : 0;
+    /* port I/O: the write is discarded, the read returns 0 (no backing device). */
+    PrivOutByte(0x80, 0x5A);
+    out->PortIoOk = (PrivInByte(0x80) == 0) ? 1 : 0;
+    /* cli then sti: must execute (emulated) without faulting. */
+    PrivCli();
+    PrivSti();
+    out->CliStiOk = 1;
+    out->AllOk = out->Cr8RoundTrip && out->MsrRoundTrip && out->PortIoOk && out->CliStiOk;
+}
+
 static NTSTATUS DispatchControl(PDEVICE_OBJECT dev, PIRP irp) {
     PDEVICE_EXT ext = (PDEVICE_EXT)dev->DeviceExtension;
     PIO_STACK_LOCATION s = IoGetCurrentIrpStackLocation(irp);
@@ -386,6 +435,11 @@ static NTSTATUS DispatchControl(PDEVICE_OBJECT dev, PIRP irp) {
         if (outl < sizeof(OTD_SEH_OUT)) return Complete(irp, STATUS_BUFFER_TOO_SMALL, 0);
         RunSeh((OTD_SEH_OUT*)sysbuf);
         return Complete(irp, STATUS_SUCCESS, sizeof(OTD_SEH_OUT));
+
+    case IOCTL_OTD_PRIV:
+        if (outl < sizeof(OTD_PRIV_OUT)) return Complete(irp, STATUS_BUFFER_TOO_SMALL, 0);
+        RunPriv((OTD_PRIV_OUT*)sysbuf);
+        return Complete(irp, STATUS_SUCCESS, sizeof(OTD_PRIV_OUT));
 
     case IOCTL_OTD_INFO: {
         OTD_INFO* info = (OTD_INFO*)sysbuf;
