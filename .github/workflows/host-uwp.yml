@@ -1,0 +1,152 @@
+name: host-uwp
+
+# host-uwp: the REAL win10xbox UWP host (milestone M5): a C++/WinRT CoreApplication shell around
+# the Host of host.h (launch.json -> machine folder staging -> Initialize -> process::Launch ->
+# verdict in status.txt). This job BUILDS and PACKAGES it into a signed .msix (artifact
+# host-uwp-msix) and runs the portable launch.json selftest; running it on an Xbox Series S in
+# Dev Mode is the owner's job, later. It replaces the throwaway host-uwp-lite (workflow
+# uwp-lite.yml, artifact host-uwp-lite-msix): the two packages differ in identity, exe name and
+# WinRT namespace, so both install side by side. It is a separate workflow on purpose: ci.yml
+# and its green jobs stay untouched.
+#
+# Standalone CMake project (host-uwp/CMakeLists.txt) that add_subdirectory()s third_party/,
+# core/ and winexbox/ itself; the top-level CMakeLists.txt is not involved (its
+# WIN10XBOX_BUILD_UWP option stays OFF in every workflow, and host-uwp/CMakeLists.txt refuses to
+# be added to that tree). Same toolchain recipe as uwp-lite.yml, which is the one proven on CI
+# (run #4 produced a signed .msix), and as the `windows` job in ci.yml, because that is the
+# configuration core/ is known to build in: Ninja + cl + sccache. RelWithDebInfo (O2 + NDEBUG)
+# is one of the two configurations ci.yml gates on.
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "host-uwp/**"
+      - "core/**"
+      - "third_party/**"
+      - "winexbox/**"
+      - "machine/machine.default.json"
+      - ".github/workflows/host-uwp.yml"
+  pull_request:
+    paths:
+      - "host-uwp/**"
+      - "core/**"
+      - "third_party/**"
+      - "winexbox/**"
+      - "machine/machine.default.json"
+      - ".github/workflows/host-uwp.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: host-uwp-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read   # the job downloads the wine-pe-builtin artifact
+
+jobs:
+  msix:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [RelWithDebInfo]
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: true }
+      - name: Nested submodules we need (zycore only; speakeasy's test corpora are not needed)
+        run: git submodule update --init --recursive third_party/zydis
+      - uses: ilammy/msvc-dev-cmd@v1
+        with: { arch: x64 }
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      # Wine PE builtins (ntdll/kernelbase/kernel32 and friends) from the latest
+      # successful wine-pe run, same incantation as the `windows` job in ci.yml. They
+      # are bundled INSIDE the package and copied to LocalState at first run (the
+      # default HOST_UWP_BUILTIN_DIR is exactly where this step puts them).
+      # Non-fatal: without them the package is still produced (the owner can drop
+      # the DLLs into LocalState\machine\Windows\builtin on the console).
+      - name: Fetch wine-pe builtin DLLs (optional)
+        shell: pwsh
+        continue-on-error: true
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          $id = gh run list --repo ${{ github.repository }} --workflow wine-pe.yml --branch ${{ github.ref_name }} --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+          if (-not $id) {
+            $id = gh run list --repo ${{ github.repository }} --workflow wine-pe.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+          }
+          if ($id) {
+            New-Item -ItemType Directory -Force -Path wine-pe/out/builtin | Out-Null
+            gh run download $id --repo ${{ github.repository }} --name wine-pe-builtin --dir wine-pe/out/builtin
+            Write-Host "downloaded wine-pe-builtin from run $id ($((Get-ChildItem wine-pe/out/builtin -Filter *.dll).Count) DLLs)"
+          } else {
+            Write-Host "no successful wine-pe run yet; the package will be built WITHOUT the Wine builtins"
+          }
+          $global:LASTEXITCODE = 0
+
+      # Mirror ci.yml's proven windows Configure. No -DCMAKE_POLICY_VERSION_MINIMUM:
+      # ci.yml builds the same third_party/zydis + core/ on this runner without it,
+      # and the earlier malformed value ("3") poisoned the cache so every
+      # cmake_minimum_required (here, zydis, zycore) errored. shell: cmd so the
+      # package-version arg (1.0.0.N) is passed literally and not reparsed by
+      # PowerShell as a version token.
+      - name: Configure
+        shell: cmd
+        env: { SCCACHE_GHA_ENABLED: "true" }
+        run: >
+          cmake -S host-uwp -B build-uwp -G Ninja
+          -DCMAKE_BUILD_TYPE=${{ matrix.config }}
+          -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          -DHOST_UWP_PACKAGE_VERSION=1.0.0.${{ github.run_number }}
+      - name: Build
+        env: { SCCACHE_GHA_ENABLED: "true" }
+        run: cmake --build build-uwp -- -k 0   # keep going so all compile errors surface in one run
+
+      # makepri + makeappx + signtool (self-signed CN=Dev, like the probe and uwp-lite).
+      - name: Package (.msix)
+        shell: cmd
+        run: call host-uwp\package.cmd build-uwp
+
+      # The launch.json parser (host-uwp/launch_config.cpp, portable code) against
+      # selftest/selftest.cpp: a console program with no layer, WinRT or package, so it runs
+      # on the runner. After Package on purpose: a failure turns the job red, but the .msix is
+      # still produced and uploaded (see the upload condition below).
+      - name: Selftest (launch.json parser)
+        id: selftest
+        run: ctest --test-dir build-uwp --output-on-failure --no-tests=error -R host_uwp.selftest
+
+      - name: Summary
+        if: always()
+        shell: pwsh
+        run: |
+          $stage = 'build-uwp/AppX'
+          $builtins = @(Get-ChildItem "$stage/payload/builtin" -Filter *.dll -ErrorAction SilentlyContinue).Count
+          $guests = @(Get-ChildItem "$stage/payload/guest" -Filter *.exe -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) -join ', '
+          $msix = Get-ChildItem build-uwp/AppPackages -Filter *.msix -ErrorAction SilentlyContinue | Select-Object -First 1
+          $lines = @('### host-uwp (build + package; NOT run on hardware)')
+          if ($msix) { $lines += ('- package: `{0}` ({1:N1} MB), version 1.0.0.${{ github.run_number }}' -f $msix.Name, ($msix.Length / 1MB)) } else { $lines += '- package: NOT produced' }
+          $lines += "- Wine PE builtin DLLs bundled: $builtins" + $(if ($builtins -eq 0) { ' (wine-pe-builtin artifact unavailable; add them on the console)' } else { '' })
+          $lines += '- winmd bundled: ' + (Test-Path "$stage/Win10XboxUwp.winmd")
+          $lines += '- bundled guests: ' + $(if ($guests) { $guests } else { 'none' })
+          $lines += '- packaged default launch.json: ' + (Test-Path "$stage/payload/launch.json")
+          $lines += '- launch.json selftest: ${{ steps.selftest.outcome }}'
+          $lines += '- AUMID: `win10xbox.uwp_eqad6j9zhtw80!App`'
+          $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          $global:LASTEXITCODE = 0
+
+      # Upload whenever a package exists, even if the selftest step failed (the job is then
+      # red, but the owner still gets the .msix to look at). No package (the build failed)
+      # means nothing to upload and no second, misleading error.
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && hashFiles('build-uwp/AppPackages/*.msix') != '' }}
+        with:
+          name: host-uwp-msix
+          path: |
+            build-uwp/AppPackages/*.msix
+            build-uwp/AppPackages/*.cer
+          if-no-files-found: error
+          retention-days: 14
