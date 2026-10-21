@@ -1,37 +1,70 @@
-# Design decisions pending console data
+# Design decisions — console data folded in
 
-The capability probe in `tools/probe/` has not yet run on an Xbox. Every
-design fork below is one that its capability matrix will settle. Each entry
-records the **current default** (what the code does today), the **flag** that
-selects it (all in `core/config.h`, `win10xbox::config`), and **what flips
-it**. None of these block development: the default is implemented first and
-the alternative is isolated behind the same interface.
+The capability probe in `tools/probe/` has now run on an Xbox Series S in Dev
+Mode (build `10.0.26100.9445`, Game bucket). Evidence lives in
+[`tools/probe/results/REPORT.md`](../tools/probe/results/REPORT.md) and
+`tools/probe/results/xbox-uwp.json`. Rows below marked **Settled by probe**
+cite the report section and the probe record key.
 
-Probe module letters refer to `tools/probe/probe-core/probe_*.cpp`.
+Each entry records the **current default** (what the code does), the **flag**
+that selects it (all in `core/include/win10xbox/config.h`,
+`win10xbox::config`), and **what would still flip it**. Probe module letters
+refer to `tools/probe/probe-core/probe_*.cpp`.
 
-| # | Fork | Default | Flag | What flips it |
-|---|------|---------|------|---------------|
-| D1 | Process model: real child processes via multi-instance UWP activation vs in-process virtual processes | **In-process virtual processes.** `NtCreateUserProcess` is emulated: the child image is mapped into the same host process with its own PEB/TEB-like state, a dedicated thread per "process", and per-process handle table / VFS / registry overlay. | `config::process_model = ProcessModel::InProcess` | Probe L: `CreateProcess` of a packaged executable succeeds *and* `AppInstance`/multi-instance activation yields a second AppContainer process with a usable IPC channel. Then `ProcessModel::MultiInstance` becomes the default for programs that need isolation (services.exe, installers). |
-| D2 | Image mapping: `NtCreateSection(SEC_IMAGE)` + `NtMapViewOfSection` of guest DLLs (kernel does relocations, shares pages) vs manual map (MemoryModule) | **Manual map** (we need to patch stubs and scan code anyway, and SEC_IMAGE sections are CoW so the patch cost is the same). | `config::image_mapping = ImageMapping::Manual` | Probe A: `SEC_IMAGE` mapping of an out-of-package DLL works *and* memory budget (D5) is tight enough that page sharing matters. Then `ImageMapping::SecImage` is used for unpatched DLLs. |
-| D3 | Which Nt* calls pass through to the host kernel | **Pass-through** for memory, threads/sync, file I/O on paths under the machine folder, timers, LPC-free calls; **emulate** for process creation, registry, win32k, tokens, LPC/ALPC, services, jobs, sections of named objects. The exact per-syscall policy is `docs/SYSCALLS.md` (generated from `core/dispatch/syscall_policy.inc`). | per-entry policy in `syscall_policy.inc`; runtime override `config::syscall_override[]` from `machine.json` | Probe C (which syscalls return STATUS_ACCESS_DENIED / are missing in the AppContainer) and probe F/G (which paths/hives are writable). Each denied pass-through moves to `Translate` or `Emulate`. |
-| D4 | Syscall stub rewriting vs executing the real `syscall` instruction with our number table | **Rewrite** every stub to `jmp` into the dispatcher. | `config::stub_strategy = StubStrategy::Rewrite` | Probe B (`probe_B_ntdll_stubs`): if the console's ntdll stubs are not the canonical 4-instruction form (e.g. CET/`int 2e` shims), the rewriter falls back to hooking by export (`StubStrategy::ExportHook`). |
-| D5 | Memory budget per guest and whether to reserve a contiguous guest arena | **No arena**; guest allocations go through the host heap/VirtualAlloc. Soft budget 2 GiB, trace a warning past it. | `config::memory_budget_bytes`, `config::use_guest_arena = false` | Probe M (`memory` record): the Dev Mode app commit limit. Below 3 GiB, enable the arena and page-file-less commit accounting so that guest `NtAllocateVirtualMemory` fails gracefully (STATUS_NO_MEMORY) instead of the app being terminated. |
-| D6 | 32-bit code: Heaven's-Gate far jump into a 32-bit code segment (WoW64-like) vs no 32-bit support | **No 32-bit support**; 32-bit PEs are rejected at load with a clear trace. | `config::wow64 = Wow64::Off` | Probe A/E: whether the AppContainer allows a far `jmp 0x23:` into a 32-bit segment (LDT/GDT selector 0x23 present) and whether `NtSetInformationProcess(ProcessWow64Information)` is reachable. If yes, `Wow64::HeavensGate` with Wine's wow64 layer (`dlls/wow64*`) is the plan. |
-| D7 | Inbound sockets | **Loopback and outbound only**; `bind`/`listen` on non-loopback return WSAEACCES through the Winsock translation layer. | `config::inbound_sockets = false` | Probe K (`inbound` record): if `internetClientServer`/`privateNetworkClientServer` capabilities grant inbound on the console, flip to `true`. |
-| D8 | D3D feature level and swap-chain path for the display backend | **Headless off-screen backend** (`winexbox/headless`): windows exist, messages pump, GDI draws into system-memory DIBs, no presentation. | `config::display_backend = DisplayBackend::Headless` | Probe I: D3D12 feature level, availability of d3d11on12/d3d9on12/GLOn12 bridges and swap-chain-on-CoreWindow. Then `DisplayBackend::D3D12` is written against the same `winexbox_driver` interface. |
-| D9 | Time source for the virtual clock | **Host QPC** scaled/offset by the virtual clock; `rdtsc` patched to read the virtual clock, not the real TSC. | `config::clock_source = ClockSource::HostQpc` | Probe E (`rdtsc` and invariant-TSC records): if the TSC is invariant and the hypervisor bit is clear, `ClockSource::Tsc` can serve `rdtsc` unpatched with only the offset virtualised. |
-| D10 | CPUID: patch every `cpuid` site vs leave real CPUID | **Patch** every site found by the scanner (hypervisor-present bit cleared, vendor string preserved, leaf 0x40000000 hidden). | `config::patch_cpuid = true` | Probe E: if the console reports the hypervisor bit clear and no leaf 0x4000xxxx, patching becomes optional (`false`) and only `rdtsc` sites are rewritten. |
-| D11 | Dynamic code: `VirtualAlloc(PAGE_EXECUTE_READWRITE)` vs `VirtualAlloc2`/`NtAllocateVirtualMemoryEx` with codeGeneration | **`NtAllocateVirtualMemory` + `NtProtectVirtualMemory` to RX after writing**, which is what the codeGeneration capability guarantees. | `config::jit_policy = JitPolicy::WriteThenProtect` | Probe A: if RWX is allowed, `JitPolicy::Rwx` lets guest JITs (CLR, V8) that insist on RWX work unmodified. |
-| D12 | VEH trap-and-emulate for privileged instructions in drivers | **VEH** (`AddVectoredExceptionHandler` first-handler) decoding with Zydis, continue with modified context. | `config::trap_engine = TrapEngine::Veh` | Probe D: whether `EXCEPTION_PRIV_INSTRUCTION` and `EXCEPTION_ACCESS_VIOLATION` reach a VEH and `SetThreadContext` works. If VEH is not delivered first, fall back to scanning driver code for privileged instructions ahead of time (`TrapEngine::StaticPatch`). |
-| D13 | Registry hive source | **hivex over real REGF files** in `machine/config/` with an in-memory overlay for writes. | `config::registry_backend = RegistryBackend::Hivex` | Probe G: if the AppContainer can open `HKLM\SOFTWARE` subtrees for read, a `RegistryBackend::HostReadThrough` fallback can serve keys missing from the supplied hives. Default stays hivex for fidelity. |
-| D14 | Guest DLL source | **Native Microsoft DLLs** imported by the user into the machine folder; **builtin** Wine PE DLLs for anything missing or overridden in `machine.json`. | `machine.json: "dll_overrides"` (`"user32": "builtin"`), default `native,builtin` | Not probe-gated. The 22H2 fidelity values (build numbers, SMBIOS strings) live in `machine.json` so CI can run on Server 2022 DLLs. |
-| D15 | Where the UWP host puts the machine folder | **`ApplicationData::Current().LocalFolder()/machine`** (always writable). | `config::machine_root` | Probe F: if `broadFileSystemAccess` or a removable drive is writable on the console, allow an external machine folder so users can drop in their DLLs over SMB/Device Portal. |
-| D16 | Driver host: in-process (same host process as the program) vs separate "kernel" instance | **In-process**: `ntoskrnl.exe` is a DLL mapped into the host; `\\.\Device` opens are routed through the dispatcher to the IRP engine. | `config::driver_host = DriverHost::InProcess` | D1. If multi-instance activation works, drivers move to a dedicated instance and `NtDeviceIoControlFile` becomes an IPC call. |
+Headline: all four load-bearing capabilities are confirmed on the console —
+RWX + execute, `NtCreateSection(SEC_IMAGE)` mapping, VEH trap-and-emulate
+(including `rdmsr` `#GP` → adjust RIP → continue), and canonical ntdll syscall
+stubs. See report §6.
+
+| # | Fork | Default | Flag | Status / evidence |
+|---|------|---------|------|-------------------|
+| D1 | Process model: real child processes vs in-process virtual processes | **Real child processes.** The console's Game bucket creates children of `cmd.exe`, `dllhost.exe` and the app's own exe. In-process virtual processes become the fallback for programs that must not fork. M3 `services.exe`/`CreateProcess` paths are designed for real children. | `config::process_model = ProcessModel::RealChild` | **Settled by probe** ([§5.12](../tools/probe/results/REPORT.md), `L/createprocess-self`, `L/createprocess-cmd`, `L/createprocess-dllhost`). Caveat: children were created **suspended** only; resume is a probe-v2 item. |
+| D2 | Image mapping: `NtCreateSection(SEC_IMAGE)` (kernel maps + relocates; we patch the CoW copy) vs manual map | **SEC_IMAGE-assisted.** The kernel maps and relocates; we do import redirection and stub/CPUID patching on the copy-on-write pages. Manual mapping (MemoryModule-derived) stays as the fallback. | `config::image_mapping = ImageMapping::SecImage` | **Settled by probe** ([§5.1](../tools/probe/results/REPORT.md), `A/sec-image-map`). Retrofit into the M1 loader only if cheap; otherwise scheduled for M6. |
+| D3 | Which Nt* calls pass through to the host kernel | **Dispatch-by-name is mandatory, not optional.** The console is build 26100 (Windows 11 24H2-era kernel); a 22H2 guest ntdll's syscall *numbers* do not match the host's, so every pass-through resolves the host export **by name**, never by number. Per-syscall policy in `docs/SYSCALLS.md`. | `syscall_policy.inc`; `config::syscall_override[]` | **Settled by probe** ([§2](../tools/probe/results/REPORT.md) build id; `C/*` all OK by name). |
+| D4 | Syscall stub rewriting vs real `syscall` with our number table | **Rewrite** every stub to jump into the dispatcher; the console stubs are the canonical x64 `mov r10,rcx; mov eax,id; test [7FFE0308h],1; syscall` shape, `SystemCall` mode 0 (no `int 2e`). | `config::stub_strategy = StubStrategy::Rewrite` | **Settled by probe** ([§5.2](../tools/probe/results/REPORT.md), `B/stub:*`). |
+| D5 | Memory budget per guest | **Guest ceiling 3.5 GiB, configurable.** ~5 GiB physical is visible to the Game-bucket process on this build; treat as a per-build value, not a constant. GPU budget via `QueryVideoMemoryInfo` is untested (probe-v2). | `config::memory_budget_bytes = 3.5 GiB` | **Settled by probe** ([§2](../tools/probe/results/REPORT.md), `M/memory-status`; §8 note 4). |
+| D6 | 32-bit code (Heaven's-Gate far jump, WoW64-like) vs no 32-bit | **No 32-bit support**; 32-bit PEs rejected at load. | `config::wow64 = Wow64::Off` | Open. The probe did not test a 32-bit far jump or `ProcessWow64Information`; probe-v2 adds it. Deferred past M5 regardless. |
+| D7 | Inbound sockets | **Allowed** (inbound listen, loopback, raw, UDP all succeed in the Game bucket). No inbound workaround needed. | `config::inbound_sockets = true` | **Settled by probe** ([§5.11](../tools/probe/results/REPORT.md), `K/tcp-listen-inbound`, `K/loopback-connect`, `K/socket-raw`). Non-loopback bind was not explicitly tested but Dev Mode networking grants server sockets. |
+| D8 | Display backend | **Headless off-screen backend** now (`winexbox/headless`); the real D3D12/CoreWindow backend is M6. Graphics plan set by the probe: `d3d9.dll`, `opengl32.dll`, `gdiplus.dll`, `vulkan-1.dll` are **absent**; `d3d9on12.dll` present but its `d3d9` runtime is missing. Plan: bundle Mesa GLOn12 (`opengl32.dll`), Dozen + a Khronos `vulkan-1` loader; `gdiplus` from the user's 22H2 copy or Wine builtin; `d3d9` = user's 22H2 `d3d9.dll` over system `d3d9on12` (test), fallback Microsoft's open-source D3D9On12. | `config::display_backend = DisplayBackend::Headless` | **Settled by probe** ([§5.9](../tools/probe/results/REPORT.md), `I/*`). **Open item:** D3D11 and D3D12 both report feature level **11_0** in this sandbox (laptop: 12_1); probe-v2 adds a `CheckFeatureSupport` sweep. |
+| D9 | Virtual clock time source | **Host QPC** scaled/offset; `rdtsc` patched to the virtual clock. | `config::clock_source = ClockSource::HostQpc` | Probe shows `rdtsc` runs free (~1.745 GHz) and the hypervisor bit is clear ([§2](../tools/probe/results/REPORT.md)), but invariant-TSC was not confirmed, so the default stays HostQpc. |
+| D10 | CPUID handling | **Patch** every `cpuid` site. On the console, leaf-1 bit 31 is already 0 but leaf `0x40000000` returns `Microsoft Xb` — which must be hidden — and the brand string reads `Microsoft Xbox Series S CPU`, which must be rewritten. See D18 for the single identity story. | `config::patch_cpuid = true` | **Settled by probe** ([§2](../tools/probe/results/REPORT.md), `E/cpuid.*`). |
+| D11 | Dynamic code: RWX vs write-then-protect | **Write-then-protect** default; RWX is also permitted on the console, so `JitPolicy::Rwx` is available for JITs that insist on it. | `config::jit_policy = JitPolicy::WriteThenProtect` | **Settled by probe** ([§5.1](../tools/probe/results/REPORT.md), `A/valloc-rwx`, `A/exec-wx-flip`). |
+| D12 | VEH trap-and-emulate for privileged instructions | **VEH** first-handler, Zydis-decoded, continue with modified context. | `config::trap_engine = TrapEngine::Veh` | **Settled by probe** ([§5.4](../tools/probe/results/REPORT.md), `D/veh-privileged-insn`: `rdmsr` `#GP` delivered to VEH, RIP advanced, continued). |
+| D13 | Registry backend | **Own REGF reader/writer over supplied hives** with an in-memory overlay; all guest writes land in the overlay (the console denies every real write). Reads of HKLM SOFTWARE/SYSTEM and HKU DEFAULT succeed on the console, so a `HostReadThrough` fallback can fill gaps. | `config::registry_backend = RegistryBackend::Regf` | **Settled by probe** ([§5.7](../tools/probe/results/REPORT.md), `G/read:*` OK, `G/write:*` DENIED). (Flag renamed from `Hivex`; see M2 — we ship our own REGF code, not hivex.) |
+| D14 | Guest DLL source | **Native Microsoft DLLs** from the machine folder; **builtin** Wine PE DLLs for anything missing/overridden. | `machine.json: "dll_overrides"`, default `native,builtin` | Not probe-gated, but see D17: the guest DLL set must be a **static manifest** — the console denies directory enumeration of System32. |
+| D15 | Where the UWP host puts the machine folder | **`ApplicationData::Current().LocalFolder()/machine`** (the only writable location besides TEMP). | `config::machine_root` | **Settled by probe** ([§5.6](../tools/probe/results/REPORT.md), `F/*`: only LocalState and TEMP writable). |
+| D16 | Driver host: in-process vs separate instance | **In-process** `ntoskrnl.exe` DLL; `\\.\Device` opens routed to the IRP engine. | `config::driver_host = DriverHost::InProcess` | Real children work (D1), so a separate driver instance is now *possible*; the in-process default stays until M4 shows a reason to split. |
+| D17 | Guest DLL discovery | **Static manifest.** The console allows opening individual System32 files by name but **denies directory listing**, so the loader never enumerates — it consults `machine/guest_dlls.txt`. | n/a (loader behavior) | **Settled by probe** ([§5.6](../tools/probe/results/REPORT.md), `F/read:system32` MISSING; `A/map-system-dll-as-data` OK). |
+| D18 | CPU identity (single source of truth) | **One `machine_identity` config** consumed everywhere. The guest must see brand `AMD 4700S 8-Core Processor` (same Zen 2 silicon; family 23 / model 136 / stepping 1 matches the console), leaf `0x40000000` all zeros, and RDRAND **advertised** (absent on the console; emulated via `#UD` trap → `BCryptGenRandom`). The same name is served by (a) the CPUID patch, (b) the registry overlay `HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\*\ProcessorNameString`, (c) a synthetic SMBIOS type-4 table (firmware tables are DENIED, so `GetSystemFirmwareTable` is emulated), and (d) wbemprox `Win32_Processor`. | `config::machine_identity` | **Settled by probe** ([§2](../tools/probe/results/REPORT.md) CPU id, `E/*`; [§5.13](../tools/probe/results/REPORT.md) `M/firmware-*` DENIED). Implemented in M2 if the version/clock spoof is still open, else as an M3 task. |
+
+Token note (subsystem, not a flag): the console token is Low integrity /
+AppContainer with 2 privileges ([§5.8](../tools/probe/results/REPORT.md),
+`H/*`); the token subsystem presents a normal Medium-integrity user, and
+`Global\` named objects go through our object manager. Registry overlay design
+(D13) stands.
+
+## Probe-v2 queue (console-run later by the owner; built into `tools/probe`)
+
+New probe modules to ship in the same `.msix`:
+
+1. Resume a created child process and confirm it runs (D1 caveat).
+2. Launch an EXE from LocalState (root-cause `A/loadlibrary-out-of-package`).
+3. 32-bit code-segment far jump (Heaven's Gate) for future WoW64 (D6).
+4. `QueryVideoMemoryInfo` for the GPU budget (D5).
+5. D3D12 `CheckFeatureSupport` sweep for 12_x features (D8 open item).
+
+## UWP host (M5) lessons from the probe
+
+- `D3D11CreateDevice` blocks the UI thread in a Game-bucket app — create
+  devices on a worker thread after `CoreWindow` activation.
+- The Xbox launcher refuses an exe without matching WinRT metadata, silently —
+  copy `tools/probe/uwp-host`'s `.vcxproj` + `App.idl` + C++/WinRT setup as the
+  `host-uwp` template.
 
 ## How to use this file
 
 - When a probe result lands, update the row, flip the flag default if needed,
-  and record the probe record key (e.g. `A.sec_image_map`) that justified it.
+  and cite the probe record key that justified it.
 - New forks discovered during development get a new row, never a silent
   branch in code.
 

@@ -1,5 +1,19 @@
 # Status
 
+## Probe results folded in (2026-10-21)
+
+The capability probe ran on an Xbox Series S in Dev Mode (build 26100, Game
+bucket). All four load-bearing capabilities are confirmed: RWX + execute,
+`NtCreateSection(SEC_IMAGE)` mapping, VEH trap-and-emulate (`rdmsr` `#GP` →
+RIP adjust → continue), and canonical ntdll syscall stubs. `docs/DECISIONS.md`
+is updated with evidence links; the probe-settled defaults are now in
+`core/include/win10xbox/config.h` (real child processes, SEC_IMAGE mapping,
+dispatch-by-name mandatory on build 26100, inbound sockets allowed, 3.5 GiB
+guest ceiling, the D18 single CPU-identity story). Full report:
+`tools/probe/results/REPORT.md`. Open items routed to probe-v2 and M6
+(child-process resume, feature-level 11_0 vs 12_1, GLOn12/Dozen/Vulkan
+bundling, WoW64 far jump).
+
 ## Milestone commits
 
 Annotated tags `m0`/`m1`/`m2` are created in the repo; if a tag is not visible
