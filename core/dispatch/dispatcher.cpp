@@ -23,6 +23,7 @@ void win10xbox_syscall_entry();
 
 namespace win10xbox::dispatch {
 namespace detail {
+const ImplDef* NlsImpls();   // nt_nls.cpp (registered like the lists in internal.h)
 namespace {
 
 struct PolicyDef { const char* name; Policy policy; const char* note; };
@@ -76,7 +77,7 @@ bool IEquals(const char* a, const char* b) {
 }
 
 void* FindImpl(const char* name) {
-    for (auto list : {FileImpls(), SectionImpls(), ProcessImpls(), SubsystemImpls()})
+    for (auto list : {FileImpls(), SectionImpls(), ProcessImpls(), NlsImpls(), SubsystemImpls()})
         for (const ImplDef* d = list; d && d->name; ++d)
             if (!std::strcmp(d->name, name)) return d->fn;
     return nullptr;
