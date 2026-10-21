@@ -26,6 +26,7 @@ Milestone commits, so they stay pinpointable regardless:
 | m0  | `cbcfbab` | repo skeleton, submodules, core + host-win32 hello, CI |
 | m1  | `fc18910` | loader (PE map, stub rewrite, scanner) — green CI |
 | m2  | `fc18910` | dispatcher + subsystems (VFS/registry/clock/token/NLS) — green CI |
+| m3  | `9e22180` | Wine PE set, winexbox interface + headless backend, Wine conformance baseline — green CI |
 
 
 ## M0 - repo skeleton (tag `m0`)
