@@ -56,10 +56,21 @@ struct Globals {
     std::vector<wchar_t> environment;
     void* params = nullptr;                // what we installed (Wine replaces it in init_user_process_params)
     std::size_t stack_reserve = 1 << 20;
+    HANDLE thread_ready = nullptr;          // main guest thread finished host-side thread init
+    HANDLE peb_ready = nullptr;             // PEB take-over done, enter the guest
+    bool wine_host = false;                 // host ntdll is Wine's (development runs)
 };
 Globals& G() { static Globals g; return g; }
 
-struct GuestStart { void* start; void* arg; std::uint32_t flags; };
+struct GuestStart {
+    void* start;
+    void* arg;
+    std::uint32_t flags;
+    bool wait_for_peb = false;         // main thread: block until the PEB take-over is done
+    bool clear_skip_attach = false;    // we added SKIP_THREAD_ATTACH for the host's sake
+};
+constexpr std::uint32_t kTebSameTebFlags = 0x17EE;
+constexpr USHORT kSkipThreadAttach = 1u << 3;
 
 std::wstring ToLowerCopy(std::wstring s) {
     for (auto& c : s) c = static_cast<wchar_t>(std::towlower(c));
@@ -170,7 +181,8 @@ std::wstring DefaultCurrentDirectory() {
 #endif
 }
 
-// ---- machine.json "cpu" -------------------------------------------------------------
+// ---- machine.json "cpu" without the VFS module -----------------------------------------
+#if !WIN10XBOX_HAVE_VFS
 // Tiny extraction (the VFS module owns machine.json parsing in general):
 //   "cpu": { "hide_hypervisor": true, "vendor": "AuthenticAMD" }
 void LoadCpuPolicy(const std::wstring& machine_root) {
@@ -211,6 +223,7 @@ void LoadCpuPolicy(const std::wstring& machine_root) {
     TRACE(process, "cpu policy: vendor=%s hide_hypervisor=%d", p.vendor.empty() ? "(real)" : p.vendor.c_str(),
           p.hide_hypervisor);
 }
+#endif
 
 // ---- Entering the guest on a thread ------------------------------------------------
 
@@ -250,10 +263,22 @@ DWORD WINAPI GuestThreadProc(void* p) {
     void* start = gs->start;
     void* arg = gs->arg;
     std::uint32_t flags = gs->flags;
+    const bool wait_for_peb = gs->wait_for_peb, clear_skip = gs->clear_skip_attach;
     delete gs;
     if (!AttachThreadState(kThreadGuest | flags))
         WARN(process, "no thread state: guest/host TEB view switching disabled on this thread");
+    if (clear_skip) {
+        auto* tf = reinterpret_cast<USHORT*>(static_cast<std::uintptr_t>(__readgsqword(0x30)) + kTebSameTebFlags);
+        *tf = static_cast<USHORT>(*tf & ~kSkipThreadAttach);
+    }
+    if (wait_for_peb) {
+        // The host's own thread initialisation has run by now (it looks at
+        // Peb->ImageBaseAddress); let Launch take the PEB over.
+        SetEvent(G().thread_ready);
+        WaitForSingleObject(G().peb_ready, INFINITE);
+    }
     EnterGuest(start, arg);
+    return 0;   // not reached
 }
 
 std::wstring Quote(const std::wstring& s) {
@@ -378,6 +403,25 @@ NTSTATUS BuildProcessParameters(const LaunchOptions& o, const std::wstring& imag
                                                      &u_desktop, &u_shell, &u_runtime, 1 /*NORMALIZED*/);
     if (s) { ERR(process, "RtlCreateProcessParametersEx failed: %08lx", static_cast<unsigned long>(s)); return s; }
 
+    // Wine's init_user_process_params() replaces the block and releases the
+    // old one with NtFreeVirtualMemory(MEM_RELEASE), as the kernel-created
+    // block of a real process is its own allocation. The host function may
+    // use the process heap, so move the (normalized, contiguous) block into a
+    // region of its own and rebase the pointers that point into it.
+    {
+        const ULONG size = At<ULONG>(params, 0);   // MaximumLength
+        void* own = VirtualAlloc(nullptr, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        if (!own) return st::NoMemory;
+        std::memcpy(own, params, size);
+        const auto lo = reinterpret_cast<std::uintptr_t>(params), hi = lo + size;
+        const std::uint32_t header = std::min<std::uint32_t>(size, 0x440) & ~7u;
+        for (std::uint32_t off = 0; off < header; off += 8) {
+            auto& q = At<std::uintptr_t>(own, off);
+            if (q >= lo && q < hi) q = q - lo + reinterpret_cast<std::uintptr_t>(own);
+        }
+        params = own;   // the heap copy is leaked on purpose: its environment may live next to it
+    }
+
     void* old = PebField<void*>(peb::ProcessParameters);
     // Wine computes the default DLL search path only when DllPath.Buffer is NULL.
     auto& dll = At<UNICODE_STRING>(params, pp::DllPath);
@@ -436,18 +480,63 @@ int Launch(const LaunchOptions& opts) {
     NTSTATUS s = dispatch::Initialize();
     if (s) return static_cast<int>(s);
 #if WIN10XBOX_HAVE_VFS
+    // machine.json is parsed by the VFS; a malformed file refuses to start.
     if ((s = vfs::Initialize(root))) { ERR(process, "vfs::Initialize(%ls) failed: %08lx", root.c_str(), static_cast<unsigned long>(s)); return static_cast<int>(s); }
+    const vfs::MachineInfo mi = vfs::GetMachineInfo();
+    cfg.os_major = mi.windows.major;
+    cfg.os_minor = mi.windows.minor;
+    cfg.os_build = mi.windows.build;
+    cfg.os_ubr = mi.windows.ubr;
 #endif
 #if WIN10XBOX_HAVE_REGISTRY
     if ((s = registry::Initialize(root))) WARN(process, "registry::Initialize failed: %08lx", static_cast<unsigned long>(s));
 #endif
 #if WIN10XBOX_HAVE_CLOCK
-    if ((s = clock::Initialize(clock::Settings{}))) WARN(process, "clock::Initialize failed: %08lx", static_cast<unsigned long>(s));
+    {
+        clock::Settings cs;
+#if WIN10XBOX_HAVE_VFS
+        cs.scale = mi.clock.scale;
+        cs.offset_100ns = mi.clock.offset_ms * 10000;
+        cs.frozen = mi.clock.frozen;
+#endif
+        if ((s = clock::Initialize(cs))) WARN(process, "clock::Initialize failed: %08lx", static_cast<unsigned long>(s));
+    }
 #endif
 #if WIN10XBOX_HAVE_TOKEN
-    if ((s = token::Initialize(token::Identity{}))) WARN(process, "token::Initialize failed: %08lx", static_cast<unsigned long>(s));
+    {
+        token::Identity id;
+#if WIN10XBOX_HAVE_VFS
+        id.user_name = mi.identity.user_name;
+        id.domain = mi.identity.domain;
+        id.user_sid = mi.identity.user_sid;
+        id.computer_name = mi.identity.computer_name;
 #endif
+        if ((s = token::Initialize(id))) WARN(process, "token::Initialize failed: %08lx", static_cast<unsigned long>(s));
+    }
+#endif
+    g.wine_host = HostExport("wine_get_version") != nullptr;
+    if (g.wine_host) TRACE(process, "host ntdll is Wine's: development run");
+#if WIN10XBOX_HAVE_VFS
+    {
+        CpuPolicy cp;
+        cp.hide_hypervisor = mi.cpu.hide_hypervisor;
+        cp.vendor.assign(mi.cpu.vendor.begin(), mi.cpu.vendor.end());
+        if (!cp.vendor.empty() && cp.vendor.size() != 12) {
+            WARN(process, "machine.json cpu.vendor \"%s\" is not 12 characters, using the real vendor", cp.vendor.c_str());
+            cp.vendor.clear();
+        }
+        SetCpuPolicy(cp);
+        for (const auto& [name, value] : mi.syscall_overrides) {
+            std::string n(name.begin(), name.end()), v(value.begin(), value.end());
+            Policy p;
+            if (!ParsePolicy(v.c_str(), &p)) { WARN(process, "syscall_overrides.%s: bad policy \"%s\"", n.c_str(), v.c_str()); continue; }
+            if (NTSTATUS ps = SetPolicy(n.c_str(), p))
+                WARN(process, "syscall_overrides.%s=%s not applied: %08lx", n.c_str(), v.c_str(), static_cast<unsigned long>(ps));
+        }
+    }
+#else
     LoadCpuPolicy(root);
+#endif
     RegisterNtdllUnixLib();
 
     if ((s = MapGuestNtdll(root))) return static_cast<int>(s);
@@ -459,16 +548,6 @@ int Launch(const LaunchOptions& opts) {
     if ((s = MapMainImage(image, &exe_base, &exe))) { g.image_path.clear(); return static_cast<int>(s); }
     SetMainImage(exe);
 
-    // ---- PEB take-over (E2). Restored by GuestExit / WaitForGuest.
-    SavePebFields();
-    if ((s = BuildProcessParameters(opts, image))) { RestorePebFields(); return static_cast<int>(s); }
-    PebField<void*>(peb::ImageBaseAddress) = exe_base;
-    PebField<ULONG>(peb::OSMajorVersion) = cfg.os_major;
-    PebField<ULONG>(peb::OSMinorVersion) = cfg.os_minor;
-    PebField<USHORT>(peb::OSBuildNumber) = static_cast<USHORT>(cfg.os_build);
-    PebField<USHORT>(peb::OSCSDVersion) = 0;
-    PebField<ULONG>(peb::OSPlatformId) = VER_PLATFORM_WIN32_NT;
-
     std::uint32_t entry_rva;
     {
         auto* b = static_cast<std::uint8_t*>(exe_base);
@@ -477,21 +556,42 @@ int Launch(const LaunchOptions& opts) {
     }
     void* entry = static_cast<std::uint8_t*>(exe_base) + entry_rva;
     g.exit_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    TRACE(process, "launching %ls: base %p entry %p", image.c_str(), exe_base, entry);
-
+    g.thread_ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    g.peb_ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     auto* gs = new GuestStart{entry, CurrentPeb(), kThreadMain};
+    if (opts.run_on_new_thread) {
+        // Created before the PEB take-over: the host's per-thread init must see the host PEB.
+        gs->wait_for_peb = true;
+        DWORD tid = 0;
+        g.main_thread = CreateThread(nullptr, g.stack_reserve, &GuestThreadProc, gs, STACK_SIZE_PARAM_IS_A_RESERVATION, &tid);
+        if (!g.main_thread) {
+            delete gs;
+            ERR(process, "CreateThread failed: %lu", GetLastError());
+            return static_cast<int>(st::NoMemory);
+        }
+        WaitForSingleObject(g.thread_ready, INFINITE);
+    }
+
+    // ---- PEB take-over (E2). Restored by GuestExit / WaitForGuest.
+    SavePebFields();
+    if ((s = BuildProcessParameters(opts, image))) {
+        RestorePebFields();
+        if (g.main_thread) { TerminateThread(g.main_thread, static_cast<DWORD>(s)); }
+        return static_cast<int>(s);
+    }
+    PebField<void*>(peb::ImageBaseAddress) = exe_base;
+    PebField<ULONG>(peb::OSMajorVersion) = cfg.os_major;
+    PebField<ULONG>(peb::OSMinorVersion) = cfg.os_minor;
+    PebField<USHORT>(peb::OSBuildNumber) = static_cast<USHORT>(cfg.os_build);
+    PebField<USHORT>(peb::OSCSDVersion) = 0;
+    PebField<ULONG>(peb::OSPlatformId) = VER_PLATFORM_WIN32_NT;
+
+    TRACE(process, "launching %ls: base %p entry %p", image.c_str(), exe_base, entry);
     if (!opts.run_on_new_thread) {
         gs->flags |= kThreadCallerOwned;
         GuestThreadProc(gs);   // never returns
     }
-    DWORD tid = 0;
-    g.main_thread = CreateThread(nullptr, g.stack_reserve, &GuestThreadProc, gs, STACK_SIZE_PARAM_IS_A_RESERVATION, &tid);
-    if (!g.main_thread) {
-        delete gs;
-        RestorePebFields();
-        ERR(process, "CreateThread failed: %lu", GetLastError());
-        return static_cast<int>(st::NoMemory);
-    }
+    SetEvent(g.peb_ready);
     if (!opts.wait) return 0;
     return WaitForGuest(INFINITE);
 }
@@ -557,6 +657,13 @@ namespace win10xbox::dispatch::detail {
 NTSTATUS CreateGuestThread(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr, PVOID start, PVOID arg,
                            ULONG flags, SIZE_T zero_bits, SIZE_T stack_size, SIZE_T max_stack, PVOID attr_list) {
     auto* gs = new process::GuestStart{start, arg, 0};
+    // A Wine host ntdll runs its thread attach against Peb->ImageBaseAddress
+    // (now the guest EXE, unknown to it): skip the host's attach there and
+    // restore the flag for the guest's loader in GuestThreadProc.
+    if (process::G().wine_host && !(flags & 0x2 /*THREAD_CREATE_FLAGS_SKIP_THREAD_ATTACH*/)) {
+        flags |= 0x2;
+        gs->clear_skip_attach = true;
+    }
     // Host RtlUserThreadStart -> BaseThreadInitThunk -> GuestThreadProc(gs):
     // host per-thread init runs first, then Wine's LdrInitializeThunk.
     NTSTATUS s = Host().NtCreateThreadEx(handle, access, attr, reinterpret_cast<HANDLE>(-1),

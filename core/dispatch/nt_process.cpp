@@ -32,7 +32,9 @@ constexpr ULONG kProcessImageFileNameWin32 = 43;
 // THREADINFOCLASS
 constexpr ULONG kThreadAmILastThread = 12;
 // SYSTEM_INFORMATION_CLASS
+#if WIN10XBOX_HAVE_CLOCK
 constexpr ULONG kSystemTimeOfDayInformation = 3;
+#endif
 constexpr ULONG kSystemWineVersionInformation = 1000;
 
 NTSTATUS WriteUnicodeStringInfo(const std::wstring& s, PVOID buffer, ULONG length, PULONG ret_len) {

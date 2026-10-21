@@ -98,6 +98,8 @@ public:
     HostModeScope& operator=(const HostModeScope&) = delete;
 private:
     void* state_;
+    unsigned long last_error_;   // TEB LastErrorValue / LastStatusValue are shared with the
+    long last_status_;           // guest and restored on exit (syscalls never change them)
 };
 
 // ---- CPU identity seen through patched cpuid sites (D10) ---------------------

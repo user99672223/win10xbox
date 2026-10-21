@@ -333,3 +333,19 @@ TEST(dispatch_wine_debug_channels) {
     const char* b = detail::w10x_wine_dbg_strdup("defg");
     CHECK(std::string(a) == "abc" && std::string(b) == "defg");
 }
+
+TEST(dispatch_preserves_last_error) {
+    // A syscall never touches TEB.LastErrorValue; the translators' host Win32
+    // calls (here GetProcessId on a bogus handle) must not leak into it.
+    Initialize();
+    void* t = MakeThunk(IdOf("NtQueryInformationProcess"));
+    if (!t) { CHECK(false); return; }
+    using Fn = NTSTATUS(NTAPI*)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+    ULONG_PTR buf[8] = {};
+    SetLastError(1234);
+    NTSTATUS s = reinterpret_cast<Fn>(t)(reinterpret_cast<HANDLE>(0x123456), 0, buf, sizeof buf, nullptr);
+    DWORD after = GetLastError();
+    CHECK(s != 0);
+    CHECK_EQ(after, 1234ul);
+    FreeThunk(t);
+}

@@ -35,7 +35,9 @@ const PolicyDef kPolicies[] = {
 struct TableDef { std::uint32_t id; const char* name; std::uint32_t nargs; };
 const TableDef kTable[] = {
 #define SYSCALL(id, name, nargs) {id, #name, nargs},
+#define WIN32U_SYSCALL(id, name, nargs) {id, #name, nargs},   // ids 0x1000+, same entry stub
 #include "syscall_table.gen.inc"
+#undef WIN32U_SYSCALL
 #undef SYSCALL
 };
 
@@ -200,11 +202,16 @@ void ReenterHostView(std::uint32_t depth) {
 
 using namespace detail;
 
-HostModeScope::HostModeScope() : state_(CurrentThreadState()) {
+HostModeScope::HostModeScope()
+    : state_(CurrentThreadState()),
+      last_error_(__readgsdword(teb::LastErrorValue)),
+      last_status_(static_cast<long>(__readgsdword(teb::LastStatusValue))) {
     auto* st = static_cast<ThreadState*>(state_);
     if (st && ++st->depth == 1) SwapIn(st);
 }
 HostModeScope::~HostModeScope() {
+    __writegsdword(teb::LastErrorValue, last_error_);
+    __writegsdword(teb::LastStatusValue, static_cast<unsigned long>(last_status_));
     auto* st = static_cast<ThreadState*>(state_);
     if (st && --st->depth == 0) SwapOut(st);
 }
@@ -243,6 +250,8 @@ NTSTATUS Initialize() {
     s.entries.clear();
     s.entries.reserve(std::size(kTable));
     std::size_t counts[4] = {};
+    std::size_t missing = 0;
+    std::string missing_names;
     for (const TableDef& t : kTable) {
         Entry e{};
         e.id = t.id;
@@ -265,11 +274,16 @@ NTSTATUS Initialize() {
                 e.policy = Policy::Todo;
             }
         }
-        if (e.policy == Policy::PassThrough && !e.host_fn)
-            WARN(dispatch, "%s: host ntdll has no export, calls will fail", t.name);
+        if (e.policy == Policy::PassThrough && !e.host_fn) {
+            TRACE(dispatch, "%s: host ntdll has no export, calls return STATUS_NOT_IMPLEMENTED", t.name);
+            if (missing++ < 3) (missing_names += missing_names.empty() ? "" : ", ") += t.name;
+        }
         ++counts[static_cast<int>(e.policy)];
         s.entries.push_back(e);
     }
+    if (missing)
+        WARN(dispatch, "%zu pass-through syscalls have no host ntdll export (%s%s); +dispatch lists them", missing,
+             missing_names.c_str(), missing > 3 ? ", ..." : "");
     s.noreturn.assign(s.entries.size(), 0);
     std::fill(std::begin(s.by_id), std::end(s.by_id), nullptr);
     for (std::size_t i = 0; i < s.entries.size(); ++i) {
@@ -388,10 +402,17 @@ extern "C" std::uint32_t win10xbox_syscall_nargs(std::uint32_t id) {
 }
 
 extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
+    // A syscall never changes the thread's last error / last status, but the
+    // host Win32 calls made below (and tracing) do: both live in the TEB the
+    // guest shares, so put them back.
+    const unsigned long last_error = __readgsdword(teb::LastErrorValue);
+    const unsigned long last_status = __readgsdword(teb::LastStatusValue);
     State& s = S();
     Entry* e = f->id < kMaxId ? s.by_id[f->id] : nullptr;
     if (!e) {
         FIXME(dispatch, "unknown syscall id %#x (ret=%p)", f->id, reinterpret_cast<void*>(f->return_address));
+        __writegsdword(teb::LastErrorValue, last_error);
+        __writegsdword(teb::LastStatusValue, last_status);
         return st::NotImplemented;
     }
     InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(&e->calls));
@@ -433,6 +454,8 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
         std::string line = FormatRelay(*e, f->args, status, us);
         trace::Log(&__win10xbox_dbch_relay, trace::Class::Trace, "", "%s", line.c_str());
     }
+    __writegsdword(teb::LastErrorValue, last_error);
+    __writegsdword(teb::LastStatusValue, last_status);
     return status;
 }
 

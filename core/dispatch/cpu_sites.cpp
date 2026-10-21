@@ -33,7 +33,7 @@ void Cpuid(loader::ScanRegs* r) {
             v[1] = v[2] = v[3] = 0;                       // Intel: ext leaf 0 has no vendor
         }
     }
-    if (leaf == 1 && p.hide_hypervisor) v[2] &= ~(1 << 31);
+    if (leaf == 1 && p.hide_hypervisor) v[2] &= 0x7fffffff;   // hypervisor present
     r->rax = static_cast<std::uint32_t>(v[0]);
     r->rbx = static_cast<std::uint32_t>(v[1]);
     r->rcx = static_cast<std::uint32_t>(v[2]);

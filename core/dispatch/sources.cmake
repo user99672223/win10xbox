@@ -4,8 +4,20 @@
 # Subsystems are wired by name (their Nt-signature functions). Each one is
 # optional so the dispatcher builds while the modules are written in
 # parallel; the default follows the presence of core/<module>/sources.cmake
-# and can be forced with -DWIN10XBOX_HAVE_<SUB>=OFF.
-foreach(_sub LOADER VFS REGISTRY CLOCK TOKEN)
+# and can be forced with -DWIN10XBOX_HAVE_<SUB>=OFF (VFS, REGISTRY, CLOCK, TOKEN).
+# The loader is not optional once it exists (its sources are always compiled
+# into win10xbox_core); loader_stubs.cpp stands in only while it is absent.
+if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/../loader/sources.cmake)
+  target_compile_definitions(win10xbox_core PRIVATE WIN10XBOX_HAVE_LOADER=1)
+else()
+  target_compile_definitions(win10xbox_core PRIVATE WIN10XBOX_HAVE_LOADER=0)
+  target_sources(win10xbox_core PRIVATE ${CMAKE_CURRENT_LIST_DIR}/loader_stubs.cpp)
+  message(STATUS "core/dispatch: core/loader absent, using loader_stubs.cpp (process::Launch will fail)")
+endif()
+
+# A subsystem switched OFF keeps its own sources in the library but is not
+# wired: its syscalls fall back to pass-through (see subsystems.cpp).
+foreach(_sub VFS REGISTRY CLOCK TOKEN)
   string(TOLOWER ${_sub} _dir)
   if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/../${_dir}/sources.cmake)
     set(_default ON)
@@ -32,11 +44,6 @@ target_sources(win10xbox_core PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/cpu_sites.cpp
   ${CMAKE_CURRENT_LIST_DIR}/process.cpp
 )
-if(NOT WIN10XBOX_HAVE_LOADER)
-  # Stand-ins returning STATUS_NOT_IMPLEMENTED so everything links; Launch
-  # fails cleanly. Removed from the build as soon as core/loader exists.
-  target_sources(win10xbox_core PRIVATE ${CMAKE_CURRENT_LIST_DIR}/loader_stubs.cpp)
-endif()
 
 if(MSVC)
   target_sources(win10xbox_core PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../asm/syscall_entry.asm)

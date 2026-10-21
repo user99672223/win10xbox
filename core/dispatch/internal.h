@@ -56,6 +56,8 @@ constexpr std::uint32_t StackLimit                = 0x10;
 constexpr std::uint32_t ThreadLocalStoragePointer = 0x58;
 constexpr std::uint32_t Peb                       = 0x60;
 constexpr std::uint32_t DeallocationStack         = 0x1478;
+constexpr std::uint32_t LastErrorValue            = 0x68;
+constexpr std::uint32_t LastStatusValue           = 0x1250;
 constexpr std::uint32_t TlsSlots                  = 0x1480;
 constexpr std::uint32_t FlsData                   = 0x17C8;
 }

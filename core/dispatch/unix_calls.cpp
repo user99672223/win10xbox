@@ -17,6 +17,7 @@
 #endif
 #include <cstdio>
 #include <cstring>
+#include <cwctype>
 #include <map>
 
 namespace win10xbox::dispatch {
@@ -34,7 +35,7 @@ std::wstring NormalizeLibName(std::wstring_view n) {
     std::size_t dot = n.find(L'.');
     if (dot != std::wstring_view::npos) n = n.substr(0, dot);
     std::wstring out(n);
-    for (auto& c : out) c = static_cast<wchar_t>(towlower(c));
+    for (auto& c : out) c = static_cast<wchar_t>(std::towlower(c));
     return out;
 }
 
