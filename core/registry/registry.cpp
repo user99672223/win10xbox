@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <condition_variable>
 #include <cstring>
+#include <cwchar>
 #include <list>
 #include <map>
 #include <memory>

@@ -10,6 +10,7 @@
 // instructions.
 #pragma once
 #include <windows.h>
+#include <winternl.h>
 #include <cstddef>
 #include <cstdint>
 #include <string>

@@ -220,12 +220,14 @@ inline bool IsCurrentThreadHandle(HANDLE h) {
 
 // ---- Path helpers (nt_file.cpp) ----------------------------------------------
 struct TranslatedOA {
-    OBJECT_ATTRIBUTES attr{};
-    UNICODE_STRING name{};
-    std::wstring storage;
-    bool translated = false;
-    const OBJECT_ATTRIBUTES* Get(const OBJECT_ATTRIBUTES* original) const { return translated ? &attr : original; }
+    const OBJECT_ATTRIBUTES* attr = nullptr;   // set when translated
+    std::shared_ptr<void> keep;                // owns attr and its name buffer
+    POBJECT_ATTRIBUTES Get(const OBJECT_ATTRIBUTES* original) const {
+        return const_cast<POBJECT_ATTRIBUTES>(attr ? attr : original);
+    }
 };
+// Name of an OBJECT_ATTRIBUTES as a string view (empty when absent).
+std::wstring_view OAName(const OBJECT_ATTRIBUTES* oa);
 // Guest OBJECT_ATTRIBUTES -> host. STATUS_SUCCESS (translated or untouched) or
 // an error the syscall should return (e.g. unmapped drive).
 NTSTATUS TranslateOA(const OBJECT_ATTRIBUTES* in, TranslatedOA* out);
@@ -269,6 +271,18 @@ bool FindView(const void* address, ImageView* copy_out);          // any address
 bool FindViewByBase(const void* base, ImageView* copy_out);
 const std::uint8_t* MainImageInfo();                               // SECTION_IMAGE_INFORMATION of the guest EXE, or null
 void SetMainImage(const std::shared_ptr<ImageSection>& sec);
+void CloseImageSection(const EmulatedObject& o);
+HANDLE DuplicateImageSection(const EmulatedObject& o);
+// Export-directory name of a mapped image ("ntdll.dll"), empty if none.
+std::string ModuleExportName(const void* image_base);
+
+// ---- Guest threads / exit (process.cpp) -----------------------------------------
+NTSTATUS CreateGuestThread(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr, PVOID start, PVOID arg,
+                           ULONG flags, SIZE_T zero_bits, SIZE_T stack_size, SIZE_T max_stack, PVOID attr_list);
+// Current guest thread is exiting with `code` (NtTerminateThread on itself).
+[[noreturn]] void GuestThreadExit(NTSTATUS code);
+void ForgetGuestThread(DWORD tid);                       // another guest thread is being terminated
+void TerminateOtherGuestThreads(NTSTATUS code);          // NtTerminateProcess(NULL, code)
 
 // ---- Emulated syscalls implemented here (exact NT signatures) -------------------
 NTSTATUS NTAPI Xl_NtCreateFile(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, PLARGE_INTEGER, ULONG, ULONG,

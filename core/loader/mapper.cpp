@@ -95,8 +95,8 @@ NTSTATUS ParseImage(const void* file, std::size_t size, ParsedImage* p) {
     if (opt_size < kOptHdrMin || opt_off + opt_size > size) return kStatusInvalidImageFormat;
     std::memcpy(&p->oh, f + opt_off, std::min<std::size_t>(opt_size, sizeof(IMAGE_OPTIONAL_HEADER64)));
     std::uint32_t avail_dirs = static_cast<std::uint32_t>((opt_size - kOptHdrMin) / sizeof(IMAGE_DATA_DIRECTORY));
-    p->oh.NumberOfRvaAndSizes = std::min({p->oh.NumberOfRvaAndSizes, avail_dirs,
-                                          static_cast<std::uint32_t>(IMAGE_NUMBEROF_DIRECTORY_ENTRIES)});
+    p->oh.NumberOfRvaAndSizes = std::min<std::uint32_t>(
+        std::min<std::uint32_t>(p->oh.NumberOfRvaAndSizes, avail_dirs), IMAGE_NUMBEROF_DIRECTORY_ENTRIES);
 
     unsigned nsec = p->fh.NumberOfSections;
     if (nsec > kMaxSections) return kStatusInvalidImageFormat;

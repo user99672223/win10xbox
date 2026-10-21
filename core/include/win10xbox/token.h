@@ -29,11 +29,16 @@ struct Identity {
 NTSTATUS Initialize(const Identity& id);
 const Identity& Current();
 
+// A TokenId names one guest HANDLE to a token (several ids may share one token
+// object, as in NT). Handle values are 31-bit: 0x54000000 | id << 2. The NT
+// pseudo handles -4 (process token), -5 (thread token), -6 (effective token)
+// are recognised by IsTokenHandle() and accepted by every Tok_Nt* call, but have
+// no TokenId (FromHandle returns 0 for them).
 using TokenId = std::uint64_t;
 bool   IsTokenHandle(HANDLE h);
 HANDLE ToHandle(TokenId id);
-TokenId FromHandle(HANDLE h);
-TokenId PrimaryToken();                 // the process token
+TokenId FromHandle(HANDLE h);           // 0 if not a token handle
+TokenId PrimaryToken();                 // id of the module's own permanent, full-access handle on the process token (Close() on it is a no-op)
 
 // NT-signature entry points.
 NTSTATUS Tok_NtOpenProcessToken(HANDLE ProcessHandle, ACCESS_MASK DesiredAccess, PHANDLE TokenHandle);
@@ -55,6 +60,18 @@ NTSTATUS Tok_NtAccessCheck(PSECURITY_DESCRIPTOR, HANDLE, ACCESS_MASK, PGENERIC_M
 NTSTATUS Tok_NtCompareTokens(HANDLE, HANDLE, PBOOLEAN);
 NTSTATUS Tok_NtQuerySecurityObject(HANDLE, SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, ULONG, PULONG);  // for token handles only
 NTSTATUS Close(HANDLE TokenHandle);
+
+// Extensions -------------------------------------------------------------
+// NtSetInformationThread(ThreadImpersonationToken) lands here: make `TokenHandle`
+// the impersonation token of `ThreadHandle` (nullptr/0 reverts). A primary token
+// is converted to an impersonation copy like NT does. Tok_NtOpenThreadToken and
+// pseudo handle -5/-6 observe it.
+NTSTATUS SetThreadImpersonationToken(HANDLE ThreadHandle, HANDLE TokenHandle);
+
+// SID string <-> binary SID (documented layout: revision 1, count, 6-byte
+// big-endian authority, little-endian DWORD sub-authorities).
+bool SidFromString(const std::wstring& s, std::vector<std::uint8_t>* out);
+std::wstring SidToString(const void* sid);
 
 // Helpers used by registry (HKCU path), VFS (user profile) and the PEB spoof.
 std::wstring UserSidString();

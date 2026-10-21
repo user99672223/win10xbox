@@ -641,28 +641,22 @@ NTSTATUS ScanCore(const Job& job, const ScanOptions& opts, ScanResult* result) {
             }
         }
         if (inline_ok) {
-            for (int attempt = 0; attempt < 2 && inline_ok; ++attempt) {
-                u8* at = near_arena.Reserve(1024 + disp.size() * 16);
-                if (!at) { inline_ok = false; break; }
-                Emit e;
-                if (!BuildInlineThunk(reinterpret_cast<u64>(at), s, disp, total, opts, e)) { inline_ok = false; break; }
-                if (detail::RoundUp(reinterpret_cast<u64>(at) - (reinterpret_cast<u64>(at) % 16), 16) != reinterpret_cast<u64>(at)) {
-                    inline_ok = false;
-                    break;
-                }
-                // Reserve() guaranteed room for the estimate; verify the real size.
-                u8* check = near_arena.Reserve(e.pos());
-                if (check != at) continue;      // rolled to a new chunk: rebuild at the new address
-                std::int64_t d = static_cast<std::int64_t>(reinterpret_cast<u64>(at)) - static_cast<std::int64_t>(sa + 5);
-                if (!FitsI32(d)) { inline_ok = false; break; }
+            // Reserve() hands out room for the worst case so the address the
+            // thunk is assembled for is final.
+            const std::size_t room = 2048 + disp.size() * 32;
+            u8* at = near_arena.Reserve(room);
+            Emit e;
+            std::int64_t dist = at ? static_cast<std::int64_t>(reinterpret_cast<u64>(at)) -
+                                         static_cast<std::int64_t>(sa + kMinJmp)
+                                   : 0;
+            if (at && FitsI32(dist) && BuildInlineThunk(reinterpret_cast<u64>(at), s, disp, total, opts, e) &&
+                e.pos() <= room) {
                 std::memcpy(at, e.b.data(), e.b.size());
                 near_arena.Commit(at, e.b.size());
                 pl.mode = Plan::Inline;
                 pl.region_len = total;
                 pl.stub = reinterpret_cast<u64>(at);
-                break;
             }
-            if (pl.mode != Plan::Inline) inline_ok = false;
         }
         if (pl.mode == Plan::Inline) continue;
 
@@ -726,7 +720,7 @@ NTSTATUS ScanCore(const Job& job, const ScanOptions& opts, ScanResult* result) {
                 if (result) ++result->skipped;
                 continue;
             }
-            u8 code[16];
+            u8 code[32];
             std::memset(code, 0xCC, sizeof(code));
             code[0] = 0xE9;
             std::int32_t rel = static_cast<std::int32_t>(static_cast<std::int64_t>(pl.stub) - static_cast<std::int64_t>(sa + 5));

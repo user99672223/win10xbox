@@ -136,8 +136,7 @@ public:
     void WBytes(std::size_t o, const void* p, std::size_t n) { if (n) std::memcpy(&data[o], p, n); }
     void WId(std::size_t o, const char* id) { data[o + 4] = static_cast<std::uint8_t>(id[0]); data[o + 5] = static_cast<std::uint8_t>(id[1]); }
 
-    std::uint32_t sk = 0;
-    std::uint32_t key_count = 0;
+    std::vector<std::uint32_t> nks;   // every nk written, to patch the sk offset afterwards
 
 private:
     void OpenHbin(std::size_t need) {
@@ -214,7 +213,7 @@ std::uint32_t WriteKey(Builder& b, const Key& k, std::uint32_t parent, bool is_r
     bool narrow = true;
     auto name = NarrowOrWide(k.name, &narrow);
     std::uint32_t nk = b.Alloc(0x50 + name.size());
-    b.key_count++;
+    b.nks.push_back(nk);
     b.WId(nk, "nk");
     std::uint16_t flags = 0;
     if (narrow) flags |= 0x20;
@@ -225,7 +224,6 @@ std::uint32_t WriteKey(Builder& b, const Key& k, std::uint32_t parent, bool is_r
     b.W32(nk + 0x14, parent);
     b.W32(nk + 0x1C, 0);
     b.W32(nk + 0x24, kNone);
-    b.W32(nk + 0x30, b.sk);
     b.W32(nk + 0x34, kNone);
     b.W16(nk + 0x4C, static_cast<std::uint16_t>(name.size()));
     b.WBytes(nk + 0x50, name.data(), name.size());
@@ -332,15 +330,17 @@ bool WriteHive(const Key& root, std::wstring_view hive_name, std::vector<std::ui
     if (!out) return false;
     Builder b;
     auto sd = DefaultSecurityDescriptor();
-    b.sk = b.Alloc(0x18 + sd.size());
-    b.WId(b.sk, "sk");
-    b.W32(b.sk + 8, b.sk);    // prev
-    b.W32(b.sk + 0xC, b.sk);  // next
-    b.W32(b.sk + 0x14, static_cast<std::uint32_t>(sd.size()));
-    b.WBytes(b.sk + 0x18, sd.data(), sd.size());
-
+    // Like Windows, the root nk is the first cell (offset 0x20); the shared sk
+    // cell is written last and referenced from every nk.
     std::uint32_t root_off = WriteKey(b, root, kNone, true, 0);
-    b.W32(b.sk + 0x10, b.key_count);   // refcount
+    std::uint32_t sk = b.Alloc(0x18 + sd.size());
+    b.WId(sk, "sk");
+    b.W32(sk + 8, sk);     // prev
+    b.W32(sk + 0xC, sk);   // next
+    b.W32(sk + 0x10, static_cast<std::uint32_t>(b.nks.size()));   // refcount
+    b.W32(sk + 0x14, static_cast<std::uint32_t>(sd.size()));
+    b.WBytes(sk + 0x18, sd.data(), sd.size());
+    for (std::uint32_t nk : b.nks) b.W32(nk + 0x30, sk);
     b.Finish();
 
     std::vector<std::uint8_t> file(kBaseBlock, 0);
@@ -614,7 +614,7 @@ bool Hive::VkData(std::uint32_t vk, std::vector<std::uint8_t>* out) const {
                 std::uint32_t bsz;
                 const std::uint8_t* blk = Cell(Rd32(l + 4 + i * 4), &bsz);
                 if (!blk) { out->clear(); return false; }
-                std::size_t take = std::min<std::size_t>(len - out->size(), bsz - 4);
+                std::size_t take = std::min<std::size_t>({len - out->size(), static_cast<std::size_t>(bsz - 4), static_cast<std::size_t>(kMaxBlockData)});
                 out->insert(out->end(), blk + 4, blk + 4 + take);
             }
             if (out->size() != len) { out->clear(); return false; }
