@@ -107,8 +107,10 @@
     <Link>
       <!-- kernel32.lib is explicit because WindowsApp.lib (the UWP umbrella)
            omits a handful of exports probe-core calls directly, including
-           AddVectoredContinueHandler / RemoveVectoredContinueHandler. -->
-      <AdditionalDependencies>d3d11.lib;d2d1.lib;dwrite.lib;dxguid.lib;kernel32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+           AddVectoredContinueHandler / RemoveVectoredContinueHandler.
+           Headless build: no D3D/D2D/DWrite link deps - we dropped the
+           on-screen renderer because D3D11 init was blocking on Xbox Game. -->
+      <AdditionalDependencies>kernel32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <!-- Midl item defaults - the CppWinRT targets add /winrt /nomidl plus
          references to the SDK union metadata so Windows.* types resolve. -->
