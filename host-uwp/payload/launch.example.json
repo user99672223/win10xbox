@@ -1,0 +1,62 @@
+// launch.example.json - every key of LocalState\launch.json with its default value.
+//
+// THIS FILE IS REPLACED by a fresh copy from the package each time win10xbox starts: it is
+// documentation. To change anything, copy it to launch.json in this folder (or write a new
+// launch.json) and edit THAT file; the package never overwrites it. Without a launch.json in
+// this folder the host uses the packaged default (payload\launch.json, which runs the sample
+// guest hello.exe and expects exit code 42), and without that the defaults shown below.
+//
+// Format: JSON with // and /* */ comments and trailing commas. UNKNOWN KEYS ARE AN ERROR: a
+// typo must not silently run the default guest on a console that has no screen to tell you.
+// Keys starting with "$" or "_" are free-form notes and ignored. In JSON every backslash of a
+// path is written twice: "C:\\Program Files\\App\\app.exe".
+//
+// The results are plain files in this folder: status.txt (verdict and facts: read it first),
+// trace.log, stdout.txt (the guest's stdout and stderr) and, if the host died, crash.txt and
+// crash.dmp. entry-reached.txt exists once control reached the guest. The guest's C:\ is the
+// folder machine\ here.
+{
+  // The program to run: a bare file name, looked up in C:\guest (machine\guest here; the
+  // package puts hello.exe and hello_cui.exe there), or an absolute guest path.
+  "guest": "hello.exe",
+
+  // Command line arguments: an array of strings (each is quoted as needed) or one string that
+  // is appended verbatim.
+  "args": [],
+
+  // The guest's current directory, an absolute guest path. "" = the layer's default
+  // (C:\Users\<user>).
+  "cwd": "",
+
+  // Tracing, in the syntax of Wine's WINEDEBUG (WIN10XBOX_DEBUG): "+loader,+process", "+all", ...
+  // "" = quiet, only err and fixme lines. Channels: modules, loader, process, vfs, dispatch,
+  // registry, clock, token, cpu, nls, driver, winex, relay (every syscall: very large), all.
+  // "+modules" is also the channel of the "guest entry reached" line that writes
+  // entry-reached.txt: keep it in a spec of your own, or that marker file is not written.
+  "trace": "",
+
+  // The same syntax for Wine's own channels (WIN10XBOX_WINEDEBUG), e.g. "+loaddll,warn+module"
+  // to see which DLLs were loaded builtin or native and which imports Wine could not resolve.
+  "winedebug": "",
+
+  // Size cap of trace.log in MiB, 0 = unlimited. Lines past the cap are dropped.
+  "trace_log_max_mb": 64,
+
+  // Watchdog: end the run (and the app) after this many seconds, 0 = wait for the guest.
+  "timeout_sec": 0,
+
+  // Close the app when the guest has exited. false keeps it open until you close it.
+  "exit_when_done": true,
+
+  // With this key status.txt starts with PASS or FAIL against the guest's exit code; without
+  // it the verdict is only "EXITED (the guest exited with code N ...)".
+  // "expect_exit_code": 42,
+
+  // Genuine DLLs to copy BY NAME from the console's own C:\Windows\System32 into the machine
+  // folder (the console denies listing System32, but opens individual files). Bare file names.
+  "stage_native": [],
+
+  // Forward CoreWindow keyboard and pointer (and gamepad-as-keys) input to the winexbox
+  // display backend.
+  "input_pump": true,
+}

@@ -1,0 +1,96 @@
+# stage.cmake - assemble the AppX layout that package.cmd packs (cmake -P).
+# Run by the stage_appx target of host-uwp/CMakeLists.txt:
+#
+#   cmake -DSTAGE=<dir> -DEXE=<win10xbox-uwp.exe> -DGUEST_GUI=<hello.exe>
+#         -DGUEST_CUI=<hello_cui.exe> -DWINMD=<Win10XboxUwp.winmd or empty>
+#         -DMANIFEST=<AppxManifest.xml> -DASSETS_DIR=<dir with *.png>
+#         -DPAYLOAD_DIR=<host-uwp/payload> -DBUILTIN_DIR=<wine-pe/out/builtin>
+#         -DMACHINE_JSON=<machine.default.json>
+#         -P stage.cmake
+#
+# Layout (see the header of host-uwp/CMakeLists.txt):
+#   AppxManifest.xml  win10xbox-uwp.exe  Win10XboxUwp.winmd  Assets\*.png
+#   payload\machine.json  payload\launch.json  payload\launch.example.json
+#   payload\guest\*.exe  payload\builtin\*.dll (+ LICENSE.wine, MANIFEST.txt)
+# At run time host_stage.cpp (StageMachineFiles) copies payload\builtin and payload\guest into
+# LocalState\machine, StageMachineJson copies payload\machine.json (never over an existing one),
+# host.cpp reads payload\launch.json as the packaged default launch configuration and
+# host_shell.cpp (PublishExampleConfig) copies payload\launch.example.json to LocalState.
+foreach(_v STAGE EXE GUEST_GUI GUEST_CUI MANIFEST ASSETS_DIR)
+  if("${${_v}}" STREQUAL "")
+    message(FATAL_ERROR "stage.cmake: -D${_v}= is required")
+  endif()
+endforeach()
+
+function(stage_copy src dst)
+  if(NOT EXISTS "${src}")
+    message(FATAL_ERROR "stage.cmake: missing input file ${src}")
+  endif()
+  file(COPY_FILE "${src}" "${dst}")
+endfunction()
+
+file(REMOVE_RECURSE "${STAGE}")
+file(MAKE_DIRECTORY "${STAGE}/Assets" "${STAGE}/payload/guest" "${STAGE}/payload/builtin")
+
+stage_copy("${EXE}" "${STAGE}/win10xbox-uwp.exe")
+stage_copy("${MANIFEST}" "${STAGE}/AppxManifest.xml")
+
+if(NOT "${WINMD}" STREQUAL "")
+  stage_copy("${WINMD}" "${STAGE}/Win10XboxUwp.winmd")
+else()
+  message(WARNING "stage.cmake: no WinRT metadata (HOST_UWP_SKIP_WINMD): the Xbox launcher is expected to refuse this package")
+endif()
+
+file(GLOB _pngs "${ASSETS_DIR}/*.png")
+if(NOT _pngs)
+  message(FATAL_ERROR "stage.cmake: no *.png in ${ASSETS_DIR}")
+endif()
+foreach(_f IN LISTS _pngs)
+  get_filename_component(_n "${_f}" NAME)
+  file(COPY_FILE "${_f}" "${STAGE}/Assets/${_n}")
+endforeach()
+
+foreach(_g "${GUEST_GUI}" "${GUEST_CUI}")
+  get_filename_component(_n "${_g}" NAME)
+  stage_copy("${_g}" "${STAGE}/payload/guest/${_n}")
+endforeach()
+
+if(NOT "${MACHINE_JSON}" STREQUAL "" AND EXISTS "${MACHINE_JSON}")
+  file(COPY_FILE "${MACHINE_JSON}" "${STAGE}/payload/machine.json")
+endif()
+
+# Static payload files from the source tree: launch.json (the packaged default launch
+# configuration) and launch.example.json (every key documented, published to LocalState by
+# the shell). Optional: without launch.json the host falls back to its built-in defaults.
+if(NOT "${PAYLOAD_DIR}" STREQUAL "" AND IS_DIRECTORY "${PAYLOAD_DIR}")
+  file(GLOB _payload_json "${PAYLOAD_DIR}/*.json")
+  foreach(_f IN LISTS _payload_json)
+    get_filename_component(_n "${_f}" NAME)
+    file(COPY_FILE "${_f}" "${STAGE}/payload/${_n}")
+  endforeach()
+endif()
+
+# Wine PE builtins (LGPL-2.1+; the wine-pe-builtin CI artifact). Optional.
+set(_nb 0)
+if(NOT "${BUILTIN_DIR}" STREQUAL "" AND IS_DIRECTORY "${BUILTIN_DIR}")
+  file(GLOB _dlls "${BUILTIN_DIR}/*.dll")
+  foreach(_f IN LISTS _dlls)
+    get_filename_component(_n "${_f}" NAME)
+    file(COPY_FILE "${_f}" "${STAGE}/payload/builtin/${_n}")
+    math(EXPR _nb "${_nb} + 1")
+  endforeach()
+  foreach(_extra LICENSE.wine MANIFEST.txt)
+    if(EXISTS "${BUILTIN_DIR}/${_extra}")
+      file(COPY_FILE "${BUILTIN_DIR}/${_extra}" "${STAGE}/payload/builtin/${_extra}")
+    endif()
+  endforeach()
+endif()
+
+if(_nb EQUAL 0)
+  message(WARNING "stage.cmake: no Wine PE builtin DLLs in '${BUILTIN_DIR}'. The package is still produced; on the "
+                  "console, copy ntdll.dll, kernelbase.dll, kernel32.dll (and friends) into "
+                  "LocalState\\machine\\Windows\\builtin, or rebuild with the wine-pe-builtin artifact.")
+else()
+  message(STATUS "stage.cmake: bundled ${_nb} Wine PE builtin DLLs from ${BUILTIN_DIR}")
+endif()
+message(STATUS "stage.cmake: AppX layout ready in ${STAGE}")

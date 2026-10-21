@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Package.appxmanifest - manifest of host-uwp, the real win10xbox UWP host (M5).
+  Adapted from host-uwp-lite's manifest, itself adapted from the capability probe's
+  tools/probe/uwp-host manifest, which is the known-good shape on the Xbox Series S
+  Dev Mode console.
+
+  Same posture as the probe: a plain sandboxed AppContainer UWP (CoreApplication
+  view provider), NOT a full-trust app. EntryPoint names the runtimeclass declared
+  in App.idl; the Xbox launcher refuses an exe without matching WinRT metadata,
+  so Win10XboxUwp.winmd (made from App.idl by midl) ships next to the exe.
+
+  Identity, display name, executable name, product id and WinRT namespace all
+  differ from host-uwp-lite's, so the two packages install side by side (each keeps
+  its own LocalState).
+
+  TargetDeviceFamily: Windows.Universal (laptop install, Xbox App partition) and
+  Windows.Xbox (Xbox Game partition) are both declared so one msix installs into
+  either bucket, exactly as in the probe.
+
+  Capabilities:
+    * codeGeneration, which VirtualAlloc PAGE_EXECUTE_* needs under AppContainer
+      (the loader maps and patches guest code).
+    * internetClient, internetClientServer, privateNetworkClientServer: the guest's
+      own socket syscalls are passed through to the host kernel (host.cpp, D7), and
+      an AppContainer process may only use the network with these. The set is the
+      one the probe declared and measured on the console (K/tcp-listen-inbound,
+      K/loopback-connect). host-uwp-lite had none because its smoke never touches
+      the network.
+    * No broadFileSystemAccess: the probe shows individual C:\Windows\System32 files
+      can be opened BY NAME with the default AppContainer rights
+      (A/map-system-dll-as-data, F/read:system32-read-ntdll), and the staging code
+      (host_stage.cpp) only ever reads files by name.
+
+  The Version attribute is substituted by CMake (HOST_UWP_PACKAGE_VERSION) so each
+  CI run produces a higher version that installs over the previous one and keeps
+  its LocalState.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:mp="http://schemas.microsoft.com/appx/2014/phone/manifest"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap mp rescap">
+
+  <Identity Name="win10xbox.uwp"
+            Publisher="CN=Dev"
+            Version="@HOST_UWP_PACKAGE_VERSION@"
+            ProcessorArchitecture="x64" />
+
+  <mp:PhoneIdentity PhoneProductId="36fe8e3f-26a5-45d9-a808-2fe81c464790"
+                    PhonePublisherId="00000000-0000-0000-0000-000000000000" />
+
+  <Properties>
+    <DisplayName>win10xbox UWP host</DisplayName>
+    <PublisherDisplayName>Dev</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Universal"
+                        MinVersion="10.0.17763.0"
+                        MaxVersionTested="10.0.26100.0" />
+    <TargetDeviceFamily Name="Windows.Xbox"
+                        MinVersion="10.0.17763.0"
+                        MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="App" Executable="win10xbox-uwp.exe" EntryPoint="Win10XboxUwp.App">
+      <uap:VisualElements DisplayName="win10xbox UWP host"
+                          Description="Runs unmodified Windows 10 x64 programs on an Xbox in Dev Mode (the win10xbox compatibility layer)."
+                          BackgroundColor="transparent"
+                          Square150x150Logo="Assets\Square150x150Logo.png"
+                          Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+        <uap:SplashScreen Image="Assets\SplashScreen.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="codeGeneration" />
+    <Capability Name="internetClient" />
+    <Capability Name="internetClientServer" />
+    <Capability Name="privateNetworkClientServer" />
+  </Capabilities>
+</Package>

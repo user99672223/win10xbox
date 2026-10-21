@@ -1,0 +1,22 @@
+// launch.json - the packaged default launch configuration of win10xbox host-uwp.
+//
+// The host reads LocalState\launch.json first (the owner's file, never touched by the
+// package); only when there is none does it fall back to this file, and without this file to
+// its built-in defaults. LocalState\launch.example.json documents every key.
+//
+// This default runs the bundled sample guest and checks its exit code, so a first run on the
+// console ends in "RESULT: PASS" or "RESULT: FAIL" at the top of LocalState\status.txt.
+{
+  // hello.exe is looked up in C:\guest (LocalState\machine\guest, filled from the package).
+  "guest": "hello.exe",
+  "expect_exit_code": 42,
+
+  // Quiet (err + fixme) plus the module-load diagnostics. "modules" is also the channel of the
+  // "guest entry reached" line that writes LocalState\entry-reached.txt: keep +modules in any
+  // spec of your own, or that marker file is not written.
+  "trace": "+modules",
+
+  // Safety net for a first run: end the run (and the app) if the guest has not exited after
+  // 5 minutes. 0 would wait forever.
+  "timeout_sec": 300,
+}
