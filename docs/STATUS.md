@@ -38,9 +38,15 @@ guest `CreateFile`/`DeviceIoControl` (buffered, direct, neither, pending-from-DP
 Wine ntdll -> dispatcher -> `Drv_NtDeviceIoControlFile` -> IRP -> `IoCallDriver` -> driver -> `IoCompleteRequest` -> output
 copy-back, verified end to end under Wine (`integration.driver_ioctl`). KMDF drivers built with Microsoft's public
 headers run on a minimal WDF function-table shim (`integration.driver_kmdf_ioctl`). `drivers.unit` has 27 cases.
-Not done: PnP/power, physical memory/port I/O (privileged-instruction module), real KMDF framework; see
-`drivers/README.md` for the surface and the differences from a real kernel. Verified on Wine only so far; the
-MSVC/Windows build of `drivers/` and the test drivers is wired but not exercised here.
+Green on both CI jobs (commit `52d39be`): the whole `drivers/` tree + the freestanding test drivers build under
+**MSVC** (windows-latest, Debug and RelWithDebInfo) and **llvm-mingw**; `drivers.unit` + `drivers.layout` gate on
+both, and the IOCTL round-trip (`integration.driver_ioctl`, `integration.driver_kmdf_ioctl`, label `driver_e2e`)
+is a hard gate on the Wine job and runs non-blocking on the Windows job (it asserts on guest stdout, the same
+real-Windows capture gap as `guest_e2e`).
+Remaining M4 item: the privileged-instruction trap-and-emulate module (`cr8`/virtual-IRQL, the kernel-VA
+`KUSER_SHARED_DATA` read, MSR/port I/O) — a self-contained VEH armed via `drivers::SetImageLoadHook`; the probe
+already proved the `#GP`->VEH->resume path on the console. Also not done: PnP/power, real KMDF framework; see
+`drivers/README.md` for the surface and the differences from a real kernel.
 
 ## M0 - repo skeleton (tag `m0`)
 
