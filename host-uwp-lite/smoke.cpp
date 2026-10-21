@@ -908,9 +908,12 @@ bool RunSmokeImpl(const HostInfo& host, Report& rep)
     const bool hello = FileContains(stdout_path, "hello from guest");
     const bool pass = (init_rc == 0) && (launch_rc == 0) && !timed_out && (exit_code == kExpectedGuestExit);
 
-    rep.Set("launch", init_rc != 0 ? std::string("not attempted (Initialize failed)") : Fmt("%d (%s)", launch_rc, Hex32(launch_rc).c_str()));
-    rep.Set("guest_exit_code", launch_rc == 0 && init_rc == 0 ? Fmt("%d", exit_code) : std::string("n/a"));
+    // exit_code is what process::Launch(wait=true) would have returned (the guest's exit code).
+    // launch_status is Launch(wait=false)'s own result: 0 = the guest was started, else the bootstrap NTSTATUS.
+    rep.Set("exit_code", launch_rc == 0 && init_rc == 0 ? Fmt("%d", exit_code) : std::string("n/a"));
     rep.Set("expected_exit_code", Fmt("%d", kExpectedGuestExit));
+    rep.Set("launch_status", init_rc != 0 ? std::string("not attempted (Initialize failed)")
+                                          : Fmt("%d (%s)", launch_rc, Hex32(launch_rc).c_str()));
     rep.Set("stdout_bytes", Fmt("%llu", out_bytes));
     rep.Set("stdout_has_hello", hello ? "yes" : "no");
     rep.Set("phase", "finished");

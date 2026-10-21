@@ -112,11 +112,13 @@ target_link_libraries(host_uwp_lite PRIVATE
   win10xbox_core
   WindowsApp        # umbrella import lib for the AppContainer-permitted exports (RoInitialize, ...)
   runtimeobject)
-# AppContainer PE flag + WINDOWS subsystem + the wide entry (same link flags the
+# AppContainer PE flag + WINDOWS subsystem + the wide entry (the link flags the
 # probe's MSBuild project produced). /MANIFEST:NO like MSBuild UWP projects: no
-# embedded Win32 manifest in a UWP exe.
+# embedded Win32 manifest in a UWP exe. No /OPT:ICF on purpose: core keeps tables
+# of its own function addresses, and ci.yml's configurations (/DEBUG implies
+# /OPT:NOICF) never fold functions either.
 target_link_options(host_uwp_lite PRIVATE
-  /APPCONTAINER /SUBSYSTEM:WINDOWS /ENTRY:wWinMainCRTStartup /MANIFEST:NO /INCREMENTAL:NO /OPT:REF /OPT:ICF)
+  /APPCONTAINER /SUBSYSTEM:WINDOWS /ENTRY:wWinMainCRTStartup /MANIFEST:NO /INCREMENTAL:NO)
 
 # ---------------------------------------------------------------------------
 # The guest programs (plain Win32, NOT AppContainer; static CRT via the global setting)

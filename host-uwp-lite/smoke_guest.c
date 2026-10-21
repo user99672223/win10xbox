@@ -22,9 +22,11 @@
  *           (runs the genuine DllMain on the layer; SEH guarded)
  *
  * Built twice from this one file by CMake:
- *   smoke.exe      /SUBSYSTEM:WINDOWS (WinMain)  default: the AppContainer host has
- *                  no console, and a console-subsystem guest pulls Wine's kernelbase
- *                  onto its console path (the open real-Windows item in docs/STATUS.md)
+ *   smoke.exe      /SUBSYSTEM:WINDOWS (WinMain)  default, as a precaution: the
+ *                  AppContainer host has no console (ConsoleHandle is NULL) and the
+ *                  repo records trouble with Wine's kernelbase console path on real
+ *                  Windows (docs/STATUS.md, BuildProcessParameters in
+ *                  core/dispatch/process.cpp). A hypothesis, not a measurement.
  *   smoke_cui.exe  /SUBSYSTEM:CONSOLE (main)     same code, for A/B comparison
  *
  * Output goes straight to GetStdHandle(STD_OUTPUT_HANDLE) with WriteFile, not

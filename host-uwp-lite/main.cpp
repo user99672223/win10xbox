@@ -4,12 +4,13 @@
 // the known-good template on the console:
 //   * no renderer, no swap chain, no D3D (probe lesson: D3D11CreateDevice blocks
 //     the UI thread of a Game-bucket app);
-//   * all heavy work (staging ~100 MB, the whole M1/M2 smoke) runs on a WORKER
+//   * all heavy work (staging tens of MB, the whole M1/M2 smoke) runs on a WORKER
 //     thread, the CoreWindow thread only pumps events;
 //   * the app closes itself with CoreApplication::Exit() when the worker is done.
 // Two deliberate differences from the probe:
-//   * CoreWindow::Activate() is called, so the shell sees the app as activated
-//     (and dismisses the splash screen) well inside its activation timeout;
+//   * CoreWindow::Activate() is called (the probe never does): the standard way to
+//     tell the shell the view is up and to dismiss the splash screen, before any
+//     activation timeout could fire while the worker is busy staging;
 //   * the worker is started only after activation has settled, so no shell-side
 //     WinRT activation work overlaps the guest's PEB take-over (process::Launch
 //     swaps Peb->Ldr, ProcessParameters, the loader lock... while the guest runs;

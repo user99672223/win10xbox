@@ -52,7 +52,7 @@ nothing outside this directory except the separate workflow
 
 | File | Content |
 |------|---------|
-| `result.txt` | First line `RESULT: PASS` / `FAIL ...` / `INCOMPLETE ...`, then `key=value` facts: `initialize`, `launch`, `guest_exit_code`, staging summaries, which NLS/DLL names could not be read, `system32.readable_by_name`, `hint`. PASS iff `Initialize == 0` and the guest exited with 42. It is rewritten at every phase boundary: if the process dies, it still says which `phase` it reached (and a host crash handler adds the exception record). |
+| `result.txt` | First line `RESULT: PASS` / `FAIL ...` / `INCOMPLETE ...`, then `key=value` facts: `initialize`, `exit_code`, `launch_status`, staging summaries, which NLS/DLL names could not be read, `system32.readable_by_name`, `hint`. PASS iff `Initialize == 0` and the guest exited with 42. It is rewritten at every phase boundary: if the process dies, it still says which `phase` it reached (and a host crash handler adds the exception record). |
 | `stdout.txt` | Everything the guest wrote to stdout/stderr: `hello from guest`, the OS version as the guest sees it (PEB / `GetVersionExW` / `RtlGetVersion`, expect 10.0.19045), `GetSystemInfo`, CPUID vendor / family / hypervisor bit / leaf `0x40000000` / brand string, rdtsc and QPC progress, and for `ucrtbase.dll` / `msvcrt.dll` whether the VFS handed out the staged **genuine** copy or the **Wine builtin**, with its file version. |
 | `trace.log` | Harness lines (`harness:`, with timestamps) interleaved with the core's trace: `process`, `loader`, `vfs`, `relay` (every syscall with arguments and NTSTATUS), Wine's `loaddll`. Can be large. |
 | `machine\` | The staged machine folder; leave it, the next run reuses it (files whose size matches are skipped). |
@@ -98,13 +98,16 @@ in `tools/probe/README.md`. Then, in Device Portal (`https://<console-ip>:11443`
    `CN=Dev` certificate from the same CI run), then the `.msix`. Pick the **Game**
    bucket (the probe's numbers were measured there). Each CI run has a higher
    version (`1.0.0.<run number>`), so a new package installs over the old one and
-   keeps `LocalState`. (`tools/probe/deploy_xbox.ps1` does the same over REST.)
+   keeps `LocalState`. (`tools/probe/deploy_xbox.ps1` calls the same Device Portal
+   REST endpoints, but its package names are hard-wired to the probe; use the
+   Device Portal UI or adapt the names.)
 2. Launch **win10xbox UWP smoke** (AUMID `win10xbox.uwp.lite_eqad6j9zhtw80!App`;
    the publisher hash is the probe's, same `CN=Dev`).
 3. **Keep it in the foreground** until it closes itself; a UWP app that goes to
-   the background is suspended. A normal run is well under a minute; the guest
-   watchdog is 10 minutes (`UWP_LITE_TIMEOUT_SEC`), after which the harness writes
-   the verdict and terminates the process.
+   the background is suspended. How long a run takes is not known until it has been
+   run on a console (staging copies tens of MB and the full relay trace is slow);
+   the guest watchdog is 10 minutes (`UWP_LITE_TIMEOUT_SEC`), after which the
+   harness writes the verdict and terminates the process.
 4. Read `result.txt` first. In Device Portal: File explorer -> `LocalAppData` ->
    `win10xbox.uwp.lite_..._x64__eqad6j9zhtw80` -> `LocalState`, or over REST (the
    same endpoint the probe's deploy script uses):
@@ -128,12 +131,14 @@ Anything else the guest needs can be dropped into `LocalState\machine\...` by ha
 ## Known limits and design notes
 
 * **Not run on hardware.** The CI job proves it builds and packages, nothing more.
-* `smoke.exe` is a **GUI-subsystem** program on purpose: the AppContainer host has
-  no console (`ConsoleHandle` is NULL), and a console-subsystem guest sends Wine's
-  kernelbase down its console path, which `core/dispatch/process.cpp` and
-  `docs/STATUS.md` list as the open real-Windows item. `smoke_cui.exe` is the same
-  source for an A/B comparison. The guest writes with `WriteFile` straight to the
-  inherited handle, not through CRT stdio.
+* `smoke.exe` is a **GUI-subsystem** program as a precaution (a hypothesis, not a
+  measurement): the AppContainer host has no console (`ConsoleHandle` is NULL), and
+  the repo records trouble with Wine's kernelbase console path on real Windows
+  (`docs/STATUS.md`; the comment in `BuildProcessParameters` in
+  `core/dispatch/process.cpp` even notes a fault when `ConsoleHandle` is nulled).
+  `smoke_cui.exe` is the same source built as a console program, for an A/B
+  comparison. The guest writes with `WriteFile` straight to the inherited handle,
+  not through CRT stdio.
 * `process::Launch` runs the guest *in this process* and temporarily takes over
   PEB fields (loader lists, process parameters, loader lock). That is fine for a
   smoke but is why the real host-uwp is M5: shell-side WinRT work on other threads
