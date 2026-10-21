@@ -4,11 +4,20 @@
 #   -DEXPECT_EXIT=<n> -DEXPECT_REGEX=<regex;regex...> [-DEMULATOR=<wine>]
 #   [-DFORBID_REGEX=<regex>] [-DDEBUG_SPEC=<WIN10XBOX_DEBUG spec>]
 # Prints "SKIP: ..." and exits 77 (cmake >= 3.29) when the machine folder has
-# no Wine builtins; the test sets both SKIP_RETURN_CODE 77 and
+# no Wine builtins or no Windows NLS data (c_1252.nls, staged by
+# machine/import_windows_dlls.ps1); the test sets both SKIP_RETURN_CODE 77 and
 # SKIP_REGULAR_EXPRESSION "SKIP:".
 if(NOT EXISTS "${MACHINE}/Windows/builtin/ntdll.dll")
   message("SKIP: ${MACHINE}/Windows/builtin/ntdll.dll missing: build Wine's PE DLLs (wine-pe/build.sh) "
           "or download the wine-pe artifact into the machine folder")
+  if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.29)
+    cmake_language(EXIT 77)
+  endif()
+  return()
+endif()
+if(NOT EXISTS "${MACHINE}/Windows/System32/c_1252.nls")
+  message("SKIP: ${MACHINE}/Windows/System32/c_1252.nls missing: the guest's ntdll needs the Windows NLS data "
+          "(machine/import_windows_dlls.ps1 stages it from a Windows install; not available on Linux)")
   if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.29)
     cmake_language(EXIT 77)
   endif()

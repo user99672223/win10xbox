@@ -8,6 +8,8 @@
 #   <MACHINE>\machine.json                     copied from DEFAULT_JSON if missing
 #   <MACHINE>\Windows\builtin\*.dll|*.exe      Wine PE builtins (wine-pe/out/builtin)
 #   <MACHINE>\Windows\System32\                native DLLs (CI: import_windows_dlls.ps1)
+#   <MACHINE>\Windows\System32\*.nls            NLS data (c_*.nls, l_intl, locale, norm*): import_windows_dlls.ps1
+#   <MACHINE>\Windows\Globalization\Sorting\    sortdefault.nls (same script)
 #   <MACHINE>\Windows\System32\config\         registry hives (optional)
 #   <MACHINE>\Windows\Temp\
 #   <MACHINE>\Users\User\AppData\{Local\Temp,Roaming}\
@@ -18,7 +20,7 @@ if(NOT MACHINE)
   message(FATAL_ERROR "prepare_machine: MACHINE not set")
 endif()
 
-foreach(d Windows/builtin Windows/System32 Windows/System32/config Windows/Temp
+foreach(d Windows/builtin Windows/System32 Windows/System32/config Windows/Globalization/Sorting Windows/Temp
           Users/User/AppData/Local/Temp Users/User/AppData/Roaming Users/Public
           ProgramData "Program Files" "Program Files (x86)" guest)
   file(MAKE_DIRECTORY "${MACHINE}/${d}")
@@ -52,4 +54,12 @@ if(NOT EXISTS "${MACHINE}/Windows/builtin/ntdll.dll")
   message(STATUS "prepare_machine: no Wine builtins in ${BUILTIN_DIR} (run wine-pe/build.sh); guest tests will be skipped")
 else()
   message(STATUS "prepare_machine: ${MACHINE}: ${_builtins} builtins, ${_guests} guest files")
+endif()
+# Wine's ntdll locale init needs the Windows NLS data files (emulated
+# NtGetNlsSectionPtr reads them from the machine folder). They are Microsoft
+# data, never committed: on Windows CI machine/import_windows_dlls.ps1 stages
+# them; elsewhere run_guest.cmake SKIPs the guest tests (same check).
+if(NOT EXISTS "${MACHINE}/Windows/System32/c_1252.nls")
+  message(STATUS "prepare_machine: no NLS data (${MACHINE}/Windows/System32/c_1252.nls; "
+                 "run machine/import_windows_dlls.ps1 on Windows); guest tests will be skipped")
 endif()

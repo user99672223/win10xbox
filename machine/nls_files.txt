@@ -1,0 +1,24 @@
+# NLS data files copied by import_windows_dlls.ps1 (genuine Windows data, never
+# committed). Wine's ntdll locale init reaches them through the emulated
+# NtGetNlsSectionPtr / NtInitializeNlsFiles (core/dispatch/nt_nls.cpp), which
+# reads them from the machine folder.
+# One entry per line, relative to the source directory (C:\Windows\System32).
+# Wildcards are allowed. Lines starting with # are comments. A missing entry is
+# a warning, like a missing DLL.
+#
+# Destination: <machine>\Windows\System32, except entries under
+# Globalization\Sorting\, which go to <machine>\Windows\Globalization\Sorting.
+# -- code pages (c_1252.nls, c_437.nls, ...): every one present in the source
+c_*.nls
+# -- case mapping and locale data
+l_intl.nls
+locale.nls
+# -- normalization (NFC, NFD, NFKC, NFKD, IDNA)
+normnfc.nls
+normnfd.nls
+normnfkc.nls
+normnfkd.nls
+normidna.nls
+# -- sort keys: <Windows>\Globalization\Sorting\sortdefault.nls, falling back to
+#    System32\sortdefault.nls in the source (the emulation looks in both places)
+Globalization\Sorting\sortdefault.nls
