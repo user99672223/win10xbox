@@ -27,13 +27,16 @@ option(WIN10XBOX_BUILD_DRIVERS "Build the driver host (fake ntoskrnl, test drive
 option(WIN10XBOX_TRACE_DEFAULT_ON "Tracing on by default (always on in Debug)" OFF)
 
 if(MSVC)
-  add_compile_options(/W4 /permissive- /Zc:__cplusplus /utf-8 /EHsc)
+  # Scope C/C++ flags to those languages: ml64 (ASM_MASM) rejects /W4, /EHsc,
+  # /Zc:*, /permissive-, /utf-8 (warnings A4008/A4018) and then fails to emit
+  # the .obj, breaking the link of the asm syscall entry stub.
+  add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:/W4;/permissive-;/Zc:__cplusplus;/utf-8;/EHsc>")
   add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
   # The loader patches code in mapped images; keep the CRT static so the host
   # has no dependency on a runtime DLL that the guest might also map.
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 else()
-  add_compile_options(-Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
+  add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:-Wall;-Wextra;-Wno-unused-parameter;-Wno-missing-field-initializers>")
   add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
   # llvm-mingw: static libc++ and winpthreads so test binaries run under Wine
   # without shipping runtime DLLs next to them.
