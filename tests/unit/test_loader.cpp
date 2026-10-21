@@ -1004,6 +1004,21 @@ TEST(loader_scan_ignores_unrelated_breakpoints) {
     CHECK_EQ(g_foreign_breakpoints, 1);
 }
 
+#if defined(_MSC_VER)
+// SEH flavour of the same check (clang-mingw cannot compile __try, so MSVC only):
+// a breakpoint that is not one of our sites must reach the frame-based handler.
+TEST(loader_scan_unrelated_breakpoint_reaches_seh) {
+    EnsureTrapHandlerInstalled();
+    int caught = 0;
+    __try {
+        RaiseException(EXCEPTION_BREAKPOINT, 0, 0, nullptr);
+    } __except (GetExceptionCode() == EXCEPTION_BREAKPOINT ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        caught = 1;
+    }
+    CHECK_EQ(caught, 1);
+}
+#endif
+
 TEST(loader_scan_guest_dll_hide_hypervisor_and_fix_tsc) {
     MappedImage img;
     NTSTATUS st = MapImageFromFile(GuestPath(L"guest_dll.dll").c_str(), kDefaultMapFlags, nullptr, &img);
