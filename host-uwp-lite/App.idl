@@ -1,0 +1,24 @@
+// App.idl - the one WinRT runtimeclass of host-uwp-lite. Same shape as the
+// capability probe's tools/probe/uwp-host/App.idl.
+//
+// Why it exists: the Xbox launcher silently refuses an exe whose manifest
+// EntryPoint has no matching WinRT metadata (docs/DECISIONS.md, "UWP host (M5)
+// lessons from the probe"). CMake runs midl.exe over this file to produce
+// Win10XboxLite.winmd, and package.cmd ships that winmd next to the exe. The
+// name of the winmd must equal the root namespace below, and the manifest's
+// <Application EntryPoint="Win10XboxLite.App"> names this class.
+//
+// The C++ side (App.h / App.cpp) is a hand-written IFrameworkViewSource rather
+// than cppwinrt-generated code: nothing ever activates this class through the
+// WinRT factory machinery (the exe is started by the shell and calls
+// CoreApplication::Run itself, exactly like the probe), so the only thing that
+// has to exist is the metadata. That keeps the standalone CMake build free of
+// cppwinrt / NuGet code generation.
+namespace Win10XboxLite
+{
+    [default_interface]
+    runtimeclass App : [default] Windows.ApplicationModel.Core.IFrameworkViewSource
+    {
+        App();
+    }
+}

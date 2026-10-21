@@ -1,0 +1,3 @@
+# package.cmd uses goto/labels: LF-only batch files can break label lookup in
+# cmd.exe (the 512-byte block bug), so always check it out with CRLF.
+*.cmd text eol=crlf
