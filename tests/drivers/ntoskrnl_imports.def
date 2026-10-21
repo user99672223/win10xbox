@@ -1,0 +1,53 @@
+; Import library of the host's ntoskrnl for the test drivers (names only; the host binds them
+; by name when it loads the .sys). Every entry must be an implemented export except those
+; listed in tests/drivers/test_drivers.cpp as deliberately stubbed.
+LIBRARY ntoskrnl.exe
+EXPORTS
+DbgPrint
+ExAcquireFastMutex
+ExAcquireResourceExclusiveLite
+ExAcquireResourceSharedLite
+ExAllocatePoolWithTag
+ExDeleteResourceLite
+ExFreePoolWithTag
+ExGetPreviousMode
+ExInitializeResourceLite
+ExReleaseFastMutex
+ExReleaseResourceLite
+IoCreateDevice
+IoCreateSymbolicLink
+IoDeleteDevice
+IoDeleteSymbolicLink
+IoGetCurrentProcess
+IoRegisterPlugPlayNotification
+IoReleaseCancelSpinLock
+IofCompleteRequest
+KeCancelTimer
+KeDelayExecutionThread
+KeGetCurrentIrql
+KeInitializeDpc
+KeInitializeEvent
+KeInitializeMutex
+KeInitializeSemaphore
+KeInitializeTimerEx
+KeInsertQueueDpc
+KeQuerySystemTime
+KeReleaseMutex
+KeReleaseSemaphore
+KeReleaseSpinLock
+KeAcquireSpinLockRaiseToDpc
+KeSetEvent
+KeSetTimer
+KeWaitForSingleObject
+KfLowerIrql
+KfRaiseIrql
+MmIsAddressValid
+MmMapLockedPagesSpecifyCache
+ObReferenceObjectByHandle
+ObfDereferenceObject
+PsGetCurrentProcessId
+PsGetCurrentThreadId
+RtlCopyUnicodeString
+RtlInitUnicodeString
+memcpy
+memset

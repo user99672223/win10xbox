@@ -1,0 +1,48 @@
+/* Shared between OurTestDevice.sys (kernel side) and the user-mode clients.
+ * Plain C, no includes: callers bring their own CTL_CODE. MIT. */
+#ifndef OUR_TEST_DEVICE_H
+#define OUR_TEST_DEVICE_H
+
+#define OTD_DEVICE_TYPE 0x22 /* FILE_DEVICE_UNKNOWN */
+#define OTD_XOR_KEY 0x5A
+
+/* METHOD_BUFFERED: out[i] = in[i] ^ 0x5A, Information = input length */
+#define IOCTL_OTD_XOR CTL_CODE(OTD_DEVICE_TYPE, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
+/* METHOD_OUT_DIRECT: input byte = pattern; the whole MDL output buffer is filled with it */
+#define IOCTL_OTD_FILL CTL_CODE(OTD_DEVICE_TYPE, 0x801, METHOD_OUT_DIRECT, FILE_ANY_ACCESS)
+/* METHOD_IN_DIRECT: the MDL buffer holds data; Information = sum of its bytes */
+#define IOCTL_OTD_SUM CTL_CODE(OTD_DEVICE_TYPE, 0x802, METHOD_IN_DIRECT, FILE_ANY_ACCESS)
+/* METHOD_NEITHER: Type3InputBuffer -> ULONG v; UserBuffer -> ULONG, set to v + 1 */
+#define IOCTL_OTD_NEITHER CTL_CODE(OTD_DEVICE_TYPE, 0x803, METHOD_NEITHER, FILE_ANY_ACCESS)
+/* METHOD_BUFFERED, completes later from a DPC (STATUS_PENDING): output = OTD_DEFERRED_OUT */
+#define IOCTL_OTD_DEFERRED CTL_CODE(OTD_DEVICE_TYPE, 0x804, METHOD_BUFFERED, FILE_ANY_ACCESS)
+/* METHOD_BUFFERED, input ULONG milliseconds, completes from a kernel timer + DPC */
+#define IOCTL_OTD_TIMER CTL_CODE(OTD_DEVICE_TYPE, 0x805, METHOD_BUFFERED, FILE_ANY_ACCESS)
+/* METHOD_BUFFERED: runs kernel API checks inside the driver, output ULONG bit mask (OTD_SELFTEST_ALL when all pass) */
+#define IOCTL_OTD_SELFTEST CTL_CODE(OTD_DEVICE_TYPE, 0x806, METHOD_BUFFERED, FILE_ANY_ACCESS)
+/* METHOD_BUFFERED: output OTD_INFO */
+#define IOCTL_OTD_INFO CTL_CODE(OTD_DEVICE_TYPE, 0x807, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+#define OTD_DEFERRED_MAGIC 0xD3F3AAEDu
+
+typedef struct _OTD_DEFERRED_OUT {
+    unsigned long Magic;
+    unsigned long DispatchIrql;   /* IRQL in the IOCTL dispatch routine */
+    unsigned long DpcIrql;        /* IRQL in the DPC that completed the request */
+    unsigned long DpcThreadId;    /* thread that ran the DPC (never the caller) */
+    unsigned long CallerThreadId;
+} OTD_DEFERRED_OUT;
+
+typedef struct _OTD_INFO {
+    unsigned long Irql;
+    unsigned long PreviousMode;     /* 1 = UserMode */
+    unsigned long ProcessId;
+    unsigned long ThreadId;
+    unsigned long OpenCount;
+    unsigned long RegistryPathChars;
+    unsigned short RegistryPath[64];
+} OTD_INFO;
+
+#define OTD_SELFTEST_ALL 0x0000FFFFu
+
+#endif
