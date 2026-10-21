@@ -49,11 +49,38 @@ jobs:
         run: cmake -S . -B build-mingw -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE=cmake/llvm-mingw.cmake
       - name: Build
         run: cmake --build build-mingw -- -k 0   # keep going so all errors surface
+      # Give the guest end-to-end tests a real run under Wine: the Wine PE
+      # builtins (from the wine-pe artifact) + the NLS data (from the Wine
+      # prefix, which our emulated NtGetNlsSectionPtr serves). Without these the
+      # guest tests skip; with them the full pipeline (boot -> printf -> exit) is
+      # exercised and gated here. Non-fatal download: if absent, they skip.
+      - name: Fetch wine-pe builtin DLLs (optional)
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          id=$(gh run list --repo "${{ github.repository }}" --workflow wine-pe.yml --branch "${{ github.ref_name }}" --status success --limit 1 --json databaseId --jq '.[0].databaseId' || true)
+          [ -z "$id" ] && id=$(gh run list --repo "${{ github.repository }}" --workflow wine-pe.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId' || true)
+          if [ -n "$id" ]; then
+            mkdir -p wine-pe/out/builtin
+            gh run download "$id" --repo "${{ github.repository }}" --name wine-pe-builtin --dir wine-pe/out/builtin
+            echo "downloaded wine-pe-builtin from run $id ($(ls wine-pe/out/builtin/*.dll 2>/dev/null | wc -l) DLLs)"
+          else
+            echo "no successful wine-pe run yet; guest tests will skip"
+          fi
       - name: Init Wine prefix (must be a dir we own; /tmp is not)
         env: { WINEDEBUG: "-all", WINEPREFIX: "${{ runner.temp }}/wineprefix" }
         run: |
           wineboot --init
           wineserver -w
+      - name: Stage Wine NLS data into the machine folder (for the guest e2e tests)
+        env: { WINEPREFIX: "${{ runner.temp }}/wineprefix" }
+        run: |
+          sys32=build-mingw/bin/machine/Windows/System32
+          sort=build-mingw/bin/machine/Windows/Globalization/Sorting
+          mkdir -p "$sys32" "$sort"
+          cp -f "$WINEPREFIX"/drive_c/windows/system32/*.nls "$sys32"/ 2>/dev/null || true
+          cp -f /usr/share/wine/nls/*.nls "$sys32"/ 2>/dev/null || true
+          cp -f "$sys32"/sortdefault.nls "$sort"/ 2>/dev/null || true
+          echo "staged $(ls "$sys32"/*.nls 2>/dev/null | wc -l) NLS files"
       - name: Test under Wine
         env: { WINEDEBUG: "-all", WINEPREFIX: "${{ runner.temp }}/wineprefix" }
         run: ctest --test-dir build-mingw --output-on-failure

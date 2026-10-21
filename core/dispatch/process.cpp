@@ -432,8 +432,14 @@ NTSTATUS BuildProcessParameters(const LaunchOptions& o, const std::wstring& imag
         At<SIZE_T>(params, pp::EnvironmentSize) = block.size() * sizeof(wchar_t);
     }
     if (old) {
-        At<HANDLE>(params, pp::ConsoleHandle) = At<HANDLE>(old, pp::ConsoleHandle);
-        At<ULONG>(params, pp::ConsoleFlags) = At<ULONG>(old, pp::ConsoleFlags);
+        // Inherit the host's standard handles so the guest's stdio reaches the
+        // same pipe/console. Do NOT inherit ConsoleHandle: on real Windows it is
+        // a genuine ConDrv handle that Wine's kernelbase cannot drive (it speaks
+        // Wine's own console protocol), and when present it hijacks the std
+        // handles so the guest's output vanishes. With ConsoleHandle = 0 Wine
+        // treats StdOutput as a plain file/pipe and WriteFile's to it directly.
+        At<HANDLE>(params, pp::ConsoleHandle) = nullptr;
+        At<ULONG>(params, pp::ConsoleFlags) = 0;
         At<HANDLE>(params, pp::StdInput) = At<HANDLE>(old, pp::StdInput);
         At<HANDLE>(params, pp::StdOutput) = At<HANDLE>(old, pp::StdOutput);
         At<HANDLE>(params, pp::StdError) = At<HANDLE>(old, pp::StdError);
