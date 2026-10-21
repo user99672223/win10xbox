@@ -1,0 +1,716 @@
+// host.cpp - the host-uwp shell logic, see host.h.
+//
+// The worker's sequence is host-win32/main.cpp's wmain body, wrapped in what an
+// AppContainer host additionally has to do (the same wrapping host-uwp-lite's
+// smoke harness proved out on CI):
+//   1. evidence trail first: trace.log, status.txt, crash recorder;
+//   2. launch.json (LocalState, else the packaged default, else built-in defaults);
+//   3. stage the machine folder in LocalState;
+//   4. point the guest's stdout/stderr at LocalState\stdout.txt;
+//   5. win10xbox::Initialize -> vfs validation -> preflight -> process::Launch;
+//   6. wait for the guest (watchdog optional), write the verdict, Shutdown.
+//
+// Networking: this file contains none. The guest's own socket syscalls are
+// passed through to the host kernel by core/dispatch (NtDeviceIoControlFile and
+// friends are PassThrough, "\Device\Afd" paths are not rewritten by the VFS);
+// the host process itself never opens a connection. The package manifest
+// declares the network capabilities the guest's sockets need.
+#include "host.h"
+
+#include "host_diag.h"
+#include "host_stage.h"
+#include "host_util.h"
+#include "launch_config.h"
+
+#include "win10xbox/config.h"
+#include "win10xbox/core.h"
+#include "win10xbox/dispatch.h"
+#include "win10xbox/trace.h"
+#include "win10xbox/vfs.h"
+
+#include <windows.h>
+
+#include <atomic>
+#include <exception>
+#include <mutex>
+#include <thread>
+#include <utility>
+#include <vector>
+
+#ifndef STATUS_TIMEOUT
+#define STATUS_TIMEOUT ((DWORD)0x00000102L)
+#endif
+
+namespace w10x_uwp
+{
+namespace
+{
+    constexpr DWORD kPollMs = 250;                       // granularity of the stop / watchdog checks
+    constexpr std::uint64_t kMiB = 1ull << 20;
+    constexpr std::size_t kMaxLaunchConfigBytes = 64u * 1024u;
+
+    const char* KindName(winexbox::InputKind k)
+    {
+        switch (k)
+        {
+        case winexbox::InputKind::KeyDown: return "key-down";
+        case winexbox::InputKind::KeyUp: return "key-up";
+        case winexbox::InputKind::MouseMove: return "mouse-move";
+        case winexbox::InputKind::MouseButtonDown: return "mouse-button-down";
+        case winexbox::InputKind::MouseButtonUp: return "mouse-button-up";
+        case winexbox::InputKind::MouseWheel: return "mouse-wheel";
+        }
+        return "?";
+    }
+
+    // Stands in for the win32u binding (winexbox.drv, deferred): the backend only
+    // delivers events inside ProcessEvents(), to a sink. Until the binding takes
+    // the sink over, the host's own sink drains the queue (so it cannot grow
+    // without bound) and counts what arrived, which makes the CoreWindow ->
+    // backend path observable in status.txt on a console.
+    class CountingSink final : public winexbox::IEventSink
+    {
+    public:
+        void OnInput(const winexbox::InputEvent& ev) override
+        {
+            switch (ev.kind)
+            {
+            case winexbox::InputKind::KeyDown: ++key_down_; break;
+            case winexbox::InputKind::KeyUp: ++key_up_; break;
+            case winexbox::InputKind::MouseMove: ++mouse_move_; break;
+            case winexbox::InputKind::MouseButtonDown:
+            case winexbox::InputKind::MouseButtonUp: ++mouse_button_; break;
+            case winexbox::InputKind::MouseWheel: ++mouse_wheel_; break;
+            }
+            // A few lines so the first events are visible in trace.log; counts only after that.
+            if (logged_.fetch_add(1) < 12)
+                diag::Line("input: %s vk=0x%02x scan=0x%02x button=%d x=%d y=%d wheel=%d", KindName(ev.kind),
+                           static_cast<unsigned>(ev.vk), static_cast<unsigned>(ev.scan), static_cast<int>(ev.button), ev.x,
+                           ev.y, ev.wheel_delta);
+        }
+
+        std::uint64_t Total() const
+        {
+            return key_down_ + key_up_ + mouse_move_ + mouse_button_ + mouse_wheel_;
+        }
+
+        std::string Summary() const
+        {
+            return Fmt("key-down=%llu key-up=%llu mouse-move=%llu mouse-button=%llu mouse-wheel=%llu",
+                       static_cast<unsigned long long>(key_down_.load()), static_cast<unsigned long long>(key_up_.load()),
+                       static_cast<unsigned long long>(mouse_move_.load()),
+                       static_cast<unsigned long long>(mouse_button_.load()),
+                       static_cast<unsigned long long>(mouse_wheel_.load()));
+        }
+
+    private:
+        std::atomic<std::uint64_t> key_down_{0}, key_up_{0}, mouse_move_{0}, mouse_button_{0}, mouse_wheel_{0};
+        std::atomic<std::uint32_t> logged_{0};
+    };
+
+    std::uint32_t Clamp(std::uint32_t v, std::uint32_t lo, std::uint32_t hi)
+    {
+        return v < lo ? lo : (v > hi ? hi : v);
+    }
+
+    // The guest inherits the HOST's standard handles (BuildProcessParameters in
+    // core/dispatch/process.cpp copies them out of the host's process parameters)
+    // and SetStdHandle writes exactly those fields. Plain file handles sidestep
+    // the real-Windows pipe-capture problem recorded in docs/STATUS.md.
+    HANDLE OpenForGuest(const std::wstring& path, DWORD access, DWORD disposition, DWORD share)
+    {
+        SECURITY_ATTRIBUTES sa;
+        sa.nLength = sizeof sa;
+        sa.lpSecurityDescriptor = nullptr;
+        sa.bInheritHandle = TRUE;
+        return CreateFileW(path.c_str(), access, share, &sa, disposition, FILE_ATTRIBUTE_NORMAL, nullptr);
+    }
+
+    std::wstring SystemPath(UINT (WINAPI *get)(LPWSTR, UINT), const wchar_t* fallback)
+    {
+        std::wstring p(MAX_PATH, L'\0');
+        const UINT n = get(&p[0], MAX_PATH);
+        if (n == 0 || n >= MAX_PATH) return fallback;
+        p.resize(n);
+        return p;
+    }
+
+    // launch.json: LocalState first (the owner's), then the packaged default,
+    // then the built-in defaults. A file that exists but cannot be read or parsed
+    // is an error: running something other than what the owner wrote would be worse.
+    bool LoadLaunchConfig(const std::wstring& local_state, const std::wstring& payload, LaunchConfig* lc,
+                          std::string* source, std::string* error)
+    {
+        struct Candidate
+        {
+            std::wstring path;
+            const char* name;
+        };
+        const Candidate candidates[] = {
+            {local_state + L"\\launch.json", "LocalState\\launch.json"},
+            {payload + L"\\launch.json", "the packaged default (payload\\launch.json)"},
+        };
+        for (const Candidate& c : candidates)
+        {
+            std::string text;
+            DWORD err = 0;
+            if (!ReadSmallFile(c.path, kMaxLaunchConfigBytes, &text, &err))
+            {
+                if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) continue;
+                *error = Fmt("cannot read %s (error %lu)", c.name, static_cast<unsigned long>(err));
+                return false;
+            }
+            LaunchConfig parsed;
+            std::string perr;
+            if (!ParseLaunchConfig(text, &parsed, &perr))
+            {
+                *error = std::string(c.name) + ": " + perr;
+                return false;
+            }
+            *lc = std::move(parsed);
+            *source = c.name;
+            return true;
+        }
+        *lc = LaunchConfig();
+        *source = "built-in defaults (no launch.json found)";
+        return true;
+    }
+
+    std::wstring BuildCommandLine(const std::wstring& image, const LaunchConfig& lc)
+    {
+        std::wstring cmd = L"\"" + image + L"\"";
+        for (const std::string& a : lc.args) cmd += L" " + QuoteArg(Widen(a));
+        if (!lc.args_raw.empty()) cmd += L" " + Widen(lc.args_raw);
+        return cmd;
+    }
+}  // namespace
+
+// ----------------------------------------------------------------------
+// Host::Impl
+// ----------------------------------------------------------------------
+struct Host::Impl
+{
+    explicit Impl(const HostInfo& i) : info(i), report(i.local_state + L"\\status.txt") {}
+
+    void RunWorker();
+    void RunImpl();
+    void Fail(const std::string& what, const std::string& hint = std::string());
+    void EndProcessAfterFinalStatus(const std::string& verdict, DWORD exit_code);
+    std::string StopReason();
+
+    HostInfo info;
+    diag::Report report;
+    std::unique_ptr<winexbox::IWinexboxDriver> display;
+    CountingSink sink;
+    std::string display_desc;
+
+    std::thread worker;
+    std::atomic<bool> finished{false};
+    std::atomic<bool> stop{false};
+    std::atomic<bool> guest_running{false};
+    std::atomic<bool> exit_when_done{true};
+    std::atomic<bool> input_enabled{true};
+    std::atomic<HANDLE> stdout_handle{INVALID_HANDLE_VALUE};
+
+    std::mutex reason_mu;
+    std::string stop_reason;
+    ULONGLONG guest_start_tick = 0;
+};
+
+void Host::Impl::Fail(const std::string& what, const std::string& hint)
+{
+    diag::Line("FAILED: %s", what.c_str());
+    report.Set("phase", "failed");
+    if (!hint.empty()) report.Set("hint", hint);
+    report.SetVerdict("FAIL (" + what + ")");
+    report.Flush();
+}
+
+std::string Host::Impl::StopReason()
+{
+    std::lock_guard<std::mutex> lock(reason_mu);
+    return stop_reason.empty() ? std::string("stopped by the shell") : stop_reason;
+}
+
+// The guest still owns the PEB (loader lists, process parameters...): do not
+// return into WinRT code, write the verdict through the held handle and end the
+// process.
+void Host::Impl::EndProcessAfterFinalStatus(const std::string& verdict, DWORD exit_code)
+{
+    report.Set("phase", "finished");
+    report.Set("input.events", sink.Summary());
+    report.SetVerdict(verdict);
+    report.Flush();
+    diag::Line("verdict: %s", verdict.c_str());
+    diag::Line("terminating the process (the guest is still running)");
+    diag::FlushLog();
+    const HANDLE out = stdout_handle.load();
+    if (out != INVALID_HANDLE_VALUE) FlushFileBuffers(out);
+    TerminateProcess(GetCurrentProcess(), exit_code);
+}
+
+void Host::Impl::RunWorker()
+{
+    try
+    {
+        RunImpl();
+    }
+    catch (const std::exception& e)
+    {
+        diag::Line("FATAL: C++ exception in the host: %s", e.what());
+        report.Set("error", std::string("C++ exception: ") + e.what());
+        report.SetVerdict("FAIL (host exception)");
+        report.Flush();
+    }
+    catch (...)
+    {
+        diag::Line("FATAL: unknown exception in the host");
+        report.SetVerdict("FAIL (host exception)");
+        report.Flush();
+    }
+    guest_running.store(false);
+    diag::FlushLog();
+    finished.store(true);
+}
+
+void Host::Impl::RunImpl()
+{
+    const std::wstring ls = info.local_state;
+    const std::wstring machine = ls + L"\\machine";
+    const std::wstring payload = info.package_dir + L"\\payload";
+
+    // ---- 0. the evidence trail first, so everything below is captured -------
+    diag::OpenLog(ls + L"\\trace.log", 64 * kMiB);
+    diag::InstallCrashFilter(ls + L"\\status.txt");
+    const win10xbox::Version ver = win10xbox::GetVersion();
+    diag::Line("host-uwp (built %s %s) on core %d.%d.%d (%s)", __DATE__, __TIME__, ver.major, ver.minor, ver.patch,
+               ver.git ? ver.git : "?");
+    diag::Line("package=%s version=%s", info.package_full_name.c_str(), info.package_version.c_str());
+    diag::Line("local_state=%s", Narrow(ls).c_str());
+    diag::Line("package_dir=%s", Narrow(info.package_dir).c_str());
+    diag::Line("display: %s", display_desc.c_str());
+
+    report.Set("tool", "win10xbox host-uwp (M5 shell, headless display backend)");
+    report.Set("started_utc", TimestampUtc());
+    report.Set("build", Fmt("%s %s", __DATE__, __TIME__));
+    report.Set("core", Fmt("%d.%d.%d (%s)", ver.major, ver.minor, ver.patch, ver.git ? ver.git : "?"));
+    report.Set("package", info.package_full_name);
+    report.Set("local_state", Narrow(ls));
+    report.Set("display", display_desc);
+    report.SetVerdict("INCOMPLETE (still starting, or the process died: see 'phase' below and trace.log)");
+    report.Set("phase", "start");
+    report.Flush();
+
+    // ---- 1. launch.json ---------------------------------------------------------
+    report.Set("phase", "launch config");
+    LaunchConfig lc;
+    std::string source, cfg_error;
+    if (!LoadLaunchConfig(ls, payload, &lc, &source, &cfg_error))
+    {
+        Fail("launch config: " + cfg_error,
+             "fix or delete LocalState\\launch.json (a copy of the documented defaults is LocalState\\launch.example.json)");
+        return;
+    }
+    exit_when_done.store(lc.exit_when_done);
+    input_enabled.store(lc.input_pump);
+    diag::SetLogCap(static_cast<std::uint64_t>(lc.trace_log_max_mb) * kMiB);
+    diag::Line("launch config from %s:", source.c_str());
+    {
+        const std::string text = DescribeLaunchConfig(lc);
+        std::size_t pos = 0;
+        while (pos < text.size())
+        {
+            const std::size_t nl = text.find('\n', pos);
+            diag::Line("  %s", text.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos).c_str());
+            pos = nl == std::string::npos ? text.size() : nl + 1;
+        }
+    }
+    report.Set("launch.source", source);
+    report.Set("launch.guest", lc.guest);
+    report.Set("launch.args", [&] {
+        std::string a;
+        for (const std::string& x : lc.args) a += (a.empty() ? "" : " ") + QuoteArg(x);
+        if (!lc.args_raw.empty()) a += (a.empty() ? "" : " ") + lc.args_raw;
+        return a;
+    }());
+    if (lc.has_expect_exit_code) report.Set("launch.expect_exit_code", Fmt("%d", lc.expect_exit_code));
+    report.Flush();
+
+    // Tracing knobs reach the core through the environment it reads at Initialize.
+    if (!lc.trace.empty()) SetEnvironmentVariableW(L"WIN10XBOX_DEBUG", Widen(lc.trace).c_str());
+    if (!lc.winedebug.empty()) SetEnvironmentVariableW(L"WIN10XBOX_WINEDEBUG", Widen(lc.winedebug).c_str());
+
+    if (stop.load())
+    {
+        Fail("stopped by the shell before the guest started (" + StopReason() + ")");
+        return;
+    }
+
+    // ---- 2. machine.json, then the layer ------------------------------------------
+    report.Set("phase", "machine.json");
+    report.Flush();
+    if (!StageMachineJson(machine, payload))
+        diag::Line("warning: no machine.json in the package payload and none in the machine folder: the layer uses its defaults");
+
+    // stdout/stderr -> LocalState\stdout.txt, stdin -> an empty file.
+    const std::wstring stdout_path = ls + L"\\stdout.txt";
+    HANDLE h_out = OpenForGuest(stdout_path, GENERIC_WRITE, CREATE_ALWAYS, FILE_SHARE_READ | FILE_SHARE_WRITE);
+    HANDLE h_in = OpenForGuest(ls + L"\\stdin.txt", GENERIC_READ, OPEN_ALWAYS, FILE_SHARE_READ | FILE_SHARE_WRITE);
+    if (h_out == INVALID_HANDLE_VALUE)
+    {
+        diag::Line("cannot create stdout.txt (error %lu): the guest's output will be lost", GetLastError());
+    }
+    else
+    {
+        SetStdHandle(STD_OUTPUT_HANDLE, h_out);
+        SetStdHandle(STD_ERROR_HANDLE, h_out);
+        stdout_handle.store(h_out);
+    }
+    if (h_in != INVALID_HANDLE_VALUE) SetStdHandle(STD_INPUT_HANDLE, h_in);
+
+    report.Set("phase", "initialize");
+    report.Flush();
+    win10xbox::trace::AddSink(&diag::TraceSink, nullptr);
+    win10xbox::config::Config cfg;
+    cfg.machine_root = machine;
+    cfg.trace_default_on = false;                                          // quiet (err + fixme); launch.json "trace" refines
+    cfg.display_backend = win10xbox::config::DisplayBackend::Headless;     // D8: the D3D12 backend is M6
+    cfg.inbound_sockets = true;                                            // D7 (core passes socket syscalls through regardless)
+    cfg.wow64 = win10xbox::config::Wow64::Off;                             // D6
+    const int init_rc = win10xbox::Initialize(cfg);
+    report.Set("initialize", Fmt("%d", init_rc));
+    diag::Line("win10xbox::Initialize -> %d", init_rc);
+    if (init_rc != 0)
+    {
+        Fail(Fmt("win10xbox::Initialize failed (%d)", init_rc), "see the first lines of trace.log");
+        return;
+    }
+
+    // machine.json is parsed by the VFS; a malformed file refuses to start (vfs.h).
+    const long vfs_rc = static_cast<long>(win10xbox::vfs::Initialize(machine));
+    if (vfs_rc != 0)
+    {
+        Fail("machine.json is malformed or its machine root is unusable (vfs::Initialize " + Hex32(vfs_rc) + ")",
+             "fix LocalState\\machine\\machine.json (schema: machine/machine.schema.json) or delete it to restore the "
+             "packaged default; the 'err:vfs' line in trace.log names the problem");
+        return;
+    }
+    std::wstring c_root = machine;
+    for (const win10xbox::vfs::DriveMapping& d : win10xbox::vfs::Drives())
+        if (d.letter == L'C') c_root = d.host_root;
+    const std::wstring profile = win10xbox::vfs::GuestUserProfile();   // C:\Users\<user>
+    const std::wstring profile_rel = profile.size() > 3 ? profile.substr(3) : std::wstring(L"Users\\User");
+    report.Set("machine.user", Narrow(profile));
+    report.Set("machine.c_root", Narrow(c_root));
+
+    if (stop.load())
+    {
+        Fail("stopped by the shell before the guest started (" + StopReason() + ")");
+        return;
+    }
+
+    // ---- 3. stage the machine folder ---------------------------------------------------
+    report.Set("phase", "staging");
+    report.Flush();
+    StagePlan plan;
+    plan.c_root = c_root;
+    plan.payload_dir = payload;
+    plan.system32 = SystemPath(&GetSystemDirectoryW, L"C:\\Windows\\System32");
+    plan.windows = SystemPath(&GetWindowsDirectoryW, L"C:\\Windows");
+    plan.profile_rel = profile_rel;
+    plan.stamp = Widen(info.package_full_name);
+    for (const std::string& n : lc.stage_native) plan.native_names.push_back(Widen(n));
+    const StageResult st = StageMachineFiles(plan);
+    report.Set("stage.builtin", st.builtin.Summary());
+    report.Set("stage.guest", st.guest.Summary());
+    report.Set("stage.nls", st.nls.Summary());
+    if (!lc.stage_native.empty()) report.Set("stage.native", st.native.Summary());
+    if (!st.builtin.bad.empty()) report.Set("stage.builtin.not_staged", st.builtin.BadList());
+    if (!st.nls.bad.empty()) report.Set("stage.nls.not_staged", st.nls.BadList());
+    if (!st.native.bad.empty()) report.Set("stage.native.not_staged", st.native.BadList());
+    report.Set("stage.package_refreshed", st.refreshed ? "yes" : "no");
+    report.Set("builtin.ntdll", st.have_ntdll ? "present" : "MISSING");
+    {
+        std::string req;
+        for (const std::string& m : st.required_missing) req += (req.empty() ? "" : ",") + m;
+        report.Set("nls.required_missing", req.empty() ? "none" : req);
+    }
+    diag::Line("stage: done. builtin[%s] guest[%s] nls[%s]", st.builtin.Summary().c_str(), st.guest.Summary().c_str(),
+               st.nls.Summary().c_str());
+    report.Flush();
+
+    // ---- 4. preflight: say precisely what is wrong instead of a bare NTSTATUS ----------------
+    report.Set("phase", "preflight");
+    if (!st.have_ntdll)
+    {
+        Fail("no Wine PE builtins in the machine folder (Windows\\builtin\\ntdll.dll is missing)",
+             "the package was built without the wine-pe-builtin artifact: copy wine-pe/out/builtin/*.dll into "
+             "LocalState\\machine\\Windows\\builtin (or install a package that bundles them) and relaunch");
+        return;
+    }
+    if (!st.required_missing.empty())
+        diag::Line("warning: required NLS data could not be staged from the console's System32 (%s): Wine's locale "
+                   "initialisation is likely to fail",
+                   st.nls.BadList().c_str());
+    std::wstring guest_host_path;
+    const long tr = static_cast<long>(win10xbox::vfs::TranslateWin32Path(Widen(lc.guest), &guest_host_path));
+    unsigned long long guest_size = 0;
+    if (tr != 0 || !FileSize(guest_host_path, &guest_size))
+    {
+        Fail("the guest program was not found: " + lc.guest +
+                 (tr == 0 ? " (looked at " + Narrow(guest_host_path) + ")" : " (the path is not on a drive the VFS maps)"),
+             "put the program into LocalState\\machine (C:\\ in the guest) or change \"guest\" in LocalState\\launch.json");
+        return;
+    }
+    report.Set("guest.host_path", Narrow(guest_host_path));
+    report.Set("guest.size", Fmt("%llu", guest_size));
+    if (!lc.cwd.empty())
+    {
+        std::wstring cwd_host;
+        if (static_cast<long>(win10xbox::vfs::TranslateWin32Path(Widen(lc.cwd), &cwd_host)) != 0 || !DirExists(cwd_host))
+            diag::Line("warning: cwd %s does not exist in the machine folder", lc.cwd.c_str());
+    }
+    if (stop.load())
+    {
+        Fail("stopped by the shell before the guest started (" + StopReason() + ")");
+        return;
+    }
+
+    // ---- 5. the display backend (created by the shell on the UI thread) ---------------------------
+    {
+        const winexbox::DisplayConfig dc = display->QueryDisplay();
+        report.Set("display.backend", display->Name());
+        report.Set("display.gpu", dc.gpu.name);
+        if (!dc.monitors.empty())
+        {
+            const winexbox::MonitorInfo& m = dc.monitors[0];
+            report.Set("display.monitor",
+                       Fmt("%s %ux%u@%u", m.device_name.c_str(), m.current.width, m.current.height, m.current.refresh_hz));
+        }
+        diag::Line("display backend '%s' (%s), input pump %s", display->Name(), dc.gpu.name.c_str(),
+                   lc.input_pump ? "on" : "off");
+    }
+
+    // ---- 6. launch ---------------------------------------------------------------------------------------------
+    // Launch(wait = false) + WaitForGuest is what Launch(wait = true) does
+    // internally (it just calls WaitForGuest(INFINITE)); the poll loop gives us
+    // the stop and watchdog checks. The worker returns to the host after the
+    // guest started (run_on_new_thread), the guest runs on its own threads.
+    win10xbox::process::LaunchOptions opts;
+    opts.image_path = Widen(lc.guest);
+    opts.command_line = BuildCommandLine(opts.image_path, lc);
+    opts.current_directory = Widen(lc.cwd);
+    opts.run_on_new_thread = true;
+    opts.wait = false;
+
+    // From here on the guest may own PEB fields: keep status.txt open so the
+    // verdict can still be written through the handle.
+    report.HoldOpen();
+    report.Set("phase", "launching the guest");
+    report.SetVerdict("RUNNING (the guest is being launched; this line is replaced when it exits)");
+    report.Set("guest.started_utc", TimestampUtc());
+    report.Flush();
+    diag::Line("process::Launch(%s) cmdline=%s", Narrow(opts.image_path).c_str(), Narrow(opts.command_line).c_str());
+    const int launch_rc = win10xbox::process::Launch(opts);
+    diag::Line("process::Launch -> %d (%s)", launch_rc, Hex32(launch_rc).c_str());
+    if (launch_rc != 0)
+    {
+        report.ReleaseHold();
+        report.Set("launch_status", Fmt("%d (%s)", launch_rc, Hex32(launch_rc).c_str()));
+        win10xbox::dispatch::Shutdown();
+        win10xbox::Shutdown();
+        Fail(Fmt("process::Launch failed before the guest ran (%s)", Hex32(launch_rc).c_str()),
+             "see the 'process' and 'loader' lines in trace.log; set \"trace\": \"+process,+loader,+vfs\" in "
+             "LocalState\\launch.json for more");
+        return;
+    }
+
+    guest_running.store(true);
+    guest_start_tick = GetTickCount64();
+    report.Set("phase", "guest running");
+    report.SetVerdict("RUNNING (the guest has been launched; this line is replaced when it exits)");
+    report.Flush();   // through the held handle
+    const ULONGLONG deadline = lc.timeout_sec != 0 ? guest_start_tick + static_cast<ULONGLONG>(lc.timeout_sec) * 1000ull : 0;
+    if (deadline != 0) diag::Line("watchdog: %u s", static_cast<unsigned>(lc.timeout_sec));
+
+    int exit_code = 0;
+    for (;;)
+    {
+        const ULONGLONG a = GetTickCount64();
+        const int rc = win10xbox::process::WaitForGuest(kPollMs);
+        const ULONGLONG waited = GetTickCount64() - a;
+        // WaitForGuest reports a timeout as STATUS_TIMEOUT, which is also a possible
+        // guest exit code: a real exit does not take the whole poll interval.
+        const bool poll_timeout = static_cast<DWORD>(rc) == static_cast<DWORD>(STATUS_TIMEOUT) && waited + 20 >= kPollMs;
+        if (!poll_timeout)
+        {
+            exit_code = rc;
+            break;
+        }
+        if (stop.load())
+        {
+            const std::string why = StopReason();
+            report.Set("guest.runtime_ms", Fmt("%llu", static_cast<unsigned long long>(GetTickCount64() - guest_start_tick)));
+            EndProcessAfterFinalStatus("STOPPED (" + why + "; the guest was still running)", 0x57A9);
+            return;   // not reached
+        }
+        if (deadline != 0 && GetTickCount64() >= deadline)
+        {
+            report.Set("guest.runtime_ms", Fmt("%llu", static_cast<unsigned long long>(GetTickCount64() - guest_start_tick)));
+            report.Set("hint", "the guest did not exit within \"timeout_sec\"; the last 'relay' lines in trace.log (set "
+                               "\"trace\": \"+relay\") show where it is stuck");
+            EndProcessAfterFinalStatus(Fmt("FAIL (guest watchdog timeout after %u s)", static_cast<unsigned>(lc.timeout_sec)),
+                                       0x7E57);
+            return;   // not reached
+        }
+    }
+
+    // ---- 7. wind down: the guest has exited, the PEB is the host's again ---------------------------------------
+    const ULONGLONG runtime_ms = GetTickCount64() - guest_start_tick;
+    guest_running.store(false);
+    diag::Line("guest exited with code %d (%s) after %llu ms", exit_code, Hex32(exit_code).c_str(),
+               static_cast<unsigned long long>(runtime_ms));
+    win10xbox::dispatch::Shutdown();   // dumps the per-syscall relay statistics into trace.log
+    win10xbox::Shutdown();             // also detaches the trace sink
+    report.ReleaseHold();
+    if (h_out != INVALID_HANDLE_VALUE)
+    {
+        FlushFileBuffers(h_out);
+        stdout_handle.store(INVALID_HANDLE_VALUE);
+        CloseHandle(h_out);
+    }
+    if (h_in != INVALID_HANDLE_VALUE) CloseHandle(h_in);
+
+    unsigned long long out_bytes = 0;
+    FileSize(stdout_path, &out_bytes);
+    report.Set("guest.exit_code", Fmt("%d (%s)", exit_code, Hex32(exit_code).c_str()));
+    report.Set("guest.runtime_ms", Fmt("%llu", static_cast<unsigned long long>(runtime_ms)));
+    report.Set("stdout_bytes", Fmt("%llu", out_bytes));
+    report.Set("input.events", sink.Summary());
+    report.Set("finished_utc", TimestampUtc());
+    report.Set("phase", "finished");
+    std::string verdict;
+    if (lc.has_expect_exit_code)
+    {
+        const bool pass = exit_code == lc.expect_exit_code;
+        verdict = pass ? Fmt("PASS (the guest exited with the expected code %d)", exit_code)
+                       : Fmt("FAIL (the guest exited with code %d, expected %d)", exit_code, lc.expect_exit_code);
+        if (!pass)
+            report.Set("hint", "the guest ran but did not exit with the expected code; read stdout.txt and trace.log, "
+                               "then try \"guest\": \"hello_cui.exe\" (console subsystem) or set \"trace\": \"+all\"");
+    }
+    else
+    {
+        verdict = Fmt("EXITED (the guest exited with code %d; set \"expect_exit_code\" in launch.json for a PASS/FAIL verdict)",
+                      exit_code);
+    }
+    report.SetVerdict(verdict);
+    diag::Line("verdict: %s", verdict.c_str());
+    report.Flush();
+    diag::FlushLog();
+}
+
+// ----------------------------------------------------------------------
+// Host
+// ----------------------------------------------------------------------
+Host::Host(const HostInfo& info) : impl_(new Impl(info))
+{
+    winexbox::BackendConfig bc;
+    bc.backend = win10xbox::config::DisplayBackend::Headless;   // D8: the D3D12 / CoreWindow backend is M6
+    bc.width = Clamp(info.display.width, 640, 7680);
+    bc.height = Clamp(info.display.height, 360, 4320);
+    bc.refresh_hz = Clamp(info.display.refresh_hz, 24, 240);
+    impl_->display = winexbox::SelectBackend(bc);
+    impl_->display->SetEventSink(&impl_->sink);
+    impl_->display_desc = Fmt("%s backend, virtual monitor %ux%u@%u (CoreWindow reported %ux%u)", impl_->display->Name(),
+                              bc.width, bc.height, bc.refresh_hz, info.display.width, info.display.height);
+}
+
+Host::~Host()
+{
+    // The shell leaks its Host on purpose (the process owns it until it exits);
+    // if one is ever destroyed, make sure a joinable thread cannot call std::terminate.
+    if (impl_ && impl_->worker.joinable()) impl_->worker.detach();
+}
+
+bool Host::StartWorker()
+{
+    try
+    {
+        impl_->worker = std::thread([this] { impl_->RunWorker(); });
+        return true;
+    }
+    catch (...)
+    {
+        impl_->report.SetVerdict("FAIL (the host worker thread could not be created)");
+        impl_->report.Flush();
+        return false;
+    }
+}
+
+bool Host::Finished() const { return impl_->finished.load(); }
+bool Host::ExitWhenDone() const { return impl_->exit_when_done.load(); }
+bool Host::GuestRunning() const { return impl_->guest_running.load(); }
+bool Host::StopRequested() const { return impl_->stop.load(); }
+
+void Host::JoinWorker()
+{
+    if (impl_->worker.joinable()) impl_->worker.join();
+}
+
+void Host::RequestStop(const char* reason)
+{
+    {
+        std::lock_guard<std::mutex> lock(impl_->reason_mu);
+        if (impl_->stop_reason.empty() && reason != nullptr) impl_->stop_reason = reason;
+    }
+    impl_->stop.store(true);
+    diag::Line("shell: stop requested (%s)", reason ? reason : "?");
+}
+
+void Host::EmergencyExit(const char* reason)
+{
+    diag::Line("shell: emergency exit (%s)", reason ? reason : "?");
+    impl_->report.Set("phase", "finished");
+    impl_->report.Set("input.events", impl_->sink.Summary());
+    impl_->report.SetVerdict(std::string("STOPPED (") + (reason ? reason : "emergency exit") + ")");
+    impl_->report.Flush();
+    diag::FlushLog();
+    TerminateProcess(GetCurrentProcess(), 0x57A9);
+    for (;;) Sleep(1000);   // TerminateProcess does not return
+}
+
+winexbox::IWinexboxDriver& Host::Display()
+{
+    return *impl_->display;
+}
+
+bool Host::InputPumpEnabled() const
+{
+    return impl_->input_enabled.load();
+}
+
+void Host::InjectInput(const winexbox::InputEvent& ev)
+{
+    if (!impl_->input_enabled.load()) return;
+    impl_->display->InjectInput(ev);
+}
+
+void Host::PumpDisplay()
+{
+    impl_->display->ProcessEvents(0);
+}
+
+void Host::NoteLifecycle(const char* what)
+{
+    diag::Line("shell: %s", what);
+}
+
+void Host::NoteSuspending()
+{
+    diag::Line("shell: suspending (input events so far: %llu)", static_cast<unsigned long long>(impl_->sink.Total()));
+    diag::FlushLog();
+    const HANDLE out = impl_->stdout_handle.load();
+    if (out != INVALID_HANDLE_VALUE) FlushFileBuffers(out);
+}
+}  // namespace w10x_uwp
