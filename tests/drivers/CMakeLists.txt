@@ -12,6 +12,17 @@
 # ctest: drivers.unit, drivers.layout (label `drivers`), integration.driver_ioctl (label `driver_e2e`).
 enable_testing()
 
+# The test drivers are freestanding .sys images that link /NODEFAULTLIB. MSVC's
+# Debug /RTC1 runtime checks emit calls to _RTC_InitBase/_RTC_Shutdown/
+# _RTC_CheckStackVars that the CRT would resolve, so with no CRT they are
+# unresolved externals (LNK2019). Strip /RTC* from the C Debug flags for this
+# directory (CMake resolves these at generate time from directory scope, so a
+# per-target or function-local set() does not work). Only C targets here are the
+# .sys drivers and the drv_client guest exe; the C++ test exes keep /RTC1.
+if(MSVC)
+  string(REGEX REPLACE "/RTC[1csu]+" "" CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}")
+endif()
+
 set(WIN10XBOX_MACHINE_DIR ${CMAKE_BINARY_DIR}/bin/machine CACHE PATH "Machine folder for integration tests")
 set(WIN10XBOX_DRIVER_OUT ${CMAKE_BINARY_DIR}/bin/drivers)
 include(${CMAKE_SOURCE_DIR}/drivers/import_lib.cmake)
@@ -22,13 +33,6 @@ win10xbox_import_lib(_ntoskrnl_implib ntoskrnl_host ${CMAKE_CURRENT_SOURCE_DIR}/
 # win10xbox_add_test_driver(<name> <sources...> [DEFINES ...]): a native-subsystem image named <name>.sys
 function(win10xbox_add_test_driver name)
   cmake_parse_arguments(A "" "" "SOURCES;DEFINES" ${ARGN})
-  # A .sys links /NODEFAULTLIB, so MSVC's Debug /RTC1 runtime checks (which emit
-  # _RTC_InitBase/_RTC_Shutdown/_RTC_CheckStackVars calls resolved from the CRT)
-  # would be unresolved externals. Strip /RTC* here; this set() is function-local
-  # (CMake scope), so only the driver targets lose it - the test exes keep it.
-  if(MSVC)
-    string(REGEX REPLACE "/RTC[1csu]+" "" CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}")
-  endif()
   add_executable(${name} ${A_SOURCES})
   set_target_properties(${name} PROPERTIES
     OUTPUT_NAME ${name} SUFFIX ".sys" PREFIX ""
