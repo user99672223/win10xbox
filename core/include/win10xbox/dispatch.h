@@ -170,5 +170,10 @@ bool IsGuestThread();   // true on threads running guest code (TLS flag set by L
 int WaitForGuest(DWORD timeout_ms = INFINITE);
 // Guest path of the main image ("C:\\..."), empty before Launch.
 std::wstring GuestImagePath();
+// Makes host directory `host_dir` visible to the guest as drive `letter`
+// for this run (e.g. host-win32 running an EXE outside the machine folder).
+// Returns false when the VFS module owns drive mappings and has no runtime
+// API for it (then only machine.json "drives" apply).
+bool MapHostDirectory(wchar_t letter, const std::wstring& host_dir);
 
 }  // namespace win10xbox::process

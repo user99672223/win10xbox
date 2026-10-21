@@ -386,6 +386,8 @@ static NTSTATUS NTAPI Xl_NtAreMappedFilesTheSame(PVOID a, PVOID b) {
     return st::NotSameDevice;
 }
 
+std::shared_ptr<ImageSection> ImageSectionFromHandle(HANDLE h) { return SectionFromHandle(h); }
+
 // Called by NtClose/NtDuplicateObject routing (nt_process.cpp).
 void CloseImageSection(const EmulatedObject& o) { CloseSectionObject(o); }
 HANDLE DuplicateImageSection(const EmulatedObject& o) {

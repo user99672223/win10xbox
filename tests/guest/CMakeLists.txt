@@ -1,9 +1,10 @@
 # Guest test programs: real Windows PE executables/DLLs that the layer loads.
 # They must not link to the host's core; they are plain Win32 programs built
 # with the same toolchain (MSVC on CI, llvm-mingw locally) and placed in
-# bin/guest/. The C runtime is linked statically (/MT via CMAKE_MSVC_RUNTIME_LIBRARY
-# in the top-level file, -static for mingw) so the programs depend on kernel32
-# only. Owned by the loader work; see tests/guest/README.md.
+# bin/guest/. The C runtime is linked statically where the toolchain allows it
+# (MSVC /MT via CMAKE_MSVC_RUNTIME_LIBRARY in the top-level file; llvm-mingw
+# -static covers libgcc only, its UCRT is imported as api-ms-win-crt-*.dll).
+# Owned by the loader work; see tests/guest/README.md.
 set(WIN10XBOX_GUEST_DIR ${CMAKE_BINARY_DIR}/bin/guest)
 
 function(win10xbox_add_guest name)

@@ -271,6 +271,7 @@ bool FindView(const void* address, ImageView* copy_out);          // any address
 bool FindViewByBase(const void* base, ImageView* copy_out);
 const std::uint8_t* MainImageInfo();                               // SECTION_IMAGE_INFORMATION of the guest EXE, or null
 void SetMainImage(const std::shared_ptr<ImageSection>& sec);
+std::shared_ptr<ImageSection> ImageSectionFromHandle(HANDLE h);   // null if not ours
 void CloseImageSection(const EmulatedObject& o);
 HANDLE DuplicateImageSection(const EmulatedObject& o);
 // Export-directory name of a mapped image ("ntdll.dll"), empty if none.

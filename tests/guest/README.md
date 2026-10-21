@@ -11,6 +11,10 @@ in for the unmodified programs the layer will eventually load.
 | `guest_cpuid` | `cpuid.c` | Prints `cpuid.1.ecx=<hex>` and `vendor=<12 chars>`, returns 0. Shows what CPUID patching makes the guest see (hypervisor bit 31 of ECX, vendor string). |
 | `guest_dll` | `dll.c` | `int add(int,int)`, `unsigned long long read_tsc(void)` (`__rdtsc`), `unsigned int cpuid_ecx1(void)` (`__cpuidex`), plus a TLS directory (a `__declspec(thread)` variable and a TLS callback that bumps `g_tls_callback_hits`), exported as `tls_callback_hits()`, `tls_callback_reason()` and `tls_value()`. Used by `tests/unit/test_loader.cpp` to test the mapper (relocation, exports, protections, relocated TLS callback array) and the scanner (the cpuid/rdtsc sites). |
 
+CRT linkage: MSVC builds use `/MT` (static CRT). llvm-mingw has no static UCRT,
+so there the programs import `api-ms-win-crt-*` (resolved to Wine's/Windows'
+UCRT by the guest loader); `-static` only removes the libgcc/libc++ DLLs.
+
 `ctest` smoke-runs `guest_hello` and `guest_cpuid` directly (Wine locally).
 `guest_hello` intentionally exits with 42, so its test passes on the output
 regex, not on the exit code. The unit test locates the DLL relative to its own
