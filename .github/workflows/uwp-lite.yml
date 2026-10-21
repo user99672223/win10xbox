@@ -78,14 +78,20 @@ jobs:
           }
           $global:LASTEXITCODE = 0
 
+      # Mirror ci.yml's proven windows Configure. No -DCMAKE_POLICY_VERSION_MINIMUM:
+      # ci.yml builds the same third_party/zydis + core/ on this runner without it,
+      # and the earlier malformed value ("3") poisoned the cache so every
+      # cmake_minimum_required (here, zydis, zycore) errored. shell: cmd so the
+      # package-version arg (1.0.0.N) is passed literally and not reparsed by
+      # PowerShell as a version token.
       - name: Configure
+        shell: cmd
         env: { SCCACHE_GHA_ENABLED: "true" }
         run: >
           cmake -S host-uwp-lite -B build-uwp-lite -G Ninja
           -DCMAKE_BUILD_TYPE=${{ matrix.config }}
           -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
           -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
-          -DCMAKE_POLICY_VERSION_MINIMUM=3.5
           -DUWP_LITE_PACKAGE_VERSION=1.0.0.${{ github.run_number }}
       - name: Build
         env: { SCCACHE_GHA_ENABLED: "true" }

@@ -27,6 +27,7 @@ Milestone commits, so they stay pinpointable regardless:
 | m1  | `fc18910` | loader (PE map, stub rewrite, scanner) — green CI |
 | m2  | `fc18910` | dispatcher + subsystems (VFS/registry/clock/token/NLS) — green CI |
 | m3  | `9e22180` | Wine PE set, winexbox interface + headless backend, Wine conformance baseline — green CI |
+| m4  | `692037b` | driver host (user-mode ntoskrnl, object/IRP engine, KMDF shim) + privileged-instruction trap-and-emulate — green CI on both toolchains |
 
 
 ## M4 - driver host (`drivers/`)
@@ -43,10 +44,15 @@ Green on both CI jobs (commit `52d39be`): the whole `drivers/` tree + the freest
 both, and the IOCTL round-trip (`integration.driver_ioctl`, `integration.driver_kmdf_ioctl`, label `driver_e2e`)
 is a hard gate on the Wine job and runs non-blocking on the Windows job (it asserts on guest stdout, the same
 real-Windows capture gap as `guest_e2e`).
-Remaining M4 item: the privileged-instruction trap-and-emulate module (`cr8`/virtual-IRQL, the kernel-VA
-`KUSER_SHARED_DATA` read, MSR/port I/O) — a self-contained VEH armed via `drivers::SetImageLoadHook`; the probe
-already proved the `#GP`->VEH->resume path on the console. Also not done: PnP/power, real KMDF framework; see
-`drivers/README.md` for the surface and the differences from a real kernel.
+Privileged-instruction trap-and-emulate landed (`drivers/host/privileged.cpp`, commit `a8c4074`): a VEH armed via
+`drivers::SetImageLoadHook` that, for a fault inside a loaded driver image, decodes with Zydis and emulates the
+instructions privileged at CPL 3 — `mov cr8` <-> virtual IRQL (the inline `KeGetCurrentIrql`/`KeRaiseIrql`/
+`KeLowerIrql`), `rdmsr`/`wrmsr`, `in`/`out`, `cli`/`sti`, `rdpmc`, `hlt`/`wbinvd`/`invd`/`invlpg` — then resumes.
+`OurTestDevice`'s `IOCTL_OTD_PRIV` exercises it from kernel mode; verified under Wine (`cr8=1 msr=1 portio=1
+clisti=1`), the same `#GP`->VEH->resume path the probe proved on the console. Gates on linux-cross, non-blocking on
+the Windows job. Follow-ups (`drivers/README.md`): the kernel-VA `KUSER_SHARED_DATA` mirror read and gs-relative
+KPCR fields — memory accesses needing the virtual KUSER/KPCR served, not a one-instruction emulation. Also not
+done: PnP/power, real KMDF framework.
 
 ## M0 - repo skeleton (tag `m0`)
 
