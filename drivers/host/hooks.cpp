@@ -92,7 +92,7 @@ NTSTATUS NTAPI W_NtQueryVolumeInformationFile(HANDLE f, PIO_STATUS_BLOCK io, PVO
     return fn ? fn(f, io, buf, len, cls) : kNotImpl;
 }
 NTSTATUS NTAPI W_NtOpenSymbolicLinkObject(PHANDLE h, ACCESS_MASK a, POBJECT_ATTRIBUTES oa) {
-    if (IsDriverLinkPath(oa)) return Drv_NtOpenSymbolicLinkObject(h, a, oa);
+    if (OwnsSymbolicLinkPath(oa)) return Drv_NtOpenSymbolicLinkObject(h, a, oa);
     using Fn = NTSTATUS(NTAPI*)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES);
     auto fn = Prev<Fn>(kOpenSymLink);
     return fn ? fn(h, a, oa) : kNotImpl;

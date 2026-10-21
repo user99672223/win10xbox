@@ -4,6 +4,7 @@
 LIBRARY ntoskrnl.exe
 EXPORTS
 DbgPrint
+__C_specific_handler
 ExAcquireFastMutex
 ExAcquireResourceExclusiveLite
 ExAcquireResourceSharedLite
@@ -12,12 +13,15 @@ ExDeleteResourceLite
 ExFreePool
 ExFreePoolWithTag
 ExGetPreviousMode
+ExRaiseStatus
 ExInitializeResourceLite
 ExReleaseFastMutex
 ExReleaseResourceLite
 IoCreateDevice
+IoConnectInterrupt
 IoCreateSymbolicLink
 IoDeleteDevice
+IoDisconnectInterrupt
 IoDeleteSymbolicLink
 IoGetCurrentProcess
 IoRegisterPlugPlayNotification
@@ -39,6 +43,7 @@ KeReleaseSpinLock
 KeResetEvent
 KeAcquireSpinLockRaiseToDpc
 KeSetEvent
+KeSynchronizeExecution
 KeSetTimer
 KeWaitForSingleObject
 KfLowerIrql

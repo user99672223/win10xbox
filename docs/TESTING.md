@@ -5,7 +5,8 @@
 | `unit.*` | `tests/unit` | linux-cross (Wine) + windows |
 | `integration.*` | `tests/integration` | windows (real EXEs through host-win32) |
 | Wine conformance subset (`wine_conformance`) | `tests/wine-tests` | linux-cross (Wine), non-blocking; windows: skips (see below) |
-| kmtest subset | `tests/kmtest` | windows (M4) |
+| `drivers.*`, `integration.driver_*` | `tests/drivers` | linux-cross (Wine) + windows (see below) |
+| kmtest subset | `tests/kmtest` | windows (M4, not yet started: `tests/drivers/kmtest.h` is a minimal in-driver harness) |
 
 ## Wine test subset (M3 fidelity baseline)
 
@@ -133,3 +134,19 @@ Add `win10xbox_wine_test(<dll> <test> run 9999)` to
 `crash 0` or `timeout 0`), then add the row above. Details and the selection
 rationale are in `tests/wine-tests/SUBSET.md`. When M3/M4 work lowers a number,
 lower the baseline in the same commit so the gain is locked in.
+
+## Driver host tests (M4)
+
+`tests/drivers` builds three WDM/KMDF test drivers (`OurTestDevice.sys`, `OurKmdfDevice.sys`, `OurStubProbe.sys`,
+`OurFailDriver.sys`) as freestanding native-subsystem PEs, a guest client for each, and:
+
+| ctest | label | what |
+|-------|-------|------|
+| `drivers.unit` | `drivers` | loads the real drivers into the host and drives them through the dispatcher entry points (27 cases) |
+| `drivers.layout` | `drivers` | `ntk.h` / WDF shim structure layouts vs the mingw-w64 ddk and KMDF 1.33 headers (mingw only) |
+| `integration.driver_ioctl` | `driver_e2e` | `drv_host.exe --driver OurTestDevice.sys C:\guest\drv_client.exe`: `CreateFile("\\.\OurTestDevice")` + `DeviceIoControl` through the Wine ntdll, the dispatcher and the IRP engine |
+| `integration.driver_kmdf_ioctl` | `driver_e2e` | the same for the KMDF driver on the WDF shim |
+
+The `driver_e2e` tests need the same machine folder as the guest tests (Wine builtins + NLS data) and SKIP (exit 77)
+without it; `drivers.unit` needs nothing. Run: `ctest --test-dir <build> -L driver --output-on-failure`.
+

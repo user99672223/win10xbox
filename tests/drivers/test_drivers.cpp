@@ -246,6 +246,40 @@ TEST(concurrent_requests_from_many_threads) {
     Drv_NtClose(shared);
 }
 
+TEST(interrupt_service_routine_runs_on_worker_at_dirql) {
+    Loaded d(L"OurTestDevice.sys");
+    if (!NT_SUCCESS(d.st)) { CHECK(false); return; }
+    HANDLE h;
+    CHECK_ST(Open(L"\\??\\OurTestDevice", &h), STATUS_SUCCESS);
+    CHECK(!InjectInterrupt(0x99));          // nothing connected there
+    for (int i = 0; i < 5; ++i) CHECK(InjectInterrupt(OTD_INTERRUPT_VECTOR));
+    OTD_INFO info{};
+    for (int i = 0; i < 200; ++i) {
+        CHECK_ST(Ioctl(h, IOCTL_OTD_INFO, nullptr, 0, &info, sizeof info), STATUS_SUCCESS);
+        if (info.IsrCount == 5) break;
+        Sleep(10);
+    }
+    CHECK_EQ(info.IsrCount, 5ul);
+    CHECK_EQ(info.IsrIrql, static_cast<unsigned long>(OTD_ISR_IRQL));
+    CHECK_EQ(GetVirtualIrql(), 0);
+    Drv_NtClose(h);
+}
+
+TEST(structured_exception_handling_inside_a_driver) {
+    Loaded d(L"OurTestDevice.sys");
+    if (!NT_SUCCESS(d.st)) { CHECK(false); return; }
+    HANDLE h;
+    CHECK_ST(Open(L"\\??\\OurTestDevice", &h), STATUS_SUCCESS);
+    OTD_SEH_OUT r{};
+    CHECK_ST(Ioctl(h, IOCTL_OTD_SEH, nullptr, 0, &r, sizeof r), STATUS_SUCCESS);
+    CHECK_EQ(r.CaughtRaise, 1ul);
+    CHECK_MSG(r.RaiseCode == 0xC000009Aul, "RaiseCode=%08lx", r.RaiseCode);     // ExRaiseStatus(STATUS_INSUFFICIENT_RESOURCES) caught by __except
+    CHECK_EQ(r.FinallyRan, 1ul);             // the __finally between them ran during unwinding
+    CHECK_EQ(r.CaughtFault, 1ul);
+    CHECK_MSG(r.FaultCode == 0xC0000005ul, "FaultCode=%08lx", r.FaultCode);     // access violation from a NULL store
+    Drv_NtClose(h);
+}
+
 TEST(kernel_selftest_all_checks_pass) {
     Loaded d(L"OurTestDevice.sys");
     if (!NT_SUCCESS(d.st)) { CHECK(false); return; }
@@ -481,6 +515,93 @@ TEST(kernel_waits_spinlocks_and_dpc_flush) {
     KeFlushQueuedDpcs();
     CHECK_EQ(ctx.irql.load(), 2);
     CHECK(!KeCancelTimer(&timer));
+}
+
+namespace {
+struct QEntry { PVOID routine; ULONG flags; PWSTR name; PVOID context; ULONG def_type; PVOID def_data; ULONG def_len; };
+struct Seen { int calls = 0; std::wstring names; ULONG blob_len = 0; ULONG blob_type = 0; std::wstring multi; };
+NTSTATUS NTAPI QueryCb(PWSTR name, ULONG type, PVOID data, ULONG len, PVOID ctx, PVOID entry_ctx) {
+    auto* seen = static_cast<Seen*>(ctx);
+    ++seen->calls;
+    seen->names += std::wstring(name ? name : L"?") + L";";
+    if (entry_ctx == reinterpret_cast<PVOID>(1)) { seen->blob_len = len; seen->blob_type = type; }
+    if (entry_ctx == reinterpret_cast<PVOID>(2)) seen->multi += std::wstring(static_cast<wchar_t*>(data), len / 2 - 1) + L"|";
+    return STATUS_SUCCESS;
+}
+}  // namespace
+
+TEST(registry_query_and_write_helpers) {
+    using Create = NTSTATUS(NTAPI*)(ULONG, PWSTR);
+    using Write = NTSTATUS(NTAPI*)(ULONG, PCWSTR, PCWSTR, ULONG, PVOID, ULONG);
+    using Query = NTSTATUS(NTAPI*)(ULONG, PCWSTR, PVOID, PVOID, PVOID);
+    using Del = NTSTATUS(NTAPI*)(ULONG, PCWSTR, PCWSTR);
+    using Check = NTSTATUS(NTAPI*)(ULONG, PCWSTR);
+    auto create = reinterpret_cast<Create>(dt::FindExport("RtlCreateRegistryKey"));
+    auto write = reinterpret_cast<Write>(dt::FindExport("RtlWriteRegistryValue"));
+    auto query = reinterpret_cast<Query>(dt::FindExport("RtlQueryRegistryValues"));
+    auto del = reinterpret_cast<Del>(dt::FindExport("RtlDeleteRegistryValue"));
+    auto check = reinterpret_cast<Check>(dt::FindExport("RtlCheckRegistryKey"));
+    CHECK(create && write && query && del && check);
+    if (!create) return;
+    const wchar_t* key = L"\\Registry\\Machine\\Software\\Win10xboxDrvTest";
+    NTSTATUS st = create(0, const_cast<PWSTR>(key));
+    if (st == STATUS_ACCESS_DENIED) { std::printf("  (skipped: cannot create HKLM\\Software keys here)\n"); return; }
+    CHECK_ST(st, STATUS_SUCCESS);
+    ULONG dword = 7;
+    unsigned char blob[9] = {1, 2, 3, 4, 5, 6, 7, 8, 9};
+    wchar_t sz[] = L"driver";
+    wchar_t multi[] = L"alpha\0beta\0";
+    CHECK_ST(write(0, key, L"Count", 4, &dword, sizeof dword), STATUS_SUCCESS);
+    CHECK_ST(write(0, key, L"Name", 1, sz, sizeof sz), STATUS_SUCCESS);
+    CHECK_ST(write(0, key, L"Blob", 3, blob, sizeof blob), STATUS_SUCCESS);
+    CHECK_ST(write(0, key, L"List", 7, multi, sizeof multi + 2), STATUS_SUCCESS);
+    CHECK_ST(check(0, key), STATUS_SUCCESS);
+    CHECK_ST(check(0, L"\\Registry\\Machine\\Software\\Win10xboxDrvTest\\Nope"), STATUS_OBJECT_NAME_NOT_FOUND);
+
+    ULONG out_dword = 0, out_default = 0;
+    UNICODE_STRING out_name = {};
+    ULONG missing_default = 42;
+    Seen seen;
+    QEntry table[] = {
+        {nullptr, 0x20, const_cast<PWSTR>(L"Count"), &out_dword, 0, nullptr, 0},
+        {nullptr, 0x20, const_cast<PWSTR>(L"Name"), &out_name, 0, nullptr, 0},
+        {reinterpret_cast<PVOID>(&QueryCb), 0, const_cast<PWSTR>(L"Blob"), reinterpret_cast<PVOID>(1), 0, nullptr, 0},
+        {reinterpret_cast<PVOID>(&QueryCb), 0, const_cast<PWSTR>(L"List"), reinterpret_cast<PVOID>(2), 0, nullptr, 0},
+        {nullptr, 0x20, const_cast<PWSTR>(L"Absent"), &out_default, 4, &missing_default, 4},
+        {nullptr, 0, nullptr, nullptr, 0, nullptr, 0},
+    };
+    CHECK_ST(query(0, key, table, &seen, nullptr), STATUS_SUCCESS);
+    CHECK_EQ(out_dword, 7ul);
+    CHECK(out_name.Buffer && std::wstring(out_name.Buffer, out_name.Length / 2) == L"driver");
+    CHECK_EQ(seen.blob_len, 9ul);
+    CHECK_EQ(seen.blob_type, 3ul);
+    CHECK(seen.multi == L"alpha|beta|");
+    CHECK_EQ(out_default, 42ul);
+    if (out_name.Buffer) reinterpret_cast<void(NTAPI*)(PVOID)>(dt::FindExport("ExFreePool"))(out_name.Buffer);
+
+    QEntry required[] = {{nullptr, 0x20 | 0x4, const_cast<PWSTR>(L"Absent"), &out_default, 0, nullptr, 0}, {nullptr, 0, nullptr, nullptr, 0, nullptr, 0}};
+    CHECK_ST(query(0, key, required, nullptr, nullptr), STATUS_OBJECT_NAME_NOT_FOUND);
+
+    Seen all;
+    QEntry enumerate[] = {{reinterpret_cast<PVOID>(&QueryCb), 0, nullptr, nullptr, 0, nullptr, 0}, {nullptr, 0, nullptr, nullptr, 0, nullptr, 0}};
+    CHECK_ST(query(0, key, enumerate, &all, nullptr), STATUS_SUCCESS);
+    CHECK_MSG(all.calls >= 5, "enumerated %d values: %ls", all.calls, all.names.c_str());   // Count Name Blob List(x2)
+
+    CHECK_ST(del(0, key, L"Count"), STATUS_SUCCESS);
+    out_dword = 0;
+    QEntry gone[] = {{nullptr, 0x20 | 0x4, const_cast<PWSTR>(L"Count"), &out_dword, 0, nullptr, 0}, {nullptr, 0, nullptr, nullptr, 0, nullptr, 0}};
+    CHECK_ST(query(0, key, gone, nullptr, nullptr), STATUS_OBJECT_NAME_NOT_FOUND);
+
+    // clean up the key through the Nt interface
+    using FnOpen = NTSTATUS(NTAPI*)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES);
+    using FnDelKey = NTSTATUS(NTAPI*)(HANDLE);
+    UNICODE_STRING kn = Us(key);
+    OBJECT_ATTRIBUTES oa;
+    InitializeObjectAttributes(&oa, &kn, OBJ_CASE_INSENSITIVE, nullptr, nullptr);
+    HANDLE hk = nullptr;
+    auto open = reinterpret_cast<FnOpen>(dt::ResolveNtFunction("NtOpenKey"));
+    auto delkey = reinterpret_cast<FnDelKey>(dt::ResolveNtFunction("NtDeleteKey"));
+    if (open && delkey && NT_SUCCESS(open(&hk, 0x10000 | 0x20019, &oa))) { delkey(hk); CloseHandle(hk); }
 }
 
 TEST(printf_family) {

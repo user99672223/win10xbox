@@ -130,7 +130,8 @@ std::size_t ExportCount();
 //   if (drivers::OwnsPath(attr))   return drivers::Drv_NtCreateFile(...);
 //   if (drivers::OwnsHandle(h))    return drivers::Drv_NtDeviceIoControlFile(...);
 bool OwnsPath(const OBJECT_ATTRIBUTES* attr);   // resolves to a driver-created device
-bool OwnsHandle(HANDLE h);                      // handle produced by Drv_NtCreateFile/Drv_NtOpenFile
+bool OwnsHandle(HANDLE h);                      // handle produced by Drv_NtCreateFile/Drv_NtOpenFile/Drv_NtOpenSymbolicLinkObject
+bool OwnsSymbolicLinkPath(const OBJECT_ATTRIBUTES* attr);   // names a symbolic link a driver created (\??\X)
 
 NTSTATUS NTAPI Drv_NtCreateFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr, PIO_STATUS_BLOCK io,
                                 PLARGE_INTEGER alloc_size, ULONG attributes, ULONG sharing, ULONG disposition,

@@ -2,16 +2,12 @@
 // user-mode ntoskrnl, build the DRIVER_OBJECT and call DriverEntry.
 #include "../ntoskrnl/internal.h"
 #include <algorithm>
+#include <atomic>
 #include <memory>
-
-namespace ntk {
-VOID NTAPI IoDeleteDevice(PDEVICE_OBJECT);
-}
 
 namespace win10xbox::drivers::detail {
 
 LIST_ENTRY g_ps_loaded_module_list;
-void CloseHandlesOfDriver(DRIVER_OBJECT* drv);   // irp_top.cpp
 
 struct DriverRec {
     std::uint32_t id = 0;
@@ -24,7 +20,6 @@ struct DriverRec {
     StubArena arena;
     std::size_t stubs = 0;
     KLDR_DATA_TABLE_ENTRY_NTK* ldr = nullptr;
-    bool unloaded = false;
 };
 
 namespace {
@@ -155,7 +150,7 @@ NTSTATUS CreateDriverObject(const std::wstring& name, const std::wstring& regist
     d->HardwareDatabase = &blob->hwdb;
     d->DriverExtension = &blob->ext;
     blob->ext.DriverObject = d;
-    // DriverExtension->ServiceKeyName = the registry path (the key name is its last component).
+    // DriverExtension->ServiceKeyName is the last component of the registry path.
     std::wstring svc = registry_path;
     size_t slash = svc.find_last_of(L'\\');
     if (slash != std::wstring::npos) svc = svc.substr(slash + 1);
@@ -167,7 +162,7 @@ NTSTATUS CreateDriverObject(const std::wstring& name, const std::wstring& regist
 }
 
 void DestroyDriverObject(DRIVER_OBJECT* d) {
-    // The blob starts with the DRIVER_OBJECT: DriverObjectDestroy is registered, drop the creation reference.
+    // The DriverBlob starts with the DRIVER_OBJECT: drop the creation reference.
     ObjDeref(d);
 }
 
@@ -192,8 +187,7 @@ void DeleteLeftoverDevices(DRIVER_OBJECT* drv) {
 void InsertLoadedModule(DriverRec* r) {
     if (!r->has_image) return;
     const std::wstring full = L"\\SystemRoot\\System32\\drivers\\" + r->file_name;
-    SIZE_T bytes = sizeof(KLDR_DATA_TABLE_ENTRY_NTK);
-    auto* e = static_cast<KLDR_DATA_TABLE_ENTRY_NTK*>(PoolAlloc(bytes, kTagMisc));
+    auto* e = static_cast<KLDR_DATA_TABLE_ENTRY_NTK*>(PoolAlloc(sizeof(KLDR_DATA_TABLE_ENTRY_NTK), kTagMisc));
     if (!e) return;
     e->DllBase = r->img.base;
     e->EntryPoint = r->img.entry;
@@ -220,6 +214,33 @@ void ReleaseRec(DriverRec* r) {
     RemoveLoadedModule(r);
     if (r->drv) { DestroyDriverObject(r->drv); r->drv = nullptr; }
     if (r->has_image) { loader::UnmapImage(r->img); r->has_image = false; }
+}
+
+void InsertDriverRec(std::unique_ptr<DriverRec> r) {
+    AcquireSRWLockExclusive(&g_lock);   // DriverEntry may call back into the host: the record must be findable
+    Drivers().push_back(std::move(r));
+    ReleaseSRWLockExclusive(&g_lock);
+}
+
+// Calls DriverEntry(drv, regpath) at PASSIVE_LEVEL; `raw` is already registered in Drivers().
+NTSTATUS RunDriverEntry(DriverRec* raw) {
+    DRIVER_OBJECT* drv = raw->drv;
+    UNICODE_STRING* regpath = &reinterpret_cast<DriverBlob*>(drv)->regpath;
+    KIRQL saved = SwapIrql(PASSIVE_LEVEL);
+    NTSTATUS st = drv->DriverInit(drv, regpath);
+    SwapIrql(saved);
+    TRACE(driver, "%ls: DriverEntry returned %08lx", raw->name.c_str(), static_cast<unsigned long>(st));
+    return st;
+}
+
+void RollBack(DriverRec* raw) {
+    DeleteLeftoverDevices(raw->drv);
+    std::unique_ptr<DriverRec> failed;
+    AcquireSRWLockExclusive(&g_lock);
+    for (auto it = Drivers().begin(); it != Drivers().end(); ++it)
+        if (it->get() == raw) { failed = std::move(*it); Drivers().erase(it); break; }
+    ReleaseSRWLockExclusive(&g_lock);
+    if (failed) ReleaseRec(failed.get());
 }
 
 }  // namespace
@@ -287,30 +308,13 @@ NTSTATUS LoadDriver(const wchar_t* host_path, const LoadOptions* opts, DriverInf
     rec->id = g_next_id++;
     InsertLoadedModule(rec.get());
 
-    // Registry path is passed as a counted string that stays valid for the driver's lifetime.
-    UNICODE_STRING* regpath = &reinterpret_cast<DriverBlob*>(drv)->regpath;
     TRACE(driver, "%ls: calling DriverEntry at %p (image %p, %zu bytes, %zu stubbed imports)", rec->name.c_str(),
           rec->img.entry, rec->img.base, rec->img.size, rec->stubs);
-    KIRQL saved = SwapIrql(PASSIVE_LEVEL);
     DriverRec* raw = rec.get();
-    {
-        // DriverEntry may create devices and call back into the host; the record must be findable.
-        AcquireSRWLockExclusive(&g_lock);
-        Drivers().push_back(std::move(rec));
-        ReleaseSRWLockExclusive(&g_lock);
-    }
-    st = drv->DriverInit(drv, regpath);
-    SwapIrql(saved);
-    TRACE(driver, "%ls: DriverEntry returned %08lx", raw->name.c_str(), static_cast<unsigned long>(st));
+    InsertDriverRec(std::move(rec));
+    st = RunDriverEntry(raw);
     if (!NT_SUCCESS(st)) {
-        // Failed load: remove what the driver created, drop the image.
-        DeleteLeftoverDevices(drv);
-        std::unique_ptr<DriverRec> failed;
-        AcquireSRWLockExclusive(&g_lock);
-        for (auto it = Drivers().begin(); it != Drivers().end(); ++it)
-            if (it->get() == raw) { failed = std::move(*it); Drivers().erase(it); break; }
-        ReleaseSRWLockExclusive(&g_lock);
-        if (failed) ReleaseRec(failed.get());
+        RollBack(raw);
         return st;
     }
     ClearInitializingFlags(drv);
@@ -349,3 +353,38 @@ NTSTATUS UnloadDriver(std::uint32_t id) {
 }
 
 }  // namespace win10xbox::drivers
+
+// IoCreateDriver / IoDeleteDriver: create a driver object whose entry point is code that is already
+// loaded (what "manually mapped" drivers do).
+namespace ntk {
+using namespace win10xbox::drivers::detail;
+
+NTSTATUS NTAPI IoCreateDriver(PUNICODE_STRING name, PDRIVER_INITIALIZE init) {
+    if (!init) return STATUS_INVALID_PARAMETER;
+    auto rec = std::make_unique<DriverRec>();
+    static std::atomic<unsigned> counter{1};
+    rec->name = name && name->Length ? ToWide(*name) : L"\\Driver\\Anonymous" + std::to_wstring(counter++);
+    rec->file_name = rec->name.substr(rec->name.find_last_of(L'\\') + 1);
+    rec->registry_path = L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\" + rec->file_name;
+    if (DriverByName(rec->name)) return STATUS_OBJECT_NAME_COLLISION;
+    NTSTATUS st = CreateDriverObject(rec->name, rec->registry_path, &rec->drv);
+    if (!NT_SUCCESS(st)) return st;
+    rec->drv->DriverInit = init;
+    rec->id = g_next_id++;
+    DriverRec* raw = rec.get();
+    InsertDriverRec(std::move(rec));
+    st = RunDriverEntry(raw);
+    if (!NT_SUCCESS(st)) {
+        RollBack(raw);
+        return st;
+    }
+    ClearInitializingFlags(raw->drv);
+    return STATUS_SUCCESS;
+}
+
+VOID NTAPI IoDeleteDriver(PDRIVER_OBJECT drv) {
+    DriverRec* r = DriverFromObject(drv);
+    if (r) win10xbox::drivers::UnloadDriver(r->id);
+}
+
+}  // namespace ntk

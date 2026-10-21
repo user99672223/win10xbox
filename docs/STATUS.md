@@ -29,6 +29,19 @@ Milestone commits, so they stay pinpointable regardless:
 | m3  | `9e22180` | Wine PE set, winexbox interface + headless backend, Wine conformance baseline — green CI |
 
 
+## M4 - driver host (`drivers/`)
+
+`drivers/` loads kernel-mode drivers in user mode and routes guest device I/O to them. A WDM driver
+(`OurTestDevice.sys`, freestanding C against `drivers/include/ntk/ntk.h`) is mapped by `core/loader`, its imports are
+bound to a ~400-function user-mode ntoskrnl, `DriverEntry` builds `\Device\OurTestDevice` + `\??\OurTestDevice`, and a
+guest `CreateFile`/`DeviceIoControl` (buffered, direct, neither, pending-from-DPC, timer, overlapped) travels
+Wine ntdll -> dispatcher -> `Drv_NtDeviceIoControlFile` -> IRP -> `IoCallDriver` -> driver -> `IoCompleteRequest` -> output
+copy-back, verified end to end under Wine (`integration.driver_ioctl`). KMDF drivers built with Microsoft's public
+headers run on a minimal WDF function-table shim (`integration.driver_kmdf_ioctl`). `drivers.unit` has 27 cases.
+Not done: PnP/power, physical memory/port I/O (privileged-instruction module), real KMDF framework; see
+`drivers/README.md` for the surface and the differences from a real kernel. Verified on Wine only so far; the
+MSVC/Windows build of `drivers/` and the test drivers is wired but not exercised here.
+
 ## M0 - repo skeleton (tag `m0`)
 
 Layout created per `docs/ARCHITECTURE.md`; the capability probe moved to

@@ -58,15 +58,17 @@ donor fits, and the commit that adds it says why.
 |   version   PEB/KUSER_SHARED_DATA spoof: 10.0.19045 (22H2)             |
 |   trace     channels, relay log of every syscall with args + NTSTATUS  |
 +-----------------------------------------------------------------------+
-|  OUR DRIVER HOST  (drivers/)                                           |
-|   fake ntoskrnl.exe: ReactOS-derived export surface (Io/Ke/Ex/Mm/Ob/   |
-|   Zw/Rtl subset drivers use), DRIVER_OBJECT/DEVICE_OBJECT/IRP model,   |
-|   object manager (IoCreateDevice, IoCreateSymbolicLink -> \??\ names), |
-|   NtDeviceIoControlFile -> IRP_MJ_DEVICE_CONTROL routing, virtual IRQL, |
-|   DPC/ISR queue on a dedicated thread, KMDF built from Microsoft's      |
-|   open source on top.  .sys files load through the same loader.        |
+|  OUR DRIVER HOST  (drivers/, details in drivers/README.md)             |
+|   user-mode ntoskrnl/hal export surface (Io/Ke/Ex/Mm/Ob/Ps/Rtl/CRT,    |
+|   Zw* bound to the dispatcher's own syscalls), DRIVER_OBJECT/          |
+|   DEVICE_OBJECT/FILE_OBJECT/IRP model, namespace (\Device\X, \??\X),  |
+|   NtCreateFile/NtDeviceIoControlFile/NtClose on driver devices ->      |
+|   IRP_MJ_* -> IoCallDriver -> completion, virtual per-thread IRQL, one  |
+|   worker thread for DPCs/timers/work items/ISRs, a minimal KMDF (WDF)  |
+|   function-table shim.  .sys files load through the same loader.       |
 |   VEH trap-and-emulate for privileged instructions (in/out, rdmsr/     |
-|   wrmsr, cli/sti, mov cr*) against virtual CPU state.                  |
+|   wrmsr, cli/sti, mov cr*) against virtual CPU state is a separate     |
+|   module (not part of drivers/).                                       |
 +-----------------------------------------------------------------------+
 |  Machine folder  (machine/)                                            |
 |   a Wine-prefix-like directory that IS the virtual PC's C:\ -           |
@@ -130,8 +132,9 @@ core/         static lib, pure Win32/NT C++20, zero UWP/WinRT dependencies
   cpu/        cpuid/rdtsc virtualisation, virtual CPU state
 host-win32/   console host for CI and desktop testing
 host-uwp/     C++/WinRT UWP shell (Xbox target); build + package only
-drivers/      fake ntoskrnl, KMDF integration, VEH trap-and-emulate,
-              virtual-device plugin interface, test drivers
+drivers/      driver host: user-mode ntoskrnl, object manager + IRP engine,
+              KMDF shim (the VEH trap-and-emulate for privileged instructions
+              is a separate module); test drivers live in tests/drivers
 wine-pe/      scripts/patches to build Wine's PE DLLs with llvm-mingw
 winexbox/     display/input backend interface for Wine's win32u + stubs
 machine/      machine-folder layout, hive handling, config schema, DLL import
@@ -151,7 +154,8 @@ docs/         this file, DECISIONS.md, SYSCALLS.md (generated), BUILD.md,
 - Wine-derived code lives in `wine-pe/` (build scripts + patches, LGPL-2.1+
   output) and in clearly marked `*_wine.cpp` files whose header states the
   Wine origin; those files are LGPL-2.1+.
-- ReactOS-derived code lives under `drivers/ntoskrnl/reactos/` and is GPL-2.0+;
+- ReactOS-derived code (none so far: the M4 driver host is original MIT code written from the documented
+  Windows layouts) would live under `drivers/ntoskrnl/reactos/` and be GPL-2.0+;
   it is built into a separate DLL (`ntoskrnl.exe` for the driver host) so the
   GPL boundary is a process-visible module boundary.
 - `third_party/` keeps each project's own license file.

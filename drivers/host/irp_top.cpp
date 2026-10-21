@@ -49,6 +49,7 @@ SRWLOCK g_lock = SRWLOCK_INIT;
 std::unordered_map<HANDLE, OpenFile*>& Handles() { static std::unordered_map<HANDLE, OpenFile*> m; return m; }
 std::unordered_map<HANDLE, std::wstring>& LinkHandles() { static std::unordered_map<HANDLE, std::wstring> m; return m; }
 std::atomic<int> g_open_count{0};
+std::atomic<int> g_link_count{0};
 std::atomic<std::uint64_t> g_serial{1};
 
 struct Guard {   // keeps an OpenFile alive across one operation
@@ -116,7 +117,13 @@ NTSTATUS DispatchIrp(PIRP irp, PDEVICE_OBJECT top, TopContext* t, bool async, UL
     }
     KPROCESSOR_MODE prev = SwapPreviousMode(irp->RequestorMode);
     bool was_in = SwapInDriverCall(true);
+    const KIRQL irql_before = CurrentIrql();
     NTSTATUS st = CallDriver(top, irp);
+    if (CurrentIrql() != irql_before) {
+        // A dispatch routine must return at the IRQL it was called at (real Windows: IRQL_NOT_LESS_OR_EQUAL bug check).
+        IrqlViolation("driver dispatch routine returned at a different IRQL", CurrentIrql(), irql_before);
+        SwapIrql(irql_before);
+    }
     SwapInDriverCall(was_in);
     SwapPreviousMode(prev);
     if (async) return st;   // the IRP may already be gone
@@ -499,7 +506,9 @@ void CloseAllHandles() {
     AcquireSRWLockExclusive(&g_lock);
     for (auto& kv : Handles()) all.push_back(kv.second);
     Handles().clear();
+    for (auto& kv : LinkHandles()) dsp::UnregisterEmulatedObject(kv.first);
     LinkHandles().clear();
+    g_link_count = 0;
     ReleaseSRWLockExclusive(&g_lock);
     for (OpenFile* of : all) CloseOpenFile(of);
 }
@@ -538,12 +547,7 @@ bool OwnsPath(const OBJECT_ATTRIBUTES* attr) {
 }
 
 bool OwnsHandle(HANDLE h) {
-    if (g_open_count.load() == 0) {
-        AcquireSRWLockShared(&g_lock);
-        bool any = !LinkHandles().empty();
-        ReleaseSRWLockShared(&g_lock);
-        if (!any) return false;
-    }
+    if (g_open_count.load() == 0 && g_link_count.load() == 0) return false;
     AcquireSRWLockShared(&g_lock);
     bool owned = Handles().count(h) != 0 || LinkHandles().count(h) != 0;
     ReleaseSRWLockShared(&g_lock);
@@ -576,6 +580,7 @@ NTSTATUS NTAPI Drv_NtClose(HANDLE handle) {
     if (it != Handles().end()) { of = it->second; Handles().erase(it); }
     else if (LinkHandles().erase(handle)) {
         ReleaseSRWLockExclusive(&g_lock);
+        --g_link_count;
         dsp::UnregisterEmulatedObject(handle);
         return STATUS_SUCCESS;
     }
@@ -639,6 +644,7 @@ NTSTATUS NTAPI Drv_NtOpenSymbolicLinkObject(PHANDLE handle, ACCESS_MASK access, 
     AcquireSRWLockExclusive(&g_lock);
     LinkHandles()[h] = target;
     ReleaseSRWLockExclusive(&g_lock);
+    ++g_link_count;
     *handle = h;
     return STATUS_SUCCESS;
 }
@@ -661,7 +667,7 @@ NTSTATUS NTAPI Drv_NtQuerySymbolicLinkObject(HANDLE handle, PUNICODE_STRING targ
     return STATUS_SUCCESS;
 }
 
-bool IsDriverLinkPath(const OBJECT_ATTRIBUTES* attr) {
+bool OwnsSymbolicLinkPath(const OBJECT_ATTRIBUTES* attr) {
     if (!attr || !attr->ObjectName || attr->RootDirectory || !NsHasObjects()) return false;
     return NsQueryLink(View(*attr->ObjectName), nullptr);
 }

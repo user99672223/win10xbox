@@ -821,7 +821,6 @@ std::vector<PDEVICE_OBJECT> ShutdownDevices() {
     ReleaseSRWLockShared(&g_shutdown_lock);
     return v;
 }
-void IoCancelAllForFile(PFILE_OBJECT) {}
 namespace {
 const Export kIoTable[] = {
 #define X(n) {#n, reinterpret_cast<void*>(&ntk::n)}
@@ -841,6 +840,7 @@ const Export kIoTable[] = {
     X(MmMapLockedPagesSpecifyCache), X(MmMapLockedPages), X(MmUnmapLockedPages),
     X(IoGetStackLimits), X(IoGetRemainingStackSize), X(IoIsWdmVersionAvailable), X(IoCreateFile),
     X(IoRegisterShutdownNotification), X(IoUnregisterShutdownNotification), X(IoGetDeviceObjectPointer),
+    X(IoCreateDriver), X(IoDeleteDriver),
     X(PoCallDriver), X(PoStartNextPowerIrp), X(PoSetPowerState),
 #undef X
     // Functions that are macros/inlines in the WDK headers but also exported.

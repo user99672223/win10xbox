@@ -296,7 +296,7 @@ bool InterruptInject(ULONG vector) {
     for (InterruptRec* r : targets) {
         WorkerPost([r] {
             KIRQL old = SpinAcquireRaise(r->lock, r->sync_irql);
-            if (r->connected) r->routine(reinterpret_cast<PVOID>(r), r->ctx);
+            if (r->connected) r->routine(reinterpret_cast<PKINTERRUPT>(r), r->ctx);
             SpinReleaseLower(r->lock, old);
         });
     }

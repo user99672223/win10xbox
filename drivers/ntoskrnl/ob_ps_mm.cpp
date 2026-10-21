@@ -503,7 +503,6 @@ const Export kObPsMmTable[] = {
     X(EtwRegister), X(EtwUnregister), X(EtwWrite), X(EtwWriteTransfer), X(EtwWriteString), X(EtwEventEnabled),
     X(EtwProviderEnabled), X(EtwSetInformation), X(IoWMIRegistrationControl), X(WmiTraceMessage),
 #undef X
-    {"ObfReferenceObject_alias_unused", nullptr},
 };
 }  // namespace
 
@@ -529,7 +528,7 @@ const Export kDataExports[] = {
     {"PsLoadedModuleList", &g_ps_loaded_module_list},
 };
 
-ExportGroup ObPsMmExports() { return {kObPsMmTable, sizeof(kObPsMmTable) / sizeof(kObPsMmTable[0]) - 1}; }
+ExportGroup ObPsMmExports() { return {kObPsMmTable, sizeof(kObPsMmTable) / sizeof(kObPsMmTable[0])}; }
 ExportGroup DataExports() { return {kDataExports, sizeof(kDataExports) / sizeof(kDataExports[0])}; }
 
 }  // namespace win10xbox::drivers::detail

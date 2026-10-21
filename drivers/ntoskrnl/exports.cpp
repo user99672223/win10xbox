@@ -25,7 +25,7 @@ using ExportMap = std::unordered_map<std::string, void*>;
 ExportMap BuildMap() {
     ExportMap m;
     const ExportGroup groups[] = {KeExports(), ExExports(), IoExports(), ObPsMmExports(), RtlExports(), DataExports(),
-                                  WdfLdrExports()};
+                                  RegistryExports(), WdfLdrExports()};
     for (const ExportGroup& g : groups)
         for (std::size_t i = 0; i < g.size; ++i) {
             if (!g.data[i].addr) continue;

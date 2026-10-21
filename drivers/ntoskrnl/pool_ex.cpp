@@ -121,8 +121,6 @@ std::vector<std::pair<std::uint32_t, std::int64_t>> PoolLiveTags() {
 namespace ntk {
 using namespace win10xbox::drivers::detail;
 
-KIRQL NTAPI KeGetCurrentIrql(void);
-
 namespace {
 void CheckPagedAtDispatch(ULONG type) {
     // POOL_TYPE: bit 0 set = paged.
@@ -410,9 +408,7 @@ KPROCESSOR_MODE NTAPI ExGetPreviousMode(void) { return PreviousMode(); }
 VOID NTAPI ExRaiseAccessViolation(void) { RaiseException(STATUS_ACCESS_VIOLATION, 0, 0, nullptr); }
 VOID NTAPI ExRaiseDatatypeMisalignment(void) { RaiseException(0x80000002 /* STATUS_DATATYPE_MISALIGNMENT */, 0, 0, nullptr); }
 VOID NTAPI ExRaiseStatus(NTSTATUS status) { RaiseException(static_cast<DWORD>(status), 0, 0, nullptr); }
-VOID NTAPI ExSetTimerResolution_unused(void) {}
 BOOLEAN NTAPI ExIsProcessorFeaturePresent(ULONG feature) { return IsProcessorFeaturePresent(feature) ? TRUE : FALSE; }
-ULONG NTAPI ExIsProcessorFeaturePresent_dummy(void) { return 0; }
 
 }  // namespace ntk
 

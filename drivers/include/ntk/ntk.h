@@ -82,7 +82,15 @@ typedef struct _OBJECT_ATTRIBUTES {
 typedef struct _IO_STATUS_BLOCK { union { NTSTATUS Status; PVOID Pointer; }; ULONG_PTR Information; } IO_STATUS_BLOCK, *PIO_STATUS_BLOCK;
 typedef struct NTK_ALIGN(16) _SLIST_HEADER { ULONGLONG Alignment; ULONGLONG Region; } SLIST_HEADER, *PSLIST_HEADER;
 typedef struct _SLIST_ENTRY { struct _SLIST_ENTRY *Next; } SLIST_ENTRY, *PSLIST_ENTRY;
-typedef struct _EXCEPTION_RECORD EXCEPTION_RECORD;
+typedef struct _EXCEPTION_RECORD {
+    ULONG ExceptionCode;
+    ULONG ExceptionFlags;
+    struct _EXCEPTION_RECORD *ExceptionRecord;
+    PVOID ExceptionAddress;
+    ULONG NumberParameters;
+    ULONG_PTR ExceptionInformation[15];
+} EXCEPTION_RECORD, *PEXCEPTION_RECORD;
+typedef struct _EXCEPTION_POINTERS { PEXCEPTION_RECORD ExceptionRecord; PVOID ContextRecord; } EXCEPTION_POINTERS, *PEXCEPTION_POINTERS;
 #define OBJ_INHERIT 0x2
 #define OBJ_PERMANENT 0x10
 #define OBJ_EXCLUSIVE 0x20
@@ -982,12 +990,12 @@ typedef struct _IRP {
 #define IO_NETWORK_INCREMENT 2
 
 /* ---- Interrupts, miscellaneous ------------------------------------------------------------------------ */
-typedef BOOLEAN (NTAPI KSERVICE_ROUTINE)(PVOID Interrupt, PVOID ServiceContext);
+typedef struct _KINTERRUPT_NTK *PKINTERRUPT;
+typedef BOOLEAN (NTAPI KSERVICE_ROUTINE)(PKINTERRUPT Interrupt, PVOID ServiceContext);
 typedef KSERVICE_ROUTINE *PKSERVICE_ROUTINE;
 typedef BOOLEAN (NTAPI KSYNCHRONIZE_ROUTINE)(PVOID SynchronizeContext);
 typedef KSYNCHRONIZE_ROUTINE *PKSYNCHRONIZE_ROUTINE;
 typedef enum _KINTERRUPT_MODE { LevelSensitive = 0, Latched = 1 } KINTERRUPT_MODE;
-typedef struct _KINTERRUPT_NTK *PKINTERRUPT;
 
 typedef struct _OSVERSIONINFOW_NTK {
     ULONG dwOSVersionInfoSize, dwMajorVersion, dwMinorVersion, dwBuildNumber, dwPlatformId;
@@ -1092,6 +1100,22 @@ NTKAPI VOID NTAPI KeQuerySystemTime(PLARGE_INTEGER CurrentTime);
 NTKAPI VOID NTAPI KeInitializeTimerEx(PKTIMER Timer, TIMER_TYPE Type);
 NTKAPI BOOLEAN NTAPI KeSetTimerEx(PKTIMER Timer, LARGE_INTEGER DueTime, LONG Period, PKDPC Dpc);
 NTKAPI VOID NTAPI KeStallExecutionProcessor(ULONG Microseconds);
+NTKAPI VOID NTAPI ExRaiseStatus(NTSTATUS Status);
+#ifndef EXCEPTION_EXECUTE_HANDLER
+#define EXCEPTION_EXECUTE_HANDLER 1
+#define EXCEPTION_CONTINUE_SEARCH 0
+#define EXCEPTION_CONTINUE_EXECUTION (-1)
+#endif
+#ifndef GetExceptionInformation
+#define GetExceptionInformation (PEXCEPTION_POINTERS)_exception_info
+void *__cdecl _exception_info(void);
+#endif
+NTKAPI NTSTATUS NTAPI IoConnectInterrupt(PKINTERRUPT *InterruptObject, PKSERVICE_ROUTINE ServiceRoutine, PVOID ServiceContext,
+                                         PKSPIN_LOCK SpinLock, ULONG Vector, KIRQL Irql, KIRQL SynchronizeIrql,
+                                         KINTERRUPT_MODE InterruptMode, BOOLEAN ShareVector, KAFFINITY ProcessorEnableMask,
+                                         BOOLEAN FloatingSave);
+NTKAPI VOID NTAPI IoDisconnectInterrupt(PKINTERRUPT InterruptObject);
+NTKAPI BOOLEAN NTAPI KeSynchronizeExecution(PKINTERRUPT Interrupt, PKSYNCHRONIZE_ROUTINE SynchronizeRoutine, PVOID SynchronizeContext);
 NTKAPI NTSTATUS NTAPI KeDelayExecutionThread(KPROCESSOR_MODE WaitMode, BOOLEAN Alertable, PLARGE_INTEGER Interval);
 NTKAPI VOID NTAPI ExAcquireFastMutex(PFAST_MUTEX FastMutex);
 NTKAPI VOID NTAPI ExReleaseFastMutex(PFAST_MUTEX FastMutex);

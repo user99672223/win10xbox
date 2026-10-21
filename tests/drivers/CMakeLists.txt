@@ -34,7 +34,7 @@ function(win10xbox_add_test_driver name)
     target_link_options(${name} PRIVATE /NODEFAULTLIB /ENTRY:DriverEntry /SUBSYSTEM:NATIVE /DYNAMICBASE /INCREMENTAL:NO)
     target_link_libraries(${name} PRIVATE ${_ntoskrnl_implib})
   else()
-    target_compile_options(${name} PRIVATE -ffreestanding -fno-stack-protector -Wno-unused-function)
+    target_compile_options(${name} PRIVATE -ffreestanding -fno-stack-protector -fms-extensions -Wno-unused-function)
     target_link_options(${name} PRIVATE -nostdlib -nostartfiles -Wl,--entry,DriverEntry -Wl,--subsystem,native
       -Wl,--dynamicbase -Wl,--nxcompat -Qunused-arguments)
     target_link_libraries(${name} PRIVATE ${_ntoskrnl_implib})
@@ -59,7 +59,8 @@ if(NOT MSVC)
     target_include_directories(OurKmdfDevice SYSTEM PRIVATE ${WIN10XBOX_DDK_INCLUDE} ${WIN10XBOX_WDF_INCLUDE}
       ${WIN10XBOX_KMDF_COMPAT_DIR})
     target_compile_definitions(OurKmdfDevice PRIVATE _AMD64_ KMDF_VERSION_MAJOR=1 KMDF_VERSION_MINOR=33)
-    target_compile_options(OurKmdfDevice PRIVATE -ffreestanding -fno-stack-protector -Wno-unused-function)
+    target_compile_options(OurKmdfDevice PRIVATE -ffreestanding -fno-stack-protector -Wno-unused-function
+      -Wno-unknown-attributes)   # WDF_DECLARE_CONTEXT_TYPE uses __declspec(allocate)
     target_link_options(OurKmdfDevice PRIVATE -nostdlib -nostartfiles -Wl,--entry,FxDriverEntry -Wl,--subsystem,native
       -Wl,--dynamicbase -Wl,--nxcompat -Qunused-arguments)
     target_link_libraries(OurKmdfDevice PRIVATE ${_ntoskrnl_implib} ${_wdfldr_implib})

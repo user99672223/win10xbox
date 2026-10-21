@@ -33,6 +33,7 @@ ExportGroup IoExports();
 ExportGroup ObPsMmExports();
 ExportGroup RtlExports();
 ExportGroup DataExports();
+ExportGroup RegistryExports();
 void ObPsMmInit();
 void ObPsMmShutdown();
 void NotifyImageLoaded(const std::wstring& full_name, PVOID base, SIZE_T size);
@@ -127,7 +128,6 @@ void* PoolAlloc(SIZE_T bytes, ULONG tag);
 void  PoolFree(void* p, ULONG tag, bool check_tag);
 bool  PoolInit();
 void  PoolShutdown();
-inline void* PoolAllocZero(SIZE_T bytes, ULONG tag) { return PoolAlloc(bytes, tag); }   // always zeroed
 
 // ---- object registry (objects.cpp) -----------------------------------------------------------------------------
 enum class ObjType : std::uint8_t { Device, Driver, File, Event, Thread, Process, Interrupt, Other };
@@ -183,11 +183,9 @@ NTSTATUS NTAPI CallDriver(PDEVICE_OBJECT dev, PIRP irp);          // IofCallDriv
 VOID NTAPI CompleteRequest(PIRP irp, CCHAR boost);                // IofCompleteRequest
 PDEVICE_OBJECT NTAPI AttachedDevice(PDEVICE_OBJECT dev);          // IoGetAttachedDevice
 NTSTATUS NTAPI InvalidDeviceRequest(PDEVICE_OBJECT dev, PIRP irp);
-void DeviceRefresh(PDEVICE_OBJECT dev);
 void DeviceFree(PDEVICE_OBJECT dev);
 PMDL MdlCreate(PVOID va, ULONG length);
 void MdlFree(PMDL mdl);
-void IoCancelAllForFile(PFILE_OBJECT fo);
 
 bool NsHasObjects();
 void SendShutdownIrps();
@@ -201,7 +199,6 @@ NTSTATUS OpenInternalPublic(ACCESS_MASK access, const std::wstring& name, ULONG 
 // dispatcher is initialised, else the host ntdll export.
 void* ResolveNtFunction(const char* nt_name);
 bool ProbeRange(const void* p, std::size_t len, bool write);
-std::uint32_t Hash32(const char* s);
 
 // Pool tags used by the host itself.
 constexpr ULONG kTagDev = NTK_TAG('N', 'k', 'D', 'v'), kTagDrv = NTK_TAG('N', 'k', 'D', 'r'),
@@ -212,7 +209,6 @@ constexpr ULONG kTagDev = NTK_TAG('N', 'k', 'D', 'v'), kTagDrv = NTK_TAG('N', 'k
 }  // namespace win10xbox::drivers::detail
 
 
-namespace win10xbox::drivers { bool IsDriverLinkPath(const OBJECT_ATTRIBUTES* attr); }
 
 // Cross-file calls between the ntk:: implementations.
 namespace ntk {
@@ -238,4 +234,6 @@ VOID NTAPI KeFlushQueuedDpcs(void);
 BOOLEAN NTAPI KeSetTimer(PKTIMER, LARGE_INTEGER, PKDPC);
 VOID NTAPI IoDeleteDevice(PDEVICE_OBJECT);
 NTSTATUS NTAPI IoGetDeviceObjectPointer(PUNICODE_STRING, ACCESS_MASK, PFILE_OBJECT*, PDEVICE_OBJECT*);
+NTSTATUS NTAPI IoCreateDriver(PUNICODE_STRING, PDRIVER_INITIALIZE);
+VOID NTAPI IoDeleteDriver(PDRIVER_OBJECT);
 }

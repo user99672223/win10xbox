@@ -9,6 +9,7 @@ set(WIN10XBOX_DRIVERS_SOURCES
   ntoskrnl/io.cpp
   ntoskrnl/ob_ps_mm.cpp
   ntoskrnl/rtl_crt.cpp
+  ntoskrnl/registry.cpp
   # driver host: namespace, object registry, loader, IRP engine, dispatcher hooks
   host/objects.cpp
   host/namespace.cpp

@@ -25,11 +25,32 @@ typedef struct _DEVICE_EXT {
     LARGE_INTEGER TimerStart;
     UCHAR Store[4096];
     ULONG StoreLen;
+    PKINTERRUPT Intr;
+    volatile LONG IsrCount;
+    volatile ULONG IsrIrql;
+    LONG SyncCount;
+    ULONG SyncIrql;
 } DEVICE_EXT, *PDEVICE_EXT;
 
 static PDEVICE_OBJECT g_device;
 static WCHAR g_reg_path[96];
 static ULONG g_reg_len;
+
+static BOOLEAN NTAPI Isr(PKINTERRUPT intr, PVOID context) {
+    PDEVICE_EXT ext = (PDEVICE_EXT)context;
+    UNREFERENCED_PARAMETER(intr);
+    ext->IsrIrql = KeGetCurrentIrql();
+    InterlockedIncrement(&ext->IsrCount);
+    return TRUE;
+}
+
+/* Runs at the connected interrupt's synchronize IRQL with the interrupt lock held. */
+static BOOLEAN NTAPI ReadIsrState(PVOID context) {
+    PDEVICE_EXT ext = (PDEVICE_EXT)context;
+    ext->SyncCount = ext->IsrCount;
+    ext->SyncIrql = KeGetCurrentIrql();
+    return TRUE;
+}
 
 static NTSTATUS Complete(PIRP irp, NTSTATUS status, ULONG_PTR info) {
     irp->IoStatus.Status = status;
@@ -252,6 +273,43 @@ static void SelfTest(PDEVICE_EXT ext) {
     DbgPrint("OurTestDevice: self test, %lu assertions, %lu failed\n", KmtResults.Executed, KmtResults.Failed);
 }
 
+/* SEH: needs the .pdata of the image registered with the host and __C_specific_handler bound to the host's. */
+static ULONG g_finally_ran;
+static void RaiseInside(void) {
+    __try {
+        ExRaiseStatus(STATUS_INSUFFICIENT_RESOURCES);
+    } __finally {
+        g_finally_ran = 1;
+    }
+}
+
+/* clang only treats calls (not plain stores) inside __try as potentially faulting, so the access goes through a call. */
+__attribute__((noinline)) static void Poke(volatile ULONG* p) { *p = 0x1234; }
+
+/* Exception filter recording the code. (GetExceptionCode() in the handler body depends on the unwinder
+ * returning the code in RAX, which Windows' __C_specific_handler does and Wine's does not.) */
+static int RecordCode(PEXCEPTION_POINTERS info, unsigned long* code) {
+    *code = info->ExceptionRecord->ExceptionCode;
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+static void RunSeh(OTD_SEH_OUT* out) {
+    volatile ULONG* null_ptr = (volatile ULONG*)(ULONG_PTR)0;
+    g_finally_ran = 0;
+    out->CaughtRaise = out->CaughtFault = 0;
+    __try {
+        RaiseInside();
+    } __except (RecordCode(GetExceptionInformation(), &out->RaiseCode)) {
+        out->CaughtRaise = 1;
+    }
+    out->FinallyRan = g_finally_ran;
+    __try {
+        Poke(null_ptr);
+    } __except (RecordCode(GetExceptionInformation(), &out->FaultCode)) {
+        out->CaughtFault = 1;
+    }
+}
+
 static NTSTATUS DispatchControl(PDEVICE_OBJECT dev, PIRP irp) {
     PDEVICE_EXT ext = (PDEVICE_EXT)dev->DeviceExtension;
     PIO_STACK_LOCATION s = IoGetCurrentIrpStackLocation(irp);
@@ -319,6 +377,11 @@ static NTSTATUS DispatchControl(PDEVICE_OBJECT dev, PIRP irp) {
         memcpy(sysbuf, &KmtResults, sizeof(OTD_SELFTEST_OUT));
         return Complete(irp, STATUS_SUCCESS, sizeof(OTD_SELFTEST_OUT));
 
+    case IOCTL_OTD_SEH:
+        if (outl < sizeof(OTD_SEH_OUT)) return Complete(irp, STATUS_BUFFER_TOO_SMALL, 0);
+        RunSeh((OTD_SEH_OUT*)sysbuf);
+        return Complete(irp, STATUS_SUCCESS, sizeof(OTD_SEH_OUT));
+
     case IOCTL_OTD_INFO: {
         OTD_INFO* info = (OTD_INFO*)sysbuf;
         if (outl < sizeof(*info)) return Complete(irp, STATUS_BUFFER_TOO_SMALL, 0);
@@ -328,6 +391,9 @@ static NTSTATUS DispatchControl(PDEVICE_OBJECT dev, PIRP irp) {
         info->ThreadId = (ULONG)(ULONG_PTR)PsGetCurrentThreadId();
         info->OpenCount = (ULONG)ext->OpenCount;
         info->RegistryPathChars = g_reg_len;
+        KeSynchronizeExecution(ext->Intr, ReadIsrState, ext);
+        info->IsrCount = (ULONG)ext->SyncCount;
+        info->IsrIrql = ext->IsrIrql;
         memcpy(info->RegistryPath, g_reg_path, g_reg_len * sizeof(WCHAR));
         return Complete(irp, STATUS_SUCCESS, sizeof(*info));
     }
@@ -345,6 +411,7 @@ static VOID NTAPI DriverUnload(PDRIVER_OBJECT drv) {
     if (g_device) {
         PDEVICE_EXT ext = (PDEVICE_EXT)g_device->DeviceExtension;
         KeCancelTimer(&ext->Timer);
+        if (ext->Intr) IoDisconnectInterrupt(ext->Intr);
         IoDeleteDevice(g_device);
         g_device = NULL;
     }
@@ -372,8 +439,15 @@ NTSTATUS NTAPI DriverEntry(PDRIVER_OBJECT drv, PUNICODE_STRING registry_path) {
     KeInitializeDpc(&ext->TimerDpcObj, TimerDpc, ext);
     KeInitializeTimerEx(&ext->Timer, NotificationTimer);
 
+    st = IoConnectInterrupt(&ext->Intr, Isr, ext, NULL, OTD_INTERRUPT_VECTOR, OTD_ISR_IRQL, OTD_ISR_IRQL, Latched, FALSE, 1, FALSE);
+    if (!NT_SUCCESS(st)) {
+        IoDeleteDevice(g_device);
+        g_device = NULL;
+        return st;
+    }
     st = IoCreateSymbolicLink(&link, &name);
     if (!NT_SUCCESS(st)) {
+        IoDisconnectInterrupt(ext->Intr);
         IoDeleteDevice(g_device);
         g_device = NULL;
         return st;

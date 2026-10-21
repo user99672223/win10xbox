@@ -23,6 +23,18 @@
 /* METHOD_BUFFERED: output OTD_INFO */
 #define IOCTL_OTD_INFO CTL_CODE(OTD_DEVICE_TYPE, 0x807, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
+#define OTD_INTERRUPT_VECTOR 0x42
+#define OTD_ISR_IRQL 5
+/* METHOD_BUFFERED: structured exception handling inside the driver; output OTD_SEH_OUT */
+#define IOCTL_OTD_SEH CTL_CODE(OTD_DEVICE_TYPE, 0x808, METHOD_BUFFERED, FILE_ANY_ACCESS)
+typedef struct _OTD_SEH_OUT {
+    unsigned long CaughtRaise;       /* ExRaiseStatus caught by __except, code stored below */
+    unsigned long RaiseCode;
+    unsigned long CaughtFault;       /* NULL dereference caught by __except */
+    unsigned long FaultCode;
+    unsigned long FinallyRan;        /* __finally block ran while unwinding */
+} OTD_SEH_OUT;
+
 #define OTD_DEFERRED_MAGIC 0xD3F3AAEDu
 
 typedef struct _OTD_DEFERRED_OUT {
@@ -40,6 +52,8 @@ typedef struct _OTD_INFO {
     unsigned long ThreadId;
     unsigned long OpenCount;
     unsigned long RegistryPathChars;
+    unsigned long IsrCount;         /* interrupts delivered on OTD_INTERRUPT_VECTOR (read under KeSynchronizeExecution) */
+    unsigned long IsrIrql;          /* IRQL the service routine ran at */
     unsigned short RegistryPath[96];
 } OTD_INFO;
 
