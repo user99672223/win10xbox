@@ -1,4 +1,5 @@
 // uwp-host/main.cpp - the C++/WinRT host.
+#include "pch.h"
 //
 // Runs as a CoreApplication-based UWP, which gives us:
 //  - a native CoreWindow (works identically on desktop UWP and Xbox Series S
@@ -347,12 +348,10 @@ struct View : winrt::implements<View, winrt::IFrameworkView> {
     std::thread probe_thread_;
 };
 
-struct ViewSource : winrt::implements<ViewSource, winrt::IFrameworkViewSource> {
-    winrt::IFrameworkView CreateView() { return winrt::make<View>(); }
-};
-
-int __stdcall wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
-    winrt::init_apartment();
-    winrt::CoreApplication::Run(winrt::make<ViewSource>());
-    return 0;
+// Entry point lives in XboxProbe::App (App.cpp/App.h), which the UWP toolchain
+// activates via WinRT metadata. App::CreateView() calls make_view() below.
+namespace probe_host {
+    winrt::Windows::ApplicationModel::Core::IFrameworkView make_view() {
+        return winrt::make<View>();
+    }
 }

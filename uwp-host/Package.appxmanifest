@@ -1,21 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Package.appxmanifest - the UWP manifest for the capability probe. We declare
-  every capability worth probing so that any denial we observe is a sandbox
-  denial, not a declaration omission:
-    * runFullTrust is intentionally NOT declared - probing what plain AppContainer
-      allows is the point.
-    * codeGeneration (restricted) is required for the dynamic-code tests
-      (VirtualAlloc PAGE_EXECUTE_* ends up gated on it).
-    * internetClient, internetClientServer, privateNetworkClientServer so the
-      network probes can see whether outbound TCP, DNS, inbound listen, and
-      loopback are allowed.
-    * broadFileSystemAccess so category F can measure out-of-package reads.
-    * other common hardware/data capabilities so WinRT activation (category N)
-      reports true denials instead of "capability not declared".
-  TargetDeviceFamily="Windows.Universal" so the same package deploys to
-  the Xbox (Dev Mode); min build 10.0.17134 so VirtualAlloc2 / MapViewOfFile3
-  are available on every target.
+  Package.appxmanifest - the real-UWP manifest for the capability probe.
+  Shipping as a proper sandboxed C++/WinRT UWP with WinRT activation metadata
+  (XboxProbe.winmd generated from App.idl by MSBuild / midlrt). The app class
+  XboxProbe.App implements IFrameworkViewSource, so Xbox's launcher activates
+  it the standard way instead of refusing the exe outright - which is what the
+  FullTrust hack from v1.0.3.0 failed to work around on the console.
+
+  TargetDeviceFamily is Windows.Universal because:
+    * laptop AppContainer install needs Universal or Desktop;
+    * Xbox App-partition install needs Universal (declaring only Desktop fails
+      install with 0x80073CFD);
+    * Xbox Game-partition install needs Windows.Xbox - we ADD it alongside
+      Universal so a single msix can be installed into either bucket on Xbox
+      ("App" or "Game" at upload time). The Game bucket gets the ~10 GB RAM /
+      exclusive-cores budget we want for category M hardware numbers.
+
+  Capabilities are deliberately restricted to the ones the probe needs. Device
+  capabilities (musicLibrary, microphone, etc.) are dropped because they cause
+  Xbox's shell to reject the manifest at launch, not because the probe doesn't
+  touch them. The WinRT activation sweep still reports what's reachable.
 -->
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
@@ -27,7 +31,7 @@
 
   <Identity Name="XboxDevModeProbe"
             Publisher="CN=Dev"
-            Version="1.0.0.0"
+            Version="1.0.4.0"
             ProcessorArchitecture="x64" />
 
   <mp:PhoneIdentity PhoneProductId="df3d1f17-dd30-4a9f-9b26-6c9b55e68a30"
@@ -41,7 +45,10 @@
 
   <Dependencies>
     <TargetDeviceFamily Name="Windows.Universal"
-                        MinVersion="10.0.17134.0"
+                        MinVersion="10.0.17763.0"
+                        MaxVersionTested="10.0.26100.0" />
+    <TargetDeviceFamily Name="Windows.Xbox"
+                        MinVersion="10.0.17763.0"
                         MaxVersionTested="10.0.26100.0" />
   </Dependencies>
 
@@ -50,16 +57,14 @@
   </Resources>
 
   <Applications>
-    <!-- EntryPoint is required by the manifest schema when Executable is set,
-         but for a native C++ CoreApplication exe (we are NOT a desktop-bridge
-         full-trust app, so no Windows.FullTrustApplication) the value is only
-         validated structurally - the system launches the PE and our wWinMain
-         calls CoreApplication::Run with our own IFrameworkViewSource. Any
-         identifier would satisfy the schema; "App" is the convention used by
-         the C++/WinRT sample set. -->
-    <Application Id="App" Executable="xbox-probe-uwp.exe" EntryPoint="App">
+    <!-- EntryPoint names our WinRT activatable class, declared in App.idl and
+         materialized as XboxProbe.winmd next to the exe inside the appx. The
+         exe's wWinMain registers a factory for XboxProbe.App so Windows (and
+         Xbox's launcher) can activate it, QueryInterface for
+         IFrameworkViewSource, and call CreateView(). -->
+    <Application Id="App" Executable="xbox-probe-uwp.exe" EntryPoint="XboxProbe.App">
       <uap:VisualElements DisplayName="Xbox Dev Mode Probe"
-                          Description="Capability probe harness for the Xbox AppContainer sandbox."
+                          Description="Capability probe harness for the Xbox AppContainer / Xbox Game-partition sandboxes."
                           BackgroundColor="transparent"
                           Square150x150Logo="Assets\Square150x150Logo.png"
                           Square44x44Logo="Assets\Square44x44Logo.png">
@@ -70,25 +75,11 @@
   </Applications>
 
   <Capabilities>
-    <!-- Code generation: required for VirtualAlloc PAGE_EXECUTE_* under
-         AppContainer. The whole category A test depends on this. -->
+    <!-- codeGeneration: required for VirtualAlloc PAGE_EXECUTE_* under
+         AppContainer. Entire category A depends on it being granted. -->
     <rescap:Capability Name="codeGeneration" />
-    <!-- Broad file-system access: required for category F to probe reads of
-         System32, C:\, etc. In its absence those probes report DENIED and we
-         can't tell if the sandbox refuses the access or if we never asked. -->
-    <rescap:Capability Name="broadFileSystemAccess" />
-    <!-- Networking - standard trio. -->
     <Capability Name="internetClient" />
     <Capability Name="internetClientServer" />
     <Capability Name="privateNetworkClientServer" />
-    <!-- Devices commonly probed via WinRT. These are plain, not restricted. -->
-    <uap:Capability Name="musicLibrary" />
-    <uap:Capability Name="videosLibrary" />
-    <uap:Capability Name="picturesLibrary" />
-    <uap:Capability Name="removableStorage" />
-    <DeviceCapability Name="microphone" />
-    <DeviceCapability Name="webcam" />
-    <DeviceCapability Name="location" />
-    <DeviceCapability Name="bluetooth" />
   </Capabilities>
 </Package>

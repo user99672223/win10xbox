@@ -1,0 +1,167 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  uwp-host.vcxproj - C++/WinRT UWP project for the probe host. Uses the MSBuild
+  AppXPackage targets installed with the UWP C++ workload so winmd generation
+  (midlrt on App.idl), activation-factory wiring (cppwinrt on the winmd), store
+  CRT linkage, resources.pri + msix packaging all happen automatically.
+  Replaces the hand-rolled CMake + package.cmd flow that could not produce real
+  WinRT activation metadata without the UWP tooling installed.
+-->
+<Project DefaultTargets="Build" ToolsVersion="17.0"
+         xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{F17E8A52-B32F-41F2-A5B7-7D3F2F6C34A1}</ProjectGuid>
+    <RootNamespace>XboxProbe</RootNamespace>
+    <DefaultLanguage>en-US</DefaultLanguage>
+    <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
+    <AppContainerApplication>true</AppContainerApplication>
+    <ApplicationType>Windows Store</ApplicationType>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformMinVersion>10.0.17763.0</WindowsTargetPlatformMinVersion>
+    <ApplicationTypeRevision>10.0</ApplicationTypeRevision>
+    <!-- Pulls in C++/WinRT compiler integration + <winrt/*.h> projection
+         headers at build time. -->
+    <CppWinRTOptimized>true</CppWinRTOptimized>
+    <CppWinRTGenerateWindowsMetadata>true</CppWinRTGenerateWindowsMetadata>
+    <!-- Don't let MSBuild try to find a .sln file; this project stands alone. -->
+    <SolutionDir>$(MSBuildProjectDirectory)\</SolutionDir>
+    <!-- Where the generated msix lands. -->
+    <AppxPackageOutput>$(SolutionDir)AppPackages\xbox-probe-uwp\xbox-probe-uwp.msix</AppxPackageOutput>
+    <AppxBundle>Never</AppxBundle>
+    <AppxPackageSigningEnabled>true</AppxPackageSigningEnabled>
+    <PackageCertificateKeyFile>$(SolutionDir)xbox-probe.pfx</PackageCertificateKeyFile>
+    <PackageCertificatePassword>probe</PackageCertificatePassword>
+    <GenerateAppxPackageOnBuild>true</GenerateAppxPackageOnBuild>
+  </PropertyGroup>
+
+  <!-- CppWinRT NuGet package provides the MIDL3 / cppwinrt projection build
+       integration (its targets switch midlrt into /winrt mode with /nomidl +
+       /reference, generate C++/WinRT projection headers from the winmd, and
+       expose the IFrameworkViewSource type to App.idl). Downloaded locally to
+       packages/ since this install has no NuGet client. -->
+  <Import Project="..\packages\Microsoft.Windows.CppWinRT.2.0.250303.1\build\native\Microsoft.Windows.CppWinRT.props" />
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+
+  <PropertyGroup>
+    <!-- Keep intermediate winmds + generated C++/WinRT projection headers out of
+         the source tree. -->
+    <IntDir>$(SolutionDir)build-uwp\$(Platform)-$(Configuration)\</IntDir>
+    <OutDir>$(SolutionDir)build-uwp\$(Platform)-$(Configuration)\</OutDir>
+    <TargetName>xbox-probe-uwp</TargetName>
+    <GeneratedFilesDir>$(IntDir)Generated\</GeneratedFilesDir>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)..\probe-core;$(GeneratedFilesDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <!-- WINAPI_FAMILY_DESKTOP_APP keeps header-level API visibility (we need
+           to resolve APIs the FAMILY_APP partition hides: AddVectored*Handler,
+           CreateFileW, mmdeviceapi types). AppContainer enforcement at runtime
+           still comes from the PE's AppContainer flag + the manifest. -->
+      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;_UNICODE;UNICODE;WINAPI_FAMILY=WINAPI_FAMILY_DESKTOP_APP;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ExceptionHandling>Async</ExceptionHandling>
+      <!-- Suppress the "WinRT language extensions deprecated" warning triggered
+           by probe-core's raw-Win32 style; this is a probe harness, not a
+           modern C++/WinRT app, and we want the probe-core sources portable
+           between the win32 and uwp hosts. -->
+      <DisableSpecificWarnings>4453;4834;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <!-- The UWP app-container property sheets set WINAPI_FAMILY=WINAPI_FAMILY_APP
+           in <PreprocessorDefinitions> AFTER our definitions, so a value set
+           there loses. AdditionalOptions is appended to the compiler command
+           line last, so /UWINAPI_FAMILY /DWINAPI_FAMILY=WINAPI_FAMILY_DESKTOP_APP
+           here actually wins. -->
+      <AdditionalOptions>%(AdditionalOptions) /U WINAPI_FAMILY /D WINAPI_FAMILY=WINAPI_FAMILY_DESKTOP_APP</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <!-- kernel32.lib is explicit because WindowsApp.lib (the UWP umbrella)
+           omits a handful of exports probe-core calls directly, including
+           AddVectoredContinueHandler / RemoveVectoredContinueHandler. -->
+      <AdditionalDependencies>d3d11.lib;d2d1.lib;dwrite.lib;dxguid.lib;kernel32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <!-- Midl item defaults - the CppWinRT targets add /winrt /nomidl plus
+         references to the SDK union metadata so Windows.* types resolve. -->
+    <Midl>
+      <MetadataFileName>$(OutDir)XboxProbe.winmd</MetadataFileName>
+    </Midl>
+  </ItemDefinitionGroup>
+
+  <ItemGroup>
+    <!-- Probe-core sources - compiled with /c and include only probe.h plus
+         Windows headers. They do NOT use pch.h (which is the C++/WinRT PCH),
+         and we put their object files under a probe-core subdirectory of
+         IntDir so names like reporter.cpp don't collide with any sibling
+         source in uwp-host. ExcludedFromBuild=false ensures the glob picks
+         them up only once. -->
+    <ClCompile Include="..\probe-core\*.cpp"
+               Exclude="..\probe-core\probe_payload.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)probe-core\</ObjectFileName>
+    </ClCompile>
+
+    <!-- UWP host sources. -->
+    <ClCompile Include="pch.cpp">
+      <PrecompiledHeader>Create</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="App.cpp" />
+    <ClCompile Include="probe_payload_stub.cpp" />
+
+    <ClInclude Include="pch.h" />
+    <ClInclude Include="App.h" />
+
+    <Midl Include="App.idl" />
+
+    <!-- The appx package picks these up automatically from AppxManifest.xml. -->
+    <AppxManifest Include="Package.appxmanifest">
+      <SubType>Designer</SubType>
+    </AppxManifest>
+
+    <Image Include="Assets\StoreLogo.png" />
+    <Image Include="Assets\Square150x150Logo.png" />
+    <Image Include="Assets\Square44x44Logo.png" />
+    <Image Include="Assets\Wide310x150Logo.png" />
+    <Image Include="Assets\SplashScreen.png" />
+  </ItemGroup>
+
+  <!-- Payload DLL built as a sibling project could complicate this. For now,
+       build it inline as an extra .cpp compiled into a tiny companion DLL via
+       the Appx packaging deployment step is not supported; the A/
+       loadlibrary-out-of-package test will SKIP on UWP builds when the DLL is
+       absent. Covering that end-to-end on Xbox is a follow-up (needs a
+       separate vcxproj whose output is added to the appx as content). -->
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Import Project="..\packages\Microsoft.Windows.CppWinRT.2.0.250303.1\build\native\Microsoft.Windows.CppWinRT.targets" />
+</Project>

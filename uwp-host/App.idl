@@ -1,0 +1,13 @@
+// App.idl - WinRT runtimeclass that Xbox's launcher activates on tile tap. Its
+// winmd is produced by midlrt via MSBuild (UWP C++ project targets); the
+// manifest's EntryPoint="XboxProbe.App" matches the class name here. The exe
+// serves its own activation factory for App via the C++/WinRT framework
+// (declared in App.h / App.cpp).
+namespace XboxProbe
+{
+    [default_interface]
+    runtimeclass App : [default] Windows.ApplicationModel.Core.IFrameworkViewSource
+    {
+        App();
+    }
+}
