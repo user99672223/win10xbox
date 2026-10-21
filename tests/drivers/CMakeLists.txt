@@ -22,6 +22,13 @@ win10xbox_import_lib(_ntoskrnl_implib ntoskrnl_host ${CMAKE_CURRENT_SOURCE_DIR}/
 # win10xbox_add_test_driver(<name> <sources...> [DEFINES ...]): a native-subsystem image named <name>.sys
 function(win10xbox_add_test_driver name)
   cmake_parse_arguments(A "" "" "SOURCES;DEFINES" ${ARGN})
+  # A .sys links /NODEFAULTLIB, so MSVC's Debug /RTC1 runtime checks (which emit
+  # _RTC_InitBase/_RTC_Shutdown/_RTC_CheckStackVars calls resolved from the CRT)
+  # would be unresolved externals. Strip /RTC* here; this set() is function-local
+  # (CMake scope), so only the driver targets lose it - the test exes keep it.
+  if(MSVC)
+    string(REGEX REPLACE "/RTC[1csu]+" "" CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}")
+  endif()
   add_executable(${name} ${A_SOURCES})
   set_target_properties(${name} PROPERTIES
     OUTPUT_NAME ${name} SUFFIX ".sys" PREFIX ""

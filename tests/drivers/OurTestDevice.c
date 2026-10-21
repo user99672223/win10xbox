@@ -284,7 +284,12 @@ static void RaiseInside(void) {
 }
 
 /* clang only treats calls (not plain stores) inside __try as potentially faulting, so the access goes through a call. */
-__attribute__((noinline)) static void Poke(volatile ULONG* p) { *p = 0x1234; }
+#if defined(_MSC_VER)
+#define OTD_NOINLINE __declspec(noinline)
+#else
+#define OTD_NOINLINE __attribute__((noinline))
+#endif
+static OTD_NOINLINE void Poke(volatile ULONG* p) { *p = 0x1234; }
 
 /* Exception filter recording the code. (GetExceptionCode() in the handler body depends on the unwinder
  * returning the code in RAX, which Windows' __C_specific_handler does and Wine's does not.) */
