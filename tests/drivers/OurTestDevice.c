@@ -321,6 +321,9 @@ static void RunSeh(OTD_SEH_OUT* out) {
  * (intrinsics) and clang (inline asm; MSVC x64 has no inline asm). */
 #if defined(_MSC_VER)
 #include <intrin.h>
+/* Force cli/sti inline: at /Od (Debug) MSVC otherwise emits a call to _disable/
+ * _enable, which a freestanding /NODEFAULTLIB .sys cannot resolve. */
+#pragma intrinsic(_disable, _enable)
 static unsigned __int64 PrivReadCr8(void) { return __readcr8(); }
 static void PrivWriteCr8(unsigned __int64 v) { __writecr8(v); }
 static unsigned __int64 PrivReadMsr(unsigned long i) { return __readmsr(i); }
