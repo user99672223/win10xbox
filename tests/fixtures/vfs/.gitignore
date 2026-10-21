@@ -1,0 +1,6 @@
+# The repo-wide .gitignore excludes *.dll/*.exe (user-supplied Microsoft
+# binaries). These fixtures are empty marker files, not binaries: keep them.
+!*.dll
+!*.exe
+!*.drv
+!*.sys

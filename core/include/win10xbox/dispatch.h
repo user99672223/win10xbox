@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "win10xbox/loader.h"
 
 namespace win10xbox::dispatch {
 
@@ -51,16 +52,63 @@ struct Entry {
 // the entry stubs. Idempotent. The host ntdll module is the one the process
 // was started with (GetModuleHandleW(L"ntdll.dll")).
 NTSTATUS Initialize();
+// Dumps per-syscall call counts on the `relay` channel (when enabled).
+// Idempotent; the table stays usable afterwards.
+void Shutdown();
 const Entry* Lookup(std::uint32_t id);
 const Entry* LookupByName(const char* name);
 std::size_t Count();
 // Runtime override from machine.json "syscall_overrides": {"NtFoo":"passthrough"}.
 NTSTATUS SetPolicy(const char* name, Policy p);
+// "passthrough"/"PassThrough"/"translate"/"emulate"/"todo" (case-insensitive).
+bool ParsePolicy(const char* text, Policy* out);
+const char* PolicyName(Policy p);
 
 // Address the loader patches into every thunk. Reads eax/r10 like the kernel.
 void* SyscallEntryAddress();
 // C-level dispatcher called by the asm stub. Returns the NTSTATUS to place in rax.
 extern "C" std::int64_t win10xbox_dispatch(Frame* frame);
+// Called by the asm stub before copying stack arguments: nargs for `id`, at most kMaxArgs.
+extern "C" std::uint32_t win10xbox_syscall_nargs(std::uint32_t id);
+constexpr std::uint32_t kMaxArgs = 20;
+
+// Calls `fn` (an NT-style function) with args[0..nargs) and returns its NTSTATUS.
+// Missing trailing args are passed as 0 (x64: the callee ignores extras).
+NTSTATUS CallWithArgs(void* fn, const std::uint64_t* args, std::uint32_t nargs);
+
+// Relay line body as traced on the `relay` channel:
+//   NtCreateFile(0000000000abcd00,00100080,...) ret=00000000
+// with " (12.3us)" appended when elapsed_us >= 0 (+timing). Exposed for tests.
+std::string FormatRelay(const Entry& e, const std::uint64_t* args, NTSTATUS status, double elapsed_us = -1.0);
+
+// ---- Guest/host thread view -------------------------------------------------
+// A guest thread runs with the guest ntdll's static-TLS array and FLS data in
+// its TEB (Wine's loader_init installs them). Host code on that thread (the
+// dispatcher, VEH handlers, scanner site handlers, functions patched into
+// guest DLLs) must run with the host's values instead, or host C++ runtime
+// TLS/FLS (MSVC magic statics, CRT per-thread data, libc++abi EH globals)
+// would read guest data. SyscallEntry switches automatically; any other host
+// entry point reachable from guest code uses this guard. Cheap (four TEB
+// moves), nests, and is a no-op on threads that never ran guest code.
+class HostModeScope {
+public:
+    HostModeScope();
+    ~HostModeScope();
+    HostModeScope(const HostModeScope&) = delete;
+    HostModeScope& operator=(const HostModeScope&) = delete;
+private:
+    void* state_;
+};
+
+// ---- CPU identity seen through patched cpuid sites (D10) ---------------------
+struct CpuPolicy {
+    std::string vendor;            // 12 chars ("AuthenticAMD"); empty = the real vendor
+    bool hide_hypervisor = true;   // clear CPUID.1:ECX[31], zero leaves 0x40000000..0x400000FF
+};
+void SetCpuPolicy(const CpuPolicy& p);
+CpuPolicy GetCpuPolicy();
+// Scanner handler (loader::SiteHandler) used for every guest image we map.
+bool CpuSiteHandler(loader::SiteKind kind, loader::ScanRegs* regs, void* ctx);
 
 // ---- Emulated object handles -----------------------------------------------
 // Emulated objects (registry keys, tokens, sections we map ourselves, driver
@@ -108,10 +156,19 @@ struct LaunchOptions {
 // process parameters, version), then enters LdrInitializeThunk with a
 // context targeting RtlUserThreadStart(entry, peb). Returns the guest exit
 // code when `wait`, else 0; negative NTSTATUS-like values on bootstrap failure.
+// With run_on_new_thread == false the calling thread becomes the guest main
+// thread and never returns: the host process exits with the guest's code.
+// Machine folder layout (see docs/DISPATCHER.md):
+//   <machine_root>\Windows\builtin\ntdll.dll, kernelbase.dll, kernel32.dll ...  (Wine PE)
+//   <machine_root>\Windows\System32\*.dll                                     (native)
 int Launch(const LaunchOptions& opts);
 // Guest ExitProcess lands here (NtTerminateProcess on the current process).
 [[noreturn]] void GuestExit(std::uint32_t exit_code);
 std::uint32_t GuestExitCode();
 bool IsGuestThread();   // true on threads running guest code (TLS flag set by Launch/thread start)
+// Waits for the guest started by Launch(wait=false); returns its exit code.
+int WaitForGuest(DWORD timeout_ms = INFINITE);
+// Guest path of the main image ("C:\\..."), empty before Launch.
+std::wstring GuestImagePath();
 
 }  // namespace win10xbox::process

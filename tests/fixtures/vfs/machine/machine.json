@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "windows": {
+    "major": 10, "minor": 0, "build": 19045, "ubr": 3803,
+    "product_name": "Windows 10 Pro", "display_version": "22H2", "csd": ""
+  },
+  "identity": {
+    "computer_name": "TESTPC",
+    "user_name": "User",
+    "user_sid": "S-1-5-21-1-2-3-1001",
+    "domain": "TESTPC"
+  },
+  "dll_overrides": {
+    "*": "native,builtin",
+    "user32": "builtin",
+    "gdi32.dll": "builtin,native",
+    "bn_native_only": "builtin,native",
+    "d3d9": "disabled",
+    "msvcrt": "native",
+    "only_b": "native",
+    "ntdll": "native",
+    "KERNEL32.DLL": "disabled"
+  },
+  "drives": {
+    "C:": ".",
+    "D:": "extra_drive"
+  },
+  "clock": { "scale": 1.0, "offset_ms": 0, "frozen": false },
+  "cpu": { "hide_hypervisor": true, "vendor": "AuthenticAMD" },
+  "syscall_overrides": {}
+}

@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "windows": { "major": 10, "minor": 0, "build": 20348, "ubr": 1, "product_name": "Windows Server 2022", "display_version": "21H2", "csd": "SP \u00e9" },
+  "identity": { "computer_name": "ALT", "user_name": "Alt", "user_sid": "S-1-5-21-9-9-9-1000", "domain": "WORKGROUP" },
+  "dll_overrides": {
+    "*": "builtin,native",
+    "Bad": "bogus",
+    "short": "n",
+    "UPPER.dll": "BUILTIN",
+    "blank": ""
+  },
+  "drives": {
+    "C:": "croot",
+    "e": "sub/./x/../e/",
+    "F:\\": "../machine",
+    "9:": "nope",
+    "G:": 5
+  },
+  "clock": { "scale": 2.5, "offset_ms": -1500, "frozen": true },
+  "cpu": { "hide_hypervisor": false, "vendor": "GenuineIntel" },
+  "syscall_overrides": { "NtQuerySystemInformation": "emulate" }
+}

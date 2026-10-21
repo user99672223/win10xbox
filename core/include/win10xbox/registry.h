@@ -1,5 +1,6 @@
 // win10xbox registry: real REGF hives (SYSTEM, SOFTWARE, NTUSER.DAT, ...)
-// read through hivex, with an in-memory overlay that absorbs every write
+// read through core/registry/regf.cpp (own REGF reader/writer; hivex was not
+// used, see machine/hivex/README.md), with an in-memory overlay that absorbs every write
 // (SetValue/CreateKey/Delete*) so supplied hives are never modified.
 // Owned by core/registry/ (+ machine/hivex/ for building hivex).
 //
@@ -12,11 +13,48 @@
 #include <windows.h>
 #include <winternl.h>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace win10xbox::registry {
+
+// NTSTATUS values returned by this module, spelled out here so callers and
+// tests need not juggle <ntstatus.h> / WIN32_NO_STATUS.
+namespace nt {
+constexpr NTSTATUS kSuccess             = 0;
+constexpr NTSTATUS kPending             = 0x00000103;
+constexpr NTSTATUS kBufferOverflow      = static_cast<NTSTATUS>(0x80000005);
+constexpr NTSTATUS kNoMoreEntries       = static_cast<NTSTATUS>(0x8000001A);
+constexpr NTSTATUS kUnsuccessful        = static_cast<NTSTATUS>(0xC0000001);
+constexpr NTSTATUS kNotImplemented      = static_cast<NTSTATUS>(0xC0000002);
+constexpr NTSTATUS kInvalidInfoClass    = static_cast<NTSTATUS>(0xC0000003);
+constexpr NTSTATUS kInvalidHandle       = static_cast<NTSTATUS>(0xC0000008);
+constexpr NTSTATUS kInvalidParameter    = static_cast<NTSTATUS>(0xC000000D);
+constexpr NTSTATUS kAccessDenied        = static_cast<NTSTATUS>(0xC0000022);
+constexpr NTSTATUS kBufferTooSmall      = static_cast<NTSTATUS>(0xC0000023);
+constexpr NTSTATUS kObjectTypeMismatch  = static_cast<NTSTATUS>(0xC0000024);
+constexpr NTSTATUS kObjectNameInvalid   = static_cast<NTSTATUS>(0xC0000033);
+constexpr NTSTATUS kObjectNameNotFound  = static_cast<NTSTATUS>(0xC0000034);
+constexpr NTSTATUS kObjectNameCollision = static_cast<NTSTATUS>(0xC0000035);
+constexpr NTSTATUS kObjectPathSyntaxBad = static_cast<NTSTATUS>(0xC000003B);
+constexpr NTSTATUS kKeyDeleted          = static_cast<NTSTATUS>(0xC000017C);
+constexpr NTSTATUS kCannotDelete        = static_cast<NTSTATUS>(0xC0000121);
+}  // namespace nt
+
+// KEY_INFORMATION_CLASS / KEY_VALUE_INFORMATION_CLASS numeric values. The
+// Reg_Nt* entry points take the raw ULONG the syscall receives (mingw's
+// winternl.h does not declare the enums and phnt's would clash), so invalid
+// classes are rejected with STATUS_INVALID_INFO_CLASS like the kernel does.
+enum KeyClass : ULONG { kKeyBasic = 0, kKeyNode = 1, kKeyFull = 2, kKeyName = 3, kKeyCached = 4,
+                        kKeyFlags = 5, kKeyVirtualization = 6 };
+enum KeyValueClass : ULONG { kValueBasic = 0, kValueFull = 1, kValuePartial = 2, kValuePartialAlign64 = 3,
+                             kValueLayer = 4, kValueFullAlign64 = 5 };
+
+// Same layout as KEY_VALUE_ENTRY (NtQueryMultipleValueKey); redeclared because
+// MSVC's winternl.h lacks it.
+struct ValueEntry { PUNICODE_STRING ValueName; ULONG DataLength; ULONG DataOffset; ULONG Type; };
 
 // Hive files live in <machine_root>\Windows\System32\config\{SYSTEM,SOFTWARE,
 // SAM,SECURITY,DEFAULT} and <machine_root>\Users\<user>\NTUSER.DAT. Missing
@@ -44,18 +82,20 @@ NTSTATUS Reg_NtCreateKey(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess, POBJECT_A
 NTSTATUS Reg_NtCreateKeyTransacted(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, ULONG, PUNICODE_STRING, ULONG, HANDLE, PULONG);
 NTSTATUS Reg_NtDeleteKey(HANDLE KeyHandle);
 NTSTATUS Reg_NtDeleteValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName);
-NTSTATUS Reg_NtEnumerateKey(HANDLE KeyHandle, ULONG Index, KEY_INFORMATION_CLASS KeyInformationClass,
+NTSTATUS Reg_NtEnumerateKey(HANDLE KeyHandle, ULONG Index, ULONG KeyInformationClass,
                             PVOID KeyInformation, ULONG Length, PULONG ResultLength);
-NTSTATUS Reg_NtEnumerateValueKey(HANDLE KeyHandle, ULONG Index, KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass,
+NTSTATUS Reg_NtEnumerateValueKey(HANDLE KeyHandle, ULONG Index, ULONG KeyValueInformationClass,
                                  PVOID KeyValueInformation, ULONG Length, PULONG ResultLength);
 NTSTATUS Reg_NtFlushKey(HANDLE KeyHandle);
 NTSTATUS Reg_NtNotifyChangeKey(HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK, ULONG, BOOLEAN, PVOID, ULONG, BOOLEAN);
 NTSTATUS Reg_NtNotifyChangeMultipleKeys(HANDLE, ULONG, POBJECT_ATTRIBUTES, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK, ULONG, BOOLEAN, PVOID, ULONG, BOOLEAN);
-NTSTATUS Reg_NtQueryKey(HANDLE KeyHandle, KEY_INFORMATION_CLASS KeyInformationClass,
+NTSTATUS Reg_NtQueryKey(HANDLE KeyHandle, ULONG KeyInformationClass,
                         PVOID KeyInformation, ULONG Length, PULONG ResultLength);
-NTSTATUS Reg_NtQueryValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass,
+NTSTATUS Reg_NtQueryValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG KeyValueInformationClass,
                              PVOID KeyValueInformation, ULONG Length, PULONG ResultLength);
-NTSTATUS Reg_NtQueryMultipleValueKey(HANDLE, PKEY_VALUE_ENTRY, ULONG, PVOID, PULONG, PULONG);
+// ValueEntries points at EntryCount ValueEntry structs (== KEY_VALUE_ENTRY).
+NTSTATUS Reg_NtQueryMultipleValueKey(HANDLE KeyHandle, ValueEntry* ValueEntries, ULONG EntryCount,
+                                     PVOID ValueBuffer, PULONG BufferLength, PULONG RequiredBufferLength);
 NTSTATUS Reg_NtRenameKey(HANDLE KeyHandle, PUNICODE_STRING NewName);
 NTSTATUS Reg_NtSetValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG TitleIndex, ULONG Type, PVOID Data, ULONG DataSize);
 NTSTATUS Reg_NtSetInformationKey(HANDLE, int KeySetInformationClass, PVOID, ULONG);
@@ -78,6 +118,13 @@ NTSTATUS SetValue(KeyId key, const Value& v);
 NTSTATUS EnumerateSubkeys(KeyId key, std::vector<std::wstring>* out);
 NTSTATUS EnumerateValues(KeyId key, std::vector<Value>* out);
 void CloseKey(KeyId key);
+
+// Used by NtLoadKey/NtLoadKeyEx to turn the NT path of a
+// hive file (\??\C:\x\hive) into a host path. Default: the "\??\" and
+// "\DosDevices\" prefixes are stripped and "C:\" maps to the machine root.
+// The dispatcher should install the VFS translator here.
+using HostPathResolver = std::function<bool(const std::wstring& nt_path, std::wstring* host_path)>;
+void SetHostPathResolver(HostPathResolver resolver);
 
 // Overlay persistence (machine folder\registry-overlay.bin): optional.
 NTSTATUS SaveOverlay();

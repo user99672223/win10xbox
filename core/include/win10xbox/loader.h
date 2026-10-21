@@ -17,6 +17,17 @@
 
 namespace win10xbox::loader {
 
+// NTSTATUS values returned by this module. Defined here (not via ntstatus.h)
+// so callers need no WIN32_NO_STATUS include dance.
+inline constexpr NTSTATUS kStatusSuccess              = static_cast<NTSTATUS>(0x00000000);
+inline constexpr NTSTATUS kStatusImageNotAtBase       = static_cast<NTSTATUS>(0x40000003);
+inline constexpr NTSTATUS kStatusInvalidParameter     = static_cast<NTSTATUS>(0xC000000D);
+inline constexpr NTSTATUS kStatusNoMemory             = static_cast<NTSTATUS>(0xC0000017);
+inline constexpr NTSTATUS kStatusConflictingAddresses = static_cast<NTSTATUS>(0xC0000018);
+inline constexpr NTSTATUS kStatusInvalidImageFormat   = static_cast<NTSTATUS>(0xC000007B);
+inline constexpr NTSTATUS kStatusInvalidImageWin32    = static_cast<NTSTATUS>(0xC0000359);  // STATUS_INVALID_IMAGE_WIN_32
+inline constexpr NTSTATUS kStatusUnsuccessful         = static_cast<NTSTATUS>(0xC0000001);
+
 struct MappedImage {
     void*         base = nullptr;        // preferred base if free, else relocated
     std::size_t   size = 0;              // SizeOfImage, page-rounded
@@ -39,6 +50,8 @@ enum class MapFlags : std::uint32_t {
     ReserveOnly     = 1u << 1,   // map headers+sections but keep pages PAGE_READWRITE (caller patches, then calls FinalizeProtections)
     RegisterUnwind  = 1u << 2,   // call RtlAddFunctionTable on the host for .pdata (default on in MapImage helpers)
 };
+// What most callers want: relocate if needed, register .pdata with the host.
+inline constexpr MapFlags kDefaultMapFlags = static_cast<MapFlags>(1u << 2);
 inline MapFlags operator|(MapFlags a, MapFlags b) { return MapFlags(std::uint32_t(a) | std::uint32_t(b)); }
 inline bool operator&(MapFlags a, MapFlags b) { return (std::uint32_t(a) & std::uint32_t(b)) != 0; }
 
@@ -111,6 +124,11 @@ struct ScanResult { std::vector<ScanSite> sites; std::size_t patched = 0, trappe
 NTSTATUS ScanAndPatch(const MappedImage& img, const ScanOptions& opts, ScanResult* result);
 // Scan an arbitrary range (e.g. JIT output or a host-loaded module).
 NTSTATUS ScanAndPatchRange(void* start, std::size_t size, const ScanOptions& opts, ScanResult* result);
+// Forget every trap site / thunk arena / protected range belonging to
+// [start, start+size) and free the thunk memory. UnmapImage calls this; call it
+// yourself for ranges passed to ScanAndPatchRange once they are unmapped. The
+// code in the range must not be executed afterwards (patched sites are gone).
+void ReleaseScanSites(const void* start, std::size_t size);
 // Install the VEH used by strategy (b). Idempotent; called by ScanAndPatch.
 void EnsureTrapHandlerInstalled();
 

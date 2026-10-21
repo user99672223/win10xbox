@@ -1,0 +1,79 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/win10xbox/machine.schema.json",
+  "title": "win10xbox machine.json",
+  "description": "Configuration of the virtual PC stored in the machine folder root. Every section is optional; missing fields take the Windows 10 22H2 defaults. Unknown top-level keys are tolerated (other modules may add sections); unknown keys inside the sections below are rejected to catch typos.",
+  "type": "object",
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": {
+      "description": "Schema version of this file.",
+      "type": "integer",
+      "enum": [1]
+    },
+    "windows": {
+      "description": "OS version the guest sees (PEB, KUSER_SHARED_DATA, registry CurrentVersion).",
+      "type": "object",
+      "properties": {
+        "major": { "type": "integer", "minimum": 0 },
+        "minor": { "type": "integer", "minimum": 0 },
+        "build": { "type": "integer", "minimum": 0 },
+        "ubr": { "description": "Update build revision (the .N in 19045.N).", "type": "integer", "minimum": 0 },
+        "product_name": { "type": "string" },
+        "display_version": { "type": "string" },
+        "csd": { "description": "Service pack string; empty for 22H2.", "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "identity": {
+      "description": "Computer and user identity. user_name also names the guest profile directory C:\\Users\\<user_name>.",
+      "type": "object",
+      "properties": {
+        "computer_name": { "type": "string", "minLength": 1, "maxLength": 15 },
+        "user_name": { "type": "string", "minLength": 1 },
+        "user_sid": { "type": "string", "pattern": "^S-1-[0-9]+(-[0-9]+)+$" },
+        "domain": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "dll_overrides": {
+      "description": "Per-DLL source, like Wine's WINEDLLOVERRIDES. Keys are module base names (case-insensitive, with or without .dll) or \"*\" for every other module (default native,builtin). Values: native, builtin, native,builtin (native first, fall back to builtin), builtin,native, or disabled (the file does not exist for the guest; the empty string means the same). ntdll, kernelbase and kernel32 are always builtin and their entries are ignored with a warning.",
+      "type": "object",
+      "propertyNames": { "minLength": 1 },
+      "additionalProperties": {
+        "type": "string",
+        "enum": ["", "native", "builtin", "native,builtin", "builtin,native", "disabled"]
+      }
+    },
+    "drives": {
+      "description": "Guest drive letter to host directory. Host paths are absolute, or relative to the machine folder. C: defaults to the machine folder itself (\".\").",
+      "type": "object",
+      "propertyNames": { "pattern": "^[A-Za-z]:?$" },
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+    "clock": {
+      "description": "Virtual time (core/clock).",
+      "type": "object",
+      "properties": {
+        "scale": { "description": "Time dilation factor.", "type": "number", "exclusiveMinimum": 0 },
+        "offset_ms": { "description": "Added to the host wall clock, in milliseconds.", "type": "integer" },
+        "frozen": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "cpu": {
+      "description": "CPUID virtualisation (core/cpu).",
+      "type": "object",
+      "properties": {
+        "hide_hypervisor": { "type": "boolean" },
+        "vendor": { "description": "12-character CPUID vendor string.", "type": "string", "minLength": 12, "maxLength": 12 }
+      },
+      "additionalProperties": false
+    },
+    "syscall_overrides": {
+      "description": "Per-syscall dispatcher policy override: syscall name to passthrough, translate, emulate or todo.",
+      "type": "object",
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    }
+  }
+}
