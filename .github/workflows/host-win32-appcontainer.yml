@@ -50,32 +50,12 @@ name: host-win32-appcontainer
 # report can print every measurement side by side; the report is what decides the job. Flipped gating after run
 # 39786498188 on 4e1131f passed. The build and staging steps are not continue-on-error: if they fail the job is red.
 
+# Every push to every branch, no path filter: the whole project is tested
+# continuously (docs/HANDOFF.md, standing testing rule).
 on:
   push:
     branches: ["**"]
-    paths:
-      - "core/**"
-      - "host-win32/**"
-      - "tests/appcontainer/**"
-      - "host-uwp-lite/smoke_guest.c"
-      - "third_party/**"
-      - "machine/**"
-      - "tests/integration/prepare_machine.cmake"
-      - "CMakeLists.txt"
-      - "cmake/**"
-      - ".github/workflows/host-win32-appcontainer.yml"
   pull_request:
-    paths:
-      - "core/**"
-      - "host-win32/**"
-      - "tests/appcontainer/**"
-      - "host-uwp-lite/smoke_guest.c"
-      - "third_party/**"
-      - "machine/**"
-      - "tests/integration/prepare_machine.cmake"
-      - "CMakeLists.txt"
-      - "cmake/**"
-      - ".github/workflows/host-win32-appcontainer.yml"
   workflow_dispatch:
 
 concurrency:
@@ -100,27 +80,16 @@ jobs:
       - name: sccache
         uses: mozilla-actions/sccache-action@v0.0.9
 
-      # Same incantation as host-win32-smoke.yml.
-      - name: Fetch wine-pe builtin DLLs (optional)
-        shell: pwsh
-        continue-on-error: true
+      # Same script as host-win32-smoke.yml and ci.yml: MANDATORY, retried, waits for a wine-pe run of this commit.
+      - name: Fetch wine-pe builtin DLLs (required)
         env: { GH_TOKEN: "${{ github.token }}" }
-        run: |
-          $id = gh run list --repo ${{ github.repository }} --workflow wine-pe.yml --branch ${{ github.ref_name }} --status success --limit 1 --json databaseId --jq '.[0].databaseId'
-          if (-not $id) {
-            $id = gh run list --repo ${{ github.repository }} --workflow wine-pe.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId'
-          }
-          if ($id) {
-            New-Item -ItemType Directory -Force -Path wine-pe/out/builtin | Out-Null
-            gh run download $id --repo ${{ github.repository }} --name wine-pe-builtin --dir wine-pe/out/builtin
-            Write-Host "downloaded wine-pe-builtin from run $id ($((Get-ChildItem wine-pe/out/builtin -Filter *.dll).Count) DLLs)"
-          } else {
-            Write-Host "no successful wine-pe run yet; the smoke cannot run without the Wine builtins"
-          }
-          $global:LASTEXITCODE = 0
+        run: >
+          python -I tools/ci/fetch_wine_pe.py --repo "${{ github.repository }}" --branch "${{ github.ref_name }}"
+          --sha "${{ github.sha }}" --artifact wine-pe-builtin=wine-pe/out/builtin
 
       # The host under test is built exactly as host-win32-smoke.yml builds it (same tree, same flags), so that "the same
-      # smoke" really is the same binary.
+      # smoke" really is the same binary. (host-win32-smoke also turns the driver host on to bundle the driver guests;
+      # win10xbox.exe does not depend on that option.)
       - name: Configure
         env: { SCCACHE_GHA_ENABLED: "true" }
         run: >

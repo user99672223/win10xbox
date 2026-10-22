@@ -34,3 +34,17 @@ add_test(NAME guest.cpuid COMMAND guest_cpuid)
 set_tests_properties(guest.cpuid PROPERTIES PASS_REGULAR_EXPRESSION "cpuid.1.ecx=[0-9a-f]+")
 add_test(NAME guest.sleep COMMAND guest_sleep)
 set_tests_properties(guest.sleep PROPERTIES PASS_REGULAR_EXPRESSION "guest slept")
+
+# The host-uwp-lite smoke guest (host-uwp-lite/smoke_guest.c, the program that
+# ran on the console), built here too so that every job that stages bin/guest
+# runs it: guest_smoke_cui.exe is the console variant (smoke_cui.exe there),
+# guest_smoke.exe the /SUBSYSTEM:WINDOWS one (smoke.exe). Both print facts and
+# return 42 (integration.guest_smoke_* in tests/integration). MSVC only: the
+# file uses SEH __try/__except, which clang does not accept for the mingw target.
+if(MSVC)
+  add_executable(guest_smoke_cui ${CMAKE_SOURCE_DIR}/host-uwp-lite/smoke_guest.c)
+  win10xbox_add_guest(guest_smoke_cui)
+  add_executable(guest_smoke WIN32 ${CMAKE_SOURCE_DIR}/host-uwp-lite/smoke_guest.c)
+  target_compile_definitions(guest_smoke PRIVATE SMOKE_GUI=1)
+  win10xbox_add_guest(guest_smoke)
+endif()

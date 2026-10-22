@@ -24,7 +24,10 @@ name: host-win32-smoke
 #        console  WIN10XBOX_TEST_NO_HOST_PATHS=1   GATING: zero unresolved + exit 42
 #        desktop  (no hook)                         non-gating sanity check
 #   5. prints "KERNEL32 unresolved: <N>" and fails the job unless N == 0 and the
-#      guest exited with 42 in the console run.
+#      guest exited with 42 in the console run;
+#   6. runs EVERY guest the build bundles (tests/guest, both subsystems of the
+#      smoke guest, the driver clients through drv_host) under the same console
+#      conditions, each gated on its own exit code (tools/ci/smoke_guests.ps1).
 # The run steps are continue-on-error so the counts always print; the gate step
 # turns them into the job result.
 #
@@ -50,30 +53,12 @@ name: host-win32-smoke
 # lines) can be turned into a function name offline: RVA = address - load base, and
 # the map's Rva+Base column is preferred load address + RVA.
 
+# Every push to every branch, no path filter: the whole project is tested
+# continuously (docs/HANDOFF.md, standing testing rule).
 on:
   push:
     branches: ["**"]
-    paths:
-      - "core/**"
-      - "host-win32/**"
-      - "host-uwp-lite/smoke_guest.c"
-      - "third_party/**"
-      - "machine/**"
-      - "tests/integration/prepare_machine.cmake"
-      - "CMakeLists.txt"
-      - "cmake/**"
-      - ".github/workflows/host-win32-smoke.yml"
   pull_request:
-    paths:
-      - "core/**"
-      - "host-win32/**"
-      - "host-uwp-lite/smoke_guest.c"
-      - "third_party/**"
-      - "machine/**"
-      - "tests/integration/prepare_machine.cmake"
-      - "CMakeLists.txt"
-      - "cmake/**"
-      - ".github/workflows/host-win32-smoke.yml"
   workflow_dispatch:
 
 concurrency:
@@ -98,30 +83,19 @@ jobs:
       - name: sccache
         uses: mozilla-actions/sccache-action@v0.0.9
 
-      # Wine builtin DLLs from the latest successful wine-pe run, same incantation
-      # as the `windows` job in ci.yml. Non-fatal here: without them the staging step
-      # below stops the job with a clear message (a green run must mean "proved").
-      - name: Fetch wine-pe builtin DLLs (optional)
-        shell: pwsh
-        continue-on-error: true
+      # Wine builtin DLLs, MANDATORY and retried, same script as ci.yml
+      # (tools/ci/fetch_wine_pe.py: a wine-pe run of this commit, waited for, else
+      # the newest successful run that still has the artifact).
+      - name: Fetch wine-pe builtin DLLs (required)
         env: { GH_TOKEN: "${{ github.token }}" }
-        run: |
-          $id = gh run list --repo ${{ github.repository }} --workflow wine-pe.yml --branch ${{ github.ref_name }} --status success --limit 1 --json databaseId --jq '.[0].databaseId'
-          if (-not $id) {
-            $id = gh run list --repo ${{ github.repository }} --workflow wine-pe.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId'
-          }
-          if ($id) {
-            New-Item -ItemType Directory -Force -Path wine-pe/out/builtin | Out-Null
-            gh run download $id --repo ${{ github.repository }} --name wine-pe-builtin --dir wine-pe/out/builtin
-            Write-Host "downloaded wine-pe-builtin from run $id ($((Get-ChildItem wine-pe/out/builtin -Filter *.dll).Count) DLLs)"
-          } else {
-            Write-Host "no successful wine-pe run yet; the smoke cannot run without the Wine builtins"
-          }
-          $global:LASTEXITCODE = 0
+        run: >
+          python -I tools/ci/fetch_wine_pe.py --repo "${{ github.repository }}" --branch "${{ github.ref_name }}"
+          --sha "${{ github.sha }}" --artifact wine-pe-builtin=wine-pe/out/builtin
 
       # The top-level tree, configured like ci.yml's `windows` job (cl + Ninja +
-      # sccache) with the options this job needs: tests ON (the prepare_machine
-      # target lives there), the driver host and the UWP host OFF (neither is used).
+      # sccache): tests ON (the prepare_machine target and the guests live there)
+      # and the driver host ON (drv_host.exe, the test drivers and their guest
+      # clients are bundled and run below); the UWP host OFF (not used).
       # No -DCMAKE_POLICY_VERSION_MINIMUM: it is unnecessary and breaks configure.
       - name: Configure
         env: { SCCACHE_GHA_ENABLED: "true" }
@@ -129,10 +103,11 @@ jobs:
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
           -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
           -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
-          -DWIN10XBOX_BUILD_TESTS=ON -DWIN10XBOX_BUILD_DRIVERS=OFF -DWIN10XBOX_BUILD_UWP=OFF
-      - name: Build host-win32
+          -DWIN10XBOX_BUILD_TESTS=ON -DWIN10XBOX_BUILD_DRIVERS=ON -DWIN10XBOX_BUILD_UWP=OFF
+      # Everything, so that every guest (bin/guest) and the driver host exist.
+      - name: Build host-win32, the driver host and every guest
         env: { SCCACHE_GHA_ENABLED: "true" }
-        run: cmake --build build --target win10xbox
+        run: cmake --build build -- -k 0
 
       # Machine folder = what the console package stages: Wine PE builtins
       # (prepare_machine copies wine-pe/out/builtin and machine.json) + the genuine
@@ -423,6 +398,13 @@ jobs:
           fi
           echo "host-win32-smoke: PASS (zero unresolved KERNEL32 imports, guest exit code 42)"
 
+      # Every bundled guest (prepare_machine copied bin/guest into the machine
+      # folder), console conditions, each gated on its exit code and output.
+      - name: Gate - every bundled guest through the host (console conditions)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: ./tools/ci/smoke_guests.ps1 -Bin build/bin -Machine build/bin/machine -LogDir guest-smoke -ConsoleConditions
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -444,6 +426,7 @@ jobs:
             diag-guest-default
             diag-guest-normal-exit
             diag-guest-normal-leak
+            guest-smoke
             build/bin/win10xbox.map
             build/bin/win10xbox.exe
             build/bin/win10xbox.pdb

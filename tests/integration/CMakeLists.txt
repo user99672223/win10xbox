@@ -72,6 +72,13 @@ win10xbox_guest_test(guest_cpuid "C:\\guest\\guest_cpuid.exe" 0
 # other guest sleeps, so nothing exercised it.
 win10xbox_guest_test(guest_sleep "C:\\guest\\guest_sleep.exe" 7 "guest slept")
 
+# The host-uwp-lite smoke guest (built in tests/guest, MSVC only): the program
+# that ran on the console, in both subsystems. It prints facts and returns 42.
+if(TARGET guest_smoke_cui)
+  win10xbox_guest_test(guest_smoke_cui "C:\\guest\\guest_smoke_cui.exe" 42 "hello from guest" "guest: done, returning 42")
+  win10xbox_guest_test(guest_smoke_gui "C:\\guest\\guest_smoke.exe" 42 "hello from guest" "guest: done, returning 42")
+endif()
+
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
 set_tests_properties(integration.guest_hello_appcontainer_sim PROPERTIES
   ENVIRONMENT "WIN10XBOX_TEST_NO_HOST_PATHS=1")

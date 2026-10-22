@@ -17,26 +17,12 @@ name: host-uwp
 # configuration core/ is known to build in: Ninja + cl + sccache. RelWithDebInfo (O2 + NDEBUG)
 # is one of the two configurations ci.yml gates on.
 
+# Every push to every branch, no path filter: the whole project is tested
+# continuously (docs/HANDOFF.md, standing testing rule).
 on:
   push:
     branches: ["**"]
-    paths:
-      - "host-uwp/**"
-      - "core/**"
-      - "third_party/**"
-      - "winexbox/**"
-      - "machine/machine.default.json"
-      - "tests/appcontainer/uwp_activate.cpp"
-      - ".github/workflows/host-uwp.yml"
   pull_request:
-    paths:
-      - "host-uwp/**"
-      - "core/**"
-      - "third_party/**"
-      - "winexbox/**"
-      - "machine/machine.default.json"
-      - "tests/appcontainer/uwp_activate.cpp"
-      - ".github/workflows/host-uwp.yml"
   workflow_dispatch:
 
 concurrency:

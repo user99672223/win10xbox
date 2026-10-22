@@ -45,27 +45,28 @@ jobs:
           sudo dpkg --add-architecture i386
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends wine wine64 ninja-build
+      # The Wine sources, for the wine_conformance subset (Wine's own tests built
+      # as guests, tests/wine-tests): a shallow clone of the pinned tag plus
+      # wine-pe/patches, about a minute. Before Configure: CMake decides there
+      # whether the conformance guests can be built.
+      - name: Fetch the Wine sources (wine_conformance guests)
+        run: wine-pe/fetch-wine.sh
+      # Give the guest end-to-end tests a real run under Wine: the Wine PE
+      # builtins (from the wine-pe artifact) + the NLS data (from the Wine
+      # prefix, which our emulated NtGetNlsSectionPtr serves). MANDATORY: without
+      # the builtins every guest test would skip, so the job fails instead
+      # (tools/ci/fetch_wine_pe.py; it waits for a wine-pe run of this commit).
+      # wine-pe-include holds the widl-generated headers advapi32/registry needs.
+      - name: Fetch wine-pe builtin DLLs and generated headers (required)
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: >
+          python3 -I tools/ci/fetch_wine_pe.py --repo "${{ github.repository }}" --branch "${{ github.ref_name }}"
+          --sha "${{ github.sha }}" --artifact wine-pe-builtin=wine-pe/out/builtin
+          --artifact wine-pe-include=wine-pe/build/include
       - name: Configure
         run: cmake -S . -B build-mingw -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE=cmake/llvm-mingw.cmake
       - name: Build
         run: cmake --build build-mingw -- -k 0   # keep going so all errors surface
-      # Give the guest end-to-end tests a real run under Wine: the Wine PE
-      # builtins (from the wine-pe artifact) + the NLS data (from the Wine
-      # prefix, which our emulated NtGetNlsSectionPtr serves). Without these the
-      # guest tests skip; with them the full pipeline (boot -> printf -> exit) is
-      # exercised and gated here. Non-fatal download: if absent, they skip.
-      - name: Fetch wine-pe builtin DLLs (optional)
-        env: { GH_TOKEN: "${{ github.token }}" }
-        run: |
-          id=$(gh run list --repo "${{ github.repository }}" --workflow wine-pe.yml --branch "${{ github.ref_name }}" --status success --limit 1 --json databaseId --jq '.[0].databaseId' || true)
-          [ -z "$id" ] && id=$(gh run list --repo "${{ github.repository }}" --workflow wine-pe.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId' || true)
-          if [ -n "$id" ]; then
-            mkdir -p wine-pe/out/builtin
-            gh run download "$id" --repo "${{ github.repository }}" --name wine-pe-builtin --dir wine-pe/out/builtin
-            echo "downloaded wine-pe-builtin from run $id ($(ls wine-pe/out/builtin/*.dll 2>/dev/null | wc -l) DLLs)"
-          else
-            echo "no successful wine-pe run yet; guest tests will skip"
-          fi
       - name: Init Wine prefix (must be a dir we own; /tmp is not)
         env: { WINEDEBUG: "-all", WINEPREFIX: "${{ runner.temp }}/wineprefix" }
         run: |
@@ -81,12 +82,21 @@ jobs:
           cp -f /usr/share/wine/nls/*.nls "$sys32"/ 2>/dev/null || true
           cp -f "$sys32"/sortdefault.nls "$sort"/ 2>/dev/null || true
           echo "staged $(ls "$sys32"/*.nls 2>/dev/null | wc -l) NLS files"
+      # Everything, wine_conformance included: those tests gate on the recorded
+      # baseline (tests/wine-tests/baseline.cmake: a regression fails, an
+      # improvement passes with an IMPROVED note), about 3.5 minutes.
       - name: Test under Wine
         env: { WINEDEBUG: "-all", WINEPREFIX: "${{ runner.temp }}/wineprefix" }
-        # wine_conformance (Wine's own test subset) is a recorded fidelity
-        # baseline, not a gate, and needs wine-pe/wine-src which this job does
-        # not clone, so it skips here; exclude it from the gating run.
-        run: ctest --test-dir build-mingw --output-on-failure --label-exclude wine_conformance
+        run: ctest --test-dir build-mingw --output-on-failure --timeout 300 --output-junit ctest-junit.xml
+      # ctest counts a skipped test as passed ("100% tests passed" with every
+      # guest test skipped: docs/HANDOFF.md trap 1). Fail on any test that did
+      # not run, and on a label that has fewer tests than its floor.
+      - name: Gate - nothing skipped
+        if: ${{ !cancelled() }}
+        run: >
+          python3 -I tools/ci/check_ctest_run.py --build build-mingw --junit ctest-junit.xml
+          --require-label guest_e2e --require-label driver_e2e=2 --require-label drivers=2
+          --require-label wine_conformance
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -110,25 +120,30 @@ jobs:
         with: { arch: x64 }
       - name: sccache
         uses: mozilla-actions/sccache-action@v0.0.9
-      # Wine builtin DLLs from the latest successful wine-pe run. Non-fatal: if
-      # none exists yet the guest integration tests skip (ntdll absent), so the
-      # MSVC compile + unit tests still gate. Downloads into the default
-      # WIN10XBOX_BUILTIN_DIR (wine-pe/out/builtin) so no -D is needed.
-      - name: Fetch wine-pe builtin DLLs (optional)
-        shell: pwsh
+      # Wine builtin DLLs, MANDATORY (tools/ci/fetch_wine_pe.py: a wine-pe run of
+      # this commit if there is one, waited for; else the newest successful one
+      # that still has the artifact; every query retried). Without them every
+      # guest test skips: ci.yml run 39818491081's windows (Debug) job found no
+      # run ("no successful wine-pe run yet") while its RelWithDebInfo sibling
+      # did, and went green with all 14 end-to-end tests skipped. Downloads into
+      # the default WIN10XBOX_BUILTIN_DIR (wine-pe/out/builtin).
+      - name: Fetch wine-pe builtin DLLs (required)
         env: { GH_TOKEN: "${{ github.token }}" }
+        run: >
+          python -I tools/ci/fetch_wine_pe.py --repo "${{ github.repository }}" --branch "${{ github.ref_name }}"
+          --sha "${{ github.sha }}" --artifact wine-pe-builtin=wine-pe/out/builtin
+      # Where the WDK's kernel headers are on this image (tests/drivers builds
+      # OurKmdfDevice.sys and layout_check against them with MSVC).
+      - name: Runner facts - Windows Kits kernel headers
+        shell: pwsh
         run: |
-          $id = gh run list --repo ${{ github.repository }} --workflow wine-pe.yml --branch ${{ github.ref_name }} --status success --limit 1 --json databaseId --jq '.[0].databaseId'
-          if (-not $id) {
-            $id = gh run list --repo ${{ github.repository }} --workflow wine-pe.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+          $kits = 'C:\Program Files (x86)\Windows Kits\10'
+          Get-ChildItem "$kits\Include" -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            $km = Join-Path $_.FullName 'km'
+            Write-Host ("{0}: km {1}, ntddk.h {2}" -f $_.Name, (Test-Path $km), (Test-Path (Join-Path $km 'ntddk.h')))
           }
-          if ($id) {
-            New-Item -ItemType Directory -Force -Path wine-pe/out/builtin | Out-Null
-            gh run download $id --repo ${{ github.repository }} --name wine-pe-builtin --dir wine-pe/out/builtin
-            Write-Host "downloaded wine-pe-builtin from run $id ($((Get-ChildItem wine-pe/out/builtin -Filter *.dll).Count) DLLs)"
-          } else {
-            Write-Host "no successful wine-pe run yet; guest integration tests will skip"
-          }
+          Get-ChildItem "$kits\Include\wdf\kmdf" -Directory -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "wdf\kmdf\$($_.Name)" }
+          Write-Host "WindowsSDKVersion=$env:WindowsSDKVersion WindowsSdkDir=$env:WindowsSdkDir"
       - name: Configure
         env: { SCCACHE_GHA_ENABLED: "true" }
         run: >
@@ -141,29 +156,35 @@ jobs:
       - name: Populate machine folder from the runner's System32 (never committed)
         shell: pwsh
         run: ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine -CI
-      # Gate: everything except the end-to-end tests that depend on captured
-      # guest stdout (labels guest_e2e and driver_e2e). The driver_e2e tests
-      # boot a full guest through drv_host and assert on the guest's printed
-      # output, so they inherit the same real-Windows stdout-capture gap.
+      # The whole suite, end-to-end included. The guest's stdout IS captured on
+      # real Windows: run 39818491081 (RelWithDebInfo, the one job of that run
+      # that had the builtins) printed "hello from guest" and passed 11 of 13
+      # guest_e2e tests; the two failures were real bugs, fixed since
+      # (docs/STATUS.md). wine_conformance needs clang-built guests and the Wine
+      # sources; with MSVC its tests are not registered at all.
       - name: Test
         env: { WIN10XBOX_DEBUG: "+all" }
-        run: ctest --test-dir build --output-on-failure --timeout 300 --label-exclude "guest_e2e|driver_e2e|wine_conformance"
-      # End-to-end on real Windows is in bring-up: the guest boots through the
-      # full ntdll init and runs to completion (correct exit code), but its
-      # stdio is not yet captured on a real-Windows host (works under Wine,
-      # gated on linux-cross). The guest_e2e and driver_e2e tests assert on that
-      # stdout, so run them for visibility without failing the job. See
-      # docs/STATUS.md. (On MSVC only the WDM driver_ioctl is built; KMDF and the
-      # layout check are NOT-MSVC-only.)
-      - name: Test (end-to-end, real-Windows bring-up, non-blocking)
-        continue-on-error: true
-        env: { WIN10XBOX_DEBUG: "+all" }
-        run: ctest --test-dir build --output-on-failure --timeout 300 --label-regex "guest_e2e|driver_e2e"
+        run: ctest --test-dir build --output-on-failure --timeout 300 --output-junit ctest-junit.xml
+      - name: Gate - nothing skipped
+        if: ${{ !cancelled() }}
+        run: >
+          python -I tools/ci/check_ctest_run.py --build build --junit ctest-junit.xml
+          --require-label guest_e2e --require-label driver_e2e=2 --require-label drivers=2
+      # Every guest the build bundles (tests/guest, the host-uwp-lite smoke guest
+      # in both subsystems, the driver clients through drv_host), run through
+      # the host executables with the exit code each must return, read from the
+      # process itself.
+      - name: Smoke - every bundled guest through the host
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: ./tools/ci/smoke_guests.ps1 -Bin build/bin -Machine build/bin/machine -LogDir build/guest-smoke
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: windows-${{ matrix.config }}-logs
           path: |
             build/Testing/Temporary/
+            build/ctest-junit.xml
+            build/guest-smoke/
             build/bin/*.log
           retention-days: 7
