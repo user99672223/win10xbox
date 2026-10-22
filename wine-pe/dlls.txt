@@ -44,3 +44,6 @@ combase
 programs/services
 wbemprox
 programs/wineboot
+
+# --- guest programs (run through the layer by integration tests) -----------
+programs/winemine
