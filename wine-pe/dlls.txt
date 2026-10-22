@@ -35,11 +35,16 @@ imm32
 ws2_32
 winmm
 
-# --- imports of fastfetch.exe (docs/slices/fastfetch.md) that are not in the native guest set -----------------
+# --- imports of fastfetch.exe (docs/slices/fastfetch.md) and what they pull in --------------------------------
+cfgmgr32
+coml2
 dnsapi
 hid
 iphlpapi
+nsi
 secur32
+shcore
+winbrand
 wtsapi32
 
 # --- COM -------------------------------------------------------------------

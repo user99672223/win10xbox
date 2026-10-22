@@ -193,10 +193,14 @@ endif()
 # every run), left at <machine>/guest/fastfetch.exe by a named step of ci.yml's windows job before ctest runs. It is a
 # system-information tool: it asks the layer for the OS version, kernel, CPU, memory, disk, locale and uptime. Gate: exit 0
 # and the four headline modules on stdout (docs/slices/fastfetch.md).
+# It runs on the builtin-only folder (the console's DLL set): the shared folder's native DLLs (the runner's build 26100)
+# do not work under Wine's ntdll (see the GUI tests above), and fastfetch imports shell32, ole32 and advapi32.
 if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
   set(_guest_args "--pipe;--logo;none;-s;OS:Kernel:CPU:Memory:Disk:Locale:Uptime")
   win10xbox_guest_test(fastfetch "C:\\guest\\fastfetch.exe" 0 "OS: " "Kernel: " "CPU: " "Memory: ")
   unset(_guest_args)
+  unset(_guest_machine)
 endif()
 
 # ---- Real GUI programs (not ours), built from source on the Windows runner ------------------------------------------
