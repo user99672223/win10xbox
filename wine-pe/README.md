@@ -87,6 +87,7 @@ Current patches:
 | Patch | Why |
 |-------|-----|
 | `0001-keep-host-process-heap.patch` | `ntdll!loader_init` only creates a process heap if `PEB->ProcessHeap` is NULL. win10xbox runs Wine's ntdll in a host process that already owns the heap; heap calls are forwarded to the host ntdll. |
+| `0002-honour-tick-count-multiplier.patch` | `GetTickCount(64)` (kernelbase, kernel32), `NtGetTickCount` and win32u's message clock apply `KUSER_SHARED_DATA.TickCountMultiplier`. On a Windows host the guest reads the host's page, where `TickCount` is in 15.625 ms ticks; Wine assumed milliseconds (its own multiplier is `1 << 24`, so Wine hosts are unaffected). |
 
 ## Updating the Wine pin
 
@@ -98,7 +99,10 @@ that no longer applies.
 
 `.github/workflows/wine-pe.yml` (manual, on `wine-pe/**` changes, weekly)
 runs the two scripts on ubuntu-latest and uploads `out/builtin/` as the
-artifact `wine-pe-builtin` (30 days). Wine source, build tree and ccache are
+artifact `wine-pe-builtin` and `build/include/` (the widl-generated headers
+some Wine tests need) as `wine-pe-include` (30 days each). Consumers fetch them
+with `tools/ci/fetch_wine_pe.py`, which waits for a wine-pe run of the same
+commit. Wine source, build tree and ccache are
 cached, keyed on the Wine tag and a hash of the scripts, list and patches.
 
 ## Licensing

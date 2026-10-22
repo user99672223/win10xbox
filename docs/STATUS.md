@@ -1,5 +1,43 @@
 # Status
 
+## CI: the whole suite gates on real Windows; task #12 closed (2026-10-22)
+
+**Measured first.** `ci.yml` run 39818491081 (`88dc49d`) was green, but its windows (Debug) job had found no wine-pe
+run ("no successful wine-pe run yet") and SKIPPED all 14 end-to-end tests, while the RelWithDebInfo job of the same
+run did get the builtins. In that one job the "non-blocking" end-to-end step showed that **the guest's stdout is
+captured on real Windows**: `integration.guest_hello` and 10 more `guest_e2e` tests passed on their stdout assertions.
+The recorded "stdio is not yet captured" gap (task #12) no longer existed; what kept the tests from gating were two
+real bugs, both hidden by the non-blocking step:
+
+* `integration.driver_ioctl`: `FAIL kernel timer: ok=1 driver_ms=127 wall_ms=8`. Wine's `GetTickCount` /
+  `GetTickCount64` / `NtGetTickCount` / win32u's message clock ignore `KUSER_SHARED_DATA.TickCountMultiplier`
+  (Wine's server keeps `TickCount` in ms with multiplier `1 << 24`); on a Windows host the guest reads the host's page,
+  where `TickCount` counts 15.625 ms ticks (127 / 15.625 = 8). Every guest tick count ran 15.625x slow on Windows and
+  on the console. Fixed by `wine-pe/patches/0002-honour-tick-count-multiplier.patch`.
+* `integration.guest_view_violation_detected`: c0000005 reading 0x104 inside `win10xbox.exe`. The test hook touched a
+  function-local static inside the guest-view window, i.e. it performed on MSVC the very fault its detector exists
+  to report. On MSVC the hook now records the violation without the access (`core/dispatch/dispatcher.cpp`).
+
+**Changed.** Both MSVC configs run the full ctest suite (no label excluded, no `continue-on-error`); linux-cross also
+runs `wine_conformance` gated (Wine sources cloned in seconds); a gate after every ctest fails on any skipped test or
+a label below its floor, DISABLED tests excepted (`tools/ci/check_ctest_run.py`); the wine-pe download is mandatory
+and waits for a wine-pe run of the same commit (`tools/ci/fetch_wine_pe.py`); every bundled guest (now including the
+host-uwp-lite smoke guest in both subsystems and the driver clients) runs through the host with its exit code on the
+Windows job and, under console conditions, in host-win32-smoke; host-uwp, uwp-lite, host-win32-smoke and
+host-win32-appcontainer run on every push. `drivers/` now runs on Windows in full: `drivers.unit`, `drivers.layout`
+(against the WDK, from the NuGet package; the image has no WDK), `integration.driver_ioctl` and
+`integration.driver_kmdf_ioctl`, plus `drv_client` / `drv_kmdf_client` in both smoke runs. The WDK layout check found
+one real difference: `DEVICE_OBJECT` is `DECLSPEC_ALIGN(16)` (size 0x150; `ntk.h` had 0x148 because mingw-w64's
+header omits the alignment) - `ntk.h` now matches. Details: `docs/TESTING.md`, "What gates where".
+
+**Evidence (run ids).** Before: 39818491081. Iterations: 39823615327 (linux-cross 54/54; windows: every guest and
+driver_ioctl green on both configs, gates red on the missing WDK and on wine tests registered under MSVC),
+39824978636 (layout_ddk.c vs the WDK's bit field), 39826229792 (everything green on Windows except drivers.layout:
+`sizeof(DEVICE_OBJECT)` 328 vs 336). Final green runs: see the commit that records them.
+
+**Not gating anywhere:** `wine_conformance` on the Windows jobs (MSVC cannot build Wine's tests; not registered) and
+`integration.guest_window` (DISABLED by its author until core/user lands; the gate lists it as not run on purpose).
+
 ## host-uwp presents the composed frame; every guest is bundled (2026-10-22)
 
 `host-uwp` now has a presenter (`host-uwp/presenter.cpp`, `blit.cpp`). It copies
@@ -438,15 +476,15 @@ headers run on a minimal WDF function-table shim (`integration.driver_kmdf_ioctl
 Green on both CI jobs (commit `52d39be`): the whole `drivers/` tree + the freestanding test drivers build under
 **MSVC** (windows-latest, Debug and RelWithDebInfo) and **llvm-mingw**; `drivers.unit` + `drivers.layout` gate on
 both, and the IOCTL round-trip (`integration.driver_ioctl`, `integration.driver_kmdf_ioctl`, label `driver_e2e`)
-is a hard gate on the Wine job and runs non-blocking on the Windows job (it asserts on guest stdout, the same
-real-Windows capture gap as `guest_e2e`).
+is a hard gate on the Wine job and, since 2026-10-22, on both Windows jobs too (see the CI section at the top; the
+"capture gap" this line used to cite turned out not to exist).
 Privileged-instruction trap-and-emulate landed (`drivers/host/privileged.cpp`, commit `a8c4074`): a VEH armed via
 `drivers::SetImageLoadHook` that, for a fault inside a loaded driver image, decodes with Zydis and emulates the
 instructions privileged at CPL 3 — `mov cr8` <-> virtual IRQL (the inline `KeGetCurrentIrql`/`KeRaiseIrql`/
 `KeLowerIrql`), `rdmsr`/`wrmsr`, `in`/`out`, `cli`/`sti`, `rdpmc`, `hlt`/`wbinvd`/`invd`/`invlpg` — then resumes.
 `OurTestDevice`'s `IOCTL_OTD_PRIV` exercises it from kernel mode; verified under Wine (`cr8=1 msr=1 portio=1
-clisti=1`), the same `#GP`->VEH->resume path the probe proved on the console. Gates on linux-cross, non-blocking on
-the Windows job. Follow-ups (`drivers/README.md`): the kernel-VA `KUSER_SHARED_DATA` mirror read and gs-relative
+clisti=1`), the same `#GP`->VEH->resume path the probe proved on the console. Gates on linux-cross and (since
+2026-10-22) on the Windows jobs. Follow-ups (`drivers/README.md`): the kernel-VA `KUSER_SHARED_DATA` mirror read and gs-relative
 KPCR fields — memory accesses needing the virtual KUSER/KPCR served, not a one-instruction emulation. Also not
 done: PnP/power, real KMDF framework.
 
@@ -506,11 +544,8 @@ per-syscall status table is the fidelity ledger going forward.
   boot a real PE through the full layer, check output and exit code) are a
   **hard gate on the Wine job** (`linux-cross`), which downloads the Wine PE
   builtins and stages the NLS data the emulated `NtGetNlsSectionPtr` serves.
-- On a **real-Windows** host the guest currently boots through the entire
-  Wine-ntdll init (loader, NLS/locale, process params) and runs to
-  completion with the correct exit code, but its **stdio is not yet captured**
-  (Wine's kernelbase console path over a real-Windows pipe). These two tests
-  therefore run **non-blocking** on the Windows CI job (visible, not gating)
-  until that is resolved. This is the lead M3 bring-up item, tracked here;
-  it is a real-Windows-only wiring gap, not an architectural one (the same
-  path is proven on the Wine gate).
+- On a **real-Windows** host the guest boots through the entire Wine-ntdll
+  init and its stdio IS captured; the end-to-end tests gate on both Windows
+  jobs since 2026-10-22 (the CI section at the top of this file). The earlier
+  claim here that stdio was not captured on real Windows is withdrawn: run
+  39818491081 shows guest stdout matched on the windows RelWithDebInfo job.
