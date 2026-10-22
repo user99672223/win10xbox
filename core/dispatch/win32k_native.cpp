@@ -1,0 +1,147 @@
+// Route B (config gui = Native, docs/GUI.md "Route B: native win32k"): the guest runs the native
+// user32/gdi32/gdi32full/win32u, every win32u syscall passes through to the host's own win32u.dll export of
+// the same name (dispatcher.cpp: RenumberSyscallThunks, UseHostWin32u), so the host's win32k manages the
+// guest's windows. This file loads the host's GUI DLLs and routes win32k's user-mode callbacks.
+//
+// Callbacks. win32k calls back through the HOST ntdll's KiUserCallbackDispatcher, which calls
+// PEB.KernelCallbackTable[index](args, len) on the thread that made the syscall. That thread is inside our
+// dispatcher, in the HOST TLS view (ThreadState::depth >= 1), while the guest's user32 -- which installed its
+// own table in the PEB -- expects to run in the guest view. And the PEB table is process-wide: a host thread
+// with windows of its own (host-uwp's CoreWindow) must keep getting the HOST user32. So once the guest's user32
+// has written its table, the PEB gets our trampoline table instead; trampoline i routes per thread:
+//   guest thread  -> CallInGuestView(guest_table[i], args, len)
+//   other thread  -> host_table[i](args, len), unchanged
+// The invariant that makes the guest case correct is written down in docs/DISPATCHER.md ("User-mode
+// callbacks in native GUI mode").
+#include "internal.h"
+#include <array>
+#include <utility>
+
+namespace win10xbox::dispatch::detail {
+namespace {
+
+using KernelCallbackFn = NTSTATUS(NTAPI*)(void* args, ULONG len);
+
+// More than any user32 has (Windows 10/11 user32's apfnDispatch has well under 256 entries). The trampolines
+// do not need the guest table's real length: the kernel only ever passes indices valid for it.
+constexpr unsigned kCallbackSlots = 512;
+
+// Namespace scope and trivially initialised: read by the trampolines on whatever thread win32k calls back.
+KernelCallbackFn* volatile g_guest_callbacks = nullptr;   // the guest's user32 table (PEB, after its DllMain)
+KernelCallbackFn* g_host_callbacks = nullptr;             // the host's user32 table (PEB, after LoadLibrary)
+volatile LONG64 g_to_guest = 0, g_to_host = 0;
+HostGui g_host_gui{};
+bool g_host_gui_ok = false;
+
+NTSTATUS RouteCallback(unsigned index, void* args, ULONG len) {
+    ThreadState* st = CurrentThreadState();
+    KernelCallbackFn* const guest = g_guest_callbacks;
+    if (!st || !(st->flags & kThreadGuest) || !guest) {
+        // Not a guest thread (or the guest has no table yet): the host's user32, as if we were not here.
+        InterlockedIncrement64(&g_to_host);
+        return g_host_callbacks[index](args, len);
+    }
+    const auto n = static_cast<unsigned long long>(InterlockedIncrement64(&g_to_guest));
+    // depth 0 would mean the guest view is already installed (a callback that did not come through our
+    // dispatcher): nothing host-side may log there, and CallInGuestView below then switches nothing.
+    if (st->depth)
+        TRACE(dispatch, "user-mode callback #%llu: KernelCallbackTable[%u] -> guest user32 %p (args %p, %lu bytes)",
+              n, index, reinterpret_cast<void*>(guest[index]), args, len);
+    // Resolved before the view switch: CallInGuestView's contract. If the callback ends in NtCallbackReturn
+    // (the normal case), that syscall unwinds this frame away in the kernel and never returns here.
+    const KernelCallbackFn fn = guest[index];
+    return CallInGuestView(fn, args, len);
+}
+
+template <unsigned I> NTSTATUS NTAPI Trampoline(void* args, ULONG len) { return RouteCallback(I, args, len); }
+
+template <unsigned... I>
+constexpr std::array<KernelCallbackFn, sizeof...(I)> MakeTrampolines(std::integer_sequence<unsigned, I...>) {
+    return {{&Trampoline<I>...}};
+}
+// Constant-initialised (no dynamic init, no guard): PEB.KernelCallbackTable points straight at it.
+constexpr std::array<KernelCallbackFn, kCallbackSlots> kTrampolines =
+    MakeTrampolines(std::make_integer_sequence<unsigned, kCallbackSlots>{});
+
+void* TrampolineTable() { return const_cast<KernelCallbackFn*>(kTrampolines.data()); }
+
+}  // namespace
+
+std::uint64_t NativeCallbacksToGuest() { return static_cast<std::uint64_t>(g_to_guest); }
+std::uint64_t NativeCallbacksToHost() { return static_cast<std::uint64_t>(g_to_host); }
+const HostGui* HostGuiFunctions() { return g_host_gui_ok ? &g_host_gui : nullptr; }
+
+void NoteNativeWin32uCall() {
+    auto& slot = PebField<KernelCallbackFn*>(peb::KernelCallbackTable);
+    KernelCallbackFn* const cur = slot;
+    if (!cur || cur == TrampolineTable() || cur == g_host_callbacks) return;
+    // The guest's user32 (its DllMain) has installed its own table: same layout as the host's, other base.
+    KernelCallbackFn* const previous = g_guest_callbacks;
+    g_guest_callbacks = cur;
+    slot = static_cast<KernelCallbackFn*>(TrampolineTable());
+    TRACE(dispatch, "PEB.KernelCallbackTable: the guest's user32 installed %p (previous guest table %p, host's %p); "
+                    "replaced by the %u trampolines at %p, routed per thread", static_cast<void*>(cur),
+          static_cast<void*>(previous), static_cast<void*>(g_host_callbacks), kCallbackSlots, TrampolineTable());
+}
+
+NTSTATUS ConfigureNativeGui() {
+    HMODULE user32 = LoadLibraryW(L"user32.dll");
+    HMODULE gdi32 = LoadLibraryW(L"gdi32.dll");
+    HMODULE win32u = LoadLibraryW(L"win32u.dll");
+    if (!user32 || !gdi32 || !win32u) {
+        ERR(dispatch, "gui native: the host's user32/gdi32/win32u did not load (%p %p %p, error %lu)",
+            static_cast<void*>(user32), static_cast<void*>(gdi32), static_cast<void*>(win32u), GetLastError());
+        return st::DllNotFound;
+    }
+    HostGui& h = g_host_gui;
+    bool ok = true;
+#define R(mod, fn) ok &= (h.fn = reinterpret_cast<decltype(h.fn)>(GetProcAddress(mod, #fn))) != nullptr
+    R(user32, EnumWindows); R(user32, GetWindowThreadProcessId); R(user32, IsWindowVisible); R(user32, IsIconic);
+    R(user32, GetWindowRect); R(user32, GetWindowDC); R(user32, ReleaseDC); R(user32, GetSystemMetrics);
+    R(gdi32, CreateCompatibleDC); R(gdi32, CreateDIBSection); R(gdi32, SelectObject); R(gdi32, BitBlt);
+    R(gdi32, DeleteDC); R(gdi32, DeleteObject); R(gdi32, GdiFlush);
+#undef R
+    auto get_desktop = reinterpret_cast<HWND(WINAPI*)()>(GetProcAddress(user32, "GetDesktopWindow"));
+    if (!ok || !get_desktop) {
+        ERR(dispatch, "gui native: the host's user32/gdi32 lack an export the composer needs");
+        return st::NotImplemented;
+    }
+    // The host's user32 must have connected this process (and this thread) to win32k before the guest's first
+    // GUI call: a harmless call does that, and its result is the first evidence that win32k is reachable here.
+    const HWND desktop = get_desktop();
+    const int cx = h.GetSystemMetrics(SM_CXSCREEN), cy = h.GetSystemMetrics(SM_CYSCREEN);
+    // Warm the composer's GDI path now, while PEB->Ldr is the host's: anything the host's gdi32 resolves lazily
+    // (delay loads) must not be resolved against the guest's module list later.
+    if (HDC mem = h.CreateCompatibleDC(nullptr)) {
+        BITMAPINFO bi{};
+        bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+        bi.bmiHeader.biWidth = 1;
+        bi.bmiHeader.biHeight = -1;
+        bi.bmiHeader.biPlanes = 1;
+        bi.bmiHeader.biBitCount = 32;
+        void* bits = nullptr;
+        if (HBITMAP bmp = h.CreateDIBSection(mem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0)) {
+            HGDIOBJ old = h.SelectObject(mem, bmp);
+            if (HDC wdc = h.GetWindowDC(desktop)) {
+                h.BitBlt(mem, 0, 0, 1, 1, wdc, 0, 0, SRCCOPY);
+                h.ReleaseDC(desktop, wdc);
+            }
+            h.GdiFlush();
+            h.SelectObject(mem, old);
+            h.DeleteObject(bmp);
+        }
+        h.DeleteDC(mem);
+    }
+    g_host_callbacks = PebField<KernelCallbackFn*>(peb::KernelCallbackTable);
+    g_host_gui_ok = true;
+    TRACE(dispatch, "gui native: host user32 %p gdi32 %p win32u %p; desktop window %p, screen %dx%d, host "
+                    "KernelCallbackTable %p", static_cast<void*>(user32), static_cast<void*>(gdi32),
+          static_cast<void*>(win32u), static_cast<void*>(desktop), cx, cy, static_cast<void*>(g_host_callbacks));
+    if (!g_host_callbacks) {
+        ERR(dispatch, "gui native: the host's user32 left PEB.KernelCallbackTable empty");
+        return st::Unsuccessful;
+    }
+    return UseHostWin32u(win32u);
+}
+
+}  // namespace win10xbox::dispatch::detail

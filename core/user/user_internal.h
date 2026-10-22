@@ -67,4 +67,12 @@ NTSTATUS NTAPI User_NtCallbackReturn(void* result, ULONG size, NTSTATUS status);
 // Which win32u syscall is being emulated right now (for the unimplemented counter / FIXMEs).
 void NoteUnimplemented(const char* name);
 
+// ---- Route B (config gui = Native): native_compose.cpp ---------------------------
+// True when the guest's windows are the host win32k's (ConfigureNativeGui succeeded). The host-facing API in
+// user.cpp then composes from the real windows instead of this module's.
+bool NativeGui();
+bool NativeComposeFrame(std::uint32_t* bgra, std::int32_t width, std::int32_t height, std::int32_t stride_bytes);
+void NativeScreenSize(std::int32_t* width, std::int32_t* height);
+std::uint64_t NativeFrameSerial();
+
 }  // namespace win10xbox::user::detail

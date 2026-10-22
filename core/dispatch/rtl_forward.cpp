@@ -151,6 +151,11 @@ ForwardResult ApplyRtlForwarding(const loader::MappedImage& img) {
 #define RTL_FORWARD(name) patch(#name, HostExport(#name), "the host ntdll");
 #define WINE_OVERRIDE(name, fn) patch(#name, reinterpret_cast<const void*>(&fn), "core");
 #include "rtl_forward.inc"
+    if (NativeGuiActive()) {
+        // Route B: the native user32's DllMain connects to csrss's user server; Wine's ntdll only has a stub
+        // that raises. The host's ntdll holds this process's real csrss connection.
+        patch("CsrClientConnectToServer", HostExport("CsrClientConnectToServer"), "the host ntdll");
+    }
     TRACE(dispatch, "guest ntdll: %zu functions forwarded, %zu skipped", r.forwarded, r.skipped);
     return r;
 }

@@ -330,6 +330,8 @@ NTSTATUS MapImageView(const std::shared_ptr<ImageSection>& sec, const MapOptions
     std::vector<std::string> unmatched;
     view->stubs = loader::RewriteSyscallStubs(view->image, SyscallEntryAddress(), &patched, &unmatched);
     view->stubs_rewritten = view->stubs != 0;
+    // Dispatch by name: a native DLL's thunks carry its own build's ids (no-op for Wine's builtins).
+    if (!patched.empty()) RenumberSyscallThunks(patched, view->image.path.c_str());
     if (view->stubs_rewritten || !unmatched.empty())
         TRACE(dispatch, "%ls: %zu syscall stubs rewritten, %zu unmatched", view->image.path.c_str(), view->stubs,
               unmatched.size());

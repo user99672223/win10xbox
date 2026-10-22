@@ -8,6 +8,7 @@
 # win10xbox_core, so this module must not link back to it.
 target_sources(win10xbox_core PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/user.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/native_compose.cpp
 )
 target_include_directories(win10xbox_core PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 target_include_directories(win10xbox_core PUBLIC ${CMAKE_CURRENT_LIST_DIR}/../../winexbox/include)

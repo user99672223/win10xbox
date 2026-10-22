@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cwchar>
+#include <cwctype>
 #include <map>
 #include <memory>
 
@@ -371,6 +372,13 @@ void ApplyConfig(const json::Value& root, State* st) {
         auto& o = st->info.cpu;
         if (!GetBool(c, "hide_hypervisor", &o.hide_hypervisor)) bad("cpu", "hide_hypervisor");
         if (!GetStr(c, "vendor", &o.vendor)) bad("cpu", "vendor");
+    }
+    if (const json::Value* g = root.Find("gui")) {
+        std::wstring v;
+        if (g->IsString()) v = Widen(g->str);
+        for (auto& ch : v) ch = static_cast<wchar_t>(std::towlower(ch));
+        if (v == L"emulated" || v == L"native") st->info.gui = v;
+        else WARN(vfs, "machine.json: \"gui\" must be \"emulated\" or \"native\", using the default");
     }
     if (const json::Value* s = root.Find("syscall_overrides"); s && s->IsObject()) {
         for (const auto& m : s->members) {

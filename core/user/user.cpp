@@ -112,16 +112,20 @@ winexbox::IWinexboxDriver* DisplayDriver() {
 }
 
 bool ComposeFrame(std::uint32_t* bgra, std::int32_t width, std::int32_t height, std::int32_t stride_bytes) {
+    if (detail::NativeGui()) return detail::NativeComposeFrame(bgra, width, height, stride_bytes);   // route B
     // Filled in by the window manager (win_paint.cpp): until then there is nothing to compose.
     (void)bgra; (void)width; (void)height; (void)stride_bytes;
     return false;
 }
 
-std::uint64_t FrameSerial() { return static_cast<std::uint64_t>(detail::g_frame_serial); }
+std::uint64_t FrameSerial() {
+    return static_cast<std::uint64_t>(detail::g_frame_serial) + detail::NativeFrameSerial();   // + route B's
+}
 
 void ScreenSize(std::int32_t* width, std::int32_t* height) {
     if (width) *width = 0;
     if (height) *height = 0;
+    if (detail::NativeGui()) { detail::NativeScreenSize(width, height); return; }   // route B: the real screen
     if (!detail::g_driver) return;
     const winexbox::DisplayConfig dc = detail::g_driver->QueryDisplay();
     for (const winexbox::MonitorInfo& m : dc.monitors) {

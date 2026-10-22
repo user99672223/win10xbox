@@ -66,6 +66,7 @@ struct MachineInfo {
     struct { double scale = 1.0; std::int64_t offset_ms = 0; bool frozen = false; } clock;
     struct { bool hide_hypervisor = true; std::wstring vendor = L"AuthenticAMD"; } cpu;
     std::vector<std::pair<std::wstring, std::wstring>> syscall_overrides;   // name -> policy, source order
+    std::wstring gui;   // "gui": "emulated" | "native" as written (lower-cased); empty when absent
 };
 
 // Initialise from the machine folder: reads <machine_root>\machine.json
