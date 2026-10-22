@@ -55,6 +55,7 @@ function(win10xbox_guest_test name program exit_code)
       -DMACHINE=${_guest_machine}
       -DREQUIRE_BUILTIN_DLLS=${_require_builtin}
       -DPROGRAM=${program}
+      "-DPROGRAM_ARGS=${_guest_args}"
       -DEXPECT_EXIT=${exit_code}
       "-DEXPECT_REGEX=${ARGN}"
       -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
@@ -146,6 +147,18 @@ win10xbox_guest_test(guest_window_text "C:\\guest\\guest_window_text.exe" 42
 set_tests_properties(integration.guest_window_text PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_text.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=121,123,ff000000|123,123,ffffffff|131,123,ff000000")
 unset(_guest_machine)
+
+# ---- Real program: MinGit (Git for Windows, minimal), fetched by tools/ci/fetch_mingit.ps1 into
+# <machine>/guest/mingit before ctest. mingw64/bin/git.exe directly (cmd/git.exe would spawn it as a child).
+# Gated: MSVC jobs (where that step runs) or -DWIN10XBOX_REAL_GIT=ON. Only in-process builtins so far.
+option(WIN10XBOX_REAL_GIT "Register integration.real_git (MinGit must be in <machine>/guest/mingit)" OFF)
+if(MSVC OR WIN10XBOX_REAL_GIT)
+  set(_guest_args "--version")
+  win10xbox_guest_test(real_git "C:\\guest\\mingit\\mingw64\\bin\\git.exe" 0 "git version 2")
+  set(_guest_args "init;C:\\guest\\gitrepo")
+  win10xbox_guest_test(real_git_init "C:\\guest\\mingit\\mingw64\\bin\\git.exe" 0 "Initialized empty Git repository")
+  unset(_guest_args)
+endif()
 
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
 set_tests_properties(integration.guest_hello_appcontainer_sim PROPERTIES

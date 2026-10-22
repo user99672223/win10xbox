@@ -159,6 +159,10 @@ jobs:
       - name: Populate machine folder from the runner's System32 (never committed)
         shell: pwsh
         run: ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine -CI
+      # Real program: MinGit into build/bin/machine/guest/mingit (integration.real_git*).
+      - name: Fetch MinGit (real guest program)
+        shell: pwsh
+        run: ./tools/ci/fetch_mingit.ps1 -Out build/bin/machine/guest/mingit
       # The whole suite, end-to-end included. The guest's stdout IS captured on
       # real Windows: run 39818491081 (RelWithDebInfo, the one job of that run
       # that had the builtins) printed "hello from guest" and passed 11 of 13
