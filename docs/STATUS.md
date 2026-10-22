@@ -33,7 +33,10 @@ header omits the alignment) - `ntk.h` now matches. Details: `docs/TESTING.md`, "
 **Evidence (run ids).** Before: 39818491081. Iterations: 39823615327 (linux-cross 54/54; windows: every guest and
 driver_ioctl green on both configs, gates red on the missing WDK and on wine tests registered under MSVC),
 39824978636 (layout_ddk.c vs the WDK's bit field), 39826229792 (everything green on Windows except drivers.layout:
-`sizeof(DEVICE_OBJECT)` 328 vs 336). Final green runs: see the commit that records them.
+`sizeof(DEVICE_OBJECT)` 328 vs 336). All green on `e23e82f`: ci 39827533313 (linux-cross 54 of 55 ran and passed, 1
+DISABLED; each windows config 29 of 30 ran and passed, 1 DISABLED, 15 `guest_e2e`, 7 guests smoke-run), wine-pe
+39827533416 (consumed by every job as "built from this commit"), host-win32-smoke 39827533375 (7 guests under console
+conditions), host-win32-appcontainer 39827533182, host-uwp 39827533101, uwp-lite 39827533216.
 
 **Not gating anywhere:** `wine_conformance` on the Windows jobs (MSVC cannot build Wine's tests; not registered) and
 `integration.guest_window` (DISABLED by its author until core/user lands; the gate lists it as not run on purpose).
