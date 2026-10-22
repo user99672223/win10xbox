@@ -46,6 +46,8 @@ $table = @(
   # The command line a guest sees (tests/guest/sqlite/args.c).
   @{ Name = 'guest_args';      Host = $host_exe; Guest = 'guest_args.exe';      Driver = '';                  Exit = 42; Out = 'args: argc=4';
      Args = @('one', 'two words', 'three') },
+  # Byte-range locking (tests/guest/sqlite/lockfile.c).
+  @{ Name = 'guest_lockfile';  Host = $host_exe; Guest = 'guest_lockfile.exe';  Driver = '';                  Exit = 42; Out = 'lockfile: done' },
   # The SQLite shell (tools/ci/build_sqlite.ps1), a program this repository did not write: an in-memory query, then
   # tests/guest/sqlite/smoke.sql against a database file in the machine folder.
   @{ Name = 'sqlite3_memory';  Host = $host_exe; Guest = 'sqlite3.exe';         Driver = '';                  Exit = 0;  Out = '(?m)^42\r?$';

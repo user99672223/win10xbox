@@ -76,6 +76,35 @@ resolves to `kernelbase.dll`, always Wine's in the guest. Wine's loader binds su
 call (`_initterm_e` in sechost's DllMain) raised 0x80000100 (`EXCEPTION_WINE_STUB`). The other guest tests keep the
 shared folder.
 
+## A real program: the SQLite shell
+
+The first guest this repository did not write. `tools/ci/build_sqlite.ps1` downloads the official amalgamation
+(`sqlite-amalgamation-3540100.zip`, SQLite 3.54.1, `https://www.sqlite.org/2026/`), checks it against the SHA-256 pinned
+in the script **on every run** (a cache hit is verified too; a mismatch is a hard failure, never a re-download), and
+builds `sqlite3.exe` with `cl /O2 /MT shell.c sqlite3.c` into `build/bin/machine/guest/`. The windows job of `ci.yml`
+and `host-win32-smoke.yml` each have a named step ("Build the SQLite shell (pinned, SHA-256 verified)") with an
+`actions/cache` entry keyed on the pinned hash. The pin: sqlite.org publishes the SHA3-256 of the archive; the file was
+downloaded once, its SHA3-256 matched the published one, and its SHA-256 is what the script holds. To move to a newer
+release change `$Version`, `$Archive`, `$Url`, `$Sha256` and the cache key together.
+
+| ctest (label `guest_e2e`) | what |
+|---|---|
+| `integration.sqlite_memory` | `sqlite3.exe -batch :memory: "select 6*7;"` prints `42`, exit 0 |
+| `integration.sqlite_script` | `sqlite3.exe -batch C:\Users\User\smoke.db` with `tests/guest/sqlite/smoke.sql` on stdin: create table, inserts (one journal per statement), ordered and aggregate selects, an index, `.dump`, `date('now')`, `pragma integrity_check`, `.exit 42`; every expected output line is gated and `Users/User/smoke.db` must exist in the machine folder afterwards |
+| `integration.guest_args` | `guest_args.exe one "two words" three`: argv, `GetCommandLineW()` and NUL-termination of the PEB's strings (regression for the first defect SQLite found) |
+
+`sqlite_*` are registered on MSVC builds only (where the step above produces `sqlite3.exe`); a missing `sqlite3.exe` is a
+failing test, not a skip. `-DWIN10XBOX_SQLITE_TESTS=ON` registers them elsewhere for a developer who staged a
+`sqlite3.exe` by hand (e.g. cross-built with `x86_64-w64-mingw32-clang -O2 -static shell.c sqlite3.c`). `smoke_guests.ps1`
+runs the same two command lines (plus `guest_args`) through `win10xbox.exe` on both Windows workflows.
+`run_guest.cmake` takes `-DARGS=a@@b` (guest command line; `@SEMI@` for a `;`), `-DINPUT_FILE=` (stdin) and
+`-DGUEST_FILE=` (a machine-folder path deleted before the run and required afterwards).
+
+Local note: the Wine 9.0 that Ubuntu ships as the *host* answers `STATUS_NOT_IMPLEMENTED` to `NtUnlockFile` with a
+non-NULL `IoStatusBlock`, which Wine 11.9's `UnlockFileEx` (the guest side) always passes, so SQLite reports
+"database is locked" under it. That is a host-version mismatch of the Linux reproduction, not a defect of the layer on
+Windows, and is why these tests are not registered on linux-cross.
+
 ## Wine test subset (M3 fidelity baseline)
 
 Wine's own conformance tests (`wine-pe/wine-src/dlls/<dll>/tests/*.c`, LGPL,

@@ -5,7 +5,7 @@ Windows 10 x64 / 22H2 NT syscall numbers) and the hand-maintained policy
 `core/dispatch/syscall_policy.inc`; win32u entries (ids 0x1000..) are Emulate when
 `core/user/user_syscalls.h` registers them. Do not edit by hand.
 
-1798 syscalls. passthrough 159, translate 30, emulate 282, todo 1327. Generated 2026-10-22.
+1798 syscalls. passthrough 157, translate 32, emulate 282, todo 1327. Generated 2026-10-22.
 
 Policy: **PassThrough** calls the host ntdll export by name; **Translate**
 rewrites arguments (paths, handles, timeouts) then passes through;
@@ -179,7 +179,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x00a2 | NtLoadKey | 2 | Emulate | registry |
 | 0x00a3 | NtLoadKey2 | 3 | Todo | registry |
 | 0x00a4 | NtLoadKeyEx | 8 | Emulate | registry |
-| 0x00a5 | NtLockFile | 10 | PassThrough |  |
+| 0x00a5 | NtLockFile | 10 | Translate | Wine's kernelbase passes IoStatusBlock NULL, which Windows rejects with an access violation (Wine hosts want NULL) |
 | 0x00a6 | NtCreateDebugObject | 4 | Todo | debugging the guest is not supported |
 | 0x00a7 | NtLockVirtualMemory | 4 | PassThrough |  |
 | 0x00a8 | NtMakePermanentObject | 1 | Todo | never touches the host |
@@ -266,7 +266,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x00f9 | NtTraceControl | 6 | PassThrough |  |
 | 0x00fa | NtUnloadDriver | 1 | Todo | driver host (M4) |
 | 0x00fb | NtUnloadKey | 1 | Emulate | registry |
-| 0x00fc | NtUnlockFile | 5 | PassThrough |  |
+| 0x00fc | NtUnlockFile | 5 | Translate | Wine 9 hosts refuse a non-NULL IoStatusBlock, Wine 11 hosts require one |
 | 0x00fd | NtUnlockVirtualMemory | 4 | PassThrough |  |
 | 0x00fe | NtUnmapViewOfSectionEx | 3 | Translate | views of our image sections are mapped by core/loader |
 | 0x00ff | NtWaitForAlertByThreadId | 2 | PassThrough |  |

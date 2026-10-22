@@ -45,3 +45,10 @@ if(WIN10XBOX_SQLITE_TESTS)
   unset(_guest_input)
   unset(_guest_file)
 endif()
+
+# Byte-range locking (core/dispatch/nt_file.cpp, NtLockFile/NtUnlockFile): Windows rejects the NULL IoStatusBlock that
+# Wine's kernelbase passes, and Wine hosts of different versions disagree about NtUnlockFile's.
+win10xbox_guest_test(guest_lockfile "C:\\guest\\guest_lockfile.exe" 42
+  "lockfile: exclusive lock 10\\+100 on first handle -> 1" "lockfile: same range on second handle -> 0 error=33"
+  "lockfile: shared lock, same range, second handle -> 1" "lockfile: exclusive over the shared range -> 0 error=33"
+  "lockfile: LockFile same, second handle -> 0 error=33" "lockfile: done")
