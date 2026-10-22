@@ -43,6 +43,12 @@ win10xbox_add_guest(guest_window2)
 add_executable(guest_window_input window_input.c)
 target_link_libraries(guest_window_input PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window_input)
+# Input semantics beyond the plain sequence (tests/guest/window_input2.c): hit test / cursor / activation
+# sequencing, double clicks, capture, children, the keyboard state and the US layout. Host-injected (the same hook) plus
+# SendInput from the guest.
+add_executable(guest_window_input2 window_input2.c)
+target_link_libraries(guest_window_input2 PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_window_input2)
 # The text guest: TextOutW/DrawTextW with the stock system font, glyph pixels read back with GetPixel
 # (tests/guest/window_text.c). Its integration test is DISABLED until the text rendering slice lands.
 add_executable(guest_window_text window_text.c)

@@ -27,7 +27,7 @@ add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_window guest_window2 guest_window_input
-                   guest_window_text)
+                   guest_window_input2 guest_window_text)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -125,6 +125,15 @@ win10xbox_guest_test(guest_window_input "C:\\guest\\guest_window_input.exe" 42
   "input: WM_LBUTTONDOWN x=50 y=50" "input: WM_CHAR ch=a" "input: WM_MOUSEWHEEL delta=120")
 set_tests_properties(integration.guest_window_input PROPERTIES
   ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=sleep 1500\\;move 150,150\\;ldown\\;lup\\;key 0x41\\;wheel 120")
+# Input semantics (tests/guest/window_input2.c): the host script covers the driver path (move, double click, right
+# click, wheel, key; the guest compares every message with its hit test / WM_SETCURSOR companions), the guest the rest with
+# SendInput. It prints PASS/FAIL per case and exits 42 only when every case passed.
+win10xbox_guest_test(guest_window_input2 "C:\\guest\\guest_window_input2.exe" 42
+  "PASS host-injected move, double click" "PASS caps lock on" "PASS click on an inactive window" "PASS capture: a click outside"
+  "PASS child: click" "PASS US layout: VkKeyScan" "window_input2: [0-9]+ passed, 0 failed")
+set_tests_properties(integration.guest_window_input2 PROPERTIES
+  ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=sleep 3000\\;move 150,150\\;ldown\\;lup\\;ldown\\;lup\\;rdown\\;rup\\;wheel -120\\;key 0x42"
+  FAIL_REGULAR_EXPRESSION "FAIL ")
 # The text GUI guest (tests/guest/window_text.c): a 400x300 WS_POPUP window at (100,100), client origin = screen
 # origin (100,100). It draws "HI" at client (20,20) and "Hello/Xbox" into (20,60)-(380,120) with the stock system
 # font, then reads the glyph pixels back with GetPixel and exits 42. The screenshot checks three of them at screen

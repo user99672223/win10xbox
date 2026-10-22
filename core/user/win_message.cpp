@@ -8,7 +8,6 @@
 // US-layout keyboard functions.
 #include "user_internal.h"
 #include "user_syscalls.h"
-#include "win10xbox/clock.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -23,8 +22,18 @@ constexpr UINT kUserTimerMinimum = 10;
 constexpr UINT kUserTimerMaximum = 0x7fffffff;
 constexpr int kMaxRecursion = 64;
 
-// Message times are the layer's tick count: what the guest's GetTickCount() shows.
-DWORD Now() { return static_cast<DWORD>(clock::TickCountMs()); }
+// Message times are in the guest's own tick count: what its GetTickCount() reads out of KUSER_SHARED_DATA (the
+// formula of kernel32's GetTickCount64), so GetMessageTime() and GetTickCount() can be compared.
+DWORD Now() {
+    const auto* usd = reinterpret_cast<const volatile ULONG*>(0x7ffe0000);
+    const ULONG multiplier = usd[1];                    // TickCountMultiplier
+    ULONG high, low;
+    do {
+        high = usd[0x324 / 4];                            // TickCount.High1Time (KSYSTEM_TIME at 0x320)
+        low = usd[0x320 / 4];                            // TickCount.LowPart
+    } while (high != usd[0x328 / 4]);                    // High2Time
+    return static_cast<DWORD>((((static_cast<ULONGLONG>(high) << 32) | low) * multiplier) >> 24);
+}
 
 void FillWinProcParams(abi::WinProcParams* p, WindowObj* w, UINT msg, WPARAM wp, LPARAM lp, bool ansi, int mapping) {
     WNDPROC func = w->proc.w ? w->proc.w : w->proc.a;
@@ -279,10 +288,11 @@ UserThread* ForegroundThread() {
     return nullptr;
 }
 
-// server/queue.c update_key_state
+// server/queue.c update_key_state (0x80 = down; 0x01 = toggled, kept for CapsLock, NumLock and ScrollLock only)
 void UpdateKeyState(BYTE* k, BYTE vk, bool down) {
     if (down) {
-        if (!(k[vk] & 0x80)) k[vk] ^= 0x01;
+        // only the lock keys have a toggle state
+        if (!(k[vk] & 0x80) && (vk == VK_CAPITAL || vk == VK_NUMLOCK || vk == VK_SCROLL)) k[vk] ^= 0x01;
         k[vk] |= 0x80;
     } else {
         k[vk] &= static_cast<BYTE>(~0x80);
@@ -1371,10 +1381,17 @@ UINT WINAPI NtUserMapVirtualKeyEx(UINT code, UINT type, HKL layout) {
     case MAPVK_VSC_TO_VK:
     case MAPVK_VSC_TO_VK_EX: {
         const UINT vk = VkOfScan(code);
-        if (type == MAPVK_VSC_TO_VK && (vk == VK_LSHIFT || vk == VK_RSHIFT)) return VK_SHIFT;
-        if (type == MAPVK_VSC_TO_VK && (vk == VK_LCONTROL || vk == VK_RCONTROL)) return VK_CONTROL;
-        if (type == MAPVK_VSC_TO_VK && (vk == VK_LMENU || vk == VK_RMENU)) return VK_MENU;
-        return vk == VK_SHIFT ? VK_LSHIFT : vk;
+        if (type == MAPVK_VSC_TO_VK) {   // the side-less key
+            if (vk == VK_LSHIFT || vk == VK_RSHIFT) return VK_SHIFT;
+            if (vk == VK_LCONTROL || vk == VK_RCONTROL) return VK_CONTROL;
+            if (vk == VK_LMENU || vk == VK_RMENU) return VK_MENU;
+            return vk;
+        }
+        // _EX: the table holds the side-less keys for the shared scan codes, the left one is the answer
+        if (vk == VK_SHIFT) return VK_LSHIFT;
+        if (vk == VK_CONTROL) return VK_LCONTROL;
+        if (vk == VK_MENU) return VK_LMENU;
+        return vk;
     }
     case MAPVK_VK_TO_CHAR: {
         const KeyMap* k = KeyByVk(code);
