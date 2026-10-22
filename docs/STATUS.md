@@ -17,8 +17,9 @@ following run and are gated (`ci.yml`, `host-win32-smoke.yml`, `host-win32-appco
 * **core/user** (`core/user/`, Wine 11.9 win32u contract): 234 `NtUser*`/`NtGdi*` syscalls emulated. Windows
   (class, create, show, paint, timers, PostMessage/SendMessage, DestroyWindow), GDI (DCs, DIB sections, memory DCs,
   BitBlt, FillRect, GetPixel), and input delivery in `win_message.cpp` (mouse and key messages queued to the
-  window). Gated: `integration.guest_window`, `integration.guest_window2`. The input sink (CoreWindow events
-  to `WM_*` in `win_message.cpp`) is on main, but its end-to-end gate waits for the `-input` slice. Not on main: glyph text, menus,
+  window). Gated: `integration.guest_window`, `integration.guest_window2`, and input delivery
+  (`integration.guest_window_input`, `guest_window_input2`: scripted mouse and keys reach the guest's window,
+  merged from `-input` at `d9f7639`). Not on main: glyph text, menus,
   clipboard, hooks (see in-flight list).
 * **D3D11 presenter** (`host-uwp/presenter.cpp`, `blit.cpp`): `user::ComposeFrame()` into a flip-sequential swap
   chain on the CoreWindow, presented from the UI thread's 60 Hz pump. Device on its own thread; hardware, then WARP,
@@ -33,8 +34,7 @@ following run and are gated (`ci.yml`, `host-win32-smoke.yml`, `host-win32-appco
 
 **What does not work yet.** Glyph text (`ExtTextOut`/`DrawText` fill rectangles only), menus, clipboard, hooks,
 window-frame dragging, networking, audio, guest child processes, D3D for guest apps (M6), and the 21 `todo`
-syscalls. `integration.guest_window_input` and `integration.guest_window_text` are `DISABLED` on main until
-their slices land. The package's `window.exe` is a 30-second blue window that exits 42 only when painted.
+syscalls. `integration.guest_window_text` is `DISABLED` on main until the `-text` slice lands. The package's `window.exe` is a 30-second blue window that exits 42 only when painted.
 
 **Packaged `.msix`.** Artifact `host-uwp-msix` from the latest completed green `host-uwp.yml` run on main:
 [39837028686](https://github.com/user99672223/win10xbox/actions/runs/39837028686) (head `fb86712`; main has since
@@ -50,8 +50,8 @@ Found on origin at this writing (each is created from main; the one-line scope i
 | native | `-native` | route B: native user32/gdi32 in the guest, `gui` knob in machine.json |
 | text | `-text` | built-in 8x16 bitmap font for `TextOutW`/`DrawTextW` (`font8x16.h`) |
 | texttest | `-texttest` | `guest_window_text` (disabled until `-text` lands) |
-| input | `-input` | input delivery into core/user (gates `guest_window_input`) |
-| inputtest | `-inputtest` | `WIN10XBOX_TEST_INJECT_INPUT` host hook, `guest_window_input` |
+| input | `-input` | input delivery into core/user: merged into main at `d9f7639` |
+| inputtest | `-inputtest` | `WIN10XBOX_TEST_INJECT_INPUT` host hook, `guest_window_input` (merged with input) |
 | realprog | `-realprog` | Lua 5.4.7 as the first real guest |
 | sqlite | `-sqlite` | SQLite shell as a real guest (pinned amalgamation build) |
 | sys1 / sys2 | `-sys1`, `-sys2` | privileged NT syscalls; five Todo syscalls via existing modules |

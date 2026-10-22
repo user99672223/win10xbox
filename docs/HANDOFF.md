@@ -22,8 +22,8 @@ supplies the NT syscall surface beneath them, inside a UWP AppContainer.
   read-only plus an in-memory overlay. **NLS** (`core/dispatch/nt_nls.cpp`): `.nls` sections from the
   machine folder; a missing file fails, nothing is faked.
 * **core/user:** windows, GDI and message queues (234 win32u syscalls, Wine 11.9 contract). Gated:
-  `integration.guest_window`, `integration.guest_window2`. The input sink is on main; its end-to-end gate
-  waits for the `-input` slice.
+  `integration.guest_window`, `integration.guest_window2`. Input delivery (`integration.guest_window_input`,
+  `guest_window_input2`) is gated on main since `d9f7639`.
 * **D3D11 presenter** in `host-uwp`: `ComposeFrame()` into a swap chain on the CoreWindow. Writes
   `LocalState\screen.bmp` every 5 s.
 * **Nine bundled guests** in the host-uwp package: `window.exe` (default), `hello.exe`, `hello_cui.exe`,
@@ -42,7 +42,7 @@ package's `window.exe` has not been seen on the TV.
 
 Branches `claude/youthful-cerf-l7xxsb-<slice>`, each from main. Full table with scopes in `STATUS.md` (top).
 
-* Existing on origin: `-native`, `-text`, `-texttest`, `-input`, `-inputtest`, `-realprog`, `-sqlite`,
+* Existing on origin: `-native`, `-text`, `-texttest`, `-realprog`, `-sqlite`,
   `-sys1`, `-sys2`, `-syscalls`, `-present`, `-ci`, `-gui-probe`, `-user`.
 * Named for next, **no remote branch found yet**: `-ncframe` (non-client frame), `-menu`, `-dialog`,
   `-clipboard`, `-hooks` (timers and hooks), `-guiapp` (real GUI program), `-net` (ws2_32/AFD), `-audio`,
@@ -86,8 +86,8 @@ Workflows: `ci.yml` (gates), `host-win32-smoke.yml`, `host-win32-appcontainer.ym
 
 ## Priorities
 
-1. Land the in-flight slices that unblock visible GUI: `-text` (glyphs), `-input` (gates `guest_window_input`),
-   then `-native` route decision.
+1. Land the in-flight slices that unblock visible GUI: `-text` (glyphs, gates `guest_window_text`), then the
+   `-native` route decision. Input is on main.
 2. Run a guest that is not ours (`-realprog`, `-sqlite` are the first candidates) and drive the remaining
    `todo` syscalls from what it hits.
 3. Get the packaged `window.exe` seen on the TV and recorded in `STATUS.md` with the screenshot.
