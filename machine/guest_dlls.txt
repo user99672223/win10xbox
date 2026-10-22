@@ -52,5 +52,13 @@ userenv.dll
 netapi32.dll
 psapi.dll
 dbghelp.dll
+# -- imported by the Sysinternals real programs (Coreinfo64, PsInfo64; docs/slices/sysinfo.md): native comdlg32 ->
+# shell32 -> the ro-typeresolution apiset (wintypes); PsInfo64 -> pdh, mpr, and netapi32's forward to netutils
+wintypes.dll
+pdh.dll
+mpr.dll
+netutils.dll
+sspicli.dll
+
 # -- apiset schema (needed by the loader to resolve api-ms-win-* names)
 apisetschema.dll
