@@ -39,7 +39,12 @@ report cannot be resolved further; the real-Windows CI reproduction below is the
 lesson for the tooling: a crash record must print every loaded module's base **and** `SizeOfImage`, or an absolute RIP
 cannot be attributed at all.
 
-### Root cause of the real-Windows exit-139 failure: recursion in `core/clock/clock.cpp` (REPRODUCED)
+### A real bug, found and fixed — but NOT the cause of the real-Windows exit-139: recursion in `core/clock/clock.cpp`
+
+> **Correction.** Commit `b97f7f0` is titled as though this fixed the real-Windows exit-139 crash. It did not.
+> `host-win32-smoke` run #3 on `b97f7f0` still fails with exit 139. The bug below is genuine, reproduced, and now
+> covered by a gating test, but it is a *Wine-host* defect: on real Windows the guest never reaches a `Sleep` at all
+> (see the next section). The commit title stands in history; this is the correction.
 
 `Clk_NtDelayExecution` resolved its "host" `NtDelayExecution` through a **lazy** `GetModuleHandleW(L"ntdll.dll")` inside
 a function-local static (`clock.cpp:243-245`, called from `:502`). The first call therefore happened on the guest's
@@ -91,12 +96,38 @@ wrongly demoted here on the grounds that the CI log showed no `NtDelayExecution`
 of evidence in a log truncated by the crash itself. Two successive misattributions of the console fault followed. The
 corrective that worked was reproducing the failure locally under Wine rather than reasoning further from the report.
 
-### Is the console access violation the same bug?
+### OPEN: the guest dies at its entry point on real Windows, before any syscall
 
-**Not established, and probably not.** A stack overflow faults on a guard page, not on address `0x4`, so the Xbox
-`EXCEPTION_ACCESS_VIOLATION` reading `0x4` may be a *third*, separate defect. The exit-139 smoke failure is fixed and
-has a gating regression test; the console fault needs a fresh on-hardware run with the improved crash record (which now
-prints host module bases and sizes) before anything can be concluded about it.
+This is the live bug, and it is now reproducible on CI without the console. `host-win32-smoke` run #3 on `b97f7f0`
+(i.e. *with* the clock fix) still fails. From its `smoke-console.log` artifact, the trace ends:
+
+```
+NtContinue(000000b2732ff310,00000001) (may not return)
+NoteGuestEntry guest entry reached (RtlUserThreadStart at 00000001700568B4)
+DumpGuestModules [0] 0000000140000000 C:\guest\smoke_cui.exe
+DumpGuestModules [1] 0000000170000000 C:\windows\system32\ntdll.dll
+DumpGuestModules [2] 0000000178000000 C:\windows\system32\kernel32.dll
+DumpGuestModules [3] 0000000174000000 C:\windows\system32\kernelbase.dll
+NoteGuestEntry guest entry: TEB.TlsSlots[19] still holds our ThreadState
+```
+
+…and stops. What that establishes:
+
+* **Zero syscalls after `NtContinue`.** The guest faults within its first instructions of real execution, before
+  issuing a single syscall. So it is neither the `Sleep` path nor dispatcher recursion.
+* Imports and module loading are **fine**: 0 unresolved, all four modules present at their expected bases.
+* `TEB.TlsSlots[19]` is **intact**, so the TlsSlots collision theory is dead on real Windows too, not just under Wine.
+* It fails **identically** with and without `WIN10XBOX_TEST_NO_HOST_PATHS=1`, so it is not AppContainer-specific.
+* Under Wine the same path is **green** (`guest_e2e` 8/8). Real-Windows-only.
+
+**This is very probably the same defect as the Xbox access violation**, which also showed no syscalls after guest entry
+and a load off a near-null base (`mov eax,[rdx+rax]`, `rdx=4`, `rax=0`). Treat the console report and the smoke failure
+as one bug until evidence separates them — which consolidates two unreproducible reports into one CI-reproducible one.
+
+Next step is diagnostic, not speculative: `host-win32` is being given the same crash capture, a **host** module table
+captured before the takeover (so a faulting RIP can finally be attributed), the bytes at RIP (to confirm against the
+console's `8b 04 02`), and a linker map to turn the attributed offset into a function name. Deliberately no further
+hypotheses here: the last three cost two withdrawn attributions, and the record is one CI run away.
 
 No `crash.dmp` was written. The dump path reported HRESULT `0x800736b2`, the form `crash.txt` uses when `dbghelp.dll`
 cannot be bound inside the AppContainer (to be confirmed against `crash.txt`). `dbghelp.dll` is delay-loaded, so the
