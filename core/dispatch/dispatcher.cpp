@@ -80,10 +80,20 @@ struct State {
 // MSVC thread-safe-init guard, and the guard reads _Init_thread_epoch through
 // TEB.ThreadLocalStoragePointer -- so Host(), called from Xl_NtContinue after
 // LeaveToGuestView(), faulted on the guest's TLS array. At namespace scope the
-// access is a plain address with no guard and no TLS of any kind. `constinit`
-// makes the compiler reject any future member that would reintroduce dynamic
-// initialisation (and with it a static-initialisation-order dependency).
-constinit State g_state;
+// access is a plain address with no guard and no TLS of any kind, which is the
+// whole fix; it does not depend on how the object is initialised.
+//
+// NOT `constinit`: MSVC's Debug STL makes std::vector's default constructor
+// non-constexpr (_ITERATOR_DEBUG_LEVEL), so `constinit State g_state;` is
+// rejected with C2127 in the Debug configuration while compiling fine in
+// RelWithDebInfo -- ci.yml run 39786498185 onwards went red on exactly that.
+// Dropping the keyword costs only the compile-time rejection of a future member
+// that would reintroduce dynamic initialisation; the durable protection against
+// this bug class is NoteHostStateUnderGuestView() plus the gating test
+// integration.guest_view_clean, which is portable and actually fails when the
+// hazard returns. Nothing here may be touched during static initialisation:
+// dispatch::Initialize() is called explicitly by the host, long after it.
+State g_state;
 // Instrumented even though it is now guard-free: reaching ANY host state inside
 // the guest-view window is the bug, and this accessor is the one the crash came
 // through (Host() -> S()), so it is the most valuable place to notice a
