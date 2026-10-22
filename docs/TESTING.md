@@ -26,6 +26,10 @@ push to every branch; nothing is `continue-on-error` except the diagnostics step
   conditions (Wine builtins only, `WIN10XBOX_TEST_NO_HOST_PATHS=1`).
 * **`host-win32-appcontainer.yml`**, **`host-uwp.yml`**, **`uwp-lite.yml`**: their own gates, unchanged.
 
+The Windows jobs' log artifacts (`windows-<config>-logs`, `host-win32-smoke-logs`, `host-win32-appcontainer-logs`)
+carry `build/bin/crash.txt`, `crash.dmp` and `entry-reached.txt` (written by `host-win32/crash.cpp` when a guest dies)
+and `build/bin/*.bmp` (the GUI tests' screenshots), besides the ctest logs and the JUnit file.
+
 Two mechanisms close the "100% tests passed, everything skipped" trap (`docs/HANDOFF.md`, trap 1):
 
 1. **The Wine PE builtins are mandatory** (`tools/ci/fetch_wine_pe.py`, used by every job that runs a guest except

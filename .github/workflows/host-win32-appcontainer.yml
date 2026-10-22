@@ -509,6 +509,10 @@ jobs:
           path: |
             ac-out
             build/ac/*.dependents.txt
+            build/bin/crash.txt
+            build/bin/crash.dmp
+            build/bin/entry-reached.txt
+            build/bin/*.bmp
             build/bin/win10xbox.map
             build/bin/win10xbox.exe
             build/bin/win10xbox.pdb

@@ -178,6 +178,8 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: ./tools/ci/smoke_guests.ps1 -Bin build/bin -Machine build/bin/machine -LogDir build/guest-smoke
+      # crash.txt / crash.dmp / entry-reached.txt: what host-win32/crash.cpp writes into build/bin when a guest run
+      # (ctest or the smoke step) dies; *.bmp: the GUI tests' screenshots (WIN10XBOX_SCREENSHOT).
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -187,4 +189,8 @@ jobs:
             build/ctest-junit.xml
             build/guest-smoke/
             build/bin/*.log
+            build/bin/crash.txt
+            build/bin/crash.dmp
+            build/bin/entry-reached.txt
+            build/bin/*.bmp
           retention-days: 7
