@@ -98,3 +98,48 @@ if(BUILTIN_ONLY_MACHINE)
   endif()
   message(STATUS "prepare_machine: ${BUILTIN_ONLY_MACHINE}: builtin-only machine, ${_copied} files")
 endif()
+
+# -DNATIVE_GUI_MACHINE=<dir>: route B's folder (docs/GUI.md "Route B: native win32k"): the builtin-only set plus
+# the NATIVE GUI DLLs from MACHINE's System32 (user32, win32u, gdi32, gdi32full, msvcp_win, imm32: what the
+# native user32 pulls in that must be native), machine.json "gui": "native", "*": "builtin,native" and "native"
+# for those six. Everything else stays Wine's: a whole native chain (msvcrt, rpcrt4, advapi32...) imports CRT
+# apisets and ntdll internals Wine's builtins do not provide. Without the native DLLs (any non-Windows host) the
+# folder is still made and the test that uses it SKIPs on the missing user32.dll.
+if(NATIVE_GUI_MACHINE)
+  foreach(d Windows/builtin Windows/System32 Windows/System32/config Windows/Globalization/Sorting Windows/Temp
+            Users/User/AppData/Local/Temp Users/User/AppData/Roaming Users/Public
+            ProgramData "Program Files" "Program Files (x86)" guest)
+    file(MAKE_DIRECTORY "${NATIVE_GUI_MACHINE}/${d}")
+  endforeach()
+  set(_gui_dlls user32.dll win32u.dll gdi32.dll gdi32full.dll msvcp_win.dll imm32.dll)
+  file(GLOB _files "${MACHINE}/Windows/builtin/*" "${MACHINE}/guest/*" "${MACHINE}/Windows/System32/*.nls"
+                   "${MACHINE}/Windows/Globalization/Sorting/*.nls")
+  foreach(n ${_gui_dlls})
+    if(EXISTS "${MACHINE}/Windows/System32/${n}")
+      list(APPEND _files "${MACHINE}/Windows/System32/${n}")
+    endif()
+  endforeach()
+  set(_copied 0)
+  foreach(f ${_files})
+    file(RELATIVE_PATH _rel "${MACHINE}" "${f}")
+    if(NOT IS_DIRECTORY "${f}")
+      file(COPY_FILE "${f}" "${NATIVE_GUI_MACHINE}/${_rel}" ONLY_IF_DIFFERENT)
+      math(EXPR _copied "${_copied} + 1")
+    endif()
+  endforeach()
+  if(DEFAULT_JSON AND EXISTS "${DEFAULT_JSON}")
+    file(READ "${DEFAULT_JSON}" _json)
+    set(_ov "\"*\": \"builtin,native\"")
+    foreach(n ${_gui_dlls})
+      string(REPLACE ".dll" "" _b "${n}")
+      string(APPEND _ov ", \"${_b}\": \"native\"")
+    endforeach()
+    string(REGEX REPLACE "\"\\*\"[ \t]*:[ \t]*\"[^\"]*\"" "${_ov}" _json "${_json}")
+    string(REGEX REPLACE "\"version\"[ \t]*:[ \t]*1[ \t]*," "\"version\": 1,\n  \"gui\": \"native\"," _json "${_json}")
+    if(NOT _json MATCHES "\"gui\": \"native\"" OR NOT _json MATCHES "\"user32\": \"native\"")
+      message(FATAL_ERROR "prepare_machine: could not derive the native-GUI machine.json from ${DEFAULT_JSON}")
+    endif()
+    file(CONFIGURE OUTPUT "${NATIVE_GUI_MACHINE}/machine.json" CONTENT "${_json}" @ONLY)
+  endif()
+  message(STATUS "prepare_machine: ${NATIVE_GUI_MACHINE}: native-GUI machine, ${_copied} files")
+endif()

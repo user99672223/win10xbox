@@ -14,10 +14,13 @@ set(WIN10XBOX_BUILTIN_DIR ${CMAKE_SOURCE_DIR}/wine-pe/out/builtin CACHE PATH "Wi
 # The GUI tests run on a second folder with the console's DLL set (builtins + NLS, "*": "builtin,native"); see
 # prepare_machine.cmake (BUILTIN_ONLY_MACHINE) and docs/TESTING.md for why.
 set(WIN10XBOX_BUILTIN_MACHINE_DIR ${CMAKE_BINARY_DIR}/bin/machine-builtin)
+# Route B's folder: the same, plus the native GUI DLLs and "gui": "native" (prepare_machine.cmake NATIVE_GUI_MACHINE).
+set(WIN10XBOX_NATIVE_GUI_MACHINE_DIR ${CMAKE_BINARY_DIR}/bin/machine-native-gui)
 set(_default_json ${CMAKE_SOURCE_DIR}/machine/machine.default.json)
 set(_prepare_args
   -DMACHINE=${WIN10XBOX_MACHINE_DIR}
   -DBUILTIN_ONLY_MACHINE=${WIN10XBOX_BUILTIN_MACHINE_DIR}
+  -DNATIVE_GUI_MACHINE=${WIN10XBOX_NATIVE_GUI_MACHINE_DIR}
   -DBUILTIN_DIR=${WIN10XBOX_BUILTIN_DIR}
   -DGUEST_DIR=${CMAKE_BINARY_DIR}/bin/guest
   -DDEFAULT_JSON=${_default_json}
@@ -118,8 +121,9 @@ set_tests_properties(integration.guest_window2 PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window2.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=63,96,ff00ff00|78,111,ffffff00|100,75,ff99b4d1")
 unset(_guest_machine)
 
-# Route B (docs/GUI.md "Route B: native win32k"): the same window.c with machine gui = native (WIN10XBOX_GUI
-# overrides machine.json): the guest loads the NATIVE user32/gdi32/gdi32full/win32u from the machine folder, every
+# Route B (docs/GUI.md "Route B: native win32k"): the same window.c on the machine folder machine-native-gui
+# (machine.json "gui": "native"; Wine builtins + the six native GUI DLLs, see prepare_machine.cmake
+# NATIVE_GUI_MACHINE): the guest loads the NATIVE user32/gdi32/gdi32full/win32u from the machine folder, every
 # win32u syscall is passed through by name to the host's own win32u.dll, win32k's user-mode callbacks reach the
 # guest's user32 through the trampolines, and the screenshot is composed from the real window. Needs the native
 # DLLs, so it is registered only for a native Windows build (the Windows CI job stages them from the runner's
@@ -129,11 +133,11 @@ if(NOT CMAKE_CROSSCOMPILING)
 add_test(NAME integration.guest_window_native
   COMMAND ${CMAKE_COMMAND}
     -DHOST=$<TARGET_FILE:win10xbox>
-    -DMACHINE=${WIN10XBOX_MACHINE_DIR}
+    -DMACHINE=${WIN10XBOX_NATIVE_GUI_MACHINE_DIR}
     -DPROGRAM=C:\\guest\\guest_window.exe
     -DEXPECT_EXIT=42
     "-DEXPECT_REGEX=window: class registered;window: created hwnd=;window: painted;window: pixel\\(10,10\\)=00dc5000 pixel\\(30,30\\)=000000ff;window: done"
-    "-DEXPECT_TRACE_REGEX=gui native: [0-9]+ win32u syscalls pass through;host path [^)]*[Ss]ystem32.[Uu][Ss][Ee][Rr]32.dll;host path [^)]*[Ss]ystem32.[Ww][Ii][Nn]32[Uu].dll;win32u.dll: [0-9]+ of [0-9]+ syscall thunks renumbered;PEB.KernelCallbackTable: the guest's user32 installed;user-mode callback #[0-9]+;native compose: [1-9][0-9]* guest window"
+    "-DEXPECT_TRACE_REGEX=gui native: [0-9]+ win32u syscalls pass through;gui native: the guest's win32u syscalls go to the host's win32k;host path [^)]*[Ss]ystem32.[Uu][Ss][Ee][Rr]32.dll;host path [^)]*[Ss]ystem32.[Ww][Ii][Nn]32[Uu].dll;win32u.dll: [0-9]+ of [0-9]+ syscall thunks renumbered;PEB.KernelCallbackTable: the guest's user32 installed;user-mode callback #[0-9]+;native compose: [1-9][0-9]* guest window"
     "-DFORBID_TRACE_REGEX=host state reached under the guest TLS view"
     -DDEBUG_SPEC=+dispatch,+modules,+process,+user
     -DREQUIRE=Windows/System32/user32.dll
@@ -147,7 +151,7 @@ set_tests_properties(integration.guest_window_native PROPERTIES
   TIMEOUT 180
   # The screen pixels as 0xAARRGGBB from the BMP's B,G,R,A bytes: RGB(0,80,220) is ff0050dc, RGB(255,0,0) ffff0000.
   # WIN10XBOX_WINEDEBUG: Wine's own loader warnings ("No implementation for ntdll.dll.X", failed DllMains).
-  ENVIRONMENT "WIN10XBOX_GUI=native;WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_native.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=110,110,ff0050dc|130,130,ffff0000")
+  ENVIRONMENT "WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_native.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=110,110,ff0050dc|130,130,ffff0000")
 endif()
 
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
