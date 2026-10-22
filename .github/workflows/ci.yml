@@ -183,6 +183,17 @@ jobs:
       - name: Build Lua 5.4.7 (real guest program)
         shell: pwsh
         run: ./tools/ci/build_lua.ps1 -Out build/bin/machine/guest
+      # The second real program, and the first prebuilt one: fastfetch 2.70.0, the project's official release zip
+      # (tools/ci/fetch_fastfetch.ps1: pinned SHA-256, verified on every run, restored from the cache or downloaded),
+      # left at build/bin/machine/guest/fastfetch.exe for integration.fastfetch (docs/slices/fastfetch.md).
+      - name: Cache the fastfetch release zip
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/fastfetch-src
+          key: fastfetch-2.70.0-89e5a20f46ac04b154c7d0ea13dbac97e43f799a98d7ae4c598863ba357a8c7f
+      - name: Fetch fastfetch 2.70.0 (real guest program)
+        shell: pwsh
+        run: ./tools/ci/fetch_fastfetch.ps1 -Out build/bin/machine/guest
       # Real GUI programs that are not ours (tools/ci/build_realgui.ps1): Microsoft's LearnWin32 Hello World and PuTTY
       # 0.85 (official tarball, cmake + cl /MT), pinned by SHA-256 and verified on every run. Left in
       # build/bin/machine/guest for integration.realgui_* (docs/TESTING.md, "Real GUI programs").
