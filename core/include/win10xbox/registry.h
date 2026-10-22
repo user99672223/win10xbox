@@ -77,6 +77,9 @@ KeyId FromHandle(HANDLE h);
 // NT-signature entry points (names mirror the syscalls they implement).
 NTSTATUS Reg_NtOpenKey(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes);
 NTSTATUS Reg_NtOpenKeyEx(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes, ULONG OpenOptions);
+// No transaction manager: the Transaction handle is ignored (traced) and the open is the plain one.
+NTSTATUS Reg_NtOpenKeyTransacted(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes, HANDLE Transaction);
+NTSTATUS Reg_NtOpenKeyTransactedEx(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes, ULONG OpenOptions, HANDLE Transaction);
 NTSTATUS Reg_NtCreateKey(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes,
                          ULONG TitleIndex, PUNICODE_STRING Class, ULONG CreateOptions, PULONG Disposition);
 NTSTATUS Reg_NtCreateKeyTransacted(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, ULONG, PUNICODE_STRING, ULONG, HANDLE, PULONG);
@@ -101,6 +104,7 @@ NTSTATUS Reg_NtSetValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG Ti
 NTSTATUS Reg_NtSetInformationKey(HANDLE, int KeySetInformationClass, PVOID, ULONG);
 NTSTATUS Reg_NtLoadKey(POBJECT_ATTRIBUTES TargetKey, POBJECT_ATTRIBUTES SourceFile);
 NTSTATUS Reg_NtLoadKeyEx(POBJECT_ATTRIBUTES, POBJECT_ATTRIBUTES, ULONG, HANDLE, HANDLE, ACCESS_MASK, PHANDLE, PVOID);
+NTSTATUS Reg_NtLoadKey2(POBJECT_ATTRIBUTES TargetKey, POBJECT_ATTRIBUTES SourceFile, ULONG Flags);
 NTSTATUS Reg_NtUnloadKey(POBJECT_ATTRIBUTES TargetKey);
 NTSTATUS Reg_NtSaveKey(HANDLE KeyHandle, HANDLE FileHandle);
 NTSTATUS Reg_NtRestoreKey(HANDLE KeyHandle, HANDLE FileHandle, ULONG Flags);

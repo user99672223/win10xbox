@@ -1041,6 +1041,20 @@ NTSTATUS Reg_NtOpenKeyEx(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess, POBJECT_A
     return OpenCommon(KeyHandle, DesiredAccess, ObjectAttributes, OpenOptions);
 }
 
+// There is no transaction manager, so the transaction is not applied: the
+// open is the plain NtOpenKey/NtOpenKeyEx one. The trace says when that happened.
+NTSTATUS Reg_NtOpenKeyTransacted(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes,
+                                 HANDLE Transaction) {
+    TRACE(registry, "NtOpenKeyTransacted: transaction %p ignored", Transaction);
+    return OpenCommon(KeyHandle, DesiredAccess, ObjectAttributes, 0);
+}
+
+NTSTATUS Reg_NtOpenKeyTransactedEx(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes,
+                                   ULONG OpenOptions, HANDLE Transaction) {
+    TRACE(registry, "NtOpenKeyTransactedEx: transaction %p ignored", Transaction);
+    return OpenCommon(KeyHandle, DesiredAccess, ObjectAttributes, OpenOptions);
+}
+
 NTSTATUS Reg_NtCreateKey(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes,
                          ULONG /*TitleIndex*/, PUNICODE_STRING Class, ULONG CreateOptions, PULONG Disposition) {
     std::lock_guard<std::mutex> lk(g_mu);
@@ -1425,6 +1439,11 @@ NTSTATUS Reg_NtLoadKey(POBJECT_ATTRIBUTES TargetKey, POBJECT_ATTRIBUTES SourceFi
 NTSTATUS Reg_NtLoadKeyEx(POBJECT_ATTRIBUTES TargetKey, POBJECT_ATTRIBUTES SourceFile, ULONG Flags, HANDLE /*TrustClassKey*/,
                          HANDLE /*Event*/, ACCESS_MASK DesiredAccess, PHANDLE RootHandle, PVOID /*Reserved*/) {
     return LoadCommon(TargetKey, SourceFile, Flags, DesiredAccess, RootHandle);
+}
+
+// NtLoadKeyEx without trust key, event, access or root handle (Wine's NtLoadKey2 does the same).
+NTSTATUS Reg_NtLoadKey2(POBJECT_ATTRIBUTES TargetKey, POBJECT_ATTRIBUTES SourceFile, ULONG Flags) {
+    return LoadCommon(TargetKey, SourceFile, Flags, 0, nullptr);
 }
 
 NTSTATUS Reg_NtUnloadKey(POBJECT_ATTRIBUTES TargetKey) {
