@@ -530,5 +530,9 @@ bool PatchJump(void* from, const void* to);
 // directory and the jumps live in one allocation within 4 GiB above the image (export RVAs are 32-bit).
 // The image must still be writable. Returns how many names were added.
 std::size_t ExtendGuestNtdllExports(const loader::MappedImage& guest_ntdll);
+// native_imports.cpp. Route B: called by MapImageView for every image; with the native GUI active, extends the
+// guest (Wine) kernelbase's export table with what native DLLs import from it and Wine lacks (jumps to Wine's
+// kernel32 export of the name, else to the host kernelbase's). Remembers the guest kernel32 for that.
+void NoteNativeGuestImage(const loader::MappedImage& img, const std::wstring& host_path);
 
 }  // namespace win10xbox::dispatch::detail
