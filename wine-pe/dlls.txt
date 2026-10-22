@@ -62,3 +62,5 @@ programs/choice
 programs/expand
 programs/icacls
 programs/cacls
+programs/explorer         # wine-pe/programs/explorer.sh: explorer /desktop=shell,WxH
+programs/conhost          # wine-pe/programs/conhost.sh: console host (DECISIONS.md)
