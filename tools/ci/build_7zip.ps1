@@ -47,15 +47,10 @@ $bundle = Join-Path $srcRoot 'CPP\7zip\Bundles\Alone7z'
 $exe = Join-Path $bundle 'x64\7zr.exe'
 Push-Location $bundle
 try {
+  # The makefiles build with -Wall -WX; the runner's newer SDK headers warn (C4865), so warnings are not fatal.
+  $env:_CL_ = '-WX-'
   & nmake /nologo PLATFORM=x64
-  if ($LASTEXITCODE -ne 0) {
-    # The makefiles build with -Wall -WX; a compiler newer than the one 7-Zip was released with may warn.
-    Write-Host '::warning::nmake failed with -WX; retrying with warnings not fatal (the sources are the pinned ones)'
-    Remove-Item -Recurse -Force x64 -ErrorAction SilentlyContinue
-    $env:_CL_ = '-WX-'
-    & nmake /nologo PLATFORM=x64
-    if ($LASTEXITCODE -ne 0) { Write-Host '::error::nmake failed'; exit 1 }
-  }
+  if ($LASTEXITCODE -ne 0) { Write-Host '::error::nmake failed'; exit 1 }
 } finally { Pop-Location }
 
 New-Item -ItemType Directory -Force -Path $Out | Out-Null

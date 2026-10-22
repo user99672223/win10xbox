@@ -235,7 +235,7 @@ win10xbox_guest_tls_test(guest_view_violation_detected 42 "+dispatch,+modules"
 option(WIN10XBOX_REAL_7Z "Register integration.real7z (7zr.exe must be in <machine>/guest)" OFF)
 if(MSVC OR WIN10XBOX_REAL_7Z)
   add_test(NAME integration.real7z
-    COMMAND ${CMAKE_COMMAND} -DHOST=$<TARGET_FILE:win10xbox> -DMACHINE=${WIN10XBOX_MACHINE_DIR}
+    COMMAND ${CMAKE_COMMAND} -DHOST=$<TARGET_FILE:win10xbox> -DMACHINE=${WIN10XBOX_BUILTIN_MACHINE_DIR}
       -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR} -P ${CMAKE_CURRENT_SOURCE_DIR}/real7z.cmake)
   set_tests_properties(integration.real7z PROPERTIES
     FIXTURES_REQUIRED w10x_machine
