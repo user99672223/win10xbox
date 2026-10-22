@@ -41,6 +41,189 @@ conditions), host-win32-appcontainer 39827533182, host-uwp 39827533101, uwp-lite
 **Not gating anywhere:** `wine_conformance` on the Windows jobs (MSVC cannot build Wine's tests; not registered) and
 `integration.guest_window` (DISABLED by its author until core/user lands; the gate lists it as not run on purpose).
 
+## Native user32/gdi32 inside an AppContainer (measured) (2026-10-22)
+
+Question: can route B (forward NtUser*/NtGdi* to the host's own `win32u.dll`, so that the real win32k
+manages windows) work inside an AppContainer, i.e. may a container process create, show and paint windows
+with the native user32/gdi32, and can the pixels be read back? Measured by `tests/appcontainer/ac_gui_probe.c`
+in `host-win32-appcontainer`, run [39827778745](https://github.com/user99672223/win10xbox/actions/runs/39827778745)
+on `612c6fa` (green; the smoke verdict of that workflow is unchanged, the GUI runs are non-gating). The probe
+imports only kernel32 at load time; user32 and gdi32 are delay-loaded and bound with `LoadLibraryW`
+(`GUI.load.*`), so a context that cannot connect to win32k would report an error code instead of dying in the
+loader. It calls user32/gdi32 directly; the layer's dispatcher was not involved.
+
+Runs: `gui-plain` = `ac_launch --plain` (ordinary process, detached like a UWP app); `gui-ac` = genuine
+AppContainer (launch log: `PROVENANCE OK`, same capabilities and grants as `probe-ac`); `gui-lpac` = LPAC
+(identified by the token attribute `WIN://NOALLAPPPKG=present`: `TokenIsLessPrivilegedAppContainer` cannot be
+queried, error 87, in every context, which is also why ac_launch prints `lessPrivilegedAppContainer=0` for the
+LPAC child). `gui-direct` = the probe started straight from the runner's shell, outside ac_launch, as the
+control for what the runner session allows at all (a GitHub runner session may have no interactive desktop):
+its output is identical to `gui-plain` apart from pids, handles, addresses, the number of messages peeked and cursor coordinates (36 OK, 0 FAIL).
+All four exited with code 0. What the runner session is, as measured: Windows build 26100, product type 3,
+session 2, window station `WinSta0` with `WSF_VISIBLE`, thread desktop `Default` with `UOI_IO=1`, a 1024x768
+32 bpp display; the container children inherit that desktop from the launcher.
+
+plain (`gui-plain.log`):
+
+```
+PROBE GUI.probe | INFO | ac_gui_probe started
+PROBE GUI.os | INFO | Windows 10.0 build 26100, product type 3
+PROBE GUI.context | INFO | pid 2956, session 2, token: AppContainer=0 integrity=0x3000 TokenIsLessPrivilegedAppContainer=not queryable (error 87 (0x00000057) The parameter is incorrect); LPAC attribute WIN://NOALLAPPPKG=absent; security attributes: TSA://ProcUnique
+PROBE GUI.dlls.at_start | INFO | user32.dll=no gdi32.dll=no gdi32full.dll=no win32u.dll=no uxtheme.dll=no comctl32.dll=no imm32.dll=no
+PROBE GUI.load.user32 | OK | user32.dll at 00007FFD41CF0000
+PROBE GUI.load.gdi32 | OK | gdi32.dll at 00007FFD425D0000
+PROBE GUI.winsta.station | OK | window station "WinSta0", UOI_FLAGS dwFlags=0x1 -> interactive (WSF_VISIBLE)
+PROBE GUI.winsta.desktop | OK | thread desktop "Default", UOI_IO=1 (this desktop receives user input)
+PROBE GUI.winsta.input_desktop | OK | OpenInputDesktop: "Default"
+PROBE GUI.register | OK | RegisterClassExW atom 0xC146
+PROBE GUI.create.overlapped | OK | hwnd 0000000000030190 (style 0x00CF0000; WM_NCCREATE 1, WM_CREATE 1)
+PROBE GUI.create.popup | OK | hwnd 0000000000060096 (style 0x80000000; WM_NCCREATE 1, WM_CREATE 1)
+PROBE GUI.create.message_only | OK | hwnd 00000000000A007A (style 0x00000000; WM_NCCREATE 1, WM_CREATE 1)
+PROBE GUI.show.showwindow | OK | ShowWindow(SW_SHOW) previously-visible=0, UpdateWindow=1, IsWindowVisible=1, IsIconic=0, GetForegroundWindow=0000000000030190 (this window), WM_PAINT so far 1
+PROBE GUI.show.rects | OK | GetWindowRect=1 (50,50)-(450,350) GetClientRect=1 (0,0)-(384,261)
+PROBE GUI.paint.getdc_fill_getpixel | OK | GetDC 0000000024010798, FillRect=1, GetPixel(10,10)=0x332211, painted 0x332211 -> match
+PROBE GUI.paint.messages | OK | after 2000 ms: WM_PAINT arrived (2, rcPaint 0,0-384,261), WM_TIMER arrived (1), posted WM_APP+1 arrived (1, via PeekMessage 1); SetTimer(2000 ms) ok, PostMessage ok, 14 message(s) peeked, WM_ERASEBKGND 1
+PROBE GUI.paint.post_getmessage | OK | PostMessageW -> GetMessageW returned it (wParam 0xBEEF, lParam 0xCAFE)
+PROBE GUI.paint.sendmessage | OK | SendMessageW(WM_APP+2) returned 0x5A5A (wndproc saw it 1 time(s)) 
+PROBE GUI.paint.after_wm_paint | OK | GetPixel(10,10) after the loop = 0x50A030 (WM_PAINT color 0x50A030, GetDC color 0x332211)
+PROBE GUI.memdc.dib_fill | OK | CreateCompatibleDC(NULL) + CreateDIBSection 64x64x32 + FillRect=1: 4096/4096 pixels = 0x204080, pixel[0]=0x00204080
+PROBE GUI.memdc.font | OK | DEFAULT_GUI_FONT 00000000018A06C3, face "MS Shell Dlg", GetTextMetricsW=1 height 13 ave width 5
+PROBE GUI.memdc.textout | OK | TextOutW=1, 208 pixel(s) changed
+PROBE GUI.memdc.drawtext | OK | DrawTextW returned height 13, 208 pixel(s) changed
+PROBE GUI.memdc.font_families | OK | EnumFontFamiliesExW(DEFAULT_CHARSET): 974 face(s)
+PROBE GUI.readback.printwindow_client | OK | PrintWindow(PW_CLIENTONLY) returned 1; of 4096 pixels: 4096 = WM_PAINT color, 0 = GetDC color, 0 untouched (sentinel), 0 other; pixel[10,10]=0x30A050; WM_PRINTCLIENT +0
+PROBE GUI.readback.printwindow_full | OK | PrintWindow(PW_CLIENTONLY|PW_RENDERFULLCONTENT) returned 1; of 4096 pixels: 4096 = WM_PAINT color, 0 = GetDC color, 0 untouched (sentinel), 0 other; pixel[10,10]=0x30A050; WM_PRINTCLIENT +0
+PROBE GUI.readback.bitblt_window | OK | BitBlt(window DC -> DIB) returned 1; of 4096 pixels: 4096 = WM_PAINT color, 0 = GetDC color, 0 untouched (sentinel), 0 other; pixel[10,10]=0x30A050; WM_PRINTCLIENT +0
+PROBE GUI.readback.bitblt_screen | OK | BitBlt(screen DC at client origin 58,81 -> DIB) returned 1; of 4096 pixels: 4096 = WM_PAINT color, 0 = GetDC color, 0 untouched (sentinel), 0 other; pixel[10,10]=0x30A050; WM_PRINTCLIENT +0
+PROBE GUI.sysmetrics.screen | OK | SM_CXSCREEN=1024 SM_CYSCREEN=768 SM_CMONITORS=1 SM_REMOTESESSION=0
+PROBE GUI.sysmetrics.display_dc | OK | CreateDCW(DISPLAY): HORZRES=1024 VERTRES=768 BITSPIXEL=32 PLANES=1 LOGPIXELSX=96 VREFRESH=64 TECHNOLOGY=1
+PROBE GUI.sysmetrics.monitors | OK | EnumDisplayMonitors returned 1, 1 monitor(s)
+PROBE GUI.sysmetrics.dpi | OK | GetDpiForSystem=96
+PROBE GUI.input.cursor | OK | SetCursorPos(200,200)=1; GetCursorPos=1 -> (200,200)
+PROBE GUI.input.keystate | INFO | GetKeyState: VK_SHIFT=0x0000 VK_CAPITAL=0x0000 VK_LBUTTON=0x0000; GetAsyncKeyState(VK_LBUTTON)=0x0000
+PROBE GUI.input.sendinput | OK | SendInput(mouse move +7,+7) inserted 1 event(s); GetCursorPos before (200,200) after=1 (208,208)
+PROBE GUI.dlls.loaded | INFO | user32.dll=loaded(C:\Windows\System32\user32.dll) gdi32.dll=loaded(C:\Windows\System32\GDI32.dll) gdi32full.dll=loaded(C:\Windows\System32\gdi32full.dll) win32u.dll=loaded(C:\Windows\System32\win32u.dll) uxtheme.dll=loaded comctl32.dll=no imm32.dll=loaded
+PROBE GUI.dlls.win32u_exports | OK | win32u.dll (already loaded): NtUserCreateWindowEx=exported NtGdiPatBlt=exported NtUserGetMessage=exported NtGdiCreateSolidBrush=exported
+PROBE GUI.syscallstub.NtUserCreateWindowEx | OK | 4C 8B D1 B8 6F 10 00 00 F6 04 25 08 03 FE 7F 01 75 03 0F 05 C3 CD 2E C3; shape mov r10,rcx; mov eax,imm32; ... syscall at +18; syscall id 0x106F
+PROBE GUI.syscallstub.NtGdiCreateSolidBrush | OK | 4C 8B D1 B8 AA 10 00 00 F6 04 25 08 03 FE 7F 01 75 03 0F 05 C3 CD 2E C3; shape mov r10,rcx; mov eax,imm32; ... syscall at +18; syscall id 0x10AA
+PROBE GUI.destroy.windows | OK | DestroyWindow: overlapped=1, popup=1, message_only=1
+PROBE GUI.destroy.class | OK | UnregisterClassW=1
+PROBE GUI.summary | INFO | 36 ok, 0 fail (FAIL is a measurement, not an error)
+```
+
+AppContainer (`gui-ac.log`):
+
+```
+PROBE GUI.probe | INFO | ac_gui_probe started
+PROBE GUI.os | INFO | Windows 10.0 build 26100, product type 3
+PROBE GUI.context | INFO | pid 8068, session 2, token: AppContainer=1 integrity=0x1000 TokenIsLessPrivilegedAppContainer=not queryable (error 87 (0x00000057) The parameter is incorrect); LPAC attribute WIN://NOALLAPPPKG=absent; security attributes: TSA://ProcUnique
+PROBE GUI.dlls.at_start | INFO | user32.dll=no gdi32.dll=no gdi32full.dll=no win32u.dll=no uxtheme.dll=no comctl32.dll=no imm32.dll=no
+PROBE GUI.load.user32 | OK | user32.dll at 00007FFD41CF0000
+PROBE GUI.load.gdi32 | OK | gdi32.dll at 00007FFD425D0000
+PROBE GUI.winsta.station | OK | window station "WinSta0", UOI_FLAGS dwFlags=0x1 -> interactive (WSF_VISIBLE)
+PROBE GUI.winsta.desktop | OK | thread desktop "Default", UOI_IO=1 (this desktop receives user input)
+PROBE GUI.winsta.input_desktop | OK | OpenInputDesktop: "Default"
+PROBE GUI.register | OK | RegisterClassExW atom 0xC146
+PROBE GUI.create.overlapped | OK | hwnd 0000000000050196 (style 0x00CF0000; WM_NCCREATE 1, WM_CREATE 1)
+PROBE GUI.create.popup | OK | hwnd 0000000000070096 (style 0x80000000; WM_NCCREATE 1, WM_CREATE 1)
+PROBE GUI.create.message_only | OK | hwnd 0000000000050188 (style 0x00000000; WM_NCCREATE 1, WM_CREATE 1)
+PROBE GUI.show.showwindow | OK | ShowWindow(SW_SHOW) previously-visible=0, UpdateWindow=1, IsWindowVisible=1, IsIconic=0, GetForegroundWindow=0000000000050196 (this window), WM_PAINT so far 1
+PROBE GUI.show.rects | OK | GetWindowRect=1 (50,50)-(450,350) GetClientRect=1 (0,0)-(384,261)
+PROBE GUI.paint.getdc_fill_getpixel | OK | GetDC 0000000024010798, FillRect=1, GetPixel(10,10)=0x332211, painted 0x332211 -> match
+PROBE GUI.paint.messages | OK | after 2015 ms: WM_PAINT arrived (2, rcPaint 0,0-384,261), WM_TIMER arrived (1), posted WM_APP+1 arrived (1, via PeekMessage 1); SetTimer(2000 ms) ok, PostMessage ok, 13 message(s) peeked, WM_ERASEBKGND 1
+PROBE GUI.paint.post_getmessage | OK | PostMessageW -> GetMessageW returned it (wParam 0xBEEF, lParam 0xCAFE)
+PROBE GUI.paint.sendmessage | OK | SendMessageW(WM_APP+2) returned 0x5A5A (wndproc saw it 1 time(s)) 
+PROBE GUI.paint.after_wm_paint | OK | GetPixel(10,10) after the loop = 0x50A030 (WM_PAINT color 0x50A030, GetDC color 0x332211)
+PROBE GUI.memdc.dib_fill | OK | CreateCompatibleDC(NULL) + CreateDIBSection 64x64x32 + FillRect=1: 4096/4096 pixels = 0x204080, pixel[0]=0x00204080
+PROBE GUI.memdc.font | OK | DEFAULT_GUI_FONT 00000000018A06C3, face "MS Shell Dlg", GetTextMetricsW=1 height 13 ave width 5
+PROBE GUI.memdc.textout | OK | TextOutW=1, 208 pixel(s) changed
+PROBE GUI.memdc.drawtext | OK | DrawTextW returned height 13, 208 pixel(s) changed
+PROBE GUI.memdc.font_families | OK | EnumFontFamiliesExW(DEFAULT_CHARSET): 974 face(s)
+PROBE GUI.readback.printwindow_client | OK | PrintWindow(PW_CLIENTONLY) returned 1; of 4096 pixels: 4096 = WM_PAINT color, 0 = GetDC color, 0 untouched (sentinel), 0 other; pixel[10,10]=0x30A050; WM_PRINTCLIENT +0
+PROBE GUI.readback.printwindow_full | OK | PrintWindow(PW_CLIENTONLY|PW_RENDERFULLCONTENT) returned 1; of 4096 pixels: 4096 = WM_PAINT color, 0 = GetDC color, 0 untouched (sentinel), 0 other; pixel[10,10]=0x30A050; WM_PRINTCLIENT +0
+PROBE GUI.readback.bitblt_window | OK | BitBlt(window DC -> DIB) returned 1; of 4096 pixels: 4096 = WM_PAINT color, 0 = GetDC color, 0 untouched (sentinel), 0 other; pixel[10,10]=0x30A050; WM_PRINTCLIENT +0
+PROBE GUI.readback.bitblt_screen | OK | BitBlt(screen DC at client origin 58,81 -> DIB) returned 1; of 4096 pixels: 4096 = WM_PAINT color, 0 = GetDC color, 0 untouched (sentinel), 0 other; pixel[10,10]=0x30A050; WM_PRINTCLIENT +0
+PROBE GUI.sysmetrics.screen | OK | SM_CXSCREEN=1024 SM_CYSCREEN=768 SM_CMONITORS=1 SM_REMOTESESSION=0
+PROBE GUI.sysmetrics.display_dc | OK | CreateDCW(DISPLAY): HORZRES=1024 VERTRES=768 BITSPIXEL=32 PLANES=1 LOGPIXELSX=96 VREFRESH=64 TECHNOLOGY=1
+PROBE GUI.sysmetrics.monitors | OK | EnumDisplayMonitors returned 1, 1 monitor(s)
+PROBE GUI.sysmetrics.dpi | OK | GetDpiForSystem=96
+PROBE GUI.input.cursor | FAIL | SetCursorPos(200,200)=0 error 5 (0x00000005) Access is denied; GetCursorPos=1 -> (208,208)
+PROBE GUI.input.keystate | INFO | GetKeyState: VK_SHIFT=0x0000 VK_CAPITAL=0x0000 VK_LBUTTON=0x0000; GetAsyncKeyState(VK_LBUTTON)=0x0000
+PROBE GUI.input.sendinput | OK | SendInput(mouse move +7,+7) inserted 1 event(s); GetCursorPos before (208,208) after=1 (215,215)
+PROBE GUI.dlls.loaded | INFO | user32.dll=loaded(C:\Windows\System32\user32.dll) gdi32.dll=loaded(C:\Windows\System32\GDI32.dll) gdi32full.dll=loaded(C:\Windows\System32\gdi32full.dll) win32u.dll=loaded(C:\Windows\System32\win32u.dll) uxtheme.dll=loaded comctl32.dll=no imm32.dll=loaded
+PROBE GUI.dlls.win32u_exports | OK | win32u.dll (already loaded): NtUserCreateWindowEx=exported NtGdiPatBlt=exported NtUserGetMessage=exported NtGdiCreateSolidBrush=exported
+PROBE GUI.syscallstub.NtUserCreateWindowEx | OK | 4C 8B D1 B8 6F 10 00 00 F6 04 25 08 03 FE 7F 01 75 03 0F 05 C3 CD 2E C3; shape mov r10,rcx; mov eax,imm32; ... syscall at +18; syscall id 0x106F
+PROBE GUI.syscallstub.NtGdiCreateSolidBrush | OK | 4C 8B D1 B8 AA 10 00 00 F6 04 25 08 03 FE 7F 01 75 03 0F 05 C3 CD 2E C3; shape mov r10,rcx; mov eax,imm32; ... syscall at +18; syscall id 0x10AA
+PROBE GUI.destroy.windows | OK | DestroyWindow: overlapped=1, popup=1, message_only=1
+PROBE GUI.destroy.class | OK | UnregisterClassW=1
+PROBE GUI.summary | INFO | 35 ok, 1 fail (FAIL is a measurement, not an error)
+```
+
+LPAC (`gui-lpac.log`):
+
+```
+PROBE GUI.probe | INFO | ac_gui_probe started
+PROBE GUI.os | INFO | Windows 10.0 build 26100, product type 3
+PROBE GUI.context | INFO | pid 5444, session 2, token: AppContainer=1 integrity=0x1000 TokenIsLessPrivilegedAppContainer=not queryable (error 87 (0x00000057) The parameter is incorrect); LPAC attribute WIN://NOALLAPPPKG=present; security attributes: TSA://ProcUnique WIN://NOALLAPPPKG
+PROBE GUI.dlls.at_start | INFO | user32.dll=no gdi32.dll=no gdi32full.dll=no win32u.dll=no uxtheme.dll=no comctl32.dll=no imm32.dll=no
+PROBE GUI.load.user32 | OK | user32.dll at 00007FFD41CF0000
+PROBE GUI.load.gdi32 | OK | gdi32.dll at 00007FFD425D0000
+PROBE GUI.winsta.station | OK | window station "WinSta0", UOI_FLAGS dwFlags=0x1 -> interactive (WSF_VISIBLE)
+PROBE GUI.winsta.desktop | OK | thread desktop "Default", UOI_IO=1 (this desktop receives user input)
+PROBE GUI.winsta.input_desktop | OK | OpenInputDesktop: "Default"
+PROBE GUI.register | OK | RegisterClassExW atom 0xC146
+PROBE GUI.create.overlapped | OK | hwnd 0000000000160184 (style 0x00CF0000; WM_NCCREATE 1, WM_CREATE 1)
+PROBE GUI.create.popup | OK | hwnd 0000000000080096 (style 0x80000000; WM_NCCREATE 1, WM_CREATE 1)
+PROBE GUI.create.message_only | OK | hwnd 00000000000C007A (style 0x00000000; WM_NCCREATE 1, WM_CREATE 1)
+PROBE GUI.show.showwindow | OK | ShowWindow(SW_SHOW) previously-visible=0, UpdateWindow=1, IsWindowVisible=1, IsIconic=0, GetForegroundWindow=0000000000160184 (this window), WM_PAINT so far 1
+PROBE GUI.show.rects | OK | GetWindowRect=1 (50,50)-(450,350) GetClientRect=1 (0,0)-(384,261)
+PROBE GUI.paint.getdc_fill_getpixel | OK | GetDC 0000000024010798, FillRect=1, GetPixel(10,10)=0x332211, painted 0x332211 -> match
+PROBE GUI.paint.messages | OK | after 2000 ms: WM_PAINT arrived (2, rcPaint 0,0-384,261), WM_TIMER arrived (1), posted WM_APP+1 arrived (1, via PeekMessage 1); SetTimer(2000 ms) ok, PostMessage ok, 9 message(s) peeked, WM_ERASEBKGND 3
+PROBE GUI.paint.post_getmessage | OK | PostMessageW -> GetMessageW returned it (wParam 0xBEEF, lParam 0xCAFE)
+PROBE GUI.paint.sendmessage | OK | SendMessageW(WM_APP+2) returned 0x5A5A (wndproc saw it 1 time(s)) 
+PROBE GUI.paint.after_wm_paint | OK | GetPixel(10,10) after the loop = 0x50A030 (WM_PAINT color 0x50A030, GetDC color 0x332211)
+PROBE GUI.memdc.dib_fill | OK | CreateCompatibleDC(NULL) + CreateDIBSection 64x64x32 + FillRect=1: 4096/4096 pixels = 0x204080, pixel[0]=0x00204080
+PROBE GUI.memdc.font | OK | DEFAULT_GUI_FONT 00000000018A06C3, face "MS Shell Dlg", GetTextMetricsW=1 height 13 ave width 5
+PROBE GUI.memdc.textout | OK | TextOutW=1, 208 pixel(s) changed
+PROBE GUI.memdc.drawtext | OK | DrawTextW returned height 13, 208 pixel(s) changed
+PROBE GUI.memdc.font_families | OK | EnumFontFamiliesExW(DEFAULT_CHARSET): 974 face(s)
+PROBE GUI.readback.printwindow_client | OK | PrintWindow(PW_CLIENTONLY) returned 1; of 4096 pixels: 4096 = WM_PAINT color, 0 = GetDC color, 0 untouched (sentinel), 0 other; pixel[10,10]=0x30A050; WM_PRINTCLIENT +0
+PROBE GUI.readback.printwindow_full | OK | PrintWindow(PW_CLIENTONLY|PW_RENDERFULLCONTENT) returned 1; of 4096 pixels: 4096 = WM_PAINT color, 0 = GetDC color, 0 untouched (sentinel), 0 other; pixel[10,10]=0x30A050; WM_PRINTCLIENT +0
+PROBE GUI.readback.bitblt_window | OK | BitBlt(window DC -> DIB) returned 1; of 4096 pixels: 4096 = WM_PAINT color, 0 = GetDC color, 0 untouched (sentinel), 0 other; pixel[10,10]=0x30A050; WM_PRINTCLIENT +0
+PROBE GUI.readback.bitblt_screen | OK | BitBlt(screen DC at client origin 58,81 -> DIB) returned 1; of 4096 pixels: 4096 = WM_PAINT color, 0 = GetDC color, 0 untouched (sentinel), 0 other; pixel[10,10]=0x30A050; WM_PRINTCLIENT +0
+PROBE GUI.sysmetrics.screen | OK | SM_CXSCREEN=1024 SM_CYSCREEN=768 SM_CMONITORS=1 SM_REMOTESESSION=0
+PROBE GUI.sysmetrics.display_dc | OK | CreateDCW(DISPLAY): HORZRES=1024 VERTRES=768 BITSPIXEL=32 PLANES=1 LOGPIXELSX=96 VREFRESH=64 TECHNOLOGY=1
+PROBE GUI.sysmetrics.monitors | OK | EnumDisplayMonitors returned 1, 1 monitor(s)
+PROBE GUI.sysmetrics.dpi | OK | GetDpiForSystem=96
+PROBE GUI.input.cursor | FAIL | SetCursorPos(200,200)=0 error 5 (0x00000005) Access is denied; GetCursorPos=1 -> (215,215)
+PROBE GUI.input.keystate | INFO | GetKeyState: VK_SHIFT=0x0000 VK_CAPITAL=0x0000 VK_LBUTTON=0x0000; GetAsyncKeyState(VK_LBUTTON)=0x0000
+PROBE GUI.input.sendinput | OK | SendInput(mouse move +7,+7) inserted 1 event(s); GetCursorPos before (215,215) after=1 (223,223)
+PROBE GUI.dlls.loaded | INFO | user32.dll=loaded(C:\Windows\System32\user32.dll) gdi32.dll=loaded(C:\Windows\System32\GDI32.dll) gdi32full.dll=loaded(C:\Windows\System32\gdi32full.dll) win32u.dll=loaded(C:\Windows\System32\win32u.dll) uxtheme.dll=loaded comctl32.dll=no imm32.dll=loaded
+PROBE GUI.dlls.win32u_exports | OK | win32u.dll (already loaded): NtUserCreateWindowEx=exported NtGdiPatBlt=exported NtUserGetMessage=exported NtGdiCreateSolidBrush=exported
+PROBE GUI.syscallstub.NtUserCreateWindowEx | OK | 4C 8B D1 B8 6F 10 00 00 F6 04 25 08 03 FE 7F 01 75 03 0F 05 C3 CD 2E C3; shape mov r10,rcx; mov eax,imm32; ... syscall at +18; syscall id 0x106F
+PROBE GUI.syscallstub.NtGdiCreateSolidBrush | OK | 4C 8B D1 B8 AA 10 00 00 F6 04 25 08 03 FE 7F 01 75 03 0F 05 C3 CD 2E C3; shape mov r10,rcx; mov eax,imm32; ... syscall at +18; syscall id 0x10AA
+PROBE GUI.destroy.windows | OK | DestroyWindow: overlapped=1, popup=1, message_only=1
+PROBE GUI.destroy.class | OK | UnregisterClassW=1
+PROBE GUI.summary | INFO | 35 ok, 1 fail (FAIL is a measurement, not an error)
+```
+
+**Verdict (measured, build 26100, runner session with an interactive desktop): YES.** Inside a genuine
+AppContainer and inside an LPAC, the host's own user32/gdi32 (`C:\Windows\System32\user32.dll`, `GDI32.dll`,
+`gdi32full.dll`, `win32u.dll`) loaded, `RegisterClassExW` succeeded, `CreateWindowExW` created an overlapped, a
+popup and a message-only window, `ShowWindow`/`UpdateWindow` made the window visible and foreground, painting
+through `GetDC` and through `WM_PAINT`/`BeginPaint` worked and `GetPixel` returned the painted colours, `WM_TIMER`,
+a posted message (`PostMessageW` -> `GetMessageW`) and `SendMessageW` round-tripped, a DIB in a memory DC took
+`FillRect` and text in `DEFAULT_GUI_FONT` ("MS Shell Dlg", 974 font faces enumerated), and the window's pixels
+were read back by `PrintWindow(PW_CLIENTONLY)`, `PrintWindow(PW_CLIENTONLY|PW_RENDERFULLCONTENT)`, `BitBlt` from
+the window DC and `BitBlt` from the screen DC, 4096/4096 pixels equal to the `WM_PAINT` colour in each case. None
+of these calls failed, so there is no error code to report for them; results are identical to the plain
+control. The only difference from the control: `SetCursorPos` fails with error 5 (`ERROR_ACCESS_DENIED`) in the
+AppContainer and in the LPAC, while `SendInput` of a mouse move succeeded there and moved the cursor. The host's
+`win32u.dll` exports `NtUserCreateWindowEx`, `NtGdiPatBlt`, `NtUserGetMessage` and `NtGdiCreateSolidBrush`, and
+its thunks have the `4C 8B D1 B8 <id> ... 0F 05` shape the loader rewrites (`NtUserCreateWindowEx` id `0x106F`,
+`NtGdiCreateSolidBrush` id `0x10AA`, `syscall` at +18). Not measured here: the console itself, a UWP app's
+process (package identity, CoreWindow, the Xbox's OS policy), and a session without an interactive desktop.
+
 ## host-uwp presents the composed frame; every guest is bundled (2026-10-22)
 
 `host-uwp` now has a presenter (`host-uwp/presenter.cpp`, `blit.cpp`). It copies
