@@ -534,5 +534,11 @@ std::size_t ExtendGuestNtdllExports(const loader::MappedImage& guest_ntdll);
 // guest (Wine) kernelbase's export table with what native DLLs import from it and Wine lacks (jumps to Wine's
 // kernel32 export of the name, else to the host kernelbase's). Remembers the guest kernel32 for that.
 void NoteNativeGuestImage(const loader::MappedImage& img, const std::wstring& host_path);
+// native_d3d.cpp. Route B + Direct3D: called by win10xbox_dispatch around every win32u pass-through (host view).
+// Before NtUserDestroyWindow: compose the guest's windows (NativeGuestPainted). After a NtGdiDdDDI* (D3DKMT) call:
+// trace each name the first time, and compose after present-type calls (throttled).
+void NativeWin32uBefore(const char* name);
+void NativeWin32uAfter(const char* name, std::uint64_t result);
+std::uint64_t NativeD3dkmtCalls();
 
 }  // namespace win10xbox::dispatch::detail

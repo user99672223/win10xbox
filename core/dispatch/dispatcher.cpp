@@ -983,9 +983,11 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
     unsigned long native_error = last_error;
     if (native_win32u) {
         NoteNativeWin32uCall();   // installs the callback trampolines once the guest's user32 has its table in
+        NativeWin32uBefore(e->name);   // native_d3d.cpp: last picture before NtUserDestroyWindow
         __writegsdword(teb::LastErrorValue, last_error);
         result64 = CallWithArgs64(e->host_fn, f->args, e->nargs);
         native_error = __readgsdword(teb::LastErrorValue);
+        NativeWin32uAfter(e->name, result64);   // native_d3d.cpp: D3DKMT evidence, compose after presents
         status = static_cast<NTSTATUS>(result64);
     } else
     switch (e->policy) {
