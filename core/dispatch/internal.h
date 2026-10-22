@@ -36,10 +36,12 @@ constexpr NTSTATUS InvalidHandle          = (NTSTATUS)0xC0000008;
 constexpr NTSTATUS InvalidParameter       = (NTSTATUS)0xC000000D;
 constexpr NTSTATUS NoMemory               = (NTSTATUS)0xC0000017;
 constexpr NTSTATUS ConflictingAddresses   = (NTSTATUS)0xC0000018;
+constexpr NTSTATUS AccessDenied           = (NTSTATUS)0xC0000022;
 constexpr NTSTATUS BufferTooSmall         = (NTSTATUS)0xC0000023;
 constexpr NTSTATUS ObjectTypeMismatch     = (NTSTATUS)0xC0000024;
 constexpr NTSTATUS ObjectNameNotFound     = (NTSTATUS)0xC0000034;
 constexpr NTSTATUS ObjectPathNotFound     = (NTSTATUS)0xC000003A;
+constexpr NTSTATUS PrivilegeNotHeld       = (NTSTATUS)0xC0000061;
 constexpr NTSTATUS InvalidImageFormat     = (NTSTATUS)0xC000007B;
 constexpr NTSTATUS NotSupported           = (NTSTATUS)0xC00000BB;
 constexpr NTSTATUS InvalidImageNotMz      = (NTSTATUS)0xC000012F;
@@ -326,6 +328,8 @@ const ImplDef* ProcessImpls();
 const ImplDef* SubsystemImpls();
 // core/user: the win32u surface (NtUser*/NtGdi*, ids 0x1000..) and NtCallbackReturn.
 const ImplDef* UserImpls();
+// nt_privileged.cpp: privileged syscalls, refused the way Windows refuses an unprivileged caller.
+const ImplDef* PrivilegedImpls();
 // Subsystem groups compiled out: their Emulate entries pass through to the
 // host (registry/token/clock reads must work for Wine's loader_init) except
 // the names listed by NeverPassThrough().
