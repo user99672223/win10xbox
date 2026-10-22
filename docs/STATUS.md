@@ -1,5 +1,65 @@
 # Status
 
+## Real programs: Lua 5.4.7, the first guest that is not ours (2026-10-22)
+
+`lua.exe` (upstream tarball, SHA-256 pinned and checked every run, `cl /O2 /MT`, `tools/ci/build_lua.ps1`) runs through
+`win10xbox.exe` on both Windows configs and under console conditions (`host-win32-smoke.yml`: builtin DLLs only, host
+paths unknown). `integration.lua_hello` (`-e "print('hello from lua', 6*7) os.exit(42)"`), `integration.lua_smoke`
+(`tests/guest/lua/smoke.lua`: argv, string.format, sort, io.write, os.time/date/clock, `USERPROFILE`, write/read/rename/
+remove of a file under `C:\Users\User`, tmpname, io.lines, dofile, require, pcall/error/xpcall, 1 MB `string.rep`,
+exit 42; each section line is gated) and `integration.lua_unwind_tables`, plus two rows in
+`tools/ci/smoke_guests.ps1` (`-RealPrograms`). Registered only on MSVC builds (or `-DWIN10XBOX_REAL_PROGRAMS=ON`), so
+linux-cross is unchanged (nothing skipped).
+
+* First run on real Windows, `ci.yml` run [39843631737](https://github.com/user99672223/win10xbox/actions/runs/39843631737)
+  (`d27e433`): `lua_hello` passed; `lua_smoke` ran every section and failed two: `os.rename` ("No such file or
+  directory") and the `os.remove` that depended on it. No Todo syscall, no crash.
+* Green: `ci.yml` run [39845563454](https://github.com/user99672223/win10xbox/actions/runs/39845563454) and
+  `host-win32-smoke.yml` run [39845563348](https://github.com/user99672223/win10xbox/actions/runs/39845563348) on `9366ab0`
+  (`100% tests passed out of 37` on windows, `ctest gate: PASS`, `guest smoke: PASS (9 guests)`, `lua_hello` and
+  `lua_smoke` ok in both the desktop and the console-conditions smoke).
+
+What Lua hit, and what was fixed (each gated by the Lua tests):
+
+1. **The command line ran into the next string** (`core/dispatch/process.cpp`, found under Wine; Windows would have shown
+   it too). `RtlCreateProcessParametersEx` packs the strings back to back by `MaximumLength`, which was `Length`, so
+   `GetCommandLineW` had no terminating NUL and the last argument carried the image path and `WinSta0\Default` after it
+   (`-vC:\guest\lua.exeWinSta0\Default`). Every earlier guest took no arguments. Gate: `integration.lua_hello` /
+   `lua_smoke` (argv exact, last argument `beta gamma`).
+2. **`os.rename` / `MoveFileExW` failed** (`NtSetInformationFile` was pass-through). `FileRenameInformation` and
+   `FileLinkInformation` (and the `Ex` and bypass classes) carry the target as an NT path in the buffer, which the host
+   looked up on its own C:. Now `Translate`: the target goes through the VFS (`Xl_NtSetInformationFile` in
+   `core/dispatch/nt_file.cpp`; a root-directory-relative target is left to the host). Gate: `smoke: os.rename ok`,
+   `os.remove ok`.
+3. **`HostNtdllProc` returned null after the PEB take-over under the Wine host** (`core/loader/internal.cpp`):
+   `GetProcAddress` finds nothing once `PEB->Ldr` is the guest's, so `RtlAddFunctionTable` resolved for the first two
+   images and failed for kernel32, kernelbase and ucrtbase (`warn:loader:... RtlAddFunctionTable failed`). The three
+   exports the loader needs are now resolved together at the latch. **Measured on real Windows: not needed there** (the
+   experiment commit `ac10275`, old code, passed `lua_unwind_tables` and everything else in run
+   [39846768572](https://github.com/user99672223/win10xbox/actions/runs/39846768572)); it is kept for the Wine host and
+   the guard `integration.lua_unwind_tables` is a no-op guard on Windows. Do not read it as a Windows fix.
+
+Also recorded:
+
+* **A guest that dies abnormally exits 0.** On the Wine host a Lua error (`longjmp` through `RtlUnwindEx`) ends the guest
+  with `err:virtual:virtual_setup_exception stack overflow` and the host reports `guest main thread ended without
+  ExitProcess (code 0)` and exit code 0: a silent success. The Lua tests catch it because they require exit 42 and the
+  final line, but the host should not turn it into 0. Not changed here.
+* **Under Wine 9 as host, Lua's error path does not run** (the cross-built `lua.exe`, `-DWIN10XBOX_REAL_PROGRAMS=ON`):
+  the first `pcall` that catches a Lua error unwinds through the host ntdll, which logs `invalid frame` for a guest
+  stack frame and ends in the stack overflow above; real Windows is fine (green). Cause not isolated (the host's
+  `virtual_unwind` logs `exception data not found in "lua.exe"`, i.e. it looks guest images up through the guest
+  loader list). Everything before the first error is checked locally.
+* `+relay` on the host ntdll side together with default (`all`) tracing made one local run exit 5; `-all,+relay` works.
+  Always pass `-all,+<channel>` when tracing a real program.
+
+What the next program needs: more than the file/env/time surface Lua uses. Candidates in order of cost: a program that
+reads stdin interactively (console input, `NtReadFile` on the console handle; Lua's REPL), one that starts a child
+process (`io.popen` / `os.execute`: `NtCreateUserProcess` is Todo), one that sleeps on timers or threads
+(`NtCreateThreadEx`, waits are pass-through but untested with real programs), and anything that loads a native DLL
+beyond the Wine builtins. SQLite (`tools/ci/build_sqlite.ps1`, another branch) adds locking and `FlushFileBuffers`.
+
+
 ## Current state of main (2026-10-22)
 
 **What works, measured.** On the Xbox Series S (build 26100) one unmodified MSVC x64 guest is mapped, bound,
