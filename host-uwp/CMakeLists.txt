@@ -127,7 +127,7 @@ add_subdirectory(${WIN10XBOX_ROOT}/winexbox winexbox)
 
 # ---------------------------------------------------------------------------
 # The UWP host exe: AppContainer PE, CoreApplication view, headless display backend.
-#   C++/WinRT sources (include pch.h):  main.cpp App.cpp
+#   C++/WinRT sources (include pch.h):  main.cpp App.cpp launcher.cpp (the gamepad)
 #   everything else is plain Win32 + the win10xbox public API:
 #     host.cpp          the Host: worker flow from launch.json to the verdict (host.h)
 #     host_diag.cpp     trace.log, status.txt, crash filter (host_diag.h)
@@ -137,6 +137,7 @@ add_subdirectory(${WIN10XBOX_ROOT}/winexbox winexbox)
 #     host_shell.cpp    crash capture wired from the shell, first-run files (host_shell.h)
 #     crash.cpp         crash.txt / crash.dmp / entry-reached.txt: a copy of host-uwp-lite's
 #     presenter.cpp     D3D11 device thread + CoreWindow swap chain + screen.bmp (presenter.h)
+#     launcher.cpp      the on-console launcher: bitmap-font list + result screen, gamepad/keyboard (launcher.h)
 #     blit.cpp          the D3D11 upload + copy of the composed frame (blit.h; also in the blit test)
 # ---------------------------------------------------------------------------
 add_executable(host_uwp WIN32
@@ -151,6 +152,7 @@ add_executable(host_uwp WIN32
   crash.cpp
   presenter.cpp
   blit.cpp
+  launcher.cpp
   App.h
   host.h
   host_diag.h
@@ -161,6 +163,7 @@ add_executable(host_uwp WIN32
   crash.h
   presenter.h
   blit.h
+  launcher.h
   pch.h)
 set_target_properties(host_uwp PROPERTIES OUTPUT_NAME "win10xbox-uwp")
 target_include_directories(host_uwp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

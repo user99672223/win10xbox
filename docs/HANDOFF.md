@@ -125,6 +125,37 @@ before the PEB takeover: `WIN10XBOX_TEST_NO_HOST_PATHS`, `WIN10XBOX_TEST_TLS_IND
 `WIN10XBOX_TEST_TLS_CLOBBER`, `WIN10XBOX_TEST_GUEST_VIEW_VIOLATION`,
 `WIN10XBOX_TEST_LEAK_GUEST_ACTCTX`, `WIN10XBOX_NORMAL_EXIT`.
 
+### Launcher (host-uwp on-console guest picker)
+
+`host-uwp/launcher.{h,cpp}` is a list of guest programs drawn on the TV by the existing D3D11 presenter
+(`Presenter::SetFrameSource`: while the launcher is active it supplies the frame instead of
+`user::ComposeFrame`; text uses a built-in 5x7 bitmap font). Navigation: gamepad through
+Windows.Gaming.Input (D-pad or left stick, A launches, B goes back; the `VK_GAMEPAD_*` keys are used only
+if no pad is ever seen) and keyboard (arrows, Enter/Space, Esc/Backspace).
+
+* **When it shows.** `launch.json` has `"picker": true`, or names `"autoselect"`, or there is no
+  `launch.json` at all (neither `LocalState` nor the package). The packaged `payload/launch.json` still
+  exists and does not say `"picker"`, so a fresh install keeps running `window.exe` as before; to make the
+  picker the fresh-install default add `"picker": true` to it and give the `run` job in `host-uwp.yml` a
+  LocalState `launch.json` that pins `window.exe` (it asserts `RESULT: PASS`).
+* **The list** is `payload\guest\*.exe` (bundled) plus any `.exe` in `LocalState\guests\`. A LocalState
+  guest (and the `.dll` files beside it) is copied into `C:\guest` (`LocalState\machine\guest`) right
+  before launch. The cursor starts on the `"guest"` of `launch.json`. Arguments and `expect_exit_code`
+  written for another guest are dropped.
+* **After the guest exits** the result screen shows its exit code, the verdict and the last 20 lines of
+  `stdout.txt`; B/Esc/Enter returns to the list. The same data is written to
+  `LocalState\launcher_result.txt` (`guest=`, `ran=`, `exit_code=`, `verdict=`, `  | <line>`).
+* **Test hook.** `"autoselect": "hello_cui.exe"` launches that entry without input, writes
+  `launcher_result.txt`, and (with `exit_when_done`, default true) ends the app after one run.
+* **Gate.** `host-uwp.yml` job `launcher` (needs `msix`, not continue-on-error): installs the `.msix` on
+  the runner, writes `LocalState\launch.json` with `picker` + `autoselect`, activates the app on the
+  runner's CoreWindow and asserts `guest=hello_cui.exe`, `ran=yes`, `exit_code=42` and
+  `hello from guest` in `launcher_result.txt`. Parser keys are covered by `host_uwp.selftest`.
+* **Not proven.** Gamepad/keyboard navigation (CI cannot press buttons) and running a SECOND guest in the
+  same process after the first one's `win10xbox::Shutdown()` (the worker loops back to the list and
+  re-runs the whole `RunImpl`; `Initialize` is re-entrant on paper, nothing has run it twice on hardware).
+  If a second run misbehaves, that is the first thing to look at; `crash.txt` will say.
+
 ## Recommended priority order
 
 1. **Pixels.** The four steps under "Shortest path to something visible". This is the goal; it is

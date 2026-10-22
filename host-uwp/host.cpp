@@ -22,6 +22,7 @@
 #include "host_stage.h"
 #include "host_util.h"
 #include "launch_config.h"
+#include "launcher.h"
 
 #include "win10xbox/config.h"
 #include "win10xbox/core.h"
@@ -32,7 +33,9 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <exception>
 #include <mutex>
 #include <thread>
@@ -198,6 +201,7 @@ struct Host::Impl
 
     void RunWorker();
     void RunImpl();
+    void ShowLauncherResult(const std::string& verdict, bool ran, long exit_code);
     void Fail(const std::string& what, const std::string& hint = std::string());
     void EndProcessAfterFinalStatus(const std::string& verdict, DWORD exit_code);
     std::string StopReason();
@@ -216,6 +220,12 @@ struct Host::Impl
     std::atomic<bool> input_enabled{true};
     std::atomic<HANDLE> stdout_handle{INVALID_HANDLE_VALUE};
 
+    // Launcher (launcher.h): set per run by RunImpl.
+    Launcher* launcher = nullptr;
+    bool picked = false;            // this run's guest was chosen in the launcher
+    bool autoselected = false;      // ... by launch.json "autoselect" (one run, then the host ends)
+    std::string picked_name;
+
     std::mutex reason_mu;
     std::string stop_reason;
     ULONGLONG guest_start_tick = 0;
@@ -228,6 +238,23 @@ void Host::Impl::Fail(const std::string& what, const std::string& hint)
     if (!hint.empty()) report.Set("hint", hint);
     report.SetVerdict("FAIL (" + what + ")");
     report.Flush();
+    ShowLauncherResult("FAIL (" + what + ")", false, 0);
+}
+
+// The launcher's result screen and LocalState\launcher_result.txt for the guest chosen in this run.
+void Host::Impl::ShowLauncherResult(const std::string& verdict, bool ran, long exit_code)
+{
+    if (launcher == nullptr || !picked) return;
+    LauncherResult r;
+    r.name = picked_name;
+    r.verdict = verdict;
+    r.ran = ran;
+    r.exit_code = exit_code;
+    if (ran) r.lines = TailLines(info.local_state + L"\\stdout.txt", 20);
+    if (!WriteLauncherResult(info.local_state + L"\\launcher_result.txt", r))
+        diag::Line("launcher: cannot write launcher_result.txt (error %lu)", GetLastError());
+    diag::Line("launcher: result for %s: %s", r.name.c_str(), verdict.c_str());
+    launcher->ShowResult(r);
 }
 
 std::string Host::Impl::StopReason()
@@ -257,7 +284,17 @@ void Host::Impl::RunWorker()
 {
     try
     {
-        RunImpl();
+        // With the launcher the worker goes round: pick, run, result screen, back to the list.
+        // (A second guest in the same process after the first one's shutdown is not proven on
+        // hardware, docs/HANDOFF.md "Launcher".) autoselect, a failure before a guest was
+        // chosen, or a stop request end the loop.
+        for (;;)
+        {
+            picked = false;
+            RunImpl();
+            if (!picked || launcher == nullptr || autoselected || stop.load()) break;
+            if (!launcher->WaitDismiss(stop)) break;
+        }
     }
     catch (const std::exception& e)
     {
@@ -353,6 +390,82 @@ void Host::Impl::RunImpl()
     {
         Fail("stopped by the shell before the guest started (" + StopReason() + ")");
         return;
+    }
+
+    // ---- 1b. the launcher: choose the guest (launcher.h) -----------------------------------------------------
+    // On when launch.json says "picker": true or names an "autoselect" entry, and by default when there is no
+    // launch.json at all. The list is the guests bundled in the package plus any .exe in LocalState\guests.
+    LauncherEntry chosen;
+    autoselected = false;
+    const bool no_config = source.rfind("built-in defaults", 0) == 0;
+    if (launcher != nullptr && (lc.has_picker ? lc.picker : (no_config || !lc.autoselect.empty())))
+    {
+        report.Set("phase", "launcher");
+        report.Flush();
+        std::vector<LauncherEntry> entries;
+        auto is_exe = [](const std::wstring& n) {
+            return n.size() > 4 && _wcsicmp(n.c_str() + n.size() - 4, L".exe") == 0;
+        };
+        for (const std::wstring& f : ListFiles(payload + L"\\guest"))
+            if (is_exe(f)) entries.push_back({Narrow(f), payload + L"\\guest\\" + f, false});
+        for (const std::wstring& f : ListFiles(ls + L"\\guests"))
+            if (is_exe(f))
+            {
+                bool dup = false;
+                for (LauncherEntry& e : entries)
+                    if (_wcsicmp(Widen(e.name).c_str(), f.c_str()) == 0) dup = true;   // the bundled one wins
+                if (!dup) entries.push_back({Narrow(f), ls + L"\\guests\\" + f, true});
+            }
+        std::sort(entries.begin(), entries.end(), [](const LauncherEntry& a, const LauncherEntry& b) {
+            return _stricmp(a.name.c_str(), b.name.c_str()) < 0;
+        });
+        diag::Line("launcher: %u entr%s", static_cast<unsigned>(entries.size()), entries.size() == 1 ? "y" : "ies");
+        int idx = -1;
+        if (!lc.autoselect.empty())
+        {
+            autoselected = true;
+            for (std::size_t i = 0; i < entries.size(); ++i)
+                if (_stricmp(entries[i].name.c_str(), lc.autoselect.c_str()) == 0) idx = static_cast<int>(i);
+            if (idx < 0)
+            {
+                Fail("launch.json \"autoselect\" names " + lc.autoselect + ", which is not in the launcher list");
+                return;
+            }
+        }
+        else
+        {
+            const std::size_t slash = lc.guest.find_last_of('\\');
+            idx = launcher->Pick(entries, slash == std::string::npos ? lc.guest : lc.guest.substr(slash + 1), stop);
+            if (idx < 0)
+            {
+                Fail("stopped by the shell in the launcher (" + StopReason() + ")");
+                return;
+            }
+        }
+        chosen = entries[static_cast<std::size_t>(idx)];
+        launcher->SetRunning();
+        picked = true;
+        picked_name = chosen.name;
+        // The settings written for another guest (arguments, expected exit code) do not belong to this one;
+        // the autoselect test hook keeps them.
+        const std::string configured = lc.guest.substr(lc.guest.find_last_of('\\') + 1);
+        if (!autoselected && _stricmp(configured.c_str(), chosen.name.c_str()) != 0)
+        {
+            lc.args.clear();
+            lc.args_raw.clear();
+            lc.has_expect_exit_code = false;
+        }
+        lc.guest = "C:\\guest\\" + chosen.name;
+        report.Set("launch.guest", lc.guest);
+        report.Set("launcher.picked", chosen.name + (chosen.from_localstate ? " (LocalState\\guests)" : " (bundled)") +
+                                          (autoselected ? " by autoselect" : ""));
+        report.Flush();
+        diag::Line("launcher: %s %s", autoselected ? "autoselected" : "chosen", chosen.name.c_str());
+        if (stop.load())
+        {
+            Fail("stopped by the shell before the guest started (" + StopReason() + ")");
+            return;
+        }
     }
 
     // ---- 2. machine.json, then the layer ------------------------------------------
@@ -461,6 +574,19 @@ void Host::Impl::RunImpl()
         diag::Line("warning: required NLS data could not be staged from the console's System32 (%s): Wine's locale "
                    "initialisation is likely to fail",
                    st.nls.BadList().c_str());
+    if (picked && chosen.from_localstate)
+    {
+        // A guest from LocalState\guests runs from C:\guest: copy it (and the DLLs next to it) there.
+        const std::wstring src_dir = ls + L"\\guests";
+        EnsureDir(c_root + L"\\guest");
+        for (const std::wstring& f : ListFiles(src_dir))
+        {
+            const bool dll = f.size() > 4 && _wcsicmp(f.c_str() + f.size() - 4, L".dll") == 0;
+            if (dll || _wcsicmp(f.c_str(), Widen(chosen.name).c_str()) == 0)
+                if (!CopyFileW((src_dir + L"\\" + f).c_str(), (c_root + L"\\guest\\" + f).c_str(), FALSE))
+                    diag::Line("launcher: cannot copy %s into C:\\guest (error %lu)", Narrow(f).c_str(), GetLastError());
+        }
+    }
     std::wstring guest_host_path;
     const long tr = static_cast<long>(win10xbox::vfs::TranslateWin32Path(Widen(lc.guest), &guest_host_path));
     unsigned long long guest_size = 0;
@@ -630,6 +756,7 @@ void Host::Impl::RunImpl()
     report.SetVerdict(verdict);
     diag::Line("verdict: %s", verdict.c_str());
     report.Flush();
+    ShowLauncherResult(verdict, true, exit_code);
     diag::FlushLog();
 }
 
@@ -673,6 +800,11 @@ bool Host::StartWorker()
         impl_->report.Flush();
         return false;
     }
+}
+
+void Host::AttachLauncher(Launcher* launcher)
+{
+    impl_->launcher = launcher;
 }
 
 bool Host::Finished() const { return impl_->finished.load(); }
