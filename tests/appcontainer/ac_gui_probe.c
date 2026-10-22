@@ -179,8 +179,24 @@ static void ProbeContext(void)
     strcpy(lpacs, "n/a");
     strcpy(attrs, "n/a");
     if (gti != NULL) {
+        /* the NT form, TOKEN_SECURITY_ATTRIBUTES_INFORMATION: the names are UNICODE_STRINGs (not the PWSTR of the
+           CLAIM_SECURITY_ATTRIBUTES_INFORMATION that winnt.h declares) */
+        typedef struct {
+            USHORT Length, MaximumLength;
+            PWSTR Buffer;
+        } NtUStr;
+        typedef struct {
+            NtUStr Name;
+            USHORT ValueType, Reserved;
+            ULONG Flags, ValueCount;
+            void *Values;
+        } NtTokenAttrV1;
         static union {
-            CLAIM_SECURITY_ATTRIBUTES_INFORMATION info;
+            struct {
+                USHORT Version, Reserved;
+                ULONG AttributeCount;
+                NtTokenAttrV1 *pAttributeV1;
+            } info;
             BYTE raw[8192];
         } sa;
         gti(tok, (TOKEN_INFORMATION_CLASS)29 /* TokenIsAppContainer */, &ac, sizeof ac, &n);
@@ -198,14 +214,17 @@ static void ProbeContext(void)
             size_t used = 0;
             DWORD i;
             attrs[0] = '\0';
-            for (i = 0; i < sa.info.AttributeCount && sa.info.Attribute.pAttributeV1 != NULL; i++) {
-                const wchar_t *nm = sa.info.Attribute.pAttributeV1[i].Name;
+            for (i = 0; i < sa.info.AttributeCount && sa.info.pAttributeV1 != NULL; i++) {
+                const NtUStr *nm = &sa.info.pAttributeV1[i].Name;
                 char u[200];
-                if (nm == NULL)
+                int chars = nm->Length / (int)sizeof(WCHAR), k;
+                if (nm->Buffer == NULL || chars <= 0)
                     continue;
-                if (lstrcmpiW(nm, L"WIN://NOALLAPPPKG") == 0)
+                if (CompareStringOrdinal(nm->Buffer, chars, L"WIN://NOALLAPPPKG", -1, TRUE) == CSTR_EQUAL)
                     noallapppkg = 1;
-                used += (size_t)snprintf(attrs + used, sizeof attrs - used, "%s%s", used ? " " : "", U8(nm, u, sizeof u));
+                k = WideCharToMultiByte(CP_UTF8, 0, nm->Buffer, chars, u, (int)sizeof u - 1, NULL, NULL);
+                u[k > 0 ? k : 0] = '\0';
+                used += (size_t)snprintf(attrs + used, sizeof attrs - used, "%s%s", used ? " " : "", u);
                 if (used >= sizeof attrs - 210)
                     break;
             }
