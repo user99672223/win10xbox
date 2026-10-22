@@ -3,18 +3,22 @@
 # windows job of ci.yml (desktop machine folder) and by host-win32-smoke.yml (console-like machine folder, with
 # -ConsoleConditions).
 #
-#   tools/ci/smoke_guests.ps1 -Bin build/bin -Machine build/bin/machine [-LogDir guest-smoke] [-ConsoleConditions]
+#   tools/ci/smoke_guests.ps1 -Bin build/bin -Machine build/bin/machine [-LogDir guest-smoke] [-ConsoleConditions] [-RealPrograms]
 #
 # The table below is the set of guests this repository builds, with the exit code each one returns when it ran to
 # completion (tests/guest/README.md, host-uwp-lite/README.md, tests/drivers). A guest in the table that was not built
 # or is missing from the machine folder FAILS the run. A guest in the machine folder that is not in the table is
 # listed (it is still gated by its ctest entry, if it has one) but does not fail this step, so a new guest never
 # breaks CI before someone decides its expected exit code here.
+# Rows marked Real = $true are programs that are not ours (Lua, built by tools/ci/build_lua.ps1 into the machine
+# folder's guest directory); they run, and fail when missing, only with -RealPrograms, which the workflows that
+# build them pass. Args = the guest's command-line arguments.
 param(
   [Parameter(Mandatory = $true)] [string] $Bin,
   [Parameter(Mandatory = $true)] [string] $Machine,
   [string] $LogDir = 'guest-smoke',
   [switch] $ConsoleConditions,
+  [switch] $RealPrograms,
   [int] $TimeoutSeconds = 180
 )
 $ErrorActionPreference = 'Stop'
@@ -32,7 +36,7 @@ foreach ($sys in @(Get-ChildItem (Join-Path $Bin 'drivers') -Filter *.sys -Error
   Copy-Item $sys.FullName -Destination $drivers -Force
 }
 
-# name, host, guest image (in <machine>\guest), driver (or ''), expected exit code, stdout regex (or '')
+# name, host, guest image (in <machine>\guest), driver (or ''), expected exit code, stdout regex (or ''), Args, Real
 $table = @(
   @{ Name = 'guest_hello';     Host = $host_exe; Guest = 'guest_hello.exe';     Driver = '';                  Exit = 42; Out = 'hello from guest' },
   @{ Name = 'guest_cpuid';     Host = $host_exe; Guest = 'guest_cpuid.exe';     Driver = '';                  Exit = 0;  Out = 'cpuid\.1\.ecx=' },
@@ -40,8 +44,16 @@ $table = @(
   @{ Name = 'guest_smoke_cui'; Host = $host_exe; Guest = 'guest_smoke_cui.exe'; Driver = '';                  Exit = 42; Out = 'guest: done, returning 42' },
   @{ Name = 'guest_smoke';     Host = $host_exe; Guest = 'guest_smoke.exe';     Driver = '';                  Exit = 42; Out = 'guest: done, returning 42' },
   @{ Name = 'drv_client';      Host = $drv_host; Guest = 'drv_client.exe';      Driver = 'OurTestDevice.sys'; Exit = 0;  Out = 'driver_ioctl: all checks passed' },
-  @{ Name = 'drv_kmdf_client'; Host = $drv_host; Guest = 'drv_kmdf_client.exe'; Driver = 'OurKmdfDevice.sys'; Exit = 0;  Out = 'kmdf: all checks passed' }
+  @{ Name = 'drv_kmdf_client'; Host = $drv_host; Guest = 'drv_kmdf_client.exe'; Driver = 'OurKmdfDevice.sys'; Exit = 0;  Out = 'kmdf: all checks passed' },
+  @{ Name = 'lua_hello';       Host = $host_exe; Guest = 'lua.exe';             Driver = '';                  Exit = 42; Out = 'hello from lua\t42'; Real = $true
+     Args = @('-e', "print('hello from lua', 6*7) os.exit(42)") },
+  @{ Name = 'lua_smoke';       Host = $host_exe; Guest = 'lua.exe';             Driver = '';                  Exit = 42; Out = 'smoke: done fails=0'; Real = $true
+     Args = @('C:\guest\lua_smoke.lua', 'alpha', 'beta gamma') }
 )
+if (-not $RealPrograms) {
+  Write-Host "real programs not run here (no -RealPrograms): $(($table | Where-Object { $_.Real } | ForEach-Object { $_.Name }) -join ', ')"
+  $table = @($table | Where-Object { -not $_.Real })
+}
 
 $saved = @{}
 if ($ConsoleConditions) {
@@ -67,6 +79,7 @@ foreach ($t in $table) {
   $hostArgs = @('--machine', $Machine)
   if ($t.Driver) { $hostArgs += @('--driver', (Join-Path $drivers $t.Driver)) }
   $hostArgs += "C:\guest\$($t.Guest)"
+  if ($t.Args) { $hostArgs += $t.Args }
   $out = Join-Path $LogDir "$($t.Name).stdout.log"
   $err = Join-Path $LogDir "$($t.Name).stderr.log"
   $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -101,6 +114,7 @@ foreach ($t in $table) {
 foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
 
 $known = $table | ForEach-Object { $_.Guest }
+if (-not $RealPrograms) { $known += 'lua.exe' }   # not built here; not "unlisted" either
 $extra = @(Get-ChildItem (Join-Path $Machine 'guest') -Filter *.exe -ErrorAction SilentlyContinue |
            Where-Object { $known -notcontains $_.Name } | ForEach-Object { $_.Name })
 if ($extra.Count -gt 0) {
