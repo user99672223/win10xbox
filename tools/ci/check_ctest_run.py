@@ -8,7 +8,9 @@ ran (docs/HANDOFF.md, trap 1). This compares what ctest knows about
 by `ctest --output-junit`):
 
   * every registered test must have run and passed: a test that was skipped,
-    not run, disabled or missing from the JUnit file fails the gate;
+    not run or missing from the JUnit file fails the gate. A test registered
+    with the DISABLED property is "not run on purpose": it is listed, never
+    counted as a skip and never counted towards a label's floor;
   * every label given with --require-label must have at least --min tests (or
     the number given as LABEL=N), so a label that silently lost its tests (or a
     configure that registered none) fails too. The counts come from ctest
@@ -31,14 +33,16 @@ import xml.etree.ElementTree as ET
 def registered_tests(build):
     out = subprocess.run(["ctest", "--test-dir", build, "--show-only=json-v1"],
                          check=True, capture_output=True, text=True).stdout
-    tests = {}
+    tests, disabled = {}, set()
     for t in json.loads(out).get("tests", []):
         labels = []
         for p in t.get("properties", []):
             if p.get("name") == "LABELS":
                 labels = list(p.get("value") or [])
+            elif p.get("name") == "DISABLED" and p.get("value"):
+                disabled.add(t["name"])
         tests[t["name"]] = labels
-    return tests
+    return tests, disabled
 
 
 def junit_results(path):
@@ -65,7 +69,7 @@ def main():
     a = ap.parse_args()
 
     junit = a.junit if os.path.isabs(a.junit) else os.path.join(a.build, a.junit)
-    tests = registered_tests(a.build)
+    tests, disabled = registered_tests(a.build)
     if not os.path.exists(junit):
         print(f"::error::{junit} missing: ctest did not run (or ran without --output-junit)")
         return 1
@@ -75,6 +79,8 @@ def main():
     if not tests:
         problems.append("ctest has no tests registered at all")
     for name in sorted(tests):
+        if name in disabled:
+            continue
         st = results.get(name, "not run (absent from the JUnit file)")
         if st != "passed":
             problems.append(f"{name}: {st}")
@@ -83,14 +89,16 @@ def main():
     for spec in a.require_label:
         label, _, n = spec.partition("=")
         want = int(n) if n else a.min
-        names = [t for t, labels in tests.items() if label in labels]
+        names = [t for t, labels in tests.items() if label in labels and t not in disabled]
         ran = [t for t in names if results.get(t) == "passed"]
         rows.append((label, len(names), len(ran), want))
         if len(names) < want:
             problems.append(f"label {label}: {len(names)} test(s) registered, at least {want} required")
 
     total_passed = sum(1 for t in tests if results.get(t) == "passed")
-    print(f"ctest gate: {len(tests)} registered, {total_passed} ran and passed")
+    print(f"ctest gate: {len(tests)} registered, {total_passed} ran and passed, {len(disabled)} DISABLED")
+    for name in sorted(disabled):
+        print(f"  DISABLED (not run on purpose, not a skip): {name}")
     for label, reg, ran, want in rows:
         print(f"  label {label:<18} registered {reg:>3}   ran+passed {ran:>3}   required >= {want}")
     for p in problems:
@@ -100,8 +108,10 @@ def main():
     if summary:
         with open(summary, "a", encoding="utf-8") as f:
             f.write(f"### ctest gate ({a.build})\n\n")
-            f.write(f"{len(tests)} tests registered, {total_passed} ran and passed, "
-                    f"{len(problems)} problem(s).\n\n")
+            f.write(f"{len(tests)} tests registered, {total_passed} ran and passed, {len(disabled)} DISABLED "
+                    f"(not run on purpose), {len(problems)} problem(s).\n\n")
+            for name in sorted(disabled):
+                f.write(f"* DISABLED: {name}\n")
             if rows:
                 f.write("| label | registered | ran and passed | required |\n|---|---:|---:|---:|\n")
                 for label, reg, ran, want in rows:
