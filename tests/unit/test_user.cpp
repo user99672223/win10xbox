@@ -221,6 +221,8 @@ TEST(user_us_layout_is_consistent) {
     CHECK_EQ(sys::NtUserToUnicodeEx('A', 0x1e, state, out, 4, 0, us), 1);
     CHECK_EQ(out[0], static_cast<WCHAR>(1));
     CHECK_EQ(sys::NtUserToUnicodeEx('A', 0x1e | 0x8000, state, out, 4, 0, us), 0);   // a key up produces nothing
+}
+
 // ---- Text: the 8x16 glyph table and ExtTextOut on a memory DC ----------------------------------
 
 TEST(user_font8x16_contract) {
