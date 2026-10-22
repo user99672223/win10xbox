@@ -44,6 +44,9 @@ netutils
 iphlpapi
 dnsapi
 nsi
+shcore      # shlwapi
+coml2       # ole32
+cryptbase   # advapi32's SystemFunction036 forward
 
 # --- COM -------------------------------------------------------------------
 ole32
