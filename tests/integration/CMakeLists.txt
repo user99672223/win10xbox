@@ -27,7 +27,7 @@ add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_window guest_window2 guest_window_input
-                   guest_window_text)
+                   guest_window_text guest_dialog)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -138,6 +138,14 @@ win10xbox_guest_test(guest_window_text "C:\\guest\\guest_window_text.exe" 42
 set_tests_properties(integration.guest_window_text PROPERTIES
   DISABLED TRUE
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_text.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=121,123,ff000000|123,123,ffffffff|131,123,ff000000")
+# The dialog manager (tests/guest/dialog.c): DialogBoxParamW with a DIALOG resource, WM_INITDIALOG, GetDlgItem,
+# Set/GetDlgItemText, tab order, a click on the OK button injected by the host (screen (160,125) = the button's
+# centre once the program placed the dialog at (100,100) and the button at client (10,10) 100x30), EndDialog(7).
+win10xbox_guest_test(guest_dialog "C:\\guest\\guest_dialog.exe" 42
+  "dialog: init edit=100 button=1" "dialog: text=hello dialog" "dialog: class=#32770 edit=Edit button=Button static=Static"
+  "dialog: ok clicked" "dialog: result=7" "dialog: done")
+set_tests_properties(integration.guest_dialog PROPERTIES
+  ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=sleep 2500\\;move 160,125\\;ldown\\;lup")
 unset(_guest_machine)
 
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
