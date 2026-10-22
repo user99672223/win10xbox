@@ -5,7 +5,7 @@ Windows 10 x64 / 22H2 NT syscall numbers) and the hand-maintained policy
 `core/dispatch/syscall_policy.inc`; win32u entries (ids 0x1000..) are Emulate when
 `core/user/user_syscalls.h` registers them. Do not edit by hand.
 
-1798 syscalls. passthrough 157, translate 30, emulate 297, todo 1314. Generated 2026-10-22.
+1798 syscalls. passthrough 157, translate 30, emulate 298, todo 1313. Generated 2026-10-22.
 
 Policy: **PassThrough** calls the host ntdll export by name; **Translate**
 rewrites arguments (paths, handles, timeouts) then passes through;
@@ -760,7 +760,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x11e5 | NtGdiGetCertificateSizeByHandle | 0 | Todo |  |
 | 0x11e6 | NtGdiGetCharABCWidthsW | 6 | Emulate | core/user |
 | 0x11e7 | NtGdiGetCharSet | 0 | Todo |  |
-| 0x11e8 | NtGdiGetCharWidthInfo | 2 | Todo |  |
+| 0x11e8 | NtGdiGetCharWidthInfo | 2 | Emulate | core/user |
 | 0x11e9 | NtGdiGetCharWidthW | 6 | Emulate | core/user |
 | 0x11ea | NtGdiGetCharacterPlacementW | 0 | Todo |  |
 | 0x11eb | NtGdiGetColorAdjustment | 2 | Todo |  |

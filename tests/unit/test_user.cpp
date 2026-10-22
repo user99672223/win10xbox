@@ -6,6 +6,7 @@
 #include "check.h"
 #include "../../core/user/user_internal.h"
 #include "../../core/user/user_syscalls.h"
+#include "../../core/user/font8x16.h"
 #include <windows.h>
 #include <cstring>
 #include <vector>
@@ -220,4 +221,210 @@ TEST(user_us_layout_is_consistent) {
     CHECK_EQ(sys::NtUserToUnicodeEx('A', 0x1e, state, out, 4, 0, us), 1);
     CHECK_EQ(out[0], static_cast<WCHAR>(1));
     CHECK_EQ(sys::NtUserToUnicodeEx('A', 0x1e | 0x8000, state, out, 4, 0, us), 0);   // a key up produces nothing
+// ---- Text: the 8x16 glyph table and ExtTextOut on a memory DC ----------------------------------
+
+TEST(user_font8x16_contract) {
+    namespace f = win10xbox::user::font8x16;
+    CHECK_EQ(f::kCellWidth, 8);
+    CHECK_EQ(f::kCellHeight, 16);
+    CHECK_EQ(f::kAscent, 12);
+    CHECK_EQ(f::kDescent, 4);
+    const std::uint8_t* h = f::GlyphRows(U'H');
+    CHECK(f::GlyphPixel(h, 1, 3));
+    CHECK(f::GlyphPixel(h, 6, 3));
+    CHECK(!f::GlyphPixel(h, 3, 3));
+    CHECK(f::GlyphPixel(f::GlyphRows(U'I'), 3, 3));
+    // nothing is drawn below the baseline by capitals, and every printable glyph has pixels
+    for (char32_t c = U'A'; c <= U'Z'; ++c)
+        if (c != U'Q')   // Q has a tail
+            for (int y = 12; y < 16; ++y) CHECK_EQ(f::GlyphRows(c)[y], 0);
+    for (char32_t c = 0x21; c <= 0x7e; ++c) {
+        int set = 0;
+        for (int y = 0; y < 16; ++y) set += f::GlyphRows(c)[y] != 0;
+        CHECK_MSG(set > 0, "glyph %#x is blank", static_cast<unsigned>(c));
+    }
+    for (int y = 0; y < 16; ++y) CHECK_EQ(f::GlyphRows(U' ')[y], 0);
+    // everything else is the box glyph
+    CHECK(f::GlyphRows(0x7) == f::kBox);
+    CHECK(f::GlyphRows(0x7f) == f::kBox);
+    CHECK(f::GlyphRows(0x4e2d) == f::kBox);
+    CHECK(f::GlyphRows(0x1f600) == f::kBox);
+    CHECK(f::GlyphPixel(f::kBox, 1, 3));
+}
+
+namespace {
+// A 64x48 32 bpp memory DC on the real GDI table; the test process's PEB value is put back by the owner.
+struct TextDc {
+    using PebSaved = void*;
+    PebSaved saved;
+    HDC dc = nullptr;
+    HBITMAP bmp = nullptr;
+    const std::uint32_t blank = 0xff123456u;   // the bitmap starts out as this colour
+    explicit TextDc(int w = 64, int h = 48) {
+        namespace peb = win10xbox::dispatch::detail::peb;
+        saved = win10xbox::dispatch::detail::PebField<void*>(peb::GdiSharedHandleTable);
+        ud::InstallProcessTables();
+        dc = win10xbox::user::sys::NtGdiCreateCompatibleDC(nullptr);
+        bmp = win10xbox::user::sys::NtGdiCreateBitmap(w, h, 1, 32, nullptr);
+        win10xbox::user::sys::NtGdiSelectBitmap(dc, bmp);
+        auto* b = ud::GdiGetT<ud::BitmapObj>(bmp, abi::kObjBitmap);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) ud::SetBitmapPixel(*b, x, y, blank);
+    }
+    ~TextDc() {
+        namespace peb = win10xbox::dispatch::detail::peb;
+        win10xbox::user::sys::NtGdiDeleteObjectApp(dc);
+        win10xbox::user::sys::NtGdiDeleteObjectApp(bmp);
+        win10xbox::dispatch::detail::PebField<void*>(peb::GdiSharedHandleTable) = saved;
+    }
+    abi::DcAttr* Attr() const { return ud::DcGet(dc)->attr; }
+    std::uint32_t Px(int x, int y) const { return ud::BitmapPixel(*ud::GdiGetT<ud::BitmapObj>(bmp, abi::kObjBitmap), x, y); }
+    BOOL Out(int x, int y, UINT flags, const RECT* r, const wchar_t* s, const INT* dx = nullptr) const {
+        return win10xbox::user::sys::NtGdiExtTextOutW(dc, x, y, flags, r, s, static_cast<UINT>(wcslen(s)), dx, 0);
+    }
+};
+constexpr std::uint32_t kBlack = 0xff000000u, kWhite = 0xffffffffu, kRed = 0xffff0000u, kBlue = 0xff0000ffu;
+}  // namespace
+
+TEST(user_ext_text_out_default_placement) {
+    TextDc t;
+    t.Attr()->text_color = RGB(255, 0, 0);
+    t.Attr()->background_color = RGB(0, 0, 255);   // OPAQUE is the default background mode
+    CHECK(t.Out(4, 2, 0, nullptr, L"HI"));
+    // the first cell's top-left is (4,2): 'H' pixels (1,3) / (6,3) set, (3,3) clear (background)
+    CHECK_EQ(t.Px(4 + 1, 2 + 3), kRed);
+    CHECK_EQ(t.Px(4 + 6, 2 + 3), kRed);
+    CHECK_EQ(t.Px(4 + 3, 2 + 3), kBlue);
+    CHECK_EQ(t.Px(4 + 8 + 3, 2 + 3), kRed);        // 'I' starts one cell (8 px) further
+    CHECK_EQ(t.Px(4, 2), kBlue);                   // background covers the whole 16 x 16 text box
+    CHECK_EQ(t.Px(4 + 15, 2 + 15), kBlue);
+    CHECK_EQ(t.Px(3, 2), t.blank);                      // nothing outside it
+    CHECK_EQ(t.Px(4 + 16, 2), t.blank);
+    CHECK_EQ(t.Px(4, 2 + 16), t.blank);
+    CHECK_EQ(t.Px(4 + 3, 2 + 1) >> 24, 0xffu);
+}
+
+TEST(user_ext_text_out_transparent_and_opaque_rect) {
+    TextDc t;
+    t.Attr()->background_color = RGB(255, 255, 255);
+    const RECT r{0, 0, 40, 20};
+    CHECK(t.Out(0, 0, ETO_OPAQUE, &r, L""));        // an empty string still fills
+    CHECK_EQ(t.Px(0, 0), kWhite);
+    CHECK_EQ(t.Px(39, 19), kWhite);
+    CHECK_EQ(t.Px(40, 19), t.blank);
+    t.Attr()->background_mode = TRANSPARENT;
+    t.Attr()->background_color = RGB(255, 0, 0);
+    CHECK(t.Out(2, 1, 0, nullptr, L"H"));
+    CHECK_EQ(t.Px(2 + 1, 1 + 3), kBlack);           // text colour defaults to black
+    CHECK_EQ(t.Px(2 + 3, 1 + 3), kWhite);           // the background was not painted over
+    // ETO_OPAQUE with a rectangle and text: the rectangle takes the background colour, text goes over it
+    t.Attr()->background_mode = OPAQUE;
+    const RECT r2{0, 24, 30, 44};
+    CHECK(t.Out(2, 25, ETO_OPAQUE, &r2, L"H"));
+    CHECK_EQ(t.Px(29, 43), kRed);
+    CHECK_EQ(t.Px(2 + 1, 25 + 3), kBlack);
+}
+
+TEST(user_ext_text_out_alignment) {
+    TextDc t;
+    t.Attr()->background_mode = TRANSPARENT;
+    t.Attr()->text_align = TA_RIGHT | TA_BOTTOM;    // (x,y) is the bottom-right of the text box
+    CHECK(t.Out(40, 40, 0, nullptr, L"H"));
+    CHECK_EQ(t.Px(32 + 1, 24 + 3), kBlack);
+    t.Attr()->text_align = TA_CENTER | TA_BASELINE; // centred; y is the baseline (cell top = y - 12)
+    CHECK(t.Out(32, 30, 0, nullptr, L"HH"));
+    CHECK_EQ(t.Px(24 + 1, 18 + 3), kBlack);         // first H
+    CHECK_EQ(t.Px(32 + 6, 18 + 3), kBlack);         // second H
+    // the baseline: capitals end on row 11, so the pixel row y-1 is the last inked row of an 'H'
+    CHECK_EQ(t.Px(24 + 1, 29), kBlack);
+    CHECK_EQ(t.Px(24 + 1, 30), t.blank);
+}
+
+TEST(user_ext_text_out_dx_and_clip) {
+    TextDc t;
+    t.Attr()->background_mode = TRANSPARENT;
+    const INT dx[] = {12, 8};
+    CHECK(t.Out(0, 0, 0, nullptr, L"HH", dx));
+    CHECK_EQ(t.Px(1, 3), kBlack);
+    CHECK_EQ(t.Px(12 + 1, 3), kBlack);              // the second cell starts 12 px in
+    CHECK_EQ(t.Px(8 + 1, 3), t.blank);
+    // ETO_CLIPPED limits the glyphs to the rectangle
+    const RECT clip{0, 20, 4, 36};
+    CHECK(t.Out(0, 20, ETO_CLIPPED, &clip, L"H"));
+    CHECK_EQ(t.Px(1, 23), kBlack);                  // inside
+    CHECK_EQ(t.Px(6, 23), t.blank);                      // outside (the glyph has a pixel there)
+    // a negative origin and a window past the bitmap clip silently
+    CHECK(t.Out(-5, -3, 0, nullptr, L"HI"));
+    CHECK(t.Out(60, 44, 0, nullptr, L"HI"));
+}
+
+TEST(user_ext_text_out_current_position) {
+    TextDc t;
+    t.Attr()->text_align = TA_UPDATECP;
+    t.Attr()->background_mode = TRANSPARENT;
+    t.Attr()->cur_pos = POINT{2, 4};
+    CHECK(t.Out(50, 50, 0, nullptr, L"HI"));        // x,y ignored: the current position is the origin
+    CHECK_EQ(t.Px(2 + 1, 4 + 3), kBlack);
+    CHECK_EQ(t.Attr()->cur_pos.x, 18);
+    CHECK_EQ(t.Attr()->cur_pos.y, 4);
+}
+
+TEST(user_text_metrics_and_extents) {
+    using namespace win10xbox::user::sys;
+    TextDc t;
+    TEXTMETRICW tm{};
+    CHECK(NtGdiGetTextMetricsW(t.dc, &tm, 0));
+    CHECK_EQ(tm.tmHeight, 16);
+    CHECK_EQ(tm.tmAscent, 12);
+    CHECK_EQ(tm.tmDescent, 4);
+    CHECK_EQ(tm.tmAveCharWidth, 8);
+    CHECK_EQ(tm.tmMaxCharWidth, 8);
+    CHECK((tm.tmPitchAndFamily & TMPF_FIXED_PITCH) == 0);
+    SIZE sz{};
+    INT dxs[4] = {}, nfit = -1;
+    CHECK(NtGdiGetTextExtentExW(t.dc, L"abc", 3, 20, &nfit, dxs, &sz, 0));
+    CHECK_EQ(sz.cx, 24);
+    CHECK_EQ(sz.cy, 16);
+    CHECK_EQ(nfit, 2);
+    CHECK_EQ(dxs[0], 8);
+    CHECK_EQ(dxs[1], 16);
+    CHECK_EQ(dxs[2], 24);
+    INT widths[3] = {};
+    CHECK(NtGdiGetCharWidthW(t.dc, 'a', 'c', nullptr, 0x02, widths));
+    CHECK_EQ(widths[0], 8);
+    CHECK_EQ(widths[2], 8);
+    abi::CharWidthInfo info{1, 1, 1};
+    CHECK(NtGdiGetCharWidthInfo(t.dc, &info));
+    CHECK_EQ(info.lsb, 0);
+    // every stock font reports the same cell
+    ud::State& s = ud::S();
+    for (int stock : {OEM_FIXED_FONT, ANSI_FIXED_FONT, ANSI_VAR_FONT, SYSTEM_FONT, SYSTEM_FIXED_FONT, DEFAULT_GUI_FONT}) {
+        NtGdiSelectFont(t.dc, s.stock[stock]);
+        TEXTMETRICW m{};
+        CHECK(NtGdiGetTextMetricsW(t.dc, &m, 0));
+        CHECK_MSG(m.tmHeight == 16 && m.tmAveCharWidth == 8, "stock font %d: %ldx%ld", stock, m.tmAveCharWidth, m.tmHeight);
+    }
+    // tall LOGFONTs scale by whole factors, small ones stay at 1
+    LOGFONTW lf{};
+    lf.lfHeight = -48;
+    HFONT big = NtGdiHfontCreate(&lf, sizeof lf, 0, 0, nullptr);
+    CHECK(big != nullptr);
+    NtGdiSelectFont(t.dc, big);
+    CHECK(NtGdiGetTextMetricsW(t.dc, &tm, 0));
+    CHECK_EQ(tm.tmHeight, 48);
+    CHECK_EQ(tm.tmAscent, 36);
+    CHECK_EQ(tm.tmAveCharWidth, 24);
+    t.Attr()->background_mode = TRANSPARENT;
+    CHECK(t.Out(0, 0, 0, nullptr, L"H"));           // each glyph pixel becomes a 3x3 block
+    CHECK_EQ(t.Px(1 * 3, 3 * 3), kBlack);
+    CHECK_EQ(t.Px(1 * 3 + 2, 3 * 3 + 2), kBlack);
+    CHECK_EQ(t.Px(3 * 3, 3 * 3), t.blank);
+    lf.lfHeight = -12;
+    HFONT small = NtGdiHfontCreate(&lf, sizeof lf, 0, 0, nullptr);
+    NtGdiSelectFont(t.dc, small);
+    CHECK(NtGdiGetTextMetricsW(t.dc, &tm, 0));
+    CHECK_EQ(tm.tmHeight, 16);
+    NtGdiSelectFont(t.dc, s.stock[SYSTEM_FONT]);
+    NtGdiDeleteObjectApp(big);
+    NtGdiDeleteObjectApp(small);
 }

@@ -138,14 +138,12 @@ set_tests_properties(integration.guest_window_input2 PROPERTIES
 # origin (100,100). It draws "HI" at client (20,20) and "Hello/Xbox" into (20,60)-(380,120) with the stock system
 # font, then reads the glyph pixels back with GetPixel and exits 42. The screenshot checks three of them at screen
 # coordinates: H(1,3) black at (121,123), H(3,3) white at (123,123), I(3,3) black at (131,123) (I's cell starts at
-# x offset 8). Stays DISABLED until the text rendering slice (claude/youthful-cerf-l7xxsb-text) lands, so CI stays
-# green meanwhile.
+# x offset 8).
 win10xbox_guest_test(guest_window_text "C:\\guest\\guest_window_text.exe" 42
   "text: class registered" "text: created hwnd=" "text: painted"
   "text: pixels H\\(1,3\\)=00000000 H\\(6,3\\)=00000000 H\\(3,3\\)=00ffffff I\\(3,3\\)=00000000 bg=00ffffff"
   "text: done")
 set_tests_properties(integration.guest_window_text PROPERTIES
-  DISABLED TRUE
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_text.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=121,123,ff000000|123,123,ffffffff|131,123,ff000000")
 unset(_guest_machine)
 

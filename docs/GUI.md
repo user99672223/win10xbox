@@ -73,8 +73,8 @@ more. Presentation is the host's: it only needs `ComposeFrame`.
 | `user.cpp` | module state (`S()`, allocated under the lock), `user.h` API, per-thread record (`TEB.Win32ClientInfo[61]`), user-mode callbacks, `NtCallbackReturn`, the guest last error of a syscall (`SetLastErr`), screenshots |
 | `user_internal.h` | shared internals (lock, objects, windows, queues, helpers) |
 | `gdi_objects.cpp` | `GDI_SHARED_MEMORY` at `PEB.GdiSharedHandleTable` (0x10000 entries, Wine's encoding, stock objects in `init_stock_objects` order, system colour brushes/pens), regions (non-overlapping rectangle lists), brushes, pens, fonts (LOGFONT only), bitmaps / DIB sections / DIB conversion, palettes, `NtGdiCreate*`, `NtGdiDeleteObjectApp`, `NtGdiExtGetObjectW`, `Get/SetDIBits`, region syscalls |
-| `gdi_dc.cpp` | DCs (screen, window, memory) and their `DC_ATTR` (guest-visible pool), `NtGdiCreateCompatibleDC`, `NtGdiOpenDCW`, `NtGdiGetDeviceCaps`, `NtGdiGetAndSetDCDword`, `NtGdiSelect*`, `SaveDC`/`RestoreDC`, clipping, logical->device mapping (MM_TEXT / ISOTROPIC / ANISOTROPIC, world transform translation), what a DC draws on (`ResolveDrawTarget`), synthesized text metrics |
-| `gdi_draw.cpp` | the rasteriser on BGRA32: `PatBlt`, `BitBlt` / `StretchBlt` with any ternary ROP (colour<->mono conversion), `Get/SetPixel`, `Rectangle`, `Ellipse`, `MoveTo`/`LineTo`, `PolyPolyDraw` (polygons, polylines, Béziers), `Fill/Frame/InvertRgn`, `SetDIBitsToDevice`, `StretchDIBits`, `ExtTextOutW` (opaque rectangle only: no font engine, FIXME once) |
+| `gdi_dc.cpp` | DCs (screen, window, memory) and their `DC_ATTR` (guest-visible pool), `NtGdiCreateCompatibleDC`, `NtGdiOpenDCW`, `NtGdiGetDeviceCaps`, `NtGdiGetAndSetDCDword`, `NtGdiSelect*`, `SaveDC`/`RestoreDC`, clipping, logical->device mapping (MM_TEXT / ISOTROPIC / ANISOTROPIC, world transform translation), what a DC draws on (`ResolveDrawTarget`), the text metrics of the built-in face (`TextCellOf`, `GetTextMetrics`, `GetTextExtentExW`, `GetCharWidth*`) |
+| `gdi_draw.cpp` | the rasteriser on BGRA32: `PatBlt`, `BitBlt` / `StretchBlt` with any ternary ROP (colour<->mono conversion), `Get/SetPixel`, `Rectangle`, `Ellipse`, `MoveTo`/`LineTo`, `PolyPolyDraw` (polygons, polylines, Béziers), `Fill/Frame/InvertRgn`, `SetDIBitsToDevice`, `StretchDIBits`, `ExtTextOutW` (the built-in 8x16 face: `font8x16.h`) |
 | `win_class.cpp` | classes and the user atom table (`NtUserRegisterClassExWOW`, `NtUserGetClassInfoEx`, `NtUserGetClassName`, `NtUserGetAtomName`, `NtUserRegisterWindowMessage`, class longs), the builtin classes (Button ... `#32769`, `Message`) with the procs from `NtUserInitializeClientPfnArrays`; procedures are kept as raw (A, W) pairs |
 | `win_window.cpp` | handle table, tree and z-order, rects, `NtUserCreateWindowEx` (Wine's message sequence), `ShowWindow`, `SetWindowPos` (WINDOWPOSCHANGING / NCCALCSIZE / WINDOWPOSCHANGED), `DestroyWindow` (WM_DESTROY parent first, WM_NCDESTROY children first), activation and focus, window longs, props, `NtUserCall{Hwnd,HwndParam,NoParam,OneParam,TwoParam}` codes, `FindWindowEx`, `BuildHwndList`, `WindowFromPoint`, capture, enable |
 | `win_defwnd.cpp` | the default window procedure (`NtUserMessageCall(NtUserDefWindowProc)`): text, WM_NCCALCSIZE from the style (Windows 10 frame metrics), WM_NCHITTEST, WM_NCPAINT, WM_ERASEBKGND with the class brush, WM_CTLCOLOR*, WM_CLOSE, WM_WINDOWPOSCHANGED -> WM_MOVE/WM_SIZE, WM_ACTIVATE -> focus, Alt+F4 |
@@ -91,7 +91,7 @@ except the few that return an `NTSTATUS` (`NtUserBuildHwndList`, `NtUserInitiali
 
 ### What is implemented (2026-10-22)
 
-234 win32u syscalls are registered (`W10X_USER_SYSCALLS`, listed as Emulate in docs/SYSCALLS.md; plus the ntdll-side `NtCallbackReturn`): enough for
+235 win32u syscalls are registered (`W10X_USER_SYSCALLS`, listed as Emulate in docs/SYSCALLS.md; plus the ntdll-side `NtCallbackReturn`): enough for
 `tests/guest/window.c` (frameless popup, FillRect, GetPixel, timers, PostMessage) and `tests/guest/window2.c`
 (captioned overlapped window, AdjustWindowRectEx, Set/GetWindowText, ShowWindow/UpdateWindow, memory DC +
 CreateCompatibleBitmap + BitBlt, InvalidateRect, KillTimer, DestroyWindow, PeekMessage on
@@ -99,9 +99,21 @@ MsgWaitForMultipleObjectsEx). Both pass under Wine (`integration.guest_window`, 
 
 Not implemented yet (they stay Todo or are documented FIXMEs), roughly in the order a typical program reaches them:
 
-* **Text**: no font engine. Metrics are synthesized from the LOGFONT (`GetTextMetrics`, `GetTextExtentPoint`,
-  `GetCharWidth` agree with each other); `ExtTextOut` / `DrawText` fill their opaque rectangle and draw no glyphs.
-  `EnumFontFamilies`, `AddFontResource`, `GetOutlineTextMetrics` are Todo.
+* **Text**: one built-in face, a classic-VGA-style 8x16 bitmap font (`font8x16.h`) for ASCII 0x20-0x7E; every
+  other code point (control characters, Latin-1 above 0x7E, anything outside the BMP) draws a box glyph, and 0xA0
+  a blank cell. The cell is 8 px wide and 16 tall with the baseline at row 12, so every font reports
+  `tmHeight` 16, `tmAscent` 12, `tmDescent` 4, `tmAveCharWidth` = `tmMaxCharWidth` 8 and a fixed pitch. A LOGFONT
+  of height >= 32 (either sign) scales the glyphs by `height / 16` (whole factors, at most 64); anything smaller
+  keeps the plain cell, whatever face name, weight or width was asked for. `ExtTextOut` draws ETO_OPAQUE,
+  ETO_CLIPPED, ETO_PDY and the `dx` array, the OPAQUE/TRANSPARENT background mode, `TA_LEFT/CENTER/RIGHT`,
+  `TA_TOP/BASELINE/BOTTOM` and `TA_UPDATECP`, clipped to the DC's clip, with alpha 0xFF; `TextOutW(x, y)` puts the
+  first cell's top-left at `(x, y)` with the default alignment. `GetTextExtentExW` (width 8 per character plus the
+  DC's extra spacing, partial extents, `nfit`), `GetCharWidth*`, `GetCharABCWidths*` (A = C = 0), `GetCharWidthInfo`
+  (no bearings), `GetTextFaceW` (the LOGFONT's face name) and `GetTextCharsetInfo` agree with it, so user32's
+  `DrawText` (which lays out from those extents) centres and wraps correctly. No bold, italic, underline or
+  strike-out styling, no kerning, no justification (`SetTextJustification` is accepted and ignored), no
+  `GetGlyphIndices` beyond the identity map. `GetFontData`, `GetOutlineTextMetrics`, `EnumFontFamilies` and
+  `AddFontResource` stay Todo / failing.
 * **Menus** (`NtUserCreateMenu`, `NtUserThunkedMenuItemInfo`, `TrackPopupMenu`...): Todo; `LoadMenu` fails, so
   windows get no menu bar. **Icons and cursors** (`NtUserSetCursorIconData`, `NtUserDrawIconEx`, `LoadImage` of
   icons/cursors): Todo. **Scroll bars** (`NtUserSetScrollInfo`, the scroll bar window procedure): Todo (WS_VSCROLL
