@@ -217,6 +217,52 @@ dropped and counted rather than faulting. Verified gating by reinstating the ori
 then **fails** on linux-cross with `err:dispatch: host state reached under the guest TLS view 1 times (last:
 dispatch::S (Host, Lookup, ...))`. Suite is 21/21, `guest_e2e` 10/10 (21 tests, from 14).
 
+### The AppContainer surface is now MEASURED on real Windows, not simulated
+
+`.github/workflows/host-win32-appcontainer.yml` runs the layer inside a genuine AppContainer on a Windows runner
+(`CreateAppContainerProfile` + `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`), with the child's token read back while it
+is suspended and the run aborted unless it really is in the requested container. Validity is established by **negative
+controls**: reading an ungranted file and writing `C:\Windows\Temp` both succeed outside and are **denied inside**
+(`error 5`), so the sandbox is genuinely enforced rather than nominally requested. Run `39786498188` on `4e1131f`:
+**`PASS (genuine AppContainer, zero unresolved KERNEL32 imports, guest exit code 42)`** — now **gating**.
+
+Three measurements, two of which settle long-standing guesses in opposite directions:
+
+**1. `GetFinalPathNameByHandleW(VOLUME_NAME_DOS)` is REFUSED inside a stock AppContainer** — `error 5`, both AC and
+LPAC, while it succeeds outside. So the console's refusal, which was the entire root cause of the kernel32/kernelbase
+forwarder bug, is **generic AppContainer behaviour, not Xbox-specific**. The layer hits it for real:
+`smoke-ac` (container, **no** test hook) logs 3 `host path of image file ... unavailable (Win32 error 5)` warnings
+against 0 in `smoke-plain`. That means the real condition is now exercised in CI and can replace the
+`WIN10XBOX_TEST_NO_HOST_PATHS=1` simulation as the gate.
+
+The mechanism is identified too, and it is actionable. Opening `\\.\MountPointManager` is denied in the container, which
+is why *DOS*-path resolution fails — and the variants show what still works:
+
+| Call | In AppContainer |
+|---|---|
+| `GetFinalPathNameByHandleW` DOS (normalized / opened) | **FAIL** (error 5) |
+| `GetFinalPathNameByHandleW` GUID volume | **FAIL** (error 5) |
+| `GetFinalPathNameByHandleW` **NT** path | **OK** — `\Device\HarddiskVolume5\…` |
+| `GetFinalPathNameByHandleW` none/normalized | **OK** — `\a\win10xbox\…` |
+| `FileNameInformation`, `NtQueryInformationFile` | **OK** |
+| `NtQueryObject(ObjectNameInformation)` | **OK** — `\Device\HarddiskVolume5\…` |
+
+So a real host path *is* obtainable inside an AppContainer by asking for an NT path instead of a DOS one. That would let
+`HostPathOfHandle` work there rather than falling back to the size+contents comparison in `SameImageFile`.
+
+**2. `dbghelp.dll` BINDS inside a genuine AppContainer** — `LoadLibrary` OK and a real self-dump written, in AC and
+LPAC, and the host's own `crash.cpp` reports `dbghelp.dll bound: crash.dmp enabled`. So the console's failure to bind it
+is **not** generic AppContainer behaviour; it is Xbox-specific. The delay-load hedge was the right call regardless, but
+the missing `crash.dmp` on hardware is an Xbox property, not an AppContainer one.
+
+**3. The smoke guest reaches exit 42 inside the container**, with 0 unresolved imports, matching `smoke-plain` and
+`smoke-plain-console` (the two controls that separate a console effect from a container effect, since the container
+child is launched detached as a UWP app is).
+
+Runner was Windows 10.0 build **26100** (server SKU); the console is 26100.9445 `xb_flt`, i.e. the same base build.
+What this still cannot cover: package identity, WinRT activation, and Xbox OS policy — a failure here is conclusive that
+behaviour is generic, a pass is not proof the Xbox agrees.
+
 ### FIXED: the host's exit code is the guest's, and `host-win32-smoke` is GREEN
 
 Fixed in `c1e4466`. `host-win32-smoke` on that commit: **`PASS (zero unresolved KERNEL32 imports, guest exit code 42)`**

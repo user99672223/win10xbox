@@ -45,11 +45,10 @@ name: host-win32-appcontainer
 #   2. does dbghelp bind? Evidence: the probe, and the host's "dbghelp.dll bound / could not be bound" startup line.
 #   3. does the guest reach exit code 42 (with 0 unresolved KERNEL32 imports, the assertions of host-win32-smoke)?
 #
-# NON-GATING for now. The run and report steps carry continue-on-error: the job is green whatever the platform did, and
-# the answer is in the log and the summary. TO MAKE IT GATING once a run has been seen to pass: delete the
-# `continue-on-error: true` line of the "Report" step (the report already exits 1 unless smoke-ac had a genuine container
-# provenance, 0 unresolved imports and exit code 42, i.e. the assertions of host-win32-smoke). The build and staging
-# steps are not continue-on-error: if they fail the job is red, as in host-win32-smoke.
+# GATING. The report step fails the job unless smoke-ac has genuine AppContainer provenance, 0 unresolved KERNEL32
+# imports and guest exit code 42. The individual run steps keep continue-on-error so that ALL of them execute and the
+# report can print every measurement side by side; the report is what decides the job. Flipped gating after run
+# 39786498188 on 4e1131f passed. The build and staging steps are not continue-on-error: if they fail the job is red.
 
 on:
   push:
@@ -248,11 +247,13 @@ jobs:
       # ---------------------------------------------------------------------------------------------------------------
       # The report: the three measurements, then the host-win32-smoke assertions applied to the container run.
       # ---------------------------------------------------------------------------------------------------------------
+      # GATING since run 39786498188 on 4e1131f, which passed: smoke-ac reached 0 unresolved KERNEL32 imports and
+      # exit code 42 inside a provenance-checked AppContainer, with GetFinalPathNameByHandleW genuinely refused (error
+      # 5) and no test hook. The report exits 1 unless smoke-ac still has genuine container provenance, 0 unresolved
+      # imports and exit 42.
       - name: Report - measurements and the smoke assertions
         id: report
         shell: bash
-        # NON-GATING. Delete this line to make the report (and with it the job) fail unless smoke-ac passed.
-        continue-on-error: true
         run: |
           # `bash -eo pipefail` by default: the greps below return 1 for "no match", which is an answer, not an error.
           set +e +o pipefail
