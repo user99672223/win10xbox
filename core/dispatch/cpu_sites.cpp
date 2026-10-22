@@ -13,7 +13,7 @@ namespace {
 
 SRWLOCK g_cpu_lock = SRWLOCK_INIT;
 CpuPolicy& Policy_() {
-    NoteHostStateUnderGuestView("dispatch::CpuPolicy");
+    detail::NoteHostStateUnderGuestView("dispatch::CpuPolicy");
     static CpuPolicy p;
     return p;
 }

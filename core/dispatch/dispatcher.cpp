@@ -84,7 +84,18 @@ struct State {
 // makes the compiler reject any future member that would reintroduce dynamic
 // initialisation (and with it a static-initialisation-order dependency).
 constinit State g_state;
-State& S() { return g_state; }
+// Instrumented even though it is now guard-free: reaching ANY host state inside
+// the guest-view window is the bug, and this accessor is the one the crash came
+// through (Host() -> S()), so it is the most valuable place to notice a
+// regression. TestViolateGuestView must not use it -- see g_test_violate_view.
+State& S() {
+    NoteHostStateUnderGuestView("dispatch::S (Host, Lookup, ...)");
+    return g_state;
+}
+
+// Namespace scope and trivially initialised: read from inside the window, so it
+// must not go through S() (which would report itself) or any lazy init.
+bool g_test_violate_view = false;
 
 // The remaining singletons keep their function-local `static` (their types
 // cannot be constant-initialised) and so keep the MSVC init guard. None is
@@ -282,8 +293,24 @@ ThreadState* CurrentThreadState() {
 }
 
 bool GuestViewActive() {
-    const ThreadState* st = CurrentThreadState();
-    return st && (st->flags & kThreadGuestView) != 0;
+    // Deliberately not via CurrentThreadState(): S() calls this on every
+    // syscall, so this skips the cookie check (a diagnostic, not a boundary)
+    // and reads the slot directly. TLS-free, like everything in the window.
+    const std::uint64_t off = win10xbox_thread_slot_offset;
+    if (!off) return false;
+    const std::uint64_t raw = __readgsqword(static_cast<unsigned long>(off));
+    if (!raw || (raw >> kSlotTagShift) != SlotTagOf(raw)) return false;
+    const auto* st = reinterpret_cast<const ThreadState*>(raw & kSlotPtrMask);
+    // depth as well as the flag, and this is not belt and braces: the calls the
+    // window exists for (NtContinue and friends) do NOT return, so
+    // ReenterHostView never runs and the flag stays set for the life of the
+    // thread. depth is what actually distinguishes "the guest is running" from
+    // "we are back in host code": the asm entry stub and HostModeScope both
+    // raise it before any host code runs, and LeaveToGuestView zeroes it. The
+    // flag then keeps a thread that has never left for the guest -- depth is
+    // also 0 during bootstrap, while the host view is still installed -- from
+    // being reported.
+    return st && (st->flags & kThreadGuestView) != 0 && st->depth == 0;
 }
 
 std::uint64_t GuestViewViolations() { return win10xbox_guest_view_violations; }
@@ -325,6 +352,23 @@ void TestClobberThreadSlot(const char* why) {
     *reinterpret_cast<volatile int*>(slot) = 0;   // sizeof(int), like errno
     WARN(dispatch, "WIN10XBOX_TEST_TLS_CLOBBER: TEB.TlsSlots[%lu] %p -> %p, simulating a guest errno store (%s)",
          S().tls_index, reinterpret_cast<void*>(before), reinterpret_cast<void*>(*slot), why);
+}
+
+// WIN10XBOX_TEST_GUEST_VIEW_VIOLATION=1 makes Xl_NtContinue touch host state
+// inside the guest-view window, which is the bug that crashed real Windows at
+// dispatcher.cpp's `static State s;`. mingw's __cxa_guard needs no TLS, so the
+// fault itself is unreachable under Wine -- but the ORDERING is not, and that
+// is what the detector keys on, so this proves the check works on linux-cross.
+// Test hook, latched in Initialize (the guest's environment block replaces the
+// host's during the takeover).
+void TestViolateGuestView() {
+    if (!g_test_violate_view) return;
+    // Both ways host code gets into trouble here: logging (trace::Log takes a
+    // mutex and walks the sinks, two more function-local statics) and reaching
+    // a singleton. The first is dropped and counted by the trace probe, the
+    // second by NoteHostStateUnderGuestView.
+    TRACE(dispatch, "WIN10XBOX_TEST_GUEST_VIEW_VIOLATION: logging inside the guest-view window");
+    ExportCache();   // a function-local static: the exact shape that faults
 }
 
 bool ThreadSlotIntact() {
@@ -551,11 +595,16 @@ NTSTATUS Initialize() {
     // which needs a slot in TEB.TlsSlots[0..63]. Remember which bitmap the host
     // allocator used so ReserveGuestTlsSlot can tell when the guest installs its
     // own (this runs before the PEB take-over).
+    // Lets trace::Log drop (and count) a line emitted inside the guest-view
+    // window instead of faulting on its own statics.
+    trace::SetUnsafeProbe(&GuestViewActive);
     s.host_tls_bitmap = PebField<void*>(peb::TlsBitmap);
     {
         wchar_t v[8];
         const DWORD n = GetEnvironmentVariableW(L"WIN10XBOX_TEST_TLS_CLOBBER", v, 8);
         s.test_clobber_slot = n != 0 && n < 8 && v[0] != L'0';
+        const DWORD g = GetEnvironmentVariableW(L"WIN10XBOX_TEST_GUEST_VIEW_VIOLATION", v, 8);
+        g_test_violate_view = g != 0 && g < 8 && v[0] != L'0';
     }
     s.tls_index = AllocThreadSlot();
     DWORD want = 0;
@@ -702,14 +751,16 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
     // DLL_PROCESS_ATTACH, which is the first thing that could call TlsAlloc.
     // One relaxed load per syscall until it latches.
     if (!s.guest_tls_reserved) ReserveGuestTlsSlot("first guest syscall");
-    if (win10xbox_guest_view_violations) {
+    if (win10xbox_guest_view_violations || trace::DroppedUnsafe()) {
         static volatile LONG view_reported = 0;
         if (!InterlockedExchange(&view_reported, 1)) {
             const char* who = g_guest_view_culprit;
-            ERR(dispatch, "host state reached under the guest TLS view %llu times (last: %s): any thread-local "
-                          "access there faults on MSVC (function-local statics included) -- resolve it before "
-                          "LeaveToGuestView, e.g. via CallInGuestView",
-                static_cast<unsigned long long>(win10xbox_guest_view_violations), who ? who : "?");
+            ERR(dispatch, "host state reached under the guest TLS view %llu times (last: %s), %llu trace lines "
+                          "dropped there: any thread-local access in that window faults on MSVC "
+                          "(function-local statics included) -- resolve it before LeaveToGuestView, "
+                          "e.g. via CallInGuestView",
+                static_cast<unsigned long long>(win10xbox_guest_view_violations), who ? who : "?",
+                static_cast<unsigned long long>(trace::DroppedUnsafe()));
         }
     }
     if (win10xbox_thread_slot_clobbered && !ThreadSlotIntact()) {

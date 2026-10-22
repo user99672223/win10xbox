@@ -138,3 +138,24 @@ win10xbox_guest_tls_test(guest_tls_slot_clobber 42 "+dispatch,+modules" "WIN10XB
 win10xbox_guest_tls_test(guest_tls_reserved_index 42 "+dispatch,+modules" "WIN10XBOX_TEST_TLS_INDEX=16"
   "WIN10XBOX_TEST_TLS_INDEX=16 rejected.*staying on slot [0-9]+"
   "ThreadState in TEB\\.TlsSlots\\[16\\]")
+
+# ---- The guest-view window -------------------------------------------------
+# Between LeaveToGuestView() and the guest resuming, the TEB shows the GUEST's
+# ThreadLocalStoragePointer, which has no block for the host image. Host code
+# touching ANY thread-local there faults -- and under MSVC that includes code
+# with no thread_local in sight, because a function-local `static` emits an init
+# guard that reads _Init_thread_epoch out of the host module's TLS block. That
+# is how `static State s;` in dispatcher.cpp, reached through Host() from
+# Xl_NtContinue, crashed real Windows while this job stayed green: mingw's
+# __cxa_guard touches no TLS, so the FAULT is unreachable under Wine.
+#
+# The ORDERING is reachable under Wine, though, which is what these two gate.
+# This is the only defence linux-cross can offer against this class.
+win10xbox_guest_tls_test(guest_view_clean 42 "+dispatch,+modules" ""
+  "guest entry reached"
+  "host state reached under the guest TLS view")
+
+win10xbox_guest_tls_test(guest_view_violation_detected 42 "+dispatch,+modules"
+  "WIN10XBOX_TEST_GUEST_VIEW_VIOLATION=1"
+  "host state reached under the guest TLS view [0-9]+ times \\(last: dispatch::ExportCache\\), [1-9][0-9]* trace lines dropped"
+  "")

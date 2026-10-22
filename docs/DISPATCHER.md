@@ -75,6 +75,70 @@ without returning (`NtContinue`, `NtContinueEx`, `NtRaiseException`,
 Guest and host therefore keep separate FLS universes; `RtlFls*` is *not*
 forwarded.
 
+### The guest-view window (no host code in here)
+
+`LeaveToGuestView()` installs the **guest's** `ThreadLocalStoragePointer`, and
+the calls it exists for (`NtContinue`, `NtContinueEx`, `NtRaiseException`,
+`NtSetContextThread` on self) do not return. Between the swap and the guest
+resuming, the host image has **no TLS block**, so any host code that touches
+thread-local storage reads through the guest's array and faults on a near-null
+address.
+
+Under MSVC that includes code with no `thread_local` anywhere in it. A
+function-local `static` emits a thread-safe-init guard that reads
+`_Init_thread_epoch` at a small offset inside the host module's TLS block:
+
+```
+mov rax, [rax+rcx*8]   ; TlsArray[__tls_index]  -> NULL, no block for the host image
+mov eax, [rdx+rax]     ; _Init_thread_epoch     -> reads 0x4 / 0x104
+```
+
+That is how `State& S() { static State s; ... }` in `dispatcher.cpp`, reached
+through `Host()` from `Xl_NtContinue`, crashed on real Windows and on the
+console while this repo's Wine job stayed green: **mingw uses `__cxa_guard`,
+which touches no TLS, so the fault is unreachable under Wine.** The same
+instruction bytes (`48 8b 04 c8` / `8b 04 02`) appeared in both reports.
+
+The rule is therefore that the window contains no host code at all:
+
+- Everything a transfer needs is resolved **before** the swap.
+  `CallInGuestView(Host().NtX, ...)` makes the compiler guarantee that, because
+  arguments — the function pointer included — are evaluated before the call. Use
+  it instead of writing the swap out by hand.
+- Only these may run inside it, and they must stay free of TLS, lazy
+  initialisation and logging: `CurrentThreadState`, `SwapIn`/`SwapOut`,
+  `LeaveToGuestView`, `ReenterHostView`, `GuestViewActive`, `core/asm`. That is
+  why `CurrentThreadState` only bumps a counter on a bad slot and leaves the
+  reporting to `win10xbox_dispatch`.
+- `dispatcher.cpp`'s process state is a `constinit` object at **namespace
+  scope**, not a function-local `static`: no guard, no TLS, and the compiler
+  rejects any future member that would need dynamic initialisation. Do not turn
+  it back into a function-local static.
+
+**Detection, which is the part Wine can do.** `LeaveToGuestView` sets
+`kThreadGuestView` in `ThreadState::flags`; `GuestViewActive()` reports the
+window as open while that flag is set *and* `ThreadState::depth` is 0 — depth is
+what distinguishes "the guest is running" from "we are back in host code",
+because the asm entry stub and `HostModeScope` both raise it, and the
+non-returning calls mean the flag alone would never be cleared. The singleton
+accessors in `core/dispatch` call `NoteHostStateUnderGuestView()`, and
+`trace::Log` consults a probe the dispatcher registers so a stray `TRACE` in the
+window is dropped and counted rather than faulting on its own mutex. Neither can
+log from inside the window, so both only count; `win10xbox_dispatch` reports
+them once from the host view, naming the culprit.
+
+`integration.guest_view_clean` asserts zero violations on a normal guest run and
+**fails under Wine if the `LeaveToGuestView()`-then-`Host()` ordering comes
+back**, which is the only defence linux-cross can offer against this class.
+`integration.guest_view_violation_detected` drives
+`WIN10XBOX_TEST_GUEST_VIEW_VIOLATION=1` to prove the detector still works.
+
+`/Zc:threadSafeInit-` would also remove the guard, and is **not** used: it drops
+thread-safe initialisation for every function-local static in `core/`, and
+several of them (`Threads()`, `Objects()`, `ExportCache()`, the `trace`
+singletons) are first touched from guest threads created at arbitrary times, so
+their initialisation is not provably ordered before concurrency.
+
 ### The TLS slot we hold
 
 `ThreadLocalStoragePointer` and `FlsData` are *pointers*, so swapping them gives

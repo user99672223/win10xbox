@@ -28,6 +28,10 @@ std::vector<SinkEntry>& Sinks() { static std::vector<SinkEntry> v; return v; }
 std::mutex& Mutex() { static std::mutex m; return m; }
 std::uint8_t g_default_mask = 0;
 bool g_initialized = false;
+// Trivially initialised on purpose: read on paths where no lazy initialisation
+// may happen (see SetUnsafeProbe in trace.h).
+UnsafeProbe g_unsafe_probe = nullptr;
+volatile std::uint64_t g_dropped_unsafe = 0;
 
 constexpr std::uint8_t Bit(Class c) { return std::uint8_t(1u << std::uint8_t(c)); }
 constexpr std::uint8_t kAllMask = Bit(Class::Fixme) | Bit(Class::Err) | Bit(Class::Warn) | Bit(Class::Trace);
@@ -94,8 +98,17 @@ void AddSink(Sink sink, void* ctx) {
     Sinks().push_back({sink, ctx});
 }
 
+void SetUnsafeProbe(UnsafeProbe probe) { g_unsafe_probe = probe; }
+std::uint64_t DroppedUnsafe() { return g_dropped_unsafe; }
+
 void LogV(const Channel* ch, Class cls, const char* func, const char* fmt, va_list ap) {
     static const char* const kClassName[] = {"fixme", "err", "warn", "trace"};
+    // Before anything with a lazily initialised static (Mutex, Sinks) or a CRT
+    // lock: on this thread, right now, that would fault rather than log.
+    if (UnsafeProbe p = g_unsafe_probe; p && p()) {
+        ++g_dropped_unsafe;
+        return;
+    }
     char line[2048];
     int n = std::snprintf(line, sizeof line, "%04lx:%s:%s:%s ", GetCurrentThreadId(),
                           kClassName[std::uint8_t(cls)], ch->name, func);

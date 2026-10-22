@@ -173,9 +173,15 @@ std::uint64_t GuestViewViolations();
 // on success. Every argument -- including the function pointer, so write it as
 // Host().NtX -- is evaluated before this call, hence before the view switch:
 // that ordering is what keeps the window free of host code.
+// Test hook (WIN10XBOX_TEST_GUEST_VIEW_VIOLATION): touches host state inside
+// the guest-view window so the detector can be proven under Wine. No-op
+// unless the variable is set. Call only from inside the window.
+void TestViolateGuestView();
+
 template <class Fn, class... Args>
 NTSTATUS CallInGuestView(Fn fn, Args... args) {
     const std::uint32_t depth = LeaveToGuestView();
+    TestViolateGuestView();   // no-op unless WIN10XBOX_TEST_GUEST_VIEW_VIOLATION is set
     const NTSTATUS s = fn(args...);
     ReenterHostView(depth);
     return s;

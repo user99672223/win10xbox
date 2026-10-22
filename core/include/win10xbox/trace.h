@@ -35,6 +35,17 @@ void LogV(const Channel* ch, Class cls, const char* func, const char* fmt, va_li
 using Sink = void (*)(const char* line, void* ctx);
 void AddSink(Sink sink, void* ctx);
 
+// Returns true when logging on this thread right now is unsafe. The dispatcher
+// registers one so that a TRACE/WARN/ERR added inside its guest-view window is
+// counted and dropped rather than crashing: Log() takes a mutex and walks the
+// sink list, both function-local statics, whose MSVC init guards read
+// thread-local storage the guest view does not have. DroppedUnsafe() reports
+// how many lines that cost, which the dispatcher logs from a safe point. No
+// probe registered (modules built without the dispatcher) means always safe.
+using UnsafeProbe = bool (*)();
+void SetUnsafeProbe(UnsafeProbe probe);
+std::uint64_t DroppedUnsafe();
+
 }  // namespace win10xbox::trace
 
 #define WIN10XBOX_LOG(ch, cls, ...) \
