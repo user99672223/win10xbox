@@ -279,6 +279,9 @@ objects, DCs, drawing).
 | `NtRaiseHardError` | `err:process: hard error ...` with the string parameters, answers `ResponseOk`. |
 | `NtContinue(Ex)`, `NtRaiseException`, `NtSetContextThread` (self) | switch to the guest TEB view, then pass. |
 | registry `Nt*Key*` | `registry::Reg_Nt*` |
+| `NtOpenKeyTransacted`, `NtOpenKeyTransactedEx` | `registry::Reg_NtOpenKeyTransacted(Ex)`: the transaction handle is traced and ignored, the open is the plain `NtOpenKey(Ex)`. `NtCreateKeyTransacted` is unchanged (`STATUS_NOT_IMPLEMENTED`). |
+| `NtLoadKey2` | `registry::Reg_NtLoadKey2`: `NtLoadKeyEx` with the flags and no trust key, event, access or root handle. |
+| `NtQueryDefaultLocale`, `NtSetDefaultLocale`, `NtQueryDefaultUILanguage`, `NtSetDefaultUILanguage` | `nt_nls.cpp` locale state: set stores, query answers, nothing on the host changes. Starts at en-US (0x0409). Zero LCID or LANGID is `STATUS_INVALID_PARAMETER`. |
 | token `Nt*Token*`, `NtAccessCheck`, `NtPrivilegeCheck`, `NtQuerySecurityObject` (token handles) | `token::Tok_Nt*` |
 | `NtQueryPerformanceCounter`, `NtQuerySystemTime`, `NtSetSystemTime`, `NtDelayExecution`, `Nt{Query,Set}TimerResolution` | `clock::Clk_Nt*` |
 

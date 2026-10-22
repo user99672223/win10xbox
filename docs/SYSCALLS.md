@@ -5,7 +5,7 @@ Windows 10 x64 / 22H2 NT syscall numbers) and the hand-maintained policy
 `core/dispatch/syscall_policy.inc`; win32u entries (ids 0x1000..) are Emulate when
 `core/user/user_syscalls.h` registers them. Do not edit by hand.
 
-1798 syscalls. passthrough 157, translate 32, emulate 282, todo 1327. Generated 2026-10-22.
+1798 syscalls. passthrough 155, translate 32, emulate 289, todo 1322. Generated 2026-10-22.
 
 Policy: **PassThrough** calls the host ntdll export by name; **Translate**
 rewrites arguments (paths, handles, timeouts) then passes through;
@@ -35,7 +35,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0012 | NtOpenKey | 3 | Emulate | registry |
 | 0x0013 | NtEnumerateValueKey | 6 | Emulate | registry |
 | 0x0014 | NtFindAtom | 3 | PassThrough |  |
-| 0x0015 | NtQueryDefaultLocale | 2 | PassThrough |  |
+| 0x0015 | NtQueryDefaultLocale | 2 | Emulate | locale state of the layer |
 | 0x0016 | NtQueryKey | 5 | Emulate | registry |
 | 0x0017 | NtQueryValueKey | 6 | Emulate | registry |
 | 0x0018 | NtAllocateVirtualMemory | 6 | PassThrough |  |
@@ -82,7 +82,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0041 | NtAdjustPrivilegesToken | 6 | Emulate | token |
 | 0x0042 | NtDuplicateToken | 6 | Emulate | token |
 | 0x0043 | NtContinue | 2 | Translate | TEB switched back to the guest view before the host call (never returns) |
-| 0x0044 | NtQueryDefaultUILanguage | 1 | PassThrough |  |
+| 0x0044 | NtQueryDefaultUILanguage | 1 | Emulate | locale state of the layer |
 | 0x0045 | NtQueueApcThread | 5 | PassThrough |  |
 | 0x0046 | NtYieldExecution | 0 | PassThrough |  |
 | 0x0047 | NtAddAtom | 3 | PassThrough |  |
@@ -177,7 +177,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x00a0 | NtListenPort | 2 | PassThrough |  |
 | 0x00a1 | NtLoadDriver | 1 | Todo | driver host (M4) |
 | 0x00a2 | NtLoadKey | 2 | Emulate | registry |
-| 0x00a3 | NtLoadKey2 | 3 | Todo | registry |
+| 0x00a3 | NtLoadKey2 | 3 | Emulate | registry |
 | 0x00a4 | NtLoadKeyEx | 8 | Emulate | registry |
 | 0x00a5 | NtLockFile | 10 | Translate | Wine's kernelbase passes IoStatusBlock NULL, which Windows rejects with an access violation (Wine hosts want NULL) |
 | 0x00a6 | NtCreateDebugObject | 4 | Todo | debugging the guest is not supported |
@@ -191,8 +191,8 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x00ae | NtOpenIoCompletion | 3 | PassThrough |  |
 | 0x00af | NtOpenJobObject | 3 | PassThrough |  |
 | 0x00b0 | NtOpenKeyEx | 4 | Emulate | registry |
-| 0x00b1 | NtOpenKeyTransacted | 4 | Todo | registry |
-| 0x00b2 | NtOpenKeyTransactedEx | 5 | Todo | registry |
+| 0x00b1 | NtOpenKeyTransacted | 4 | Emulate | registry (transaction ignored) |
+| 0x00b2 | NtOpenKeyTransactedEx | 5 | Emulate | registry (transaction ignored) |
 | 0x00b3 | NtOpenKeyedEvent | 3 | PassThrough |  |
 | 0x00b4 | NtOpenMutant | 3 | PassThrough |  |
 | 0x00b5 | NtOpenProcessToken | 3 | Emulate | token |
@@ -238,8 +238,8 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x00dd | NtSecureConnectPort | 9 | PassThrough |  |
 | 0x00de | NtSetContextThread | 2 | Translate | TEB switched back to the guest view when targeting the current thread |
 | 0x00df | NtSetDebugFilterState | 3 | PassThrough |  |
-| 0x00e0 | NtSetDefaultLocale | 2 | Todo | would change the host user's locale |
-| 0x00e1 | NtSetDefaultUILanguage | 1 | Todo | would change the host user's UI language |
+| 0x00e0 | NtSetDefaultLocale | 2 | Emulate | locale state of the layer |
+| 0x00e1 | NtSetDefaultUILanguage | 1 | Emulate | locale state of the layer |
 | 0x00e2 | NtSetEaFile | 4 | PassThrough |  |
 | 0x00e3 | NtSetInformationDebugObject | 5 | PassThrough |  |
 | 0x00e4 | NtSetInformationJobObject | 4 | PassThrough |  |
