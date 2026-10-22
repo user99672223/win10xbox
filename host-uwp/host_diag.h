@@ -4,6 +4,13 @@
 // leaves nothing but a closed window, so these files are the only way to know
 // what happened on a console.
 //
+// This module and the crash capture of crash.h (crash.txt, crash.dmp, entry-reached.txt and
+// the one-line crash summaries) work side by side; host_shell.h says how the shell wires the
+// capture in. They meet in three places, all implemented here:
+//   * trace.log: the capture borrows the log's handle (LogHandle) for its summaries;
+//   * the unhandled-exception filter: InstallCrashFilter chains to the capture's;
+//   * status.txt: Report::Flush() also hands the text to the capture (SetCrashSnapshot).
+//
 // PEB note: process::Launch lets the guest take over PEB fields (loader lists,
 // process parameters, loader lock) while it runs, and shell-side threads are
 // not guarded against that (README.md, "Known limits"). Everything in the
@@ -26,10 +33,23 @@ namespace w10x_uwp
 namespace diag
 {
     // ---- trace.log -------------------------------------------------------
-    // Creates (truncates) the log. max_bytes == 0 means unlimited.
+    // Creates (truncates) the log. max_bytes == 0 means unlimited. Calling it again for the
+    // file that is already open (same path) keeps the open handle and what was written to it,
+    // and only sets the cap: the shell opens the log before the worker exists (see LogHandle),
+    // and the worker's call must not replace the handle the crash capture holds.
     bool OpenLog(const std::wstring& path, std::uint64_t max_bytes);
     void SetLogCap(std::uint64_t max_bytes);
+    // Flushes and closes the log. The crash capture is detached from the handle first.
     void CloseLog();
+
+    // The open log's handle, for the crash capture (crash.h) to borrow. InstallCrashCapture
+    // keeps a copy of the handle value and appends its one-line crash summaries through it with
+    // raw WriteFile, and it cannot be given another handle later. So: open the log first, then
+    // install the capture with LogHandle(). The copy stays valid because this module never
+    // closes the handle without calling DetachCrashTraceLog() first (CloseLog, and an OpenLog
+    // that has to replace the file) and OpenLog on the same path keeps it. The handle stays
+    // owned by this module: do not close it. INVALID_HANDLE_VALUE when no log is open.
+    HANDLE LogHandle();
 
     // "HH:MM:SS.mmm host: <text>\n". Safe on every thread.
     void Line(const char* fmt, ...);
@@ -50,7 +70,8 @@ namespace diag
 
         void Set(const std::string& key, const std::string& value);
         void SetVerdict(const std::string& verdict);
-        // Rewrites the file and refreshes the crash recorder's snapshot.
+        // Rewrites the file and refreshes the crash recorder's snapshot (this module's own, and
+        // the crash capture's, which crash.txt quotes).
         void Flush();
 
         // Keeps status.txt open so that Flush() rewrites it in place through the
@@ -69,8 +90,15 @@ namespace diag
     };
 
     // ---- crash recorder --------------------------------------------------
-    // Records an unhandled host exception in trace.log and status.txt
-    // (preceded by the last status snapshot), then lets the OS continue.
+    // Installs the unhandled-exception filter of the host. It CHAINS to the filter that was
+    // installed before it (the crash capture's, which the shell installs first thing: crash.txt
+    // gets the UNHANDLED record, crash.dmp the dump, trace.log the one-line summary), then
+    // rewrites status.txt as "RESULT: FAIL (the host process crashed)" followed by the last
+    // status snapshot, and lets the OS continue. The order and the reasons are in host_diag.cpp.
+    // Call it after the capture was installed, or there is nothing to chain to.
     void InstallCrashFilter(const std::wstring& status_path);
+
+    // True once InstallCrashFilter found a filter installed before it and chains to it.
+    bool CrashFilterChained();
 }  // namespace diag
 }  // namespace w10x_uwp

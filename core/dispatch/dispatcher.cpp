@@ -18,6 +18,10 @@ WIN10XBOX_DECLARE_CHANNEL(process);
 extern "C" {
 // TEB offset of our TLS slot (0 = view switching disabled). Read by core/asm.
 std::uint64_t win10xbox_thread_slot_offset = 0;
+// Incremented (lock inc) by core/asm every time TEB.TlsSlots[tls_index] held a
+// value that is not one of our ThreadStates. Never expected to be non-zero;
+// win10xbox_dispatch reports the first one on the dispatch channel.
+std::uint64_t win10xbox_thread_slot_clobbered = 0;
 void win10xbox_syscall_entry();
 }
 
@@ -57,6 +61,8 @@ struct State {
     HMODULE host_ntdll = nullptr;
     HostNt host{};
     DWORD tls_index = TLS_OUT_OF_INDEXES;
+    void* host_tls_bitmap = nullptr;   // PEB.TlsBitmap before the takeover (host ntdll's)
+    LONG guest_tls_reserved = 0;       // ReserveGuestTlsSlot has run
     LARGE_INTEGER qpf{};
 };
 State& S() { static State s; return s; }
@@ -109,6 +115,96 @@ void SwapOut(ThreadState* st) {
     __writegsqword(teb::FlsData, st->guest_fls);
 }
 
+// TEB.TlsSlots index for our ThreadState. Both allocators hand out the lowest
+// clear bit in PEB.TlsBitmap, and Wine's loader_init additionally claims a few
+// indices by fiat (SlotUsable in internal.h), so take indices until we reach one
+// at or above kPreferredSlot, keep the highest usable one and give the rest
+// back. Everything we hold is released before we return, so this costs the
+// process nothing but cannot be handed the same unusable index twice.
+DWORD AllocThreadSlot() {
+    DWORD taken[teb::TlsSlotCount];
+    unsigned n = 0;
+    while (n < teb::TlsSlotCount) {
+        DWORD i = TlsAlloc();
+        if (i == TLS_OUT_OF_INDEXES) break;
+        if (i >= teb::TlsSlotCount) { TlsFree(i); break; }   // no asm fast path above 63
+        taken[n++] = i;
+        if (i >= kPreferredSlot) break;
+    }
+    DWORD keep = TLS_OUT_OF_INDEXES;
+    for (unsigned k = 0; k < n; ++k)
+        if (SlotUsable(taken[k]) && (keep == TLS_OUT_OF_INDEXES || taken[k] > keep)) keep = taken[k];
+    for (unsigned k = 0; k < n; ++k)
+        if (taken[k] != keep) TlsFree(taken[k]);
+    return keep;
+}
+
+// WIN10XBOX_TEST_TLS_INDEX=<n> makes Initialize use TEB.TlsSlots[n] instead of
+// the one TlsAlloc hands out, so a Wine/desktop-Windows run can exercise an
+// index that only a real-Windows host would ever be given. The collision this
+// guards against is impossible to reach by luck under Wine: there the host ntdll
+// IS Wine's, so its loader_init reserved index NTDLL_TLS_ERRNO (16) long before
+// our TlsAlloc ran and TlsAlloc can never return it. Same shape as
+// WIN10XBOX_TEST_NO_HOST_PATHS in nt_file.cpp. Test hook.
+//   WIN10XBOX_TEST_TLS_INDEX=16   request 16; the SlotUsable guard relocates it
+//   WIN10XBOX_TEST_TLS_INDEX=!16  force 16 past the guard (reproduces the bug)
+bool TestSlotOverride(DWORD* index, bool* force) {
+    wchar_t v[16];
+    const DWORD n = GetEnvironmentVariableW(L"WIN10XBOX_TEST_TLS_INDEX", v, 16);
+    if (!n || n >= 16) return false;
+    const wchar_t* p = v;
+    *force = (*p == L'!');
+    if (*force) ++p;
+    DWORD parsed = 0;
+    if (!*p) return false;
+    for (; *p; ++p) {
+        if (*p < L'0' || *p > L'9') return false;
+        parsed = parsed * 10 + static_cast<DWORD>(*p - L'0');
+    }
+    if (parsed >= teb::TlsSlotCount) return false;   // never breaks the asm fast path
+    *index = parsed;
+    return true;
+}
+
+// ---- The tagged TEB slot ----------------------------------------------------
+// What we store in TEB.TlsSlots[tls_index] is not the bare ThreadState pointer
+// but the pointer with a tag in bits 48..63, which are always zero in an x64
+// user-mode address. The tag is a function of bits 16..30 OF THE POINTER
+// ITSELF, so it is redundant information rather than a constant cookie, and
+// that is the point: Wine's _errno() hands out &TEB.TlsSlots[16] as the storage
+// for an `int` (wine-src/dlls/ntdll/thread.c:445), so a collision clobbers only
+// the LOW 32 BITS of the slot. The surviving value is neither NULL nor a clean
+// sentinel, which is exactly why the plain `test rbx,rbx` in core/asm never
+// caught it. A 4-byte write to the low dword changes bits 16..30 while leaving
+// the tag alone, so the two stop agreeing and we detect it ARITHMETICALLY,
+// before dereferencing anything. A full 8-byte foreign pointer leaves bits
+// 48..63 clear, while a valid tag always has bit 15 set, so that is caught too.
+constexpr std::uint64_t kSlotTagShift = 48;
+constexpr std::uint64_t kSlotPtrMask = (1ull << kSlotTagShift) - 1;
+
+// The tag bits 48..63 must hold for the slot to be ours. Bit 15 is forced so a
+// zero tag field can never validate.
+constexpr std::uint64_t SlotTagOf(std::uint64_t v) { return 0x8000ull | ((v >> 16) & 0x7FFFull); }
+
+std::uint64_t TagSlot(const ThreadState* st) {
+    const auto p = reinterpret_cast<std::uint64_t>(st);
+    return p | (SlotTagOf(p) << kSlotTagShift);
+}
+
+// Mirrored instruction for instruction by the view-switch block in BOTH
+// core/asm twins, except for the ThreadState::magic check, which only this side
+// makes (the asm validates the pointer; the cookie additionally rejects a stale
+// pointer to a ThreadState that has already been detached).
+ThreadState* ValidateSlot(std::uint64_t raw) {
+    if (!raw) return nullptr;
+    if ((raw >> kSlotTagShift) != SlotTagOf(raw)) return nullptr;
+    const std::uint64_t p = raw & kSlotPtrMask;
+    if (!p) return nullptr;
+    auto* st = reinterpret_cast<ThreadState*>(p);
+    if (st->magic != kThreadStateMagic) return nullptr;
+    return st;
+}
+
 void AppendArg(std::string& out, std::uint64_t v) {
     char buf[24];
     if (v <= 0xffffffffull) std::snprintf(buf, sizeof buf, "%08llx", static_cast<unsigned long long>(v));
@@ -134,20 +230,82 @@ std::uint32_t NargsOverride(const char* name) {
 
 ThreadState* CurrentThreadState() {
     std::uint64_t off = win10xbox_thread_slot_offset;
-    return off ? reinterpret_cast<ThreadState*>(__readgsqword(static_cast<unsigned long>(off))) : nullptr;
+    if (!off) return nullptr;
+    const std::uint64_t raw = __readgsqword(static_cast<unsigned long>(off));
+    ThreadState* st = ValidateSlot(raw);
+    if (!st && raw) {
+        // Someone else owns TEB.TlsSlots[tls_index] now. Running on a foreign
+        // pointer would write its contents into the TEB, so treat the thread as
+        // having no state and make the breakage visible instead.
+        InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(&win10xbox_thread_slot_clobbered));
+        ERR(dispatch, "TEB.TlsSlots[%lu] holds %p, not our ThreadState: TEB view switching off on thread %04lx",
+            S().tls_index, reinterpret_cast<void*>(raw), GetCurrentThreadId());
+    }
+    return st;
+}
+
+DWORD ThreadSlotIndex() { return S().tls_index; }
+std::uint64_t ThreadSlotClobbers() { return win10xbox_thread_slot_clobbered; }
+
+bool ThreadSlotIntact() {
+    const std::uint64_t off = win10xbox_thread_slot_offset;
+    return off && ValidateSlot(__readgsqword(static_cast<unsigned long>(off))) != nullptr;
+}
+
+void ReserveGuestTlsSlot(const char* why) {
+    State& s = S();
+    if (s.tls_index >= teb::TlsSlotCount) return;                    // nothing to protect
+    void* bm = PebField<void*>(peb::TlsBitmap);
+    // Until Wine's loader_init has installed its own RTL_BITMAP there is no
+    // guest allocator yet; stay unlatched and look again on the next call.
+    if (!bm || bm == s.host_tls_bitmap) return;
+    if (InterlockedCompareExchange(&s.guest_tls_reserved, 1, 0) != 0) return;
+    // RTL_BITMAP { ULONG SizeOfBitMap; ULONG *Buffer; } (x64: Buffer at +8)
+    const std::uint32_t size = *static_cast<std::uint32_t*>(bm);
+    auto* buffer = *reinterpret_cast<std::uint32_t**>(static_cast<std::uint8_t*>(bm) + 8);
+    const auto* own_bits = reinterpret_cast<const std::uint32_t*>(CurrentPeb() + peb::TlsBitmapBits);
+    if (!buffer || s.tls_index >= size) {
+        ERR(dispatch, "guest TLS bitmap at %p unusable (size %lu, buffer %p): slot %lu NOT reserved (%s)", bm,
+            static_cast<unsigned long>(size), static_cast<void*>(buffer), s.tls_index, why);
+        return;
+    }
+    const std::uint32_t word = s.tls_index / 32, bit = 1u << (s.tls_index % 32);
+    const bool already = (buffer[word] & bit) != 0;
+    if (!already)
+        InterlockedOr(reinterpret_cast<volatile LONG*>(&buffer[word]), static_cast<LONG>(bit));
+    // "already set" means the guest's bitmap is backed by PEB.TlsBitmapBits and
+    // therefore shares our host allocator's bits; "was clear" means it does not,
+    // and this call is what keeps the guest from re-handing-out our slot.
+    if (already)
+        TRACE(dispatch, "guest TLS bitmap %p (bits %p, PEB.TlsBitmapBits %p, %lu slots): slot %lu already in use, "
+                        "allocators share the PEB bits (%s)", bm, static_cast<void*>(buffer),
+              static_cast<const void*>(own_bits), static_cast<unsigned long>(size), s.tls_index, why);
+    else
+        WARN(dispatch, "guest TLS bitmap %p (bits %p, PEB.TlsBitmapBits %p) did NOT have slot %lu marked in use: "
+                       "reserved it now, the guest allocator would have handed it out (%s)", bm,
+             static_cast<void*>(buffer), static_cast<const void*>(own_bits), s.tls_index, why);
 }
 
 ThreadState* AttachThreadState(std::uint32_t flags) {
     if (ThreadState* st = CurrentThreadState()) { st->flags |= flags; return st; }
     if (S().tls_index == TLS_OUT_OF_INDEXES) return nullptr;
     auto* st = new ThreadState{};
+    if ((reinterpret_cast<std::uint64_t>(st) >> kSlotTagShift) != 0) {
+        // Not reachable with x64 user-mode addresses; refuse rather than store a
+        // pointer the slot tag cannot protect.
+        ERR(dispatch, "ThreadState at %p has bits 48..63 set: TEB view switching off on thread %04lx", st,
+            GetCurrentThreadId());
+        delete st;
+        return nullptr;
+    }
     st->host_tls = st->guest_tls = __readgsqword(teb::ThreadLocalStoragePointer);
     st->host_fls = st->guest_fls = __readgsqword(teb::FlsData);
     st->flags = flags;
     st->tid = GetCurrentThreadId();
+    st->magic = kThreadStateMagic;   // before the TEB slot points at it
     DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &st->thread, 0, FALSE,
                     DUPLICATE_SAME_ACCESS);
-    TlsSetValue(S().tls_index, st);
+    TlsSetValue(S().tls_index, reinterpret_cast<void*>(TagSlot(st)));
     AcquireSRWLockExclusive(&g_threads_lock);
     Threads().push_back(st);
     ReleaseSRWLockExclusive(&g_threads_lock);
@@ -162,6 +320,7 @@ void DetachThreadState() {
     v.erase(std::remove(v.begin(), v.end(), st), v.end());
     ReleaseSRWLockExclusive(&g_threads_lock);
     TlsSetValue(S().tls_index, nullptr);
+    st->magic = 0;   // a stale pointer to freed memory must not validate
     if (st->thread) CloseHandle(st->thread);
     delete st;
 }
@@ -295,12 +454,41 @@ NTSTATUS Initialize() {
     }
 
     // TLS slot for ThreadState; core/asm reads it through the TEB directly,
-    // which needs a slot in TEB.TlsSlots[0..63].
-    s.tls_index = TlsAlloc();
-    if (s.tls_index != TLS_OUT_OF_INDEXES && s.tls_index < 64)
+    // which needs a slot in TEB.TlsSlots[0..63]. Remember which bitmap the host
+    // allocator used so ReserveGuestTlsSlot can tell when the guest installs its
+    // own (this runs before the PEB take-over).
+    s.host_tls_bitmap = PebField<void*>(peb::TlsBitmap);
+    s.tls_index = AllocThreadSlot();
+    DWORD want = 0;
+    bool force = false;
+    if (TestSlotOverride(&want, &force)) {
+        if (force) {
+            WARN(dispatch, "WIN10XBOX_TEST_TLS_INDEX=!%lu: forcing TEB.TlsSlots[%lu] past the safety guard "
+                           "(test hook; %s)", want, want,
+                 SlotUsable(want) ? "index is safe anyway" : "index is one Wine claims by fiat");
+            s.tls_index = want;
+        } else if (SlotUsable(want)) {
+            TRACE(dispatch, "WIN10XBOX_TEST_TLS_INDEX=%lu: using TEB.TlsSlots[%lu] (test hook)", want, want);
+            s.tls_index = want;
+        } else {
+            WARN(dispatch, "WIN10XBOX_TEST_TLS_INDEX=%lu rejected: Wine's ntdll claims that slot by fiat "
+                           "(0 reserved, %lu = NTDLL_TLS_ERRNO); staying on slot %lu", want, kWineErrnoSlot,
+                 s.tls_index);
+        }
+    }
+    if (s.tls_index != TLS_OUT_OF_INDEXES && s.tls_index < teb::TlsSlotCount) {
         win10xbox_thread_slot_offset = teb::TlsSlots + 8ull * s.tls_index;
-    else
+        // Logged unconditionally: which index we hold is the first thing needed
+        // to diagnose a TEB.TlsSlots collision, and it is not recoverable from
+        // anywhere else in a host log or console trace.
+        TRACE(dispatch, "ThreadState in TEB.TlsSlots[%lu] (TEB+%#llx)%s%s; PEB.TlsBitmap=%p", s.tls_index,
+              static_cast<unsigned long long>(win10xbox_thread_slot_offset),
+              s.tls_index < kPreferredSlot ? ", below the preferred slot " "19" : "",
+              SlotUsable(s.tls_index) ? "" : " -- UNSAFE: Wine's ntdll claims this slot by fiat",
+              s.host_tls_bitmap);
+    } else {
         ERR(dispatch, "TLS slot %lu unusable: guest/host TEB view switching disabled", s.tls_index);
+    }
 
     s.initialized = true;
     ReleaseSRWLockExclusive(&s.lock);
@@ -409,6 +597,19 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
     const unsigned long last_error = __readgsdword(teb::LastErrorValue);
     const unsigned long last_status = __readgsdword(teb::LastStatusValue);
     State& s = S();
+    // The guest's loader_init installs its own PEB.TlsBitmap before it makes
+    // its first syscall, so this is the earliest point at which our slot can be
+    // reserved against the guest's allocator -- ahead of any guest DLL's
+    // DLL_PROCESS_ATTACH, which is the first thing that could call TlsAlloc.
+    // One relaxed load per syscall until it latches.
+    if (!s.guest_tls_reserved) ReserveGuestTlsSlot("first guest syscall");
+    if (win10xbox_thread_slot_clobbered) {
+        static volatile LONG reported = 0;
+        if (!InterlockedExchange(&reported, 1))
+            ERR(dispatch, "TEB.TlsSlots[%lu] was overwritten by the guest (%llu times): TEB view switching is off, "
+                          "host code is running on the guest's TLS pointer", s.tls_index,
+                static_cast<unsigned long long>(win10xbox_thread_slot_clobbered));
+    }
     Entry* e = f->id < kMaxId ? s.by_id[f->id] : nullptr;
     if (!e) {
         FIXME(dispatch, "unknown syscall id %#x (ret=%p)", f->id, reinterpret_cast<void*>(f->return_address));

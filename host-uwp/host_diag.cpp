@@ -1,15 +1,19 @@
 // host_diag.cpp - see host_diag.h. The trace sink, the line logger, the report
 // and the crash filter are lifted from host-uwp-lite/smoke.cpp; the additions are
 // the log size cap, a lock that makes closing the log safe against late
-// writers, and a thread-safe Report.
+// writers, a thread-safe Report, and the points where this module meets the crash
+// capture of crash.h: the log handle it borrows, the status text it quotes and
+// the unhandled-exception filter this module's one is chained to.
 #include "host_diag.h"
 
+#include "crash.h"
 #include "host_util.h"
 
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <cwchar>
 
 namespace w10x_uwp
 {
@@ -19,6 +23,7 @@ namespace
 {
     SRWLOCK g_log_lock = SRWLOCK_INIT;      // shared: writers; exclusive: open/close
     HANDLE g_log = INVALID_HANDLE_VALUE;
+    wchar_t g_log_path[1024];               // the file g_log is open on (exclusive lock)
     std::atomic<std::uint64_t> g_log_bytes{0};
     std::atomic<std::uint64_t> g_log_cap{0};
     std::atomic<bool> g_log_capped{false};
@@ -57,16 +62,42 @@ namespace
 
 bool OpenLog(const std::wstring& path, std::uint64_t max_bytes)
 {
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
     AcquireSRWLockExclusive(&g_log_lock);
-    if (g_log != INVALID_HANDLE_VALUE) CloseHandle(g_log);
-    g_log = h;
-    g_log_bytes.store(0);
+    bool ok = true;
+    if (g_log != INVALID_HANDLE_VALUE && std::wcscmp(g_log_path, path.c_str()) == 0)
+    {
+        // Already open on this very file. The shell opens trace.log BEFORE it installs the crash
+        // capture, because the capture keeps a copy of the handle value (LogHandle) and cannot be
+        // given another one later; closing and reopening here would leave it with a dead handle.
+        // So the handle and what was written to it stay; only the cap is taken over.
+    }
+    else
+    {
+        HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (g_log != INVALID_HANDLE_VALUE)
+        {
+            uwp_lite::DetachCrashTraceLog();   // the capture may hold the old handle: it must not outlive it
+            CloseHandle(g_log);
+        }
+        g_log = h;
+        g_log_path[0] = 0;
+        if (h != INVALID_HANDLE_VALUE) lstrcpynW(g_log_path, path.c_str(), static_cast<int>(sizeof g_log_path / sizeof(wchar_t)));
+        g_log_bytes.store(0);
+        g_log_capped.store(false);
+        ok = h != INVALID_HANDLE_VALUE;
+    }
     g_log_cap.store(max_bytes);
-    g_log_capped.store(false);
     ReleaseSRWLockExclusive(&g_log_lock);
-    return h != INVALID_HANDLE_VALUE;
+    return ok;
+}
+
+HANDLE LogHandle()
+{
+    AcquireSRWLockShared(&g_log_lock);
+    const HANDLE h = g_log;
+    ReleaseSRWLockShared(&g_log_lock);
+    return h;
 }
 
 void SetLogCap(std::uint64_t max_bytes)
@@ -79,9 +110,11 @@ void CloseLog()
     AcquireSRWLockExclusive(&g_log_lock);
     if (g_log != INVALID_HANDLE_VALUE)
     {
+        uwp_lite::DetachCrashTraceLog();   // first: the capture may hold this handle (see LogHandle)
         FlushFileBuffers(g_log);
         CloseHandle(g_log);
         g_log = INVALID_HANDLE_VALUE;
+        g_log_path[0] = 0;
     }
     ReleaseSRWLockExclusive(&g_log_lock);
 }
@@ -157,6 +190,7 @@ void Report::Flush()
     for (const auto& kv : kv_) text += kv.first + "=" + kv.second + "\n";
     g_snapshot_len = text.size() < sizeof g_snapshot ? text.size() : sizeof g_snapshot;
     std::memcpy(g_snapshot, text.data(), g_snapshot_len);
+    uwp_lite::SetCrashSnapshot(text.data(), text.size());   // crash.txt quotes the latest text as well (crash.h)
 
     if (held_ != INVALID_HANDLE_VALUE)
     {
@@ -215,10 +249,46 @@ namespace
         return p;
     }
 
+    // The unhandled-exception filter that was installed before ours: the crash capture's
+    // (crash.cpp), which the shell installs first thing, or nullptr. SetUnhandledExceptionFilter
+    // keeps ONE filter, so installing ours without remembering it turns the capture's off: no
+    // UNHANDLED record in crash.txt, no dump for the exception that ends the process, no line
+    // in trace.log.
+    std::atomic<LPTOP_LEVEL_EXCEPTION_FILTER> g_capture_filter{nullptr};
+
+    // The host's top-level filter. It runs the crash capture's filter FIRST and its own report
+    // SECOND. Both always run, and the order is deliberate:
+    //
+    //  * The capture is the hardened one. With little stack left (a stack overflow) it hands its
+    //    whole report to a thread of its own, and on a guest thread it first puts the host's
+    //    TLS/FLS back. Anything that ran before it could use up the few KiB of stack that are
+    //    left, or hang, and then crash.txt would not be written at all. Whatever happens in the
+    //    best-effort part below, the capture has already done its work.
+    //  * The capture writes its crash.txt record and its trace.log line BEFORE its slow step, the
+    //    minidump (it suspends every other thread and can take seconds). So only the report below
+    //    waits for the dump. That report is the rewrite of status.txt, and it is the one the capture
+    //    cannot do while the guest runs: Report::HoldOpen() keeps status.txt open for writing and
+    //    the capture reopens it with FILE_SHARE_READ only (a sharing violation). Only this module
+    //    also has the text for it (the Report's snapshot). It runs last, so its status.txt is the
+    //    one that stays.
+    //  * Nothing is written twice. crash.txt, the dump and the trace.log line come from the capture
+    //    alone, so this filter writes the trace.log line itself only when it has no capture to
+    //    chain to. status.txt is replaced by each writer, never appended to.
+    //  * The guard makes the body run once per process and never nested. A fault inside the capture
+    //    (or in the code below) re-enters this filter on the same thread; chaining again would make
+    //    the capture's retry loop (200 x 10 ms for its g_busy lock) wait for a lock that very thread
+    //    still holds. A second thread dying while the first one reports is skipped too: the first
+    //    report is the one that matters, and the capture's vectored handler has recorded the rest.
+    //  * The result is the capture's (EXCEPTION_CONTINUE_SEARCH: the OS goes on and ends the
+    //    process), as it was before this filter chained to it.
     LONG WINAPI CrashFilter(EXCEPTION_POINTERS* ep)
     {
-        if (InterlockedExchange(&g_in_crash, 1) != 0 || ep == nullptr || ep->ExceptionRecord == nullptr)
-            return EXCEPTION_CONTINUE_SEARCH;
+        if (InterlockedExchange(&g_in_crash, 1) != 0) return EXCEPTION_CONTINUE_SEARCH;
+
+        const LPTOP_LEVEL_EXCEPTION_FILTER capture = g_capture_filter.load();
+        const LONG verdict = capture != nullptr ? capture(ep) : EXCEPTION_CONTINUE_SEARCH;
+
+        if (ep == nullptr || ep->ExceptionRecord == nullptr) return verdict;
         char line[768];
         char* p = line;
         const EXCEPTION_RECORD* er = ep->ExceptionRecord;
@@ -251,9 +321,10 @@ namespace
             p = PutHex(p, c->Rdx, 16);
         }
         *p++ = '\n';
-        // The log handle is read without the lock on purpose: this may run on a
-        // thread that holds it.
-        if (g_log != INVALID_HANDLE_VALUE) WriteAll(g_log, line, static_cast<std::size_t>(p - line));
+        // trace.log: a chained capture has written the same line itself (it borrows the log handle,
+        // see LogHandle), so this one is for the case without a capture. The log handle is read
+        // without the lock on purpose: this may run on a thread that holds it.
+        if (capture == nullptr && g_log != INVALID_HANDLE_VALUE) WriteAll(g_log, line, static_cast<std::size_t>(p - line));
         if (g_crash_status_path[0] != 0)
         {
             HANDLE h = CreateFileW(g_crash_status_path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
@@ -263,20 +334,38 @@ namespace
                 static const char kHead[] = "RESULT: FAIL (the host process crashed)\n";
                 WriteAll(h, kHead, sizeof kHead - 1);
                 WriteAll(h, line, static_cast<std::size_t>(p - line));
+                if (capture != nullptr)
+                {
+                    // The capture is done by now, the dump included.
+                    static const char kFiles[] =
+                        "crash records: crash.txt; minidump: crash.dmp (when that file exists, it is complete)\n";
+                    WriteAll(h, kFiles, sizeof kFiles - 1);
+                }
                 static const char kTail[] = "--- state before the crash ---\n";
                 WriteAll(h, kTail, sizeof kTail - 1);
                 WriteAll(h, g_snapshot, g_snapshot_len);
                 CloseHandle(h);
             }
         }
-        return EXCEPTION_CONTINUE_SEARCH;
+        return verdict;
     }
 }  // namespace
 
 void InstallCrashFilter(const std::wstring& status_path)
 {
     lstrcpynW(g_crash_status_path, status_path.c_str(), static_cast<int>(sizeof g_crash_status_path / sizeof(wchar_t)));
-    SetUnhandledExceptionFilter(&CrashFilter);
+    // Keep what SetUnhandledExceptionFilter returns: the filter installed before ours (see
+    // CrashFilter). Installed twice, the "previous" one would be ours: never chain to ourselves.
+    // (Between the two statements an unhandled exception on another thread would see no chain;
+    // that is a few instructions at the start of the worker, and the capture's vectored handler
+    // is not affected.)
+    const LPTOP_LEVEL_EXCEPTION_FILTER previous = SetUnhandledExceptionFilter(&CrashFilter);
+    if (previous != &CrashFilter) g_capture_filter.store(previous);
+}
+
+bool CrashFilterChained()
+{
+    return g_capture_filter.load() != nullptr;
 }
 
 }  // namespace diag

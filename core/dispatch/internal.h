@@ -63,6 +63,12 @@ constexpr std::uint32_t LastErrorValue            = 0x68;
 constexpr std::uint32_t LastStatusValue           = 0x1250;
 constexpr std::uint32_t TlsSlots                  = 0x1480;
 constexpr std::uint32_t FlsData                   = 0x17C8;
+// TEB.TlsSlots is an INLINE array of this many pointers, not a pointer to an
+// array: unlike ThreadLocalStoragePointer and FlsData (both swapped per view by
+// SwapIn/SwapOut below), it cannot be given a separate host and guest copy, so
+// it is the one per-thread surface the guest's TlsAlloc and our ThreadState
+// slot share. See "The TLS slot we hold" in docs/DISPATCHER.md.
+constexpr std::uint32_t TlsSlotCount              = 64;
 }
 namespace peb {
 constexpr std::uint32_t ImageBaseAddress   = 0x10;
@@ -71,6 +77,7 @@ constexpr std::uint32_t ProcessParameters  = 0x20;
 constexpr std::uint32_t ProcessHeap        = 0x30;
 constexpr std::uint32_t FastPebLock        = 0x38;
 constexpr std::uint32_t TlsBitmap          = 0x78;
+constexpr std::uint32_t TlsBitmapBits      = 0x80;   // ULONG[2]: the bits PEB.TlsBitmap points at
 constexpr std::uint32_t AnsiCodePageData   = 0xA0;
 constexpr std::uint32_t OemCodePageData    = 0xA8;
 constexpr std::uint32_t UnicodeCaseTableData = 0xB0;
@@ -87,6 +94,11 @@ inline std::uint8_t* CurrentPeb() { return reinterpret_cast<std::uint8_t*>(__rea
 template <class T> T& PebField(std::uint32_t off) { return *reinterpret_cast<T*>(CurrentPeb() + off); }
 
 // ---- Per-thread state (TLS slot; layout shared with core/asm) ---------------
+// `magic` must hold kThreadStateMagic: core/asm and CurrentThreadState() check
+// it before trusting the TEB slot, so a foreign value written into
+// TEB.TlsSlots[tls_index] degrades into a counted, logged error instead of a
+// bogus pointer whose contents get written into the TEB (see ValidateSlot in
+// dispatcher.cpp and the view-switch block in core/asm/syscall_entry.S).
 struct ThreadState {
     std::uint64_t host_tls;     // 0x00
     std::uint64_t host_fls;     // 0x08
@@ -94,8 +106,9 @@ struct ThreadState {
     std::uint64_t guest_fls;    // 0x18
     std::uint32_t depth;        // 0x20: >0 = host view active
     std::uint32_t flags;        // 0x24
-    DWORD         tid;
-    HANDLE        thread;       // duplicated host handle (guest threads), may be null
+    DWORD         tid;          // 0x28
+    std::uint32_t magic;        // 0x2C: kThreadStateMagic (was padding; checked by core/asm)
+    HANDLE        thread;       // 0x30: duplicated host handle (guest threads), may be null
     // Wine debug output (replacements for ntdll's per-TEB debug_info)
     char          dbg_line[1024];
     std::uint32_t dbg_pos;
@@ -109,6 +122,11 @@ static_assert(offsetof(ThreadState, host_fls) == 0x08);
 static_assert(offsetof(ThreadState, guest_tls) == 0x10);
 static_assert(offsetof(ThreadState, guest_fls) == 0x18);
 static_assert(offsetof(ThreadState, depth) == 0x20);
+static_assert(offsetof(ThreadState, magic) == 0x2C);   // core/asm/syscall_entry.{asm,S}
+
+// Cookie in ThreadState::magic. core/asm compares against this literal, so a
+// change here needs the same change in BOTH asm twins.
+constexpr std::uint32_t kThreadStateMagic = 0x57310B01;   // "W10XB01"
 
 constexpr std::uint32_t kThreadGuest       = 1u << 0;   // runs guest code
 constexpr std::uint32_t kThreadMain        = 1u << 1;   // guest main thread (bootstrap)
@@ -125,6 +143,33 @@ void DetachThreadState();
 std::uint32_t LeaveToGuestView();
 void ReenterHostView(std::uint32_t depth);
 std::vector<ThreadState*> GuestThreads();   // snapshot
+
+// ---- The TLS slot we hold in TEB.TlsSlots (dispatcher.cpp) -------------------
+// TEB.TlsSlots has two independent allocators in one process: our host ntdll's
+// (through TlsAlloc, at Initialize, before the guest takeover) and the guest's
+// Wine ntdll's. They coordinate through PEB.TlsBitmap, whose bit storage is
+// PEB.TlsBitmapBits inside the PEB itself, so a bit set by one is visible to
+// the other -- EXCEPT for the indices Wine's loader_init claims by fiat with
+// RtlSetBits instead of allocating (wine-pe/wine-src/dlls/ntdll/loader.c:4454).
+// Holding one of those is unsafe whatever the bitmap says, so we never keep one:
+constexpr DWORD kWineErrnoSlot  = 16;   // NTDLL_TLS_ERRNO (wine-src/dlls/ntdll/ntdll_misc.h:36)
+constexpr DWORD kWineWow64Slots = 19;   // WOW64_TLS_MAX_NUMBER (wine-src/include/winternl.h:1322)
+// Both allocators hand out the lowest clear bit, so an index at or above the
+// WoW64 block is also the one least likely to be reached by the guest at all.
+constexpr DWORD kPreferredSlot  = kWineWow64Slots;
+inline bool SlotUsable(DWORD i) { return i != 0 && i != kWineErrnoSlot && i < teb::TlsSlotCount; }
+
+DWORD ThreadSlotIndex();   // TLS_OUT_OF_INDEXES when view switching is disabled
+// Makes sure our index is marked in-use in whatever bitmap PEB.TlsBitmap points
+// at once the guest has installed its own, so the guest's allocator can never
+// hand it out. A no-op until Wine's loader_init has replaced the pointer, and
+// then once only; reports what it found (the "already set" case is what proves
+// the two allocators really do share PEB.TlsBitmapBits on this host).
+void ReserveGuestTlsSlot(const char* why);
+// TEB.TlsSlots[tls_index] holds a cookie-valid ThreadState on this thread.
+bool ThreadSlotIntact();
+// How often core/asm or CurrentThreadState() found a foreign value in the slot.
+std::uint64_t ThreadSlotClobbers();
 
 // ---- Typed host ntdll entry points used by translators -------------------------
 using PFN_NtClose = NTSTATUS(NTAPI*)(HANDLE);

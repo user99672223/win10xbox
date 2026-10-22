@@ -5,6 +5,7 @@
 EXTERN win10xbox_syscall_nargs:PROC
 EXTERN win10xbox_dispatch:PROC
 EXTERN win10xbox_thread_slot_offset:QWORD
+EXTERN win10xbox_thread_slot_clobbered:QWORD
 
 .code
 
@@ -31,6 +32,27 @@ win10xbox_syscall_entry PROC FRAME
     test r11, r11
     jz entry_view_done
     mov rbx, qword ptr gs:[r11]
+    test rbx, rbx
+    jz entry_view_done
+    ; The slot holds the ThreadState pointer tagged in bits 48..63 with
+    ; 8000h | bits 16..30 of itself. Checking that the two still agree costs no
+    ; memory access and catches the 4-byte clobber a colliding guest TLS user
+    ; leaves behind (Wine's _errno writes an int through &TEB.TlsSlots[16]).
+    ; Mirrors ValidateSlot in core/dispatch/dispatcher.cpp. GAS twin: .S.
+    mov rax, rbx
+    shr rax, 16
+    and eax, 7FFFh
+    or eax, 8000h
+    mov rcx, rbx
+    shr rcx, 48
+    cmp eax, ecx
+    je entry_view_ok
+    lock inc qword ptr [win10xbox_thread_slot_clobbered]
+    xor ebx, ebx
+    jmp entry_view_done
+entry_view_ok:
+    shl rbx, 16
+    shr rbx, 16
     test rbx, rbx
     jz entry_view_done
     inc dword ptr [rbx+20h]
