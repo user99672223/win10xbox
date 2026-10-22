@@ -452,7 +452,10 @@ TEST(vfs_override_lookup) {
     CHECK(OverrideFor(L"native_only.dll") == DllOverride::NativeThenBuiltin);
     CHECK(OverrideFor(L"USER32") == DllOverride::Builtin);
     CHECK(OverrideFor(L"User32.DLL") == DllOverride::Builtin);
-    CHECK(OverrideFor(L"gdi32") == DllOverride::BuiltinThenNative);          // key given as "gdi32.dll"
+    // gdi32 is in the GUI stack, always builtin (E1) although the fixture asks for builtin,native
+    CHECK(OverrideFor(L"gdi32") == DllOverride::Builtin);
+    CHECK(OverrideFor(L"win32u") == DllOverride::Builtin);
+    CHECK(OverrideFor(L"imm32.dll") == DllOverride::Builtin);
     CHECK(OverrideFor(L"d3d9") == DllOverride::Disabled);
     CHECK(OverrideFor(L"msvcrt") == DllOverride::Native);
     // E1: ntdll/kernelbase/kernel32 are always builtin, whatever machine.json says

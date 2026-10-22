@@ -16,7 +16,7 @@ push to every branch; nothing is `continue-on-error` except the diagnostics step
 
 * **`ci.yml` linux-cross** (llvm-mingw, guests under Wine): `wine-pe/fetch-wine.sh` (shallow clone of the pinned Wine
   tag, a few seconds), the Wine PE builtins **and** the widl-generated headers (`wine-pe-include`, for
-  `advapi32/registry`), then the full `ctest` with nothing excluded (55 registered after merging `cdd901a`: 13 `guest_e2e` + 1 DISABLED, 2
+  `advapi32/registry`), then the full `ctest` with nothing excluded (56 registered after merging core/user: 15 `guest_e2e`, 2
   `driver_e2e`, 2 `drivers`, 28 `wine_conformance`, ...; about 4 minutes of tests).
 * **`ci.yml` windows** (MSVC, Debug and RelWithDebInfo, machine folder with the runner's System32 DLLs and NLS
   data): the full `ctest` (the guest's stdout is captured on real Windows; see `docs/STATUS.md`), then every bundled
@@ -40,8 +40,8 @@ Two mechanisms close the "100% tests passed, everything skipped" trap (`docs/HAN
    `ctest --show-only=json-v1` (what is registered) with `ctest --output-junit` (what ran). Any skipped, not-run or
    failed test fails the job, and so does a label with fewer tests than its floor (`guest_e2e` >= 1, `driver_e2e` >= 2,
    `drivers` >= 2, and on linux-cross `wine_conformance` >= 1). Counts come from ctest, never from a list of names,
-   so new tests are picked up automatically. A test registered `DISABLED` (today: `integration.guest_window`, until
-   core/user lands) is reported as "not run on purpose", is not a skip and does not count towards a floor.
+   so new tests are picked up automatically. A test registered `DISABLED` (none today) is reported as "not run on
+   purpose", is not a skip and does not count towards a floor.
 
 The guests the smoke step runs, with their exit codes, are the table in `tools/ci/smoke_guests.ps1`
 (`guest_hello` 42, `guest_cpuid` 0, `guest_sleep` 7, `guest_smoke_cui` / `guest_smoke` 42, `drv_client` and
@@ -51,6 +51,30 @@ gated by its ctest entry. `guest_dll.dll` is a DLL, exercised by `unit.core` (`t
 The one exclusion: `wine_conformance` does not run on the Windows jobs. Its guests are Wine's own test sources, which
 build only with clang against Wine's headers; with MSVC no test is registered. (They would need llvm-mingw and the
 Wine sources on the Windows runner, and a second, real-Windows baseline.)
+
+## GUI guests (core/user)
+
+`integration.guest_window` (tests/guest/window.c: frameless popup, FillRect, GetPixel, timers) and
+`integration.guest_window2` (tests/guest/window2.c: captioned window, memory-DC double buffering, Set/GetWindowText,
+InvalidateRect, DestroyWindow, PeekMessage on MsgWaitForMultipleObjectsEx) run through host-win32 with the headless
+display. Each checks its own pixels with GetPixel and exits 42; host-win32 writes the last painted frame of the
+virtual screen to `WIN10XBOX_SCREENSHOT=<file.bmp>` and `run_guest.cmake` checks pixels of it given as
+`WIN10XBOX_EXPECT_SCREENSHOT_PIXELS="x,y,aarrggbb|..."` (0xAARRGGBB as read from the BMP's B,G,R,A bytes). The
+`user_*` cases of `unit.core` cover the GDI handle encoding, the stock objects' slots, HWND encoding, regions and
+DIB reading. Trace channels: `WIN10XBOX_DEBUG=+user,+gdi` (with `+relay` for every win32u call). `guest.window` /
+`guest.window2` (the same programs run natively) are registered only where there is a real win32k (not under the
+cross-compiling emulator).
+
+The two GUI tests run on their own machine folder, `bin/machine-builtin` (prepared by `integration.prepare_machine`
+next to `bin/machine`, from the same Wine builtins, guest programs and NLS data, with no native DLLs and
+`"dll_overrides": {"*": "builtin,native"}`): the console's DLL set, which is what host-uwp stages. They cannot use the
+shared folder on the Windows jobs, where `import_windows_dlls.ps1` fills `System32` with the runner's own build-26100
+DLLs and `machine.default.json` prefers native: Wine's builtin user32/gdi32 then loaded native advapi32, sechost and
+rpcrt4, which import ntdll exports Wine 11.9 does not have (`RtlCreateBoundaryDescriptor`,
+`TpSetDefaultPoolStackInformation`, ...) and whose CRT apiset (`api-ms-win-core-crt-l2-1-0`) the host's schema
+resolves to `kernelbase.dll`, always Wine's in the guest. Wine's loader binds such imports to stubs, and the first
+call (`_initterm_e` in sechost's DllMain) raised 0x80000100 (`EXCEPTION_WINE_STUB`). The other guest tests keep the
+shared folder.
 
 ## Wine test subset (M3 fidelity baseline)
 

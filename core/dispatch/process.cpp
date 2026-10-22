@@ -281,20 +281,18 @@ __declspec(noinline) void ProbeStack(std::size_t bytes) {
     ctx.Rcx = reinterpret_cast<std::uint64_t>(start);
     ctx.Rdx = reinterpret_cast<std::uint64_t>(arg);
     TRACE(process, "thread %04lx entering guest: start=%p arg=%p", GetCurrentThreadId(), start, arg);
-    // The guest view starts with NO static-TLS array, like a fresh thread before its loader has run: Wine's
-    // LdrInitializeThunk installs its own (alloc_thread_tls), and core/asm keeps both from then on. Until then
-    // Wine's loader may load DLLs that have a TLS directory, and alloc_tls_slot writes a block into the array
-    // of every thread whose TEB.ThreadLocalStoragePointer is non-NULL and frees what that slot held: with the
-    // host's array still in the TEB, that freed a host TLS block (heap corruption 0xC0000374 as soon as the
-    // native gdi32full.dll was imported). The call target is resolved before the TEB changes: host code after
-    // the store would read its TLS through NULL (the guest-view window rule). FLS needs nothing: Wine's
-    // loader always installs its own FlsSlots.
-    // Without a ThreadState there is no view switch at all, and the host keeps its array.
     const auto ldr_init = G().ldr_init;
-    ThreadState* const self = CurrentThreadState();
-    if (self) __writegsqword(teb::ThreadLocalStoragePointer, 0);
+    // The guest starts with NO TLS vector, like a fresh thread, not with the host's: ThreadState::host_tls
+    // already holds the host's (AttachThreadState) and core/asm swaps it back in on every syscall. Wine's
+    // loader installs its own vector in alloc_thread_tls, but before that, while it resolves the static
+    // imports, alloc_tls_slot runs for every imported DLL with a TLS directory and frees and replaces slot i
+    // of the vector it finds in the TEB ("if (!teb->ThreadLocalStoragePointer) continue" is its only guard).
+    // With the host's vector there, that freed the host's own TLS blocks: 0xC0000374 in the host heap on real
+    // Windows as soon as a guest imported a DLL with TLS (user32 -> native advapi32 -> msvcrt). FLS is left as
+    // it is: Wine replaces FlsSlots unconditionally in its thread init.
+    // Nothing between this store and the call touches TLS (ldr_init was read above).
+    __writegsqword(teb::ThreadLocalStoragePointer, 0);
     ldr_init(&ctx, 0, 0, 0);
-    if (self) __writegsqword(teb::ThreadLocalStoragePointer, self->host_tls);
     ERR(process, "guest LdrInitializeThunk returned");
     detail::GuestThreadExit(st::Unsuccessful);
 }

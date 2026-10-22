@@ -63,3 +63,38 @@ if(NOT EXISTS "${MACHINE}/Windows/System32/c_1252.nls")
   message(STATUS "prepare_machine: no NLS data (${MACHINE}/Windows/System32/c_1252.nls; "
                  "run machine/import_windows_dlls.ps1 on Windows); guest tests will be skipped")
 endif()
+
+# -DBUILTIN_ONLY_MACHINE=<dir>: a second machine folder with the console's DLL set, used by the GUI tests.
+# It holds the same builtins, guest programs and NLS data as MACHINE but NO native DLLs, and its machine.json
+# says "*": "builtin,native" -- what host-uwp stages on the console (Wine builtins + NLS only). The shared
+# folder cannot serve the GUI guests on Windows CI: import_windows_dlls.ps1 fills its System32 with the runner's
+# own DLLs (build 26100) and machine.default.json prefers native, so Wine's builtin user32/gdi32 pulled in
+# native advapi32/sechost/rpcrt4, which import ntdll exports Wine 11.9 lacks and resolve the CRT apiset to
+# kernelbase (always Wine's): the guest died on Wine's 0x80000100 import stub. Run at test time (the
+# integration.prepare_machine fixture), after CI has staged the NLS data into MACHINE.
+if(BUILTIN_ONLY_MACHINE)
+  foreach(d Windows/builtin Windows/System32 Windows/System32/config Windows/Globalization/Sorting Windows/Temp
+            Users/User/AppData/Local/Temp Users/User/AppData/Roaming Users/Public
+            ProgramData "Program Files" "Program Files (x86)" guest)
+    file(MAKE_DIRECTORY "${BUILTIN_ONLY_MACHINE}/${d}")
+  endforeach()
+  file(GLOB _files "${MACHINE}/Windows/builtin/*" "${MACHINE}/guest/*" "${MACHINE}/Windows/System32/*.nls"
+                   "${MACHINE}/Windows/Globalization/Sorting/*.nls")
+  set(_copied 0)
+  foreach(f ${_files})
+    file(RELATIVE_PATH _rel "${MACHINE}" "${f}")
+    if(NOT IS_DIRECTORY "${f}")
+      file(COPY_FILE "${f}" "${BUILTIN_ONLY_MACHINE}/${_rel}" ONLY_IF_DIFFERENT)
+      math(EXPR _copied "${_copied} + 1")
+    endif()
+  endforeach()
+  if(DEFAULT_JSON AND EXISTS "${DEFAULT_JSON}")
+    file(READ "${DEFAULT_JSON}" _json)
+    string(REGEX REPLACE "\"\\*\"[ \t]*:[ \t]*\"[^\"]*\"" "\"*\": \"builtin,native\"" _json "${_json}")
+    if(NOT _json MATCHES "\"\\*\": \"builtin,native\"")
+      message(FATAL_ERROR "prepare_machine: no \"*\" entry in ${DEFAULT_JSON}'s dll_overrides to rewrite")
+    endif()
+    file(CONFIGURE OUTPUT "${BUILTIN_ONLY_MACHINE}/machine.json" CONTENT "${_json}" @ONLY)
+  endif()
+  message(STATUS "prepare_machine: ${BUILTIN_ONLY_MACHINE}: builtin-only machine, ${_copied} files")
+endif()

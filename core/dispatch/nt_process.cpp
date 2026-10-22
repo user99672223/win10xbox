@@ -13,6 +13,7 @@
 #endif
 #include <algorithm>
 #include <cstring>
+#include <vector>
 
 namespace win10xbox::dispatch::detail {
 namespace {
@@ -219,37 +220,6 @@ static NTSTATUS NTAPI Xl_NtQueryInformationThread(HANDLE thread, ULONG klass, PV
     return Host().NtQueryInformationThread(thread, klass, buffer, length, ret_len);
 }
 
-// Only the guest's threads. Wine's loader walks every thread of the process to give each one a block of a newly
-// loaded module's static TLS (alloc_tls_slot, wine-src/dlls/ntdll/loader.c): it writes into the array at
-// TEB.ThreadLocalStoragePointer and RtlFreeHeap()s what was in the slot it picked. On a HOST thread that array is
-// the host's own (win10xbox.exe's TLS, the CRT's), so the first guest DLL with a TLS directory (the native
-// gdi32full.dll) freed a host block and the host heap reported corruption (0xC0000374). Host threads are not the
-// guest's business; skip them. (A guest thread that is inside a syscall at that moment shows the host view too:
-// not handled, see docs/STATUS.md.)
-static NTSTATUS NTAPI Xl_NtGetNextThread(HANDLE process, HANDLE thread, ACCESS_MASK access, ULONG attributes,
-                                         ULONG flags, PHANDLE out) {
-    using Fn = NTSTATUS(NTAPI*)(HANDLE, HANDLE, ACCESS_MASK, ULONG, ULONG, PHANDLE);
-    const auto host = reinterpret_cast<Fn>(HostExport("NtGetNextThread"));
-    if (!host) return st::NotImplemented;
-    if (!IsCurrentProcess(process) || !out) return host(process, thread, access, attributes, flags, out);
-    std::vector<DWORD> guest;
-    for (ThreadState* t : GuestThreads()) guest.push_back(t->tid);
-    HANDLE cur = thread;
-    bool ours = false;   // cur is a handle this function opened (and must close)
-    for (;;) {
-        HANDLE next = nullptr;
-        const NTSTATUS s = host(process, cur, access | THREAD_QUERY_LIMITED_INFORMATION, attributes, flags, &next);
-        if (ours) Host().NtClose(cur);
-        if (s) return s;
-        if (std::find(guest.begin(), guest.end(), GetThreadId(next)) != guest.end()) {
-            *out = next;
-            return st::Success;
-        }
-        cur = next;
-        ours = true;
-    }
-}
-
 static NTSTATUS NTAPI Xl_NtQuerySystemInformation(ULONG klass, PVOID buffer, ULONG length, PULONG ret_len) {
 #if WIN10XBOX_HAVE_CLOCK
     if (klass == kSystemTimeOfDayInformation) return clock::Clk_NtQuerySystemInformation_TimeOfDay(buffer, length, ret_len);
@@ -346,6 +316,39 @@ static NTSTATUS NTAPI Xl_NtCreateThreadEx(PHANDLE handle, ACCESS_MASK access, PO
     return CreateGuestThread(handle, access, attr, start, arg, flags, zero_bits, stack, max_stack, attr_list);
 }
 
+// NtGetNextThread on the current process enumerates the GUEST's threads only. Wine's loader
+// (alloc_tls_slot, loader.c) walks every thread NtGetNextThread returns when a DLL with a TLS
+// directory is loaded after startup, and replaces each thread's TEB.ThreadLocalStoragePointer with a
+// block sized for the guest's module count: done to a host thread (the host's main thread, the crash
+// thread...) that is a heap block the host's ntdll later frees as its own -> 0xC0000374 on real
+// Windows the first time a guest loaded native msvcrt.dll (via user32 -> advapi32).
+using PFN_NtGetNextThread = NTSTATUS(NTAPI*)(HANDLE, HANDLE, ACCESS_MASK, ULONG, ULONG, PHANDLE);
+
+NTSTATUS NTAPI Xl_NtGetNextThread(HANDLE process, HANDLE thread, ACCESS_MASK access, ULONG attributes, ULONG flags,
+                                  PHANDLE handle) {
+    auto next_fn = reinterpret_cast<PFN_NtGetNextThread>(HostExport("NtGetNextThread"));
+    if (!next_fn) return st::NotImplemented;
+    if (!IsCurrentProcess(process)) return next_fn(process, thread, access, attributes, flags, handle);
+    std::vector<DWORD> guests;
+    for (ThreadState* t : GuestThreads()) guests.push_back(t->tid);
+    HANDLE cur = thread;
+    bool cur_is_ours = false;   // a handle we opened while skipping (the caller's own one is never closed)
+    for (;;) {
+        HANDLE next = nullptr;
+        const NTSTATUS s = next_fn(process, cur, access | THREAD_QUERY_LIMITED_INFORMATION, attributes, flags, &next);
+        if (cur_is_ours) Host().NtClose(cur);
+        if (!NtSuccess(s)) return s;
+        const DWORD tid = GetThreadId(next);
+        if (std::find(guests.begin(), guests.end(), tid) != guests.end()) {
+            if (handle) *handle = next;
+            else Host().NtClose(next);
+            return st::Success;
+        }
+        cur = next;
+        cur_is_ours = true;
+    }
+}
+
 const ImplDef* ProcessImpls() {
     static const ImplDef k[] = {
         {"NtClose", reinterpret_cast<void*>(&Xl_NtClose)},
@@ -353,7 +356,6 @@ const ImplDef* ProcessImpls() {
         {"NtQueryVirtualMemory", reinterpret_cast<void*>(&Xl_NtQueryVirtualMemory)},
         {"NtQueryInformationProcess", reinterpret_cast<void*>(&Xl_NtQueryInformationProcess)},
         {"NtQueryInformationThread", reinterpret_cast<void*>(&Xl_NtQueryInformationThread)},
-        {"NtGetNextThread", reinterpret_cast<void*>(&Xl_NtGetNextThread)},
         {"NtQuerySystemInformation", reinterpret_cast<void*>(&Xl_NtQuerySystemInformation)},
         {"NtQuerySecurityObject", reinterpret_cast<void*>(&Xl_NtQuerySecurityObject)},
         {"NtTerminateProcess", reinterpret_cast<void*>(&Xl_NtTerminateProcess)},
@@ -364,6 +366,7 @@ const ImplDef* ProcessImpls() {
         {"NtRaiseException", reinterpret_cast<void*>(&Xl_NtRaiseException)},
         {"NtSetContextThread", reinterpret_cast<void*>(&Xl_NtSetContextThread)},
         {"NtCreateThreadEx", reinterpret_cast<void*>(&Xl_NtCreateThreadEx)},
+        {"NtGetNextThread", reinterpret_cast<void*>(&Xl_NtGetNextThread)},
         {nullptr, nullptr},
     };
     return k;

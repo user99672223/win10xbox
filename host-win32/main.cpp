@@ -413,6 +413,7 @@ static int HostMain(int argc, wchar_t** argv) {
     // Leaked on purpose like everything else the guest may still reference at EndProcess.
     winexbox::IWinexboxDriver* const display = winexbox::SelectBackend(winexbox::BackendConfig{}).release();
     win10xbox::user::SetDisplayDriver(display);
+    display->SetEventSink(win10xbox::user::InputSink());   // driver input -> the guest's message queues
     wchar_t screenshot[MAX_PATH * 2] = {};
     const DWORD screenshot_len = GetEnvironmentVariableW(L"WIN10XBOX_SCREENSHOT", screenshot, MAX_PATH * 2);
     crash.BeforeLaunch();   // the host's module table, while PEB->Ldr is still the host's

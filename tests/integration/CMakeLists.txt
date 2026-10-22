@@ -11,9 +11,13 @@ set_tests_properties(integration.host_version PROPERTIES PASS_REGULAR_EXPRESSION
 # it at the downloaded wine-pe artifact. Without builtins the guest tests SKIP.
 set(WIN10XBOX_MACHINE_DIR ${CMAKE_BINARY_DIR}/bin/machine CACHE PATH "Machine folder for integration tests")
 set(WIN10XBOX_BUILTIN_DIR ${CMAKE_SOURCE_DIR}/wine-pe/out/builtin CACHE PATH "Wine PE builtin DLLs for integration tests")
+# The GUI tests run on a second folder with the console's DLL set (builtins + NLS, "*": "builtin,native"); see
+# prepare_machine.cmake (BUILTIN_ONLY_MACHINE) and docs/TESTING.md for why.
+set(WIN10XBOX_BUILTIN_MACHINE_DIR ${CMAKE_BINARY_DIR}/bin/machine-builtin)
 set(_default_json ${CMAKE_SOURCE_DIR}/machine/machine.default.json)
 set(_prepare_args
   -DMACHINE=${WIN10XBOX_MACHINE_DIR}
+  -DBUILTIN_ONLY_MACHINE=${WIN10XBOX_BUILTIN_MACHINE_DIR}
   -DBUILTIN_DIR=${WIN10XBOX_BUILTIN_DIR}
   -DGUEST_DIR=${CMAKE_BINARY_DIR}/bin/guest
   -DDEFAULT_JSON=${_default_json}
@@ -22,7 +26,7 @@ set(_prepare_args
 add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
-  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_window)
+  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_window guest_window2)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -35,11 +39,20 @@ if(NOT _vendor)
   set(_vendor "[A-Za-z]+")
 endif()
 
+# The machine folder is WIN10XBOX_MACHINE_DIR unless the caller sets _guest_machine.
 function(win10xbox_guest_test name program exit_code)
+  # On the builtin-only folder, also prove from the modules trace that no native system DLL was mapped.
+  set(_require_builtin OFF)
+  if(NOT _guest_machine)
+    set(_guest_machine ${WIN10XBOX_MACHINE_DIR})
+  elseif(_guest_machine STREQUAL WIN10XBOX_BUILTIN_MACHINE_DIR)
+    set(_require_builtin ON)
+  endif()
   add_test(NAME integration.${name}
     COMMAND ${CMAKE_COMMAND}
       -DHOST=$<TARGET_FILE:win10xbox>
-      -DMACHINE=${WIN10XBOX_MACHINE_DIR}
+      -DMACHINE=${_guest_machine}
+      -DREQUIRE_BUILTIN_DLLS=${_require_builtin}
       -DPROGRAM=${program}
       -DEXPECT_EXIT=${exit_code}
       "-DEXPECT_REGEX=${ARGN}"
@@ -83,14 +96,27 @@ endif()
 # through Wine's user32/gdi32 and the win32u syscalls emulated by core/user, reads its own pixels back with
 # GetPixel, and exits 42. The host writes the composed virtual screen to a .bmp (WIN10XBOX_SCREENSHOT), and
 # run_guest.cmake checks two pixels of that file too: the window at (100,100)-(500,400) must show the blue at
-# screen (110,110) and the red at (130,130). The screenshot is the artifact to look at when this fails.
+# screen (110,110) and the red at (130,130), as 0xAARRGGBB read from the BMP's B,G,R,A bytes (RGB(0,80,220) is
+# ff0050dc, RGB(255,0,0) is ffff0000). The screenshot is the artifact to look at when this fails.
+# Both GUI tests run on the builtin-only machine folder (the console's DLL set).
+set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
 win10xbox_guest_test(guest_window "C:\\guest\\guest_window.exe" 42
   "window: class registered" "window: created hwnd=" "window: painted"
   "window: pixel\\(10,10\\)=00dc5000 pixel\\(30,30\\)=000000ff" "window: done")
 set_tests_properties(integration.guest_window PROPERTIES
-  # DISABLED until core/user answers the NtUser*/NtGdi* calls (docs/GUI.md); shown as "Not Run", never as a pass.
-  DISABLED TRUE
-  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=110,110,ffdc5000|130,130,ff0000ff")
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=110,110,ff0050dc|130,130,ffff0000")
+
+# The second GUI guest (tests/guest/window2.c): an overlapped window with a frame, double-buffered painting
+# through a memory DC, a timer that repaints and then destroys the window, a PeekMessage loop on
+# MsgWaitForMultipleObjectsEx. It checks itself (exit 42); the screenshot is the last frame it painted: the
+# client area at screen (58,91) shows the green and the yellow square, the caption bar the active caption colour.
+win10xbox_guest_test(guest_window2 "C:\\guest\\guest_window2.exe" 42
+  "window2: client=320x200" "window2: text=win10xbox two"
+  "window2: pixel\\(5,5\\)=0000ff00 pixel\\(20,20\\)=0000ffff"
+  "window2: timer=2 destroy=1 ncdestroy=1 iswindow=0" "window2: done")
+set_tests_properties(integration.guest_window2 PROPERTIES
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window2.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=63,96,ff00ff00|78,111,ffffff00|100,75,ff99b4d1")
+unset(_guest_machine)
 
 # Route B (docs/GUI.md "Route B: native win32k"): the same window.c with machine gui = native (WIN10XBOX_GUI
 # overrides machine.json): the guest loads the NATIVE user32/gdi32/gdi32full/win32u from the machine folder, every
