@@ -1,0 +1,112 @@
+win10xbox: kernelbase exports the entry points the genuine user32/imm32 import through the host API-set map
+
+The guest shares the host PEB, so ApiSetMap is Windows' own schema: api-ms-win-core-heap-obsolete
+resolves to kernelbase (Wine: kernel32), and the native user32/imm32 import CheckTokenMembershipEx,
+SetProcessValidCallTargets, WTSGetServiceSessionId, WTSIsServerContainer and the Global*/Local* family
+from there. Wine had them as stubs or only in kernel32, so the loader bound a stub that raised
+EXCEPTION_WINE_STUB (the Global*/Local* ones forward to kernel32).
+
+diff --git a/dlls/kernelbase/kernelbase.spec b/dlls/kernelbase/kernelbase.spec
+index 2c5906a..f227fa2 100644
+--- a/dlls/kernelbase/kernelbase.spec
++++ b/dlls/kernelbase/kernelbase.spec
+@@ -131,7 +131,7 @@
+ @ stdcall CheckRemoteDebuggerPresent(long ptr)
+ # @ stub CheckTokenCapability
+ @ stdcall CheckTokenMembership(long ptr ptr)
+-# @ stub CheckTokenMembershipEx
++@ stdcall CheckTokenMembershipEx(long ptr long ptr)
+ @ stdcall ChrCmpIA(long long)
+ @ stdcall ChrCmpIW(long long)
+ @ stdcall ClearCommBreak(long)
+@@ -807,7 +807,13 @@
+ @ stdcall GetWsChangesEx(long ptr ptr)
+ @ stdcall -arch=i386,x86_64 GetXStateFeaturesMask(ptr ptr)
+ @ stdcall GlobalAlloc(long long)
++@ stdcall GlobalFlags(long) kernel32.GlobalFlags
+ @ stdcall GlobalFree(long)
++@ stdcall GlobalHandle(ptr) kernel32.GlobalHandle
++@ stdcall GlobalLock(long) kernel32.GlobalLock
++@ stdcall GlobalReAlloc(long long long) kernel32.GlobalReAlloc
++@ stdcall GlobalSize(long) kernel32.GlobalSize
++@ stdcall GlobalUnlock(long) kernel32.GlobalUnlock
+ @ stdcall GlobalMemoryStatusEx(ptr)
+ # @ stub GuardCheckLongJumpTarget
+ # @ stub HasPolicyForegroundProcessingCompletedInternal
+@@ -977,7 +983,9 @@
+ @ stdcall LoadStringW(long long ptr long)
+ @ stdcall LocalAlloc(long long)
+ @ stdcall LocalFileTimeToFileTime(ptr ptr)
++@ stdcall LocalFlags(long) kernel32.LocalFlags
+ @ stdcall LocalFree(long)
++@ stdcall LocalSize(long) kernel32.LocalSize
+ @ stdcall LocalLock(long)
+ @ stdcall LocalReAlloc(long long long)
+ @ stdcall LocalUnlock(long)
+@@ -1511,7 +1519,7 @@
+ @ stdcall SetProcessPreferredUILanguages(long ptr ptr)
+ @ stdcall SetProcessPriorityBoost(long long)
+ @ stdcall SetProcessShutdownParameters(long long)
+-# @ stub SetProcessValidCallTargets
++@ stdcall SetProcessValidCallTargets(long ptr long long ptr)
+ @ stdcall SetProcessWorkingSetSizeEx(long long long long)
+ # @ stub SetProtectedPolicy
+ # @ stub SetRoamingLastObservedChangeTime
+@@ -1735,8 +1743,8 @@
+ @ stdcall VirtualQuery(ptr ptr long)
+ @ stdcall VirtualQueryEx(long ptr ptr long)
+ @ stdcall VirtualUnlock(ptr long)
+-# @ stub WTSGetServiceSessionId
+-# @ stub WTSIsServerContainer
++@ stdcall WTSGetServiceSessionId()
++@ stdcall WTSIsServerContainer()
+ @ stdcall WaitCommEvent(long ptr ptr)
+ @ stdcall WaitForDebugEvent(ptr long)
+ @ stdcall WaitForDebugEventEx(ptr long)
+diff --git a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
+index d16035f..ed63ffc 100644
+--- a/dlls/kernelbase/process.c
++++ b/dlls/kernelbase/process.c
+@@ -1163,6 +1163,42 @@ BOOL WINAPI DECLSPEC_HOTPATCH ProcessIdToSessionId( DWORD pid, DWORD *id )
+ }
+ 
+ 
++/***********************************************************************
++ *           CheckTokenMembershipEx   (kernelbase.@)
++ */
++BOOL WINAPI CheckTokenMembershipEx( HANDLE token, PSID sid, DWORD flags, PBOOL is_member )
++{
++    return CheckTokenMembership( token, sid, is_member );
++}
++
++
++/***********************************************************************
++ *           SetProcessValidCallTargets   (kernelbase.@)
++ */
++BOOL WINAPI SetProcessValidCallTargets( HANDLE process, PVOID base, SIZE_T size, ULONG count, PVOID info )
++{
++    return TRUE;
++}
++
++
++/***********************************************************************
++ *           WTSGetServiceSessionId   (kernelbase.@)
++ */
++DWORD WINAPI WTSGetServiceSessionId(void)
++{
++    return 0;
++}
++
++
++/***********************************************************************
++ *           WTSIsServerContainer   (kernelbase.@)
++ */
++BOOL WINAPI WTSIsServerContainer(void)
++{
++    return FALSE;
++}
++
++
+ /***********************************************************************
+  *           QueryProcessCycleTime   (kernelbase.@)
+  */
