@@ -23,11 +23,13 @@ docs/SYSCALLS.md, plus `NtCallbackReturn`; design and the not-implemented list i
 
 * Local (llvm-mingw + Wine): `100% tests passed, 0 tests failed out of 28` (`ctest --test-dir build-mingw
   --label-exclude wine_conformance`; no skips); `unit.core`: `121 tests, 0 failures` (the `user_*` cases included).
-* `ci.yml` run [39834605986](https://github.com/user99672223/win10xbox/actions/runs/39834605986) on `bc82f9a`:
+* `ci.yml` run [39839907345](https://github.com/user99672223/win10xbox/actions/runs/39839907345) on `249d386`
+  (first green on `bc82f9a`, run [39834605986](https://github.com/user99672223/win10xbox/actions/runs/39834605986)):
   windows (Debug) and windows (RelWithDebInfo) green with the full suite gated (`100% tests passed out of 32`,
-  `ctest gate: PASS (nothing skipped, nothing missing)`). The guest's stdout in both configs (from the jobs'
-  `ctest-junit.xml`):
+  `ctest gate: 32 registered, 32 ran and passed, 0 DISABLED`). The tests' output in both configs (from the jobs'
+  `ctest-junit.xml`; the first line is run_guest.cmake's `+modules` check, the rest the guest's stdout):
   ```
+  guest system DLLs from Windows\builtin: kernel32.dll kernelbase.dll user32.dll gdi32.dll advapi32.dll sechost.dll ucrtbase.dll msvcrt.dll win32u.dll imm32.dll
   window: class registered
   window: created hwnd=0000000000010021 client=400x300
   window: painted
