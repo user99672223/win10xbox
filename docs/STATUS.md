@@ -151,9 +151,35 @@ mingw *cannot* reproduce it, so the gating linux-cross job is structurally blind
 fires under Wine (host state touched while the guest view is active is a bug by construction) is worth more than the
 fix itself.
 
-Caveat: the reproduction was clang-cl under Wine, not `cl` on Windows. `host-win32-smoke` now prints a full annotated
-crash record, a host module table captured before the takeover, the bytes at RIP, and ships a linker `.map` plus the
-`.pdb`, so the next run confirms it on the real toolchain.
+**Confirmed on the real `cl`/`link` toolchain**, `host-win32-smoke` on `a24b57a` (windows-latest). The crash record now
+attributes the fault instead of leaving it unattributable:
+
+```
+at 0x00007ff674e8976c  = host module win10xbox.exe+0x3976c
+access violation: reading 0x0000000000000104  = <unattributed; null pointer + 0x104>
+bytes at rip-8 .. rip+16: 04 01 00 00 48 8b 04 c8 | 8b 04 02 39 05 bf c7 28 00 7f 0c ...
+```
+
+`48 8b 04 c8` is `mov rax,[rax+rcx*8]` — the TLS-array index — immediately followed by `8b 04 02`
+(`mov eax,[rdx+rax]`), which is **byte-for-byte the instruction the console reported**. Symbolized from the uploaded
+MSVC map: `S()+0x1c` (fault) ← `Host()+0x9` ← `CallWithArgs()+0x15d` ← `win10xbox_dispatch+0x345`, under
+`Xl_NtContinue()+0x26`. The faulting read is `0x104` here and `0x4` on the console — the same mechanism at a different
+TLS-block offset, so the exact offset is not significant.
+
+The precise ordering, `core/dispatch/nt_process.cpp:289-295`:
+
+```c
+static NTSTATUS NTAPI Xl_NtContinue(PCONTEXT ctx, BOOLEAN alert) {
+    NoteGuestEntry(ctx);                          // 290 — completes here, still the HOST view
+    std::uint32_t d = LeaveToGuestView();         // 291 — installs the GUEST's TLS array
+    NTSTATUS s = Host().NtContinue(ctx, alert);   // 292 — Host() → S() → guard → FAULT
+```
+
+`NoteGuestEntry` also appears in the stack scan, and it is instrumentation added in `eb52c50`, so it was checked as a
+possible self-inflicted cause: it is **not**. It returns before the swap, so its return address is merely left on the
+stack — the raw-x64-stack-scan caveat. The faulting ordering is 291 then 292 and predates all of this work. The same
+`LeaveToGuestView()` → `Host()` ordering is at `Xl_NtContinueEx` (`:297-303`), `Xl_NtRaiseException` (`:305-309`) and
+`Xl_NtSetContextThread`.
 
 No `crash.dmp` was written. The dump path reported HRESULT `0x800736b2`, the form `crash.txt` uses when `dbghelp.dll`
 cannot be bound inside the AppContainer (to be confirmed against `crash.txt`). `dbghelp.dll` is delay-loaded, so the
