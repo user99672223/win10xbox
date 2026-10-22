@@ -68,20 +68,56 @@ more. Presentation is the host's: it only needs `ComposeFrame`.
 
 | File | Owns |
 | --- | --- |
-| `user.cpp` | module state, `user.h` API, per-thread record (`TEB.Win32ClientInfo[61]`), user-mode callbacks, `NtCallbackReturn`, `UserImpls()` registration table |
-| `user_internal.h` | shared internals (lock, thread record, callback helper) |
-| `gdi_objects.cpp` | `GDI_SHARED_MEMORY` at `PEB.GdiSharedHandleTable` (allocated once, 0x10000 entries, Wine's handle encoding and stock-object slots), brushes, pens, fonts (metrics only), bitmaps/DIB sections, regions (rect lists), `NtGdiCreate*`, `NtGdiDeleteObjectApp`, `NtGdiExtGetObjectW`, `NtGdiSelect*`, `NtGdiGetDCObject`, `NtGdiGetStockObject` |
-| `gdi_dc.cpp` | DCs (display, window, memory), `NtGdiOpenDCW`, `NtGdiCreateCompatibleDC`, `NtGdiGetDeviceCaps`, `NtGdiGetAndSetDCDword`, `NtGdiSaveDC`/`RestoreDC`, clipping (`NtGdiIntersectClipRect`, `NtGdiGetAppClipBox`), coordinate state |
-| `gdi_draw.cpp` | the rasteriser on BGRA32 surfaces: `NtGdiPatBlt`, `NtGdiBitBlt`, `NtGdiStretchBlt`, `NtGdiSetPixel`/`GetPixel`, `NtGdiRectangle`, `NtGdiLineTo`/`MoveTo`, `NtGdiFillRgn`?, `NtGdiSetDIBitsToDeviceInternal`, `NtGdiGetDIBitsInternal`, `NtGdiExtTextOutW` (no font engine yet: draw nothing, return TRUE, FIXME once) |
-| `win_class.cpp` | classes (`NtUserRegisterClassExWOW`, `NtUserGetClassInfoEx`, `NtUserGetClassName`, class longs), the builtin classes win32u registers itself (`register_builtin_classes` in Wine's `class.c`: Button, ComboBox, ..., `#32769` desktop, `#32768` menu, `Message`, `Static`, `Edit`...) using the procs from `NtUserInitializeClientPfnArrays` |
-| `win_window.cpp` | windows: handle table, parent/owner/children/z-order, rects (window/client in screen coords), style/exstyle/id/userdata/text/props, `NtUserCreateWindowEx` (Wine's message sequence), `NtUserDestroyWindow`, `NtUserShowWindow`, `NtUserSetWindowPos`, `NtUserMoveWindow`, `NtUserSetWindowLong[Ptr]`, `NtUserCallHwnd[Param]` codes, `NtUserCallNoParam`/`OneParam`/`TwoParam` codes, `NtUserFindWindowEx`, `NtUserBuildHwndList`, `NtUserQueryWindow`, `NtUserSetParent`, `NtUserGetAncestor`, `NtUserWindowFromPoint`, focus/active/capture/foreground |
-| `win_message.cpp` | per-thread queues: posted messages, sent messages (same thread: direct; other thread: queue + wait), paint and timer pseudo-messages, `NtUserPostMessage`, `NtUserPostThreadMessage`, `NtUserPostQuitMessage`, `NtUserGetMessage`, `NtUserPeekMessage`, `NtUserMsgWaitForMultipleObjectsEx`, `NtUserWaitMessage`, `NtUserGetQueueStatus`, `NtUserMessageCall` (codes above), `NtUserDispatchMessage`, `NtUserTranslateMessage`, `NtUserSetTimer`/`KillTimer`, `NtUserGetThreadState`, `NtUserRegisterWindowMessage`, `NtUserGetKeyState`/`AsyncKeyState`/`KeyboardState`, input events from the driver (`IEventSink::OnInput` -> WM_MOUSEMOVE/WM_LBUTTONDOWN/WM_KEYDOWN... to the window under the cursor / focus) |
-| `win_paint.cpp` | update regions, `NtUserInvalidateRect`/`Rgn`, `NtUserValidateRect`, `NtUserRedrawWindow`, `NtUserGetUpdateRect`/`Rgn`, `NtUserBeginPaint`/`EndPaint`, `NtUserGetDC`/`GetDCEx`/`GetWindowDC`/`ReleaseDC`, window surfaces (allocated from the driver per **top-level** window, child windows draw into their top-level's surface with an offset and a clip), `ComposeFrame`, `FrameSerial`, erase background (WM_ERASEBKGND with the class brush) |
-| `win_sysparams.cpp` | `NtUserSystemParametersInfo[ForDpi]`, system metrics, system colours/brushes/pens, DPI (`96`, `NTUSER_DPI_UNAWARE` contexts), monitors (`NtUserEnumDisplayMonitors`, `GetMonitorInfo`, `MonitorFromRect/Window/Point`, `NtUserEnumDisplaySettings`, `NtUserEnumDisplayDevices`, `NtUserGetDisplayConfigBufferSizes`...) from `IWinexboxDriver::QueryDisplay()` |
+| `ntuser_abi.h` | the contract as data: KernelCallbackTable ids, `ntuser_thread_info`, `win_proc_params`, the `NtUserCall*` / `NtUserMessageCall` / `NtGdiGetDCDword` codes, `GDI_HANDLE_ENTRY`, `DC_ATTR` (every layout user32/gdi32 read from memory has a `static_assert`) |
+| `user_syscalls.h` | every implemented syscall's prototype and `W10X_USER_SYSCALLS`, the registration list `UserImpls()` is built from |
+| `user.cpp` | module state (`S()`, allocated under the lock), `user.h` API, per-thread record (`TEB.Win32ClientInfo[61]`), user-mode callbacks, `NtCallbackReturn`, the guest last error of a syscall (`SetLastErr`), screenshots |
+| `user_internal.h` | shared internals (lock, objects, windows, queues, helpers) |
+| `gdi_objects.cpp` | `GDI_SHARED_MEMORY` at `PEB.GdiSharedHandleTable` (0x10000 entries, Wine's encoding, stock objects in `init_stock_objects` order, system colour brushes/pens), regions (non-overlapping rectangle lists), brushes, pens, fonts (LOGFONT only), bitmaps / DIB sections / DIB conversion, palettes, `NtGdiCreate*`, `NtGdiDeleteObjectApp`, `NtGdiExtGetObjectW`, `Get/SetDIBits`, region syscalls |
+| `gdi_dc.cpp` | DCs (screen, window, memory) and their `DC_ATTR` (guest-visible pool), `NtGdiCreateCompatibleDC`, `NtGdiOpenDCW`, `NtGdiGetDeviceCaps`, `NtGdiGetAndSetDCDword`, `NtGdiSelect*`, `SaveDC`/`RestoreDC`, clipping, logical->device mapping (MM_TEXT / ISOTROPIC / ANISOTROPIC, world transform translation), what a DC draws on (`ResolveDrawTarget`), synthesized text metrics |
+| `gdi_draw.cpp` | the rasteriser on BGRA32: `PatBlt`, `BitBlt` / `StretchBlt` with any ternary ROP (colour<->mono conversion), `Get/SetPixel`, `Rectangle`, `Ellipse`, `MoveTo`/`LineTo`, `PolyPolyDraw` (polygons, polylines, Béziers), `Fill/Frame/InvertRgn`, `SetDIBitsToDevice`, `StretchDIBits`, `ExtTextOutW` (opaque rectangle only: no font engine, FIXME once) |
+| `win_class.cpp` | classes and the user atom table (`NtUserRegisterClassExWOW`, `NtUserGetClassInfoEx`, `NtUserGetClassName`, `NtUserGetAtomName`, `NtUserRegisterWindowMessage`, class longs), the builtin classes (Button ... `#32769`, `Message`) with the procs from `NtUserInitializeClientPfnArrays`; procedures are kept as raw (A, W) pairs |
+| `win_window.cpp` | handle table, tree and z-order, rects, `NtUserCreateWindowEx` (Wine's message sequence), `ShowWindow`, `SetWindowPos` (WINDOWPOSCHANGING / NCCALCSIZE / WINDOWPOSCHANGED), `DestroyWindow` (WM_DESTROY parent first, WM_NCDESTROY children first), activation and focus, window longs, props, `NtUserCall{Hwnd,HwndParam,NoParam,OneParam,TwoParam}` codes, `FindWindowEx`, `BuildHwndList`, `WindowFromPoint`, capture, enable |
+| `win_defwnd.cpp` | the default window procedure (`NtUserMessageCall(NtUserDefWindowProc)`): text, WM_NCCALCSIZE from the style (Windows 10 frame metrics), WM_NCHITTEST, WM_NCPAINT, WM_ERASEBKGND with the class brush, WM_CTLCOLOR*, WM_CLOSE, WM_WINDOWPOSCHANGED -> WM_MOVE/WM_SIZE, WM_ACTIVATE -> focus, Alt+F4 |
+| `win_message.cpp` | per-thread queues (posted, input, cross-thread sent), WM_PAINT and WM_TIMER pseudo-messages, `GetMessage`, `PeekMessage`, `MsgWaitForMultipleObjectsEx`, `WaitMessage`, `GetQueueStatus`, `NtUserMessageCall` codes, `DispatchMessage` (WM_PAINT / timer procs), `TranslateMessage` (US layout), timers, the input sink (driver events -> mouse / keyboard messages), key state, `SendInput`, cursor, caret (tracked, not drawn) |
+| `win_paint.cpp` | update regions (bounding rectangle + erase / frame / internal-paint flags), `InvalidateRect`/`Rgn`, `ValidateRect`/`Rgn`, `RedrawWindow`, `GetUpdateRect`/`Rgn`, `BeginPaint`/`EndPaint`, `GetDC`/`GetDCEx`/`GetWindowDC`/`ReleaseDC`, `ScrollWindowEx`, the non-client frame (solid colours), window surfaces from the driver, flush, `ComposeFrame` / `ComposeLastPaintedFrame` |
+| `win_sysparams.cpp` | `GetSystemMetrics` (Windows 10 at 96 DPI), `SystemParametersInfo[ForDpi]`, DPI awareness, monitors (`EnumDisplayMonitors` via the callback, `GetMonitorInfo`, `MonitorFromRect/Window`), `EnumDisplaySettings`, `EnumDisplayDevices`, `SetSysColors` |
 
-Any syscall not implemented stays **Todo** in the dispatcher: it traces `unimplemented syscall
-NtUserFoo` once per call site and returns `STATUS_NOT_IMPLEMENTED` (which user32 sees as 0/FALSE).
-Implement what the guest hits, in the order it hits it; do not pre-build the long tail.
+Any syscall not implemented stays **Todo** in the dispatcher: it traces `unimplemented syscall NtUserFoo`, sets the
+guest's last error to `ERROR_CALL_NOT_IMPLEMENTED` and returns **0** -- the failure value of every win32u call
+except the few that return an `NTSTATUS` (`NtUserBuildHwndList`, `NtUserInitializeClientPfnArrays`, the
+`NtGdiDdDDI*` family, ...), which get `STATUS_NOT_IMPLEMENTED`. (The first version returned
+`STATUS_NOT_IMPLEMENTED` everywhere, which user32 read as a valid HWND from `NtUserCreateWindowEx` and as
+`TRUE`/`-1` from BOOL calls.) Implement what the guest hits, in the order it hits it; do not pre-build the long tail.
+
+### What is implemented (2026-10-22)
+
+235 win32u syscalls are registered (`W10X_USER_SYSCALLS`; plus the ntdll-side `NtCallbackReturn`): enough for
+`tests/guest/window.c` (frameless popup, FillRect, GetPixel, timers, PostMessage) and `tests/guest/window2.c`
+(captioned overlapped window, AdjustWindowRectEx, Set/GetWindowText, ShowWindow/UpdateWindow, memory DC +
+CreateCompatibleBitmap + BitBlt, InvalidateRect, KillTimer, DestroyWindow, PeekMessage on
+MsgWaitForMultipleObjectsEx). Both pass under Wine (`integration.guest_window`, `integration.guest_window2`).
+
+Not implemented yet (they stay Todo or are documented FIXMEs), roughly in the order a typical program reaches them:
+
+* **Text**: no font engine. Metrics are synthesized from the LOGFONT (`GetTextMetrics`, `GetTextExtentPoint`,
+  `GetCharWidth` agree with each other); `ExtTextOut` / `DrawText` fill their opaque rectangle and draw no glyphs.
+  `EnumFontFamilies`, `AddFontResource`, `GetOutlineTextMetrics` are Todo.
+* **Menus** (`NtUserCreateMenu`, `NtUserThunkedMenuItemInfo`, `TrackPopupMenu`...): Todo; `LoadMenu` fails, so
+  windows get no menu bar. **Icons and cursors** (`NtUserSetCursorIconData`, `NtUserDrawIconEx`, `LoadImage` of
+  icons/cursors): Todo. **Scroll bars** (`NtUserSetScrollInfo`, the scroll bar window procedure): Todo (WS_VSCROLL
+  only reserves the space). **Clipboard**, **hooks** (`SetWindowsHookEx`, `SetWinEventHook`), **IME**,
+  **raw input**, **layered windows** (`SetLayeredWindowAttributes`, `UpdateLayeredWindow`), **window regions**,
+  `AlphaBlend` / `TransparentBlt` / `GradientFill` / `MaskBlt`, `PrintWindow`, `ScrollDC`, `DeferWindowPos`,
+  window stations / desktops: Todo.
+* Window dragging / resizing from the frame (WM_NCLBUTTONDOWN on the caption or border) is not implemented; the
+  frame is drawn in solid colours (COLOR_ACTIVEBORDER / COLOR_ACTIVECAPTION, a close-button square), without
+  caption text.
+* Update regions are a bounding rectangle per window (BeginPaint clips to it), not true regions.
+* Cross-thread `SendMessage` works (queued and answered while the receiver pumps); `SendMessageTimeout` ignores
+  the timeout. `ShowWindowAsync` runs synchronously. `DestroyWindow` of another thread's window fails.
+* Drawing into 1 bpp bitmaps and non-32 bpp DIB sections works for blits (pixel by pixel) but not for the
+  line / polygon primitives; drawing on the screen DC (`GetDC(NULL)`) is dropped with a FIXME.
+* DPI: everything is 96 DPI; `SetProcessDpiAwarenessContext` is recorded, nothing is scaled.
 
 ## Rules
 
@@ -96,8 +132,9 @@ Implement what the guest hits, in the order it hits it; do not pre-build the lon
 3. **No function-local statics reachable from a guest thread's first touch** without the module
    lock already held (MSVC magic statics read TLS; see dispatcher.cpp). Namespace-scope,
    trivially initialised state, or allocate under the lock.
-4. **Handles**: HWND = `(index + 1) | (generation << 16)`, fits 32 bits (`UlongToHandle` is used
-   everywhere in ntuser.h), never 0; the desktop window is the first one. HGDIOBJ = Wine's
+4. **Handles**: HWND = `(0x20 + slot) | (generation << 16)`, generation 1..0x7fff: fits 32 bits with bit 31
+   clear (`UlongToHandle` is used everywhere in ntuser.h), never 0, never one of `HWND_TOP/BOTTOM/TOPMOST/
+   NOTOPMOST/MESSAGE/BROADCAST`; the desktop window is the first one. Truncated (16-bit) handles resolve by slot. HGDIOBJ = Wine's
    encoding (`LOWORD` index into the shared table, `HIWORD` = `Unique`, type bits as
    `NTGDI_OBJ_*`), stock objects at `FIRST_GDI_HANDLE + n` in exactly the order of Wine's
    `init_stock_objects` (`dlls/win32u/gdiobj.c`), because `GetStockObject` is a table lookup in
@@ -110,8 +147,12 @@ Implement what the guest hits, in the order it hits it; do not pre-build the lon
 6. **Pixels**: surfaces are `winexbox::ISurface` BGRA8888 top-down, alpha byte written as `0xFF`
    by every drawing primitive. The rasteriser clips to the DC's clip box (client rect
    intersected with the surface, intersected with `IntersectClipRect`/`SelectClipRgn` if set).
-   After `EndPaint` / `ReleaseDC` of a window DC that drew something: `surface->Flush(dirty)`,
-   `driver->Present()`, `++FrameSerial`.
+   After `EndPaint` / `ReleaseDC` of a window DC that drew something, and whenever a thread goes idle in
+   `GetMessage`/`PeekMessage`: `surface->Flush(dirty)`, `driver->Present()`, `++FrameSerial`. Every flush also
+   records the composition (surfaces + screen rectangles) as the *last painted frame*: `WriteScreenshot`
+   writes that one (`ComposeLastPaintedFrame`), so a program that hides or destroys its window before exiting
+   still leaves its picture; `ComposeFrame` is always the live state (what host-uwp presents). Windows that are
+   still alive when the guest process exits stay in the composition.
 7. **Messages** follow Wine's `window.c`/`winpos.c`/`defwnd.c` sequences where it matters for
    real programs (WM_NCCREATE, WM_NCCALCSIZE, WM_CREATE, WM_SIZE, WM_MOVE, WM_SHOWWINDOW,
    WM_WINDOWPOSCHANGING/CHANGED, WM_ACTIVATE, WM_SETFOCUS, WM_ERASEBKGND, WM_PAINT, WM_DESTROY,
@@ -119,11 +160,22 @@ Implement what the guest hits, in the order it hits it; do not pre-build the lon
    behaviour for what we send: WM_NCCREATE stores the text, WM_NCCALCSIZE keeps the client equal
    to the window rect for now (no non-client area is drawn yet: **frameless windows first**),
    WM_ERASEBKGND fills with the class brush, WM_CLOSE destroys, WM_PAINT validates.
-8. **The first target is `tests/guest/window.c`** (`integration.guest_window`): RegisterClass,
+8. **Wine's GUI stack is always builtin** (DECISIONS.md E1, extended): `win32u`, `user32`, `gdi32` and
+   `imm32` load from `<machine>\Windows\builtin` whatever `dll_overrides` says, like ntdll/kernelbase/kernel32.
+   The machine folder of the Windows CI job holds the runner's own user32/gdi32/win32u (`machine/guest_dlls.txt`)
+   and `native,builtin` loaded them: native win32u then made Windows-numbered win32k syscalls into Wine's table.
+   (If route B -- forwarding to the host's win32k, measured in STATUS.md -- is ever taken, this is the switch to
+   revisit.)
+9. **Input**: `user::InputSink()` is an `IEventSink`; host-win32 installs it on its driver, host-uwp's counting
+   sink forwards to it. It only posts (any thread may call it): mouse events go to the window under the cursor
+   (or the capture window), keys to the focus window of the foreground thread; a click on an inactive top-level
+   window activates it on its own thread. GUI threads drain the driver queue (`ProcessEvents`) themselves while
+   they wait in `GetMessage` / `MsgWaitForMultipleObjectsEx`.
+10. **The first target is `tests/guest/window.c`** (`integration.guest_window`): RegisterClass,
    CreateWindowEx(WS_POPUP|WS_VISIBLE, 400x300 at 100,100), WM_PAINT with two FillRects, GetPixel
    read-back, PostMessage/SetTimer, GetMessage loop, exit 42; plus the screenshot pixels. It must
    pass under Wine locally (`ctest --test-dir build-mingw -R guest_window`) and on both Windows
-   configs in CI. Then `hello.exe` of host-uwp, then a real third-party program.
+   configs in CI. Then `tests/guest/window2.c` (done), then a real third-party program.
 
 ## Local workflow
 

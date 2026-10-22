@@ -166,4 +166,6 @@ jobs:
           path: |
             build/Testing/Temporary/
             build/bin/*.log
+            build/bin/crash.txt
+            build/bin/*.bmp
           retention-days: 7

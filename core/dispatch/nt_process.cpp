@@ -11,7 +11,9 @@
 #if WIN10XBOX_HAVE_CLOCK
 #include "win10xbox/clock.h"
 #endif
+#include <algorithm>
 #include <cstring>
+#include <vector>
 
 namespace win10xbox::dispatch::detail {
 namespace {
@@ -314,6 +316,39 @@ static NTSTATUS NTAPI Xl_NtCreateThreadEx(PHANDLE handle, ACCESS_MASK access, PO
     return CreateGuestThread(handle, access, attr, start, arg, flags, zero_bits, stack, max_stack, attr_list);
 }
 
+// NtGetNextThread on the current process enumerates the GUEST's threads only. Wine's loader
+// (alloc_tls_slot, loader.c) walks every thread NtGetNextThread returns when a DLL with a TLS
+// directory is loaded after startup, and replaces each thread's TEB.ThreadLocalStoragePointer with a
+// block sized for the guest's module count: done to a host thread (the host's main thread, the crash
+// thread...) that is a heap block the host's ntdll later frees as its own -> 0xC0000374 on real
+// Windows the first time a guest loaded native msvcrt.dll (via user32 -> advapi32).
+using PFN_NtGetNextThread = NTSTATUS(NTAPI*)(HANDLE, HANDLE, ACCESS_MASK, ULONG, ULONG, PHANDLE);
+
+NTSTATUS NTAPI Xl_NtGetNextThread(HANDLE process, HANDLE thread, ACCESS_MASK access, ULONG attributes, ULONG flags,
+                                  PHANDLE handle) {
+    auto next_fn = reinterpret_cast<PFN_NtGetNextThread>(HostExport("NtGetNextThread"));
+    if (!next_fn) return st::NotImplemented;
+    if (!IsCurrentProcess(process)) return next_fn(process, thread, access, attributes, flags, handle);
+    std::vector<DWORD> guests;
+    for (ThreadState* t : GuestThreads()) guests.push_back(t->tid);
+    HANDLE cur = thread;
+    bool cur_is_ours = false;   // a handle we opened while skipping (the caller's own one is never closed)
+    for (;;) {
+        HANDLE next = nullptr;
+        const NTSTATUS s = next_fn(process, cur, access | THREAD_QUERY_LIMITED_INFORMATION, attributes, flags, &next);
+        if (cur_is_ours) Host().NtClose(cur);
+        if (!NtSuccess(s)) return s;
+        const DWORD tid = GetThreadId(next);
+        if (std::find(guests.begin(), guests.end(), tid) != guests.end()) {
+            if (handle) *handle = next;
+            else Host().NtClose(next);
+            return st::Success;
+        }
+        cur = next;
+        cur_is_ours = true;
+    }
+}
+
 const ImplDef* ProcessImpls() {
     static const ImplDef k[] = {
         {"NtClose", reinterpret_cast<void*>(&Xl_NtClose)},
@@ -331,6 +366,7 @@ const ImplDef* ProcessImpls() {
         {"NtRaiseException", reinterpret_cast<void*>(&Xl_NtRaiseException)},
         {"NtSetContextThread", reinterpret_cast<void*>(&Xl_NtSetContextThread)},
         {"NtCreateThreadEx", reinterpret_cast<void*>(&Xl_NtCreateThreadEx)},
+        {"NtGetNextThread", reinterpret_cast<void*>(&Xl_NtGetNextThread)},
         {nullptr, nullptr},
     };
     return k;
