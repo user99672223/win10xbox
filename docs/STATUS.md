@@ -1,5 +1,33 @@
 # Status
 
+## host-uwp presents the composed frame; every guest is bundled (2026-10-22)
+
+`host-uwp` now has a presenter (`host-uwp/presenter.cpp`, `blit.cpp`). It copies
+`win10xbox::user::ComposeFrame` (core/user, `core/include/win10xbox/user.h`) into a D3D11 flip-sequential
+swap chain on the CoreWindow and presents it from the UI thread's 60 Hz pump. The D3D11 device is created on a
+thread of its own, because `D3D11CreateDevice` hangs on the UI thread of a Game-bucket app (DECISIONS.md). It tries
+hardware, then WARP, and falls back to headless with a `display:` line. All of this is brought up before the Host's
+worker starts. The Host hands its headless winexbox backend to core/user (`user::SetDisplayDriver`). The CoreWindow
+size is converted to physical pixels for the swap chain, the virtual monitor and the pointer positions.
+`LocalState\screen.bmp` is written every 5 s while the guest runs and when it has exited. The package bundles
+`window.exe` (a placeholder GUI guest until `tests/guest/window.c` lands; CMake switches to that file automatically),
+the `tests/guest` programs, `smoke_cui.exe` and `drv_client.exe`. The packaged `launch.json` runs `window.exe` and
+keeps the app open on the last frame.
+
+What CI proves (`host-uwp` workflow): it builds and packages. The new `host_uwp.blit` test (gating) runs the
+presenter's upload + copy on a WARP device and checks the pixels it reads back. The package assertion checks every
+bundled guest. The non-gating `run` job (run `39822419428`) installed the package on windows-latest and launched it,
+and status.txt said `display.presenter=D3D11 hardware swap chain; screen 800x600, window 800x600 px; presents=2`, so
+`CreateSwapChainForCoreWindow` + `Present` worked on a real CoreWindow there.
+
+That run also exposed a **false PASS**, now fixed. Under the stub core/user, `CreateWindowExW` returned an NTSTATUS
+as the hwnd (`0xC0000002`), `GetMessageW` failed at once, and the first placeholder `window.exe` fell through to
+`return 42`. It now returns 42 only if it was painted and its own timer ended the loop (otherwise 3 or 4).
+
+**What only the console can prove:** the hardware device in the Game bucket and the UI-thread hang rule, the TV
+output, and, with core/user's `ComposeFrame` still a stub in this tree, that a window actually appears. Until then the
+TV shows the presenter's dark-grey background.
+
 ## The GUI path, settled from the Wine source (2026-10-22)
 
 Two successive statements about `win32u` were made in `docs/HANDOFF.md` and both are now replaced
