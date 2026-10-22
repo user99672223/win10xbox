@@ -7,7 +7,11 @@
  *
  * A plain x64 Win32 program (static CRT, no console): RegisterClassW, CreateWindowExW 640x400
  * visible, WM_PAINT fills the client area with solid blue, a 3 s SetTimer posts WM_QUIT, and the
- * program returns 42 (payload\launch.json expects it). The window is deliberately NOT destroyed
+ * program returns 42 (payload\launch.json expects it) ONLY if it was painted and the message loop
+ * ended through that timer's WM_QUIT. Anything else is a distinct code, so a GetMessageW that fails
+ * at once (it returns -1 and the loop simply ends) is not a false PASS:
+ *   1 RegisterClassW failed, 2 CreateWindowExW failed, 3 the loop ended without the timer's
+ *   WM_QUIT, 4 it did but WM_PAINT never came. The window is deliberately NOT destroyed
  * before the exit, so the last composed frame the presenter keeps showing still has it.
  * A line per step goes to stdout (LocalState\stdout.txt) through WriteFile, not CRT stdio.
  */
@@ -15,6 +19,9 @@
 
 #define BLUE RGB(0, 80, 220)
 #define QUIT_TIMER 1
+
+static int g_painted;
+static int g_timer_quit;
 
 static void say(const char* text) {
     DWORD put = 0;
@@ -33,13 +40,15 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         FillRect(dc, &rc, blue);
         DeleteObject(blue);
         EndPaint(hwnd, &ps);
-        say("window: painted\r\n");
+        if (!g_painted) say("window: painted\r\n");
+        g_painted = 1;
         return 0;
     }
     case WM_TIMER:
         if (wp == QUIT_TIMER) {
             KillTimer(hwnd, QUIT_TIMER);
             say("window: timer fired, quitting\r\n");
+            g_timer_quit = 1;
             PostQuitMessage(42);
         }
         return 0;
@@ -51,7 +60,9 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show) {
     WNDCLASSW wc;
     HWND hwnd;
     MSG msg;
-    char line[128];
+    BOOL got;
+    int rc;
+    char line[160];
     (void)prev;
     (void)cmdline;
     (void)show;
@@ -82,10 +93,13 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show) {
 
     if (!SetTimer(hwnd, QUIT_TIMER, 3000, NULL)) say("window: SetTimer failed\r\n");
 
-    while (GetMessageW(&msg, NULL, 0, 0) > 0) {
+    while ((got = GetMessageW(&msg, NULL, 0, 0)) > 0) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
-    say("window: done\r\n");
-    return 42;
+    rc = !g_timer_quit ? 3 : !g_painted ? 4 : 42;
+    wsprintfA(line, "window: done (GetMessageW returned %d, painted=%d, timer=%d) -> exit %d\r\n", (int)got, g_painted,
+              g_timer_quit, rc);
+    say(line);
+    return rc;
 }

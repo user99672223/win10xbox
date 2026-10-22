@@ -20,7 +20,8 @@
 {
   // The program to run: a bare file name, looked up in C:\guest (machine\guest here), or an
   // absolute guest path. The package puts these there:
-  //   window.exe       GUI: a solid blue window on the TV, exits 42 (the packaged default)
+  //   window.exe       GUI: a solid blue window on the TV, exits 42 once painted and its timer
+  //                    quit the loop (the packaged default)
   //   hello.exe        GUI subsystem, no window: facts to stdout.txt, exits 42
   //   hello_cui.exe    the same as a console program, exits 42
   //   smoke_cui.exe    host-uwp-lite's smoke guest (OS version, CPUID, clock facts), exits 42
