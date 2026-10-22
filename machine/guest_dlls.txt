@@ -52,8 +52,9 @@ userenv.dll
 netapi32.dll
 psapi.dll
 dbghelp.dll
-# -- imported by fastfetch.exe, no Wine builtin exists
+# -- imported by fastfetch.exe (winbrand: no Wine builtin exists; wintypes: api-ms-win-ro-typeresolution, via shell32)
 winbrand.dll
+wintypes.dll
 
 # -- apiset schema (needed by the loader to resolve api-ms-win-* names)
 apisetschema.dll

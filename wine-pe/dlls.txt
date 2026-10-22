@@ -36,6 +36,7 @@ ws2_32
 winmm
 
 # --- imports of fastfetch.exe (docs/slices/fastfetch.md) that are not in the native guest set -----------------
+dnsapi
 hid
 iphlpapi
 secur32

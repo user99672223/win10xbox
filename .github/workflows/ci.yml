@@ -194,6 +194,9 @@ jobs:
       - name: Fetch fastfetch 2.70.0 (real guest program)
         shell: pwsh
         run: ./tools/ci/fetch_fastfetch.ps1 -Out build/bin/machine/guest
+      - name: Report the DLL closure of fastfetch.exe (what the loader needs and the machine folder lacks)
+        shell: pwsh
+        run: ./tools/ci/dll_closure.ps1 -Program build/bin/machine/guest/fastfetch.exe -Machine build/bin/machine
       # Real GUI programs that are not ours (tools/ci/build_realgui.ps1): Microsoft's LearnWin32 Hello World and PuTTY
       # 0.85 (official tarball, cmake + cl /MT), pinned by SHA-256 and verified on every run. Left in
       # build/bin/machine/guest for integration.realgui_* (docs/TESTING.md, "Real GUI programs").
