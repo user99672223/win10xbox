@@ -11,9 +11,13 @@ set_tests_properties(integration.host_version PROPERTIES PASS_REGULAR_EXPRESSION
 # it at the downloaded wine-pe artifact. Without builtins the guest tests SKIP.
 set(WIN10XBOX_MACHINE_DIR ${CMAKE_BINARY_DIR}/bin/machine CACHE PATH "Machine folder for integration tests")
 set(WIN10XBOX_BUILTIN_DIR ${CMAKE_SOURCE_DIR}/wine-pe/out/builtin CACHE PATH "Wine PE builtin DLLs for integration tests")
+# The GUI tests run on a second folder with the console's DLL set (builtins + NLS, "*": "builtin,native"); see
+# prepare_machine.cmake (BUILTIN_ONLY_MACHINE) and docs/TESTING.md for why.
+set(WIN10XBOX_BUILTIN_MACHINE_DIR ${CMAKE_BINARY_DIR}/bin/machine-builtin)
 set(_default_json ${CMAKE_SOURCE_DIR}/machine/machine.default.json)
 set(_prepare_args
   -DMACHINE=${WIN10XBOX_MACHINE_DIR}
+  -DBUILTIN_ONLY_MACHINE=${WIN10XBOX_BUILTIN_MACHINE_DIR}
   -DBUILTIN_DIR=${WIN10XBOX_BUILTIN_DIR}
   -DGUEST_DIR=${CMAKE_BINARY_DIR}/bin/guest
   -DDEFAULT_JSON=${_default_json}
@@ -35,11 +39,15 @@ if(NOT _vendor)
   set(_vendor "[A-Za-z]+")
 endif()
 
+# The machine folder is WIN10XBOX_MACHINE_DIR unless the caller sets _guest_machine.
 function(win10xbox_guest_test name program exit_code)
+  if(NOT _guest_machine)
+    set(_guest_machine ${WIN10XBOX_MACHINE_DIR})
+  endif()
   add_test(NAME integration.${name}
     COMMAND ${CMAKE_COMMAND}
       -DHOST=$<TARGET_FILE:win10xbox>
-      -DMACHINE=${WIN10XBOX_MACHINE_DIR}
+      -DMACHINE=${_guest_machine}
       -DPROGRAM=${program}
       -DEXPECT_EXIT=${exit_code}
       "-DEXPECT_REGEX=${ARGN}"
@@ -78,6 +86,8 @@ win10xbox_guest_test(guest_sleep "C:\\guest\\guest_sleep.exe" 7 "guest slept")
 # run_guest.cmake checks two pixels of that file too: the window at (100,100)-(500,400) must show the blue at
 # screen (110,110) and the red at (130,130), as 0xAARRGGBB read from the BMP's B,G,R,A bytes (RGB(0,80,220) is
 # ff0050dc, RGB(255,0,0) is ffff0000). The screenshot is the artifact to look at when this fails.
+# Both GUI tests run on the builtin-only machine folder (the console's DLL set).
+set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
 win10xbox_guest_test(guest_window "C:\\guest\\guest_window.exe" 42
   "window: class registered" "window: created hwnd=" "window: painted"
   "window: pixel\\(10,10\\)=00dc5000 pixel\\(30,30\\)=000000ff" "window: done")
@@ -94,6 +104,7 @@ win10xbox_guest_test(guest_window2 "C:\\guest\\guest_window2.exe" 42
   "window2: timer=2 destroy=1 ncdestroy=1 iswindow=0" "window2: done")
 set_tests_properties(integration.guest_window2 PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window2.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=63,96,ff00ff00|78,111,ffffff00|100,75,ff99b4d1")
+unset(_guest_machine)
 
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
 set_tests_properties(integration.guest_hello_appcontainer_sim PROPERTIES
