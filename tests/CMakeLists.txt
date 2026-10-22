@@ -5,3 +5,4 @@ add_subdirectory(unit)
 add_subdirectory(integration)
 add_subdirectory(host_exit)    # how win10xbox.exe ends: the exit code survives anything the DLL detach does
 add_subdirectory(wine-tests)   # Wine conformance subset (label wine_conformance)
+add_subdirectory(winetest)     # integration.winetest_kernel32: wine-pe/tests/kernel32.sh, per-unit baseline

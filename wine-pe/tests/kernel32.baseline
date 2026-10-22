@@ -1,0 +1,13 @@
+# Per-unit baseline for integration.winetest_kernel32 (wine-pe/tests/kernel32.sh --baseline).
+#   <unit> <run|crash|timeout> <max_failures>
+# PROVISIONAL: not measured yet; every unit is "crash" until the first measured run replaces this.
+file     crash 0
+path     crash 0
+sync     crash 0
+thread   crash 0
+virtual  crash 0
+heap     crash 0
+locale   crash 0
+codepage crash 0
+time     crash 0
+environ  crash 0
