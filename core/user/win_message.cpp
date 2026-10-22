@@ -1303,9 +1303,5 @@ BOOL WINAPI NtUserGetCaretPos(POINT* point) {
 
 UINT WINAPI NtUserGetCaretBlinkTime() { return 530; }
 
-HWND WINAPI NtUserGetOpenClipboardWindow() {
-    return nullptr;   // nobody can open the clipboard (NtUserOpenClipboard is Todo)
-}
-
 }  // namespace sys
 }  // namespace win10xbox::user

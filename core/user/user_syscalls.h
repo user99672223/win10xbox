@@ -127,7 +127,27 @@ BOOL WINAPI NtUserHideCaret(HWND hwnd);
 BOOL WINAPI NtUserSetCaretPos(INT x, INT y);
 BOOL WINAPI NtUserGetCaretPos(POINT* point);
 UINT WINAPI NtUserGetCaretBlinkTime();
+
+// ---- win_clipboard.cpp ----
+BOOL WINAPI NtUserOpenClipboard(HWND hwnd, ULONG unk);
+BOOL WINAPI NtUserCloseClipboard();
+BOOL WINAPI NtUserEmptyClipboard();
+NTSTATUS WINAPI NtUserSetClipboardData(UINT format, HANDLE data, void* params);   // struct set_clipboard_params*
+HANDLE WINAPI NtUserGetClipboardData(UINT format, void* params);                    // struct get_clipboard_params*
+INT WINAPI NtUserCountClipboardFormats();
+BOOL WINAPI NtUserIsClipboardFormatAvailable(UINT format);
+UINT WINAPI NtUserEnumClipboardFormats(UINT format);
+BOOL WINAPI NtUserGetUpdatedClipboardFormats(UINT* formats, UINT size, UINT* out_size);
+INT WINAPI NtUserGetPriorityClipboardFormat(UINT* list, INT count);
+INT WINAPI NtUserGetClipboardFormatName(UINT format, WCHAR* buffer, INT maxlen);
+HWND WINAPI NtUserGetClipboardOwner();
+HWND WINAPI NtUserGetClipboardViewer();
 HWND WINAPI NtUserGetOpenClipboardWindow();
+DWORD WINAPI NtUserGetClipboardSequenceNumber();
+HWND WINAPI NtUserSetClipboardViewer(HWND hwnd);
+BOOL WINAPI NtUserChangeClipboardChain(HWND hwnd, HWND next);
+BOOL WINAPI NtUserAddClipboardFormatListener(HWND hwnd);
+BOOL WINAPI NtUserRemoveClipboardFormatListener(HWND hwnd);
 
 // ---- win_paint.cpp ----
 HDC WINAPI NtUserBeginPaint(HWND hwnd, PAINTSTRUCT* ps);
@@ -318,7 +338,12 @@ INT WINAPI NtGdiStretchDIBitsInternal(HDC hdc, INT x_dst, INT y_dst, INT width_d
     X(NtUserVkKeyScanEx) X(NtUserGetKeyNameText) X(NtUserSendInput) X(NtUserTrackMouseEvent) \
     X(NtUserGetDoubleClickTime) X(NtUserMessageBeep) X(NtUserCreateCaret) X(NtUserDestroyCaret) X(NtUserShowCaret) \
     X(NtUserHideCaret) X(NtUserSetCaretPos) X(NtUserGetCaretPos) X(NtUserGetCaretBlinkTime) \
-    X(NtUserGetOpenClipboardWindow) \
+    X(NtUserOpenClipboard) X(NtUserCloseClipboard) X(NtUserEmptyClipboard) X(NtUserSetClipboardData) \
+    X(NtUserGetClipboardData) X(NtUserCountClipboardFormats) X(NtUserIsClipboardFormatAvailable) \
+    X(NtUserEnumClipboardFormats) X(NtUserGetUpdatedClipboardFormats) X(NtUserGetPriorityClipboardFormat) \
+    X(NtUserGetClipboardFormatName) X(NtUserGetClipboardOwner) X(NtUserGetClipboardViewer) \
+    X(NtUserGetOpenClipboardWindow) X(NtUserGetClipboardSequenceNumber) X(NtUserSetClipboardViewer) \
+    X(NtUserChangeClipboardChain) X(NtUserAddClipboardFormatListener) X(NtUserRemoveClipboardFormatListener) \
     X(NtUserBeginPaint) X(NtUserEndPaint) X(NtUserGetDC) X(NtUserGetDCEx) X(NtUserGetWindowDC) X(NtUserReleaseDC) \
     X(NtUserInvalidateRect) X(NtUserInvalidateRgn) X(NtUserValidateRect) X(NtUserValidateRgn) X(NtUserRedrawWindow) \
     X(NtUserGetUpdateRect) X(NtUserGetUpdateRgn) X(NtUserExcludeUpdateRgn) X(NtUserWindowFromDC) \
