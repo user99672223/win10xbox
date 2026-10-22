@@ -11,6 +11,7 @@ target_sources(win10xbox_core PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/gdi_objects.cpp
   ${CMAKE_CURRENT_LIST_DIR}/gdi_dc.cpp
   ${CMAKE_CURRENT_LIST_DIR}/gdi_draw.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/gdi_bitmap.cpp
   ${CMAKE_CURRENT_LIST_DIR}/win_class.cpp
   ${CMAKE_CURRENT_LIST_DIR}/win_window.cpp
   ${CMAKE_CURRENT_LIST_DIR}/win_defwnd.cpp

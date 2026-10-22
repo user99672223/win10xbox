@@ -287,6 +287,12 @@ INT WINAPI NtGdiStretchDIBitsInternal(HDC hdc, INT x_dst, INT y_dst, INT width_d
                                       INT y_src, INT width_src, INT height_src, const void* bits, const BITMAPINFO* bmi,
                                       UINT coloruse, DWORD rop, UINT max_info, UINT max_bits, HANDLE xform);
 
+// ---- gdi_bitmap.cpp ----
+BOOL WINAPI NtGdiAlphaBlend(HDC hdc_dst, INT x_dst, INT y_dst, INT width_dst, INT height_dst, HDC hdc_src, INT x_src,
+                            INT y_src, INT width_src, INT height_src, DWORD blend_function, HANDLE xform);
+BOOL WINAPI NtGdiTransparentBlt(HDC hdc, INT x_dst, INT y_dst, INT width_dst, INT height_dst, HDC hdc_src, INT x_src,
+                                INT y_src, INT width_src, INT height_src, UINT color);
+
 }  // namespace win10xbox::user::sys
 
 // The registration list: every name above.
@@ -353,4 +359,5 @@ INT WINAPI NtGdiStretchDIBitsInternal(HDC hdc, INT x_dst, INT y_dst, INT width_d
     X(NtGdiPatBlt) X(NtGdiBitBlt) X(NtGdiStretchBlt) \
     X(NtGdiGetPixel) X(NtGdiSetPixel) X(NtGdiRectangle) X(NtGdiEllipse) X(NtGdiMoveTo) \
     X(NtGdiLineTo) X(NtGdiPolyPolyDraw) X(NtGdiFillRgn) X(NtGdiFrameRgn) X(NtGdiInvertRgn) X(NtGdiExtTextOutW) \
-    X(NtGdiSetDIBitsToDeviceInternal) X(NtGdiStretchDIBitsInternal)
+    X(NtGdiSetDIBitsToDeviceInternal) X(NtGdiStretchDIBitsInternal) \
+    X(NtGdiAlphaBlend) X(NtGdiTransparentBlt)

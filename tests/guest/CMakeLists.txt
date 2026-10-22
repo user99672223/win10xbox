@@ -49,6 +49,11 @@ add_executable(guest_window_text window_text.c)
 target_link_libraries(guest_window_text PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window_text)
 
+# GDI bitmap operations (tests/guest/gdi_bitmap.c): memory DCs only, pixel-exact checks.
+add_executable(guest_gdi_bitmap gdi_bitmap.c)
+target_link_libraries(guest_gdi_bitmap PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_gdi_bitmap)
+
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
 add_test(NAME guest.hello COMMAND guest_hello)
 set_tests_properties(guest.hello PROPERTIES PASS_REGULAR_EXPRESSION "hello from guest")
