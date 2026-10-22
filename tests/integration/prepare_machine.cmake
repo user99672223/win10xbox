@@ -143,3 +143,50 @@ if(NATIVE_GUI_MACHINE)
   endif()
   message(STATUS "prepare_machine: ${NATIVE_GUI_MACHINE}: native-GUI machine, ${_copied} files")
 endif()
+
+# -DD3D_MACHINE=<dir>: route B + Direct3D 11 (docs/DECISIONS.md G1, integration.guest_imgui_d3d11): the folder
+# NATIVE_GUI_MACHINE describes (builtins, NLS, guests, the native GUI DLLs, "gui": "native") plus the NATIVE Direct3D
+# runtime: d3d11/dxgi/d3dcompiler_47 run as guest code, and their D3DKMT calls (gdi32 -> the native win32u's
+# NtGdiDdDDI* thunks) pass through by name to the host's win32u like every other route-B syscall, i.e. to the host's
+# dxgkrnl. d3d10warp is the user-mode driver d3d11 loads for the runner's "Microsoft Basic Render Driver" (and for
+# D3D_DRIVER_TYPE_WARP). Wine's d3d11/dxgi are not an option here (they are wined3d front ends over GL/Vulkan in
+# Wine's unix libraries, which this project does not have).
+if(D3D_MACHINE)
+  foreach(d Windows/builtin Windows/System32 Windows/System32/config Windows/Globalization/Sorting Windows/Temp
+            Users/User/AppData/Local/Temp Users/User/AppData/Roaming Users/Public
+            ProgramData "Program Files" "Program Files (x86)" guest)
+    file(MAKE_DIRECTORY "${D3D_MACHINE}/${d}")
+  endforeach()
+  set(_d3d_native user32.dll win32u.dll gdi32.dll gdi32full.dll msvcp_win.dll imm32.dll
+                  d3d11.dll dxgi.dll d3dcompiler_47.dll d3d10warp.dll dxcore.dll dwmapi.dll)
+  file(GLOB _files "${MACHINE}/Windows/builtin/*" "${MACHINE}/guest/*" "${MACHINE}/Windows/System32/*.nls"
+                   "${MACHINE}/Windows/Globalization/Sorting/*.nls")
+  foreach(n ${_d3d_native})
+    if(EXISTS "${MACHINE}/Windows/System32/${n}")
+      list(APPEND _files "${MACHINE}/Windows/System32/${n}")
+    endif()
+  endforeach()
+  set(_copied 0)
+  foreach(f ${_files})
+    file(RELATIVE_PATH _rel "${MACHINE}" "${f}")
+    if(NOT IS_DIRECTORY "${f}")
+      file(COPY_FILE "${f}" "${D3D_MACHINE}/${_rel}" ONLY_IF_DIFFERENT)
+      math(EXPR _copied "${_copied} + 1")
+    endif()
+  endforeach()
+  if(DEFAULT_JSON AND EXISTS "${DEFAULT_JSON}")
+    file(READ "${DEFAULT_JSON}" _json)
+    set(_ov "\"*\": \"builtin,native\"")
+    foreach(n ${_d3d_native})
+      string(REPLACE ".dll" "" _b "${n}")
+      string(APPEND _ov ", \"${_b}\": \"native\"")
+    endforeach()
+    string(REGEX REPLACE "\"\\*\"[ \t]*:[ \t]*\"[^\"]*\"" "${_ov}" _json "${_json}")
+    string(REGEX REPLACE "\"version\"[ \t]*:[ \t]*1[ \t]*," "\"version\": 1,\n  \"gui\": \"native\"," _json "${_json}")
+    if(NOT _json MATCHES "\"gui\": \"native\"" OR NOT _json MATCHES "\"d3d11\": \"native\"")
+      message(FATAL_ERROR "prepare_machine: could not derive the D3D machine.json from ${DEFAULT_JSON}")
+    endif()
+    file(CONFIGURE OUTPUT "${D3D_MACHINE}/machine.json" CONTENT "${_json}" @ONLY)
+  endif()
+  message(STATUS "prepare_machine: ${D3D_MACHINE}: route B + Direct3D 11 machine, ${_copied} files")
+endif()

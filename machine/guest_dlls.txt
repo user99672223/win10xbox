@@ -52,5 +52,13 @@ userenv.dll
 netapi32.dll
 psapi.dll
 dbghelp.dll
+# -- Direct3D 11 for route B (docs/DECISIONS.md G1): the native runtime, the shader compiler, WARP (the user-mode
+#    driver of "Microsoft Basic Render Driver" and of D3D_DRIVER_TYPE_WARP) and what they load
+d3d11.dll
+dxgi.dll
+d3dcompiler_47.dll
+d3d10warp.dll
+dxcore.dll
+dwmapi.dll
 # -- apiset schema (needed by the loader to resolve api-ms-win-* names)
 apisetschema.dll
