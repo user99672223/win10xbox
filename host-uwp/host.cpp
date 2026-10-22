@@ -89,6 +89,8 @@ namespace
                 diag::Line("input: %s vk=0x%02x scan=0x%02x button=%d x=%d y=%d wheel=%d", KindName(ev.kind),
                            static_cast<unsigned>(ev.vk), static_cast<unsigned>(ev.scan), static_cast<int>(ev.button), ev.x,
                            ev.y, ev.wheel_delta);
+            // ... and on to the guest's message queues (core/user posts WM_MOUSEMOVE / WM_KEYDOWN ...).
+            win10xbox::user::InputSink()->OnInput(ev);
         }
 
         std::uint64_t Total() const
