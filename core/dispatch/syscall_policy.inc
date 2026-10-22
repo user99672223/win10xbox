@@ -45,7 +45,7 @@ POLICY(NtQueryVirtualMemory, Translate, "MemoryWineLoadUnixLib*, MEM_IMAGE type 
 POLICY(NtOpenThreadToken, Emulate, "token")
 POLICY(NtQueryInformationThread, Translate, "ThreadAmILastThread counts guest threads only")
 POLICY(NtOpenProcess, PassThrough, "")
-POLICY(NtSetInformationFile, PassThrough, "")
+POLICY(NtSetInformationFile, Translate, "FileRenameInformation*/FileLinkInformation*: the target name goes through the VFS")
 POLICY(NtMapViewOfSection, Translate, "views of our image sections are mapped by core/loader")
 POLICY(NtAccessCheckAndAuditAlarm, PassThrough, "")
 POLICY(NtUnmapViewOfSection, Translate, "views of our image sections are mapped by core/loader")

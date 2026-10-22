@@ -1,5 +1,80 @@
 # Status
 
+## Current state of main (2026-10-22)
+
+**What works, measured.** On the Xbox Series S (build 26100) one unmodified MSVC x64 guest is mapped, bound,
+run and exits 42 (the hardware run described in HANDOFF.md). Under Wine and on the Windows CI runners, the
+following run and are gated (`ci.yml`, `host-win32-smoke.yml`, `host-win32-appcontainer.yml`, `host-uwp.yml`):
+
+* **Loader** (`core/loader`): PE mapping, import binding, Wine builtin stub rewrite, scanner.
+* **Dispatcher** (`core/dispatch`): by-name syscall table generated from Wine's headers; per-syscall policy
+  (`Emulate` / `PassThrough` / `Todo`); privileged NT calls answered as an unprivileged caller would.
+* **VFS** (`core/vfs`): virtual `C:\` over the machine folder, case-folded path comparison, NT path translation.
+* **Registry** (`core/registry`): virtual `\Registry` from read-only REGF hives plus an in-memory write overlay.
+* **NLS** (`core/dispatch/nt_nls.cpp`): `NtGetNlsSectionPtr` / `NtInitializeNlsFiles` map the `.nls` files staged
+  in the machine folder; a missing file fails with `STATUS_OBJECT_NAME_NOT_FOUND`, nothing is faked.
+* **Console guests**: `tests/guest/{hello,cpuid,sleep,dll}` and the smoke guest, through the host, with exit codes.
+* **core/user** (`core/user/`, Wine 11.9 win32u contract): 234 `NtUser*`/`NtGdi*` syscalls emulated. Windows
+  (class, create, show, paint, timers, PostMessage/SendMessage, DestroyWindow), GDI (DCs, DIB sections, memory DCs,
+  BitBlt, FillRect, GetPixel), and input delivery in `win_message.cpp` (mouse and key messages queued to the
+  window). Gated: `integration.guest_window`, `integration.guest_window2`, and input delivery
+  (`integration.guest_window_input`, `guest_window_input2`: scripted mouse and keys reach the guest's window,
+  merged from `-input` at `d9f7639`). Not on main: glyph text, menus,
+  clipboard, hooks (see in-flight list).
+* **D3D11 presenter** (`host-uwp/presenter.cpp`, `blit.cpp`): `user::ComposeFrame()` into a flip-sequential swap
+  chain on the CoreWindow, presented from the UI thread's 60 Hz pump. Device on its own thread; hardware, then WARP,
+  then headless with a `display:` line. `LocalState\screen.bmp` is written every 5 s and at exit.
+* **Nine bundled guests** in the host-uwp package (`host-uwp/CMakeLists.txt`, `HOST_UWP_GUESTS`): `window.exe`
+  (the default), `hello.exe`, `hello_cui.exe`, `guest_hello`, `guest_cpuid`, `guest_sleep`, `guest_dll`,
+  `smoke_cui.exe`, `drv_client.exe`.
+* **Native user32/gdi32 in an AppContainer (measured, non-gating)**: a genuine AppContainer process can load the
+  native user32/gdi32, create, show and paint a window and read pixels back on the Windows runner's session
+  (run 39827778745, `tests/appcontainer/ac_gui_probe.c`). Not measured on the console. This is the evidence for
+  route B (forward to the host's win32u); route A (core/user) remains the gated path.
+
+**What does not work yet.** Glyph text (`ExtTextOut`/`DrawText` fill rectangles only), menus, clipboard, hooks,
+window-frame dragging, networking, audio, guest child processes, D3D for guest apps (M6), and the 21 `todo`
+syscalls. `integration.guest_window_text` is `DISABLED` on main until the `-text` slice lands. The package's `window.exe` is a 30-second blue window that exits 42 only when painted.
+
+**Packaged `.msix`.** Artifact `host-uwp-msix` from the latest completed green `host-uwp.yml` run on main:
+[39837028686](https://github.com/user99672223/win10xbox/actions/runs/39837028686) (head `fb86712`; main has since
+moved to `1a6fb74`, whose run [39846504150](https://github.com/user99672223/win10xbox/actions/runs/39846504150) was
+still in progress when this was written).
+
+## In-flight slices (branches `claude/youthful-cerf-l7xxsb-<slice>`)
+
+Found on origin at this writing (each is created from main; the one-line scope is from its latest commit):
+
+| Slice | Branch | Scope |
+|---|---|---|
+| native | `-native` | route B: native user32/gdi32 in the guest, `gui` knob in machine.json |
+| text | `-text` | built-in 8x16 bitmap font for `TextOutW`/`DrawTextW` (`font8x16.h`) |
+| texttest | `-texttest` | `guest_window_text` (disabled until `-text` lands) |
+| input | `-input` | input delivery into core/user: merged into main at `d9f7639` |
+| inputtest | `-inputtest` | `WIN10XBOX_TEST_INJECT_INPUT` host hook, `guest_window_input` (merged with input) |
+| realprog | `-realprog` | Lua 5.4.7 as the first real guest |
+| sqlite | `-sqlite` | SQLite shell as a real guest (pinned amalgamation build) |
+| sys1 / sys2 | `-sys1`, `-sys2` | privileged NT syscalls; five Todo syscalls via existing modules |
+| syscalls | `-syscalls` | syscall work (its own commits are on the branch; main was merged into it) |
+| present | `-present` | `window.exe` exits 42 only when painted and quit by its timer |
+| ci | `-ci` | CI uploads crash.txt, crash.dmp, entry-reached.txt, GUI screenshots |
+| gui-probe | `-gui-probe` | the AppContainer native user32/gdi32 measurement (above) |
+| user | `-user` | core/user emulation and its STATUS/TESTING entries |
+
+Named for the next slices but **no remote branch found at this writing**: `-ncframe` (non-client frame),
+`-menu`, `-dialog`, `-clipboard`, `-hooks` (timers and hooks), `-guiapp` (a real GUI program), `-net` (ws2_32/AFD),
+`-audio`, `-uwpchild` (child processes in UWP), `-d3d` (ImGui on d3d11 via route B). Check `git ls-remote` before
+relying on them.
+
+## Install the package on the console
+
+1. Download artifact `host-uwp-msix` from the green run above (or the newest green `host-uwp.yml` run on main).
+2. Device Portal: install the `.cer` certificate first, then the `.msix`.
+3. The default `LocalState\launch.json` runs `window.exe` (30 s, expects exit 42) and keeps the last frame on the TV.
+   Result: `RESULT: PASS` or `RESULT: FAIL` at the top of `LocalState\status.txt`.
+4. `LocalState\screen.bmp` is the last composed frame; `LocalState\entry-reached.txt` and `crash.txt` are written
+   on the run. A `launch.json` placed in `LocalState` overrides the default (`launch.example.json` lists the keys).
+
 ## core/user: text rendering (2026-10-22)
 
 `TextOutW` / `ExtTextOutW` / `DrawTextW` now put glyphs on the screen: `core/user/font8x16.h` is a public-domain
@@ -23,11 +98,13 @@ docs/SYSCALLS.md, plus `NtCallbackReturn`; design and the not-implemented list i
 
 * Local (llvm-mingw + Wine): `100% tests passed, 0 tests failed out of 28` (`ctest --test-dir build-mingw
   --label-exclude wine_conformance`; no skips); `unit.core`: `121 tests, 0 failures` (the `user_*` cases included).
-* `ci.yml` run [39834605986](https://github.com/user99672223/win10xbox/actions/runs/39834605986) on `bc82f9a`:
+* `ci.yml` run [39839907345](https://github.com/user99672223/win10xbox/actions/runs/39839907345) on `249d386`
+  (first green on `bc82f9a`, run [39834605986](https://github.com/user99672223/win10xbox/actions/runs/39834605986)):
   windows (Debug) and windows (RelWithDebInfo) green with the full suite gated (`100% tests passed out of 32`,
-  `ctest gate: PASS (nothing skipped, nothing missing)`). The guest's stdout in both configs (from the jobs'
-  `ctest-junit.xml`):
+  `ctest gate: 32 registered, 32 ran and passed, 0 DISABLED`). The tests' output in both configs (from the jobs'
+  `ctest-junit.xml`; the first line is run_guest.cmake's `+modules` check, the rest the guest's stdout):
   ```
+  guest system DLLs from Windows\builtin: kernel32.dll kernelbase.dll user32.dll gdi32.dll advapi32.dll sechost.dll ucrtbase.dll msvcrt.dll win32u.dll imm32.dll
   window: class registered
   window: created hwnd=0000000000010021 client=400x300
   window: painted

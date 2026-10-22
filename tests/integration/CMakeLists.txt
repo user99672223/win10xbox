@@ -40,7 +40,9 @@ if(NOT _vendor)
   set(_vendor "[A-Za-z]+")
 endif()
 
-# The machine folder is WIN10XBOX_MACHINE_DIR unless the caller sets _guest_machine.
+# The machine folder is WIN10XBOX_MACHINE_DIR unless the caller sets _guest_machine; the guest's command-line
+# arguments (a list, one element each) are _guest_args if the caller sets it, and _guest_debug / _guest_forbid_trace
+# (a WIN10XBOX_DEBUG spec and a regex the layer's trace must not match) if it wants to assert on the trace.
 function(win10xbox_guest_test name program exit_code)
   # On the builtin-only folder, also prove from the modules trace that no native system DLL was mapped.
   set(_require_builtin OFF)
@@ -55,6 +57,9 @@ function(win10xbox_guest_test name program exit_code)
       -DMACHINE=${_guest_machine}
       -DREQUIRE_BUILTIN_DLLS=${_require_builtin}
       -DPROGRAM=${program}
+      "-DPROGRAM_ARGS=${_guest_args}"
+      "-DDEBUG_SPEC=${_guest_debug}"
+      "-DFORBID_TRACE_REGEX=${_guest_forbid_trace}"
       -DEXPECT_EXIT=${exit_code}
       "-DEXPECT_REGEX=${ARGN}"
       -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
@@ -146,6 +151,41 @@ win10xbox_guest_test(guest_window_text "C:\\guest\\guest_window_text.exe" 42
 set_tests_properties(integration.guest_window_text PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_text.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=121,123,ff000000|123,123,ffffffff|131,123,ff000000")
 unset(_guest_machine)
+
+# ---- Real programs: the first guests that are not ours ----------------------------------------------------------
+# Lua 5.4.7, built from the upstream tarball with MSVC by tools/ci/build_lua.ps1 (a named step of ci.yml's windows
+# job, which leaves it at <machine>/guest/lua.exe before ctest runs). Registered only where that step exists: MSVC
+# builds, or any build configured with -DWIN10XBOX_REAL_PROGRAMS=ON after putting a lua.exe into the machine folder
+# (docs/TESTING.md, "Real programs"). Not registered on linux-cross, so its skip floor never counts them.
+option(WIN10XBOX_REAL_PROGRAMS "Register the real-program guest tests (lua.exe must be in <machine>/guest)" OFF)
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  configure_file(${CMAKE_SOURCE_DIR}/tests/guest/lua/smoke.lua ${CMAKE_BINARY_DIR}/bin/guest/lua_smoke.lua COPYONLY)
+  # (a) the command line: -e with a quoted argument, and the exit code from os.exit.
+  set(_guest_args "-e;print('hello from lua', 6*7) os.exit(42)")
+  win10xbox_guest_test(lua_hello "C:\\guest\\lua.exe" 42 "hello from lua\t42")
+  # (b) the script (tests/guest/lua/smoke.lua): every section prints "smoke: <name> ok".
+  set(_guest_args "C:\\guest\\lua_smoke.lua;alpha;beta gamma")
+  set(_lua_sections argv format format.g sort sort.words io.write os.time os.date os.date.t os.clock getenv getenv.none
+    io.open.write file.close io.open.read file.line1 file.line2 file.rest file.size os.rename os.remove file.gone
+    io.open.missing os.tmpname tmpname.open io.lines dofile require pcall pcall.table pcall.runtime xpcall string.rep string.rep.sub string.rep.sep table.concat gc)
+  set(_lua_expect "")
+  foreach(_s ${_lua_sections})
+    string(REPLACE "." "\\." _re "${_s}")
+    list(APPEND _lua_expect "smoke: ${_re} ok")
+  endforeach()
+  win10xbox_guest_test(lua_smoke "C:\\guest\\lua.exe" 42 ${_lua_expect} "smoke: done fails=0")
+  set_tests_properties(integration.lua_smoke PROPERTIES FAIL_REGULAR_EXPRESSION "smoke: [a-z.]+ FAILED")
+  # (c) the host-side unwind tables: every image the guest maps must be registered with the host's
+  # RtlAddFunctionTable (the host walks guest frames for pcall/longjmp and for SEH). Before the fix the lookup of
+  # that export failed for every image mapped after the PEB take-over (docs/STATUS.md, "Real programs").
+  set(_guest_args "-e;print(pcall(error, 'x')) os.exit(42)")
+  set(_guest_debug "-all,+loader")
+  set(_guest_forbid_trace "RtlAddFunctionTable failed")
+  win10xbox_guest_test(lua_unwind_tables "C:\\guest\\lua.exe" 42 "false\tx")
+  unset(_guest_args)
+  unset(_guest_debug)
+  unset(_guest_forbid_trace)
+endif()
 
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
 set_tests_properties(integration.guest_hello_appcontainer_sim PROPERTIES

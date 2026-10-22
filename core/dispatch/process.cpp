@@ -429,8 +429,13 @@ NTSTATUS BuildProcessParameters(const LaunchOptions& o, const std::wstring& imag
     if (block.size() == 1) block.push_back(0);
 
     std::wstring title = image, desktop = L"WinSta0\\Default", empty;
+    // MaximumLength leaves room for the terminating NUL (the std::wstring's own): RtlCreateProcessParametersEx packs
+    // the strings back to back by MaximumLength, so without it the command line runs into the next string and a
+    // program that reads GetCommandLineW as a C string (every CRT's argv) sees the image path and the desktop name
+    // appended to its last argument. Windows always NUL-terminates these.
     auto us = [](std::wstring& s) {
-        return UNICODE_STRING{static_cast<USHORT>(s.size() * 2), static_cast<USHORT>(s.size() * 2), s.data()};
+        const USHORT len = static_cast<USHORT>(s.size() * 2);
+        return UNICODE_STRING{len, static_cast<USHORT>(len ? len + 2 : 0), s.data()};
     };
     std::wstring img = image;
     UNICODE_STRING u_image = us(img), u_dll = us(empty), u_cur = us(curdir), u_cmd = us(cmdline), u_title = us(title),
