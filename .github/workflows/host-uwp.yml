@@ -537,7 +537,7 @@ jobs:
           if (Test-Path $ls) { Get-ChildItem -Path $ls -File | ForEach-Object { Copy-Item -Path $_.FullName -Destination uwp-evidence -Force; Write-Host ("  {0,-24} {1,10:N0} bytes" -f $_.Name, $_.Length) } }
           foreach ($f in 'status.txt', 'launcher_result.txt') {
             $p = Join-Path $ls $f
-            if (Test-Path $p) { Write-Host "--- $f ---"; Get-Content -Path $p | ForEach-Object { Write-Host $_ } } else { Write-Host "--- $f: MISSING ---" }
+            if (Test-Path $p) { Write-Host "--- $f ---"; Get-Content -Path $p | ForEach-Object { Write-Host $_ } } else { Write-Host "--- ${f}: MISSING ---" }
           }
           foreach ($f in 'crash.txt') { $p = Join-Path $ls $f; if (Test-Path $p) { Write-Host "--- $f (first 60 lines) ---"; Get-Content -Path $p -TotalCount 60 | ForEach-Object { Write-Host $_ } } }
           $p = Join-Path $ls 'trace.log'
