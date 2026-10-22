@@ -32,7 +32,7 @@
   // "" = quiet, only err and fixme lines. Channels: modules, loader, process, vfs, dispatch,
   // registry, clock, token, cpu, nls, driver, winex, relay (every syscall: very large), all.
   // "+modules" is also the channel of the "guest entry reached" line that writes
-  // entry-reached.txt: keep it in a spec of your own, or that marker file is not written.
+  // entry-reached.txt. The host appends +modules for you, so you need not include it.
   "trace": "",
 
   // The same syntax for Wine's own channels (WIN10XBOX_WINEDEBUG), e.g. "+loaddll,warn+module"

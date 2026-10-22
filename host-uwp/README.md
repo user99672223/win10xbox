@@ -113,7 +113,7 @@ are annotations and are ignored. `LocalState\launch.example.json` lists every ke
 | `guest` | string | `hello.exe` | A bare file name, looked up in `C:\guest`, or an absolute guest path such as `"C:\\Program Files\\App\\app.exe"`. |
 | `args` | array or string | `[]` | Arguments, each quoted as needed; or one string appended verbatim. |
 | `cwd` | string | `""` | The guest's current directory, an absolute guest path. `""` means `C:\Users\<user>`. |
-| `trace` | string | `""` | A `WIN10XBOX_DEBUG` spec, e.g. `"+loader,+process"`. `""` is quiet (err and fixme only). Keep `+modules` in it, or `entry-reached.txt` is not written. |
+| `trace` | string | `""` | A `WIN10XBOX_DEBUG` spec, e.g. `"+loader,+process"`. `""` is quiet (err and fixme only). You do **not** need to include `+modules`: the host appends it, so `entry-reached.txt` is written whatever you set here. |
 | `winedebug` | string | `""` | A `WIN10XBOX_WINEDEBUG` spec for Wine's own channels, e.g. `"+loaddll,warn+module"`. |
 | `trace_log_max_mb` | integer | `64` | Size cap of `trace.log` in MiB. `0` means unlimited. |
 | `timeout_sec` | integer | `0` | Watchdog: end the run after this many seconds. `0` waits for the guest. |
@@ -138,7 +138,7 @@ The packaged default (`payload\launch.json`) is used when there is no `LocalStat
 2. A missing Wine builtin is reported in `status.txt`: copy the Wine PE DLLs into `LocalState\machine\Windows\builtin`.
 3. A program that is not found: put it into `LocalState\machine\guest` (`C:\guest` in the guest), or change `guest` in
    `launch.json`.
-4. More trace, without a rebuild: set `"trace": "+process,+loader,+vfs,+modules"` (keep `+modules`) and, for Wine's own
+4. More trace, without a rebuild: set `"trace": "+process,+loader,+vfs"` (`+modules` is appended for you) and, for Wine's own
    channels, `"winedebug": "+loaddll,warn+module"`. Then relaunch.
 5. If the guest does not exit, `timeout_sec` ends the run, and `status.txt` points at the last `relay` lines in `trace.log`.
 
@@ -168,10 +168,12 @@ configures the standalone project, builds it, runs `package.cmd`, runs the launc
 ## Known limits and design notes
 
 - **Not run on hardware.** CI proves that it builds, packages and passes the launch.json selftest, nothing more.
-- **The crash capture is a copy of host-uwp-lite's** (`crash.cpp`, `crash.h`, same namespace so the two stay diffable).
-  `host_shell.cpp` documents two differences: `host_diag.cpp` installs its own unhandled-exception filter, so an exception
-  on a host thread that nothing handled gets no UNHANDLED record or dump from the capture; and crash summaries do not reach
-  `trace.log`. The vectored handler still records first-chance exceptions.
+- **The crash capture is a copy of host-uwp-lite's** (`crash.cpp`, `crash.h`, byte-identical, same namespace so the two
+  stay diffable). The two gaps that used to exist here are fixed: `host_diag.cpp` now *chains* the capture's
+  unhandled-exception filter instead of replacing it, so a hard crash still produces the UNHANDLED record, the dump and
+  the FAIL status rewrite; and crash summaries now reach `trace.log`, because the shell opens the log first and hands the
+  capture that handle. The capture runs before `host_diag`'s own report, so a near-exhausted stack is still handed to the
+  capture's dedicated crash thread.
 - **`crash.dmp` needs `dbghelp.dll` inside the AppContainer.** It is delay-loaded and bound at startup. If the console
   refuses it, the package still starts and `crash.txt` says why no dump was written.
 - **The guest runs in this process.** `process::Launch` takes over PEB fields (loader lists, process parameters, the loader

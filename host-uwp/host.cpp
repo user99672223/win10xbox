@@ -340,9 +340,10 @@ void Host::Impl::RunImpl()
     // Tracing knobs reach the core through the environment it reads at Initialize.
     if (!lc.trace.empty()) SetEnvironmentVariableW(L"WIN10XBOX_DEBUG", Widen(lc.trace).c_str());
     if (!lc.winedebug.empty()) SetEnvironmentVariableW(L"WIN10XBOX_WINEDEBUG", Widen(lc.winedebug).c_str());
-    // The line above REPLACED WIN10XBOX_DEBUG with the owner's spec; entry-reached.txt needs the
-    // core's `modules` channel on whatever that spec says, so it is put back (host_shell.h). Only
-    // here can this be done: after the replacement, before win10xbox::Initialize reads the variable.
+    // The "trace" line above REPLACED WIN10XBOX_DEBUG with the owner's spec; entry-reached.txt needs
+    // the core's `modules` channel on whatever that spec says, so it is put back (host_shell.h).
+    // Only here can this be done: after the replacement, before win10xbox::Initialize reads the
+    // variable.
     diag::Line("%s", EnsureModulesChannel().c_str());
 
     if (stop.load())

@@ -12,8 +12,8 @@
   "expect_exit_code": 42,
 
   // Quiet (err + fixme) plus the module-load diagnostics. "modules" is also the channel of the
-  // "guest entry reached" line that writes LocalState\entry-reached.txt: keep +modules in any
-  // spec of your own, or that marker file is not written.
+  // "guest entry reached" line that writes LocalState\entry-reached.txt. The host appends
+  // +modules to whatever you set here, so that marker file is written either way.
   "trace": "+modules",
 
   // Safety net for a first run: end the run (and the app) if the guest has not exited after
