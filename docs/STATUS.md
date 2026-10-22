@@ -181,6 +181,55 @@ stack — the raw-x64-stack-scan caveat. The faulting ordering is 291 then 292 a
 `LeaveToGuestView()` → `Host()` ordering is at `Xl_NtContinueEx` (`:297-303`), `Xl_NtRaiseException` (`:305-309`) and
 `Xl_NtSetContextThread`.
 
+### FIXED, and the guest now runs to completion on real Windows
+
+Fixed in `532a3bf` by closing the class rather than the four call sites: the dispatcher's process state is
+`constinit State g_state;` at namespace scope (no guard, no TLS, and `constinit` makes the compiler reject any future
+member that would reintroduce dynamic initialisation), and `CallInGuestView(Host().NtX, ...)` makes the host-view
+resolution happen *by language rule* — arguments are sequenced before the call — rather than by the author remembering
+an ordering. `/Zc:threadSafeInit-` was rejected on the merits: `Threads()`, `Objects()`, `ExportCache()` and the three
+`trace` singletons are first touched from guest threads created at arbitrary times, so dropping the guard there is a
+data race, and being process-wide it would mask the next instance instead of revealing it.
+
+**Result on real Windows** (`host-win32-smoke` on `532a3bf`, windows-latest), in order from `smoke-console.log`:
+
+```
+hello from guest
+guest: command line 'C:\guest\smoke_cui.exe'
+trace:process:GuestExit guest exit, code 42
+trace:process:RestorePebFields host PEB fields restored
+trace:relay:Shutdown statistics: 188 calls to 34 syscalls
+trace:core:Shutdown shutdown
+```
+
+98 relay lines after guest entry, where previously there were **zero**. An unmodified Windows x64 PE is loaded, its
+imports bound, run to completion returning its own exit code, and the layer torn down cleanly — on real Windows, not
+under Wine. That is the project's core claim, demonstrated.
+
+**The hazard class is now gated where it was previously invisible.** mingw uses `__cxa_guard` and touches no TLS, so
+linux-cross can never reproduce the fault itself — that structural blindness, not the single bug, is what let this
+reach the console. `LeaveToGuestView` now sets `kThreadGuestView`, and `GuestViewActive()` reports the window open only
+while that flag is set **and** `ThreadState::depth == 0` (that second condition is load-bearing: keying on the flag
+alone left it set for the thread's life, because `NtContinue` never returns, and silently suppressed 645 trace lines).
+`NoteHostStateUnderGuestView()` covers `dispatch::S`, `ExportCache`, `Objects`, `Threads`, `process::G`,
+`dispatch::Views`, `dispatch::CpuPolicy` and a probe `trace::Log` consults, so even a stray `TRACE` in the window is
+dropped and counted rather than faulting. Verified gating by reinstating the original ordering: `integration.guest_view_clean`
+then **fails** on linux-cross with `err:dispatch: host state reached under the guest TLS view 1 times (last:
+dispatch::S (Host, Lookup, ...))`. Suite is 21/21, `guest_e2e` 10/10 (21 tests, from 14).
+
+### OPEN: the host's own exit code is 127, not the guest's 42
+
+`host-win32-smoke` is still red, but for a different and much narrower reason: after the clean shutdown above, the main
+thread raises an **unhandled `0xc000000d` (`STATUS_INVALID_PARAMETER`)** at `ntdll.dll+0x7e55f`, with
+`combase`/`KERNELBASE`/`RPCRT4` on the stack and `runs guest code: no`, and `win10xbox.exe` exits **127** instead of
+42. The bytes at RIP are `eb 00` right after an `e8` call, and `0x00000080c000000d` sits on the stack, which looks like
+`RtlRaiseStatus` machinery rather than a memory fault. The step also took ~3 minutes, consistent with
+`MiniDumpWriteDump` running now that dbghelp is available (it was refused inside the console AppContainer).
+
+This is a **host exit-path** defect, not a layer defect, and it is newly *reachable* rather than newly broken — before
+`532a3bf` the guest never got far enough to reach teardown. Note that 127 needs its own explanation: Git Bash reports a
+Windows status modulo 256, and `0xC000000D mod 256` is 13, not 127.
+
 No `crash.dmp` was written. The dump path reported HRESULT `0x800736b2`, the form `crash.txt` uses when `dbghelp.dll`
 cannot be bound inside the AppContainer (to be confirmed against `crash.txt`). `dbghelp.dll` is delay-loaded, so the
 package still ran, and `crash.txt` and `entry-reached.txt` were produced: the first on-console run to leave crash
