@@ -42,5 +42,6 @@ combase
 
 # --- helpers / programs ----------------------------------------------------
 programs/services
+programs/cmd   # guest program: integration.wineprog_cmd (wine-pe/programs/cmd.sh)
 wbemprox
 programs/wineboot
