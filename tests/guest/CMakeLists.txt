@@ -38,6 +38,12 @@ add_executable(guest_window2 window2.c)
 target_link_libraries(guest_window2 PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window2)
 
+# The text guest: TextOutW/DrawTextW with the stock system font, glyph pixels read back with GetPixel
+# (tests/guest/window_text.c). Its integration test is DISABLED until the text rendering slice lands.
+add_executable(guest_window_text window_text.c)
+target_link_libraries(guest_window_text PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_window_text)
+
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
 add_test(NAME guest.hello COMMAND guest_hello)
 set_tests_properties(guest.hello PROPERTIES PASS_REGULAR_EXPRESSION "hello from guest")
@@ -67,4 +73,6 @@ if(NOT CMAKE_CROSSCOMPILING_EMULATOR)
   set_tests_properties(guest.window PROPERTIES PASS_REGULAR_EXPRESSION "window: done")
   add_test(NAME guest.window2 COMMAND guest_window2)
   set_tests_properties(guest.window2 PROPERTIES PASS_REGULAR_EXPRESSION "window2: done")
+  add_test(NAME guest.window_text COMMAND guest_window_text)
+  set_tests_properties(guest.window_text PROPERTIES PASS_REGULAR_EXPRESSION "text: done")
 endif()

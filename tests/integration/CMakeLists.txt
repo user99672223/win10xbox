@@ -26,7 +26,7 @@ set(_prepare_args
 add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
-  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_window guest_window2)
+  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_window guest_window2 guest_window_text)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -116,6 +116,20 @@ win10xbox_guest_test(guest_window2 "C:\\guest\\guest_window2.exe" 42
   "window2: timer=2 destroy=1 ncdestroy=1 iswindow=0" "window2: done")
 set_tests_properties(integration.guest_window2 PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window2.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=63,96,ff00ff00|78,111,ffffff00|100,75,ff99b4d1")
+
+# The text GUI guest (tests/guest/window_text.c): a 400x300 WS_POPUP window at (100,100), client origin = screen
+# origin (100,100). It draws "HI" at client (20,20) and "Hello/Xbox" into (20,60)-(380,120) with the stock system
+# font, then reads the glyph pixels back with GetPixel and exits 42. The screenshot checks three of them at screen
+# coordinates: H(1,3) black at (121,123), H(3,3) white at (123,123), I(3,3) black at (131,123) (I's cell starts at
+# x offset 8). Stays DISABLED until the text rendering slice (claude/youthful-cerf-l7xxsb-text) lands, so CI stays
+# green meanwhile.
+win10xbox_guest_test(guest_window_text "C:\\guest\\guest_window_text.exe" 42
+  "text: class registered" "text: created hwnd=" "text: painted"
+  "text: pixels H\\(1,3\\)=00000000 H\\(6,3\\)=00000000 H\\(3,3\\)=00ffffff I\\(3,3\\)=00000000 bg=00ffffff"
+  "text: done")
+set_tests_properties(integration.guest_window_text PROPERTIES
+  DISABLED TRUE
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_text.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=121,123,ff000000|123,123,ffffffff|131,123,ff000000")
 unset(_guest_machine)
 
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
