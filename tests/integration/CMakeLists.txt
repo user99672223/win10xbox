@@ -27,7 +27,10 @@ add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_window guest_window2 guest_window_input
-                   guest_window_text)
+                   guest_window_text guest_cxx_runtime)
+  if(TARGET guest_cxx_runtime_md)
+    add_dependencies(prepare_machine guest_cxx_runtime_md)
+  endif()
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -85,6 +88,17 @@ win10xbox_guest_test(guest_cpuid "C:\\guest\\guest_cpuid.exe" 0
 # syscall stub and Clk_NtDelayExecution recursed until the stack ran out. No
 # other guest sleeps, so nothing exercised it.
 win10xbox_guest_test(guest_sleep "C:\\guest\\guest_sleep.exe" 7 "guest slept")
+
+# Exceptions and the C++ runtime (tests/guest/cxx_runtime.cpp): C++ throw/catch across frames and a DLL boundary, SEH
+# (access violation, divide by zero, RaiseException, unhandled-exception filter), vectored handlers, std::thread /
+# mutex / condition_variable, thread_local + TLS callback, static init order, std::filesystem on the VFS, a stack
+# overflow caught on a thread. One test per toolchain variant (guest_cxx_runtime_md only on MSVC: /MD runtime DLLs).
+set(_cxx_expect "cxx: throw_catch ok" "cxx: dll_boundary ok" "cxx: seh ok" "cxx: veh ok" "cxx: threads ok"
+    "cxx: thread_local ok" "cxx: static_init ok" "cxx: filesystem ok" "cxx: stack_overflow ok" "cxx: done failures=0")
+win10xbox_guest_test(guest_cxx_runtime "C:\\guest\\guest_cxx_runtime.exe" 42 ${_cxx_expect})
+if(TARGET guest_cxx_runtime_md)
+  win10xbox_guest_test(guest_cxx_runtime_md "C:\\guest\\guest_cxx_runtime_md.exe" 42 ${_cxx_expect})
+endif()
 
 # The host-uwp-lite smoke guest (built in tests/guest, MSVC only): the program
 # that ran on the console, in both subsystems. It prints facts and returns 42.

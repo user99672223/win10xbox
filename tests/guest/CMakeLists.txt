@@ -49,6 +49,25 @@ add_executable(guest_window_text window_text.c)
 target_link_libraries(guest_window_text PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window_text)
 
+# C++ runtime / exception coverage (cxx_runtime.cpp + the DLL it throws across). One executable per toolchain
+# variant: the default runtime (MSVC /MT static CRT, llvm-mingw static libc++), and on MSVC also /MD (vcruntime140 +
+# ucrt as DLLs). /MD uses the release DLL runtime in Debug too (the debug runtime DLLs are not on the machine).
+function(win10xbox_add_cxx_guest suffix)
+  add_library(guest_cxx_dll${suffix} SHARED cxx_dll.cpp)
+  win10xbox_add_guest(guest_cxx_dll${suffix})
+  add_executable(guest_cxx_runtime${suffix} cxx_runtime.cpp)
+  target_link_libraries(guest_cxx_runtime${suffix} PRIVATE guest_cxx_dll${suffix})
+  win10xbox_add_guest(guest_cxx_runtime${suffix})
+  if(MSVC AND suffix STREQUAL "_md")
+    set_target_properties(guest_cxx_dll${suffix} guest_cxx_runtime${suffix}
+      PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
+  endif()
+endfunction()
+win10xbox_add_cxx_guest("")
+if(MSVC)
+  win10xbox_add_cxx_guest("_md")
+endif()
+
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
 add_test(NAME guest.hello COMMAND guest_hello)
 set_tests_properties(guest.hello PROPERTIES PASS_REGULAR_EXPRESSION "hello from guest")
