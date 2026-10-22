@@ -40,11 +40,14 @@ jobs:
           sudo mkdir -p /opt/llvm-mingw
           curl -sSL "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_VER}/llvm-mingw-${LLVM_MINGW_VER}-ucrt-ubuntu-22.04-x86_64.tar.xz" \
             | sudo tar -xJ -C /opt/llvm-mingw --strip-components=1
+      # apt on the runner can stall for hours on a dead mirror (run 39811598598 sat on this
+      # step for 3 h 40 min): bound the step and retry the download phase.
       - name: Install Wine + ninja
+        timeout-minutes: 12
         run: |
           sudo dpkg --add-architecture i386
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends wine wine64 ninja-build
+          for i in 1 2 3; do sudo apt-get update -q && break; sleep 15; done
+          sudo apt-get install -y -q --no-install-recommends -o Acquire::Retries=3 -o Acquire::http::Timeout=60 wine wine64 ninja-build
       # The Wine sources, for the wine_conformance subset (Wine's own tests built
       # as guests, tests/wine-tests): a shallow clone of the pinned tag plus
       # wine-pe/patches, about a minute. Before Configure: CMake decides there
