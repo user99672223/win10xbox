@@ -78,7 +78,7 @@ more. Presentation is the host's: it only needs `ComposeFrame`.
 | `win_class.cpp` | classes and the user atom table (`NtUserRegisterClassExWOW`, `NtUserGetClassInfoEx`, `NtUserGetClassName`, `NtUserGetAtomName`, `NtUserRegisterWindowMessage`, class longs), the builtin classes (Button ... `#32769`, `Message`) with the procs from `NtUserInitializeClientPfnArrays`; procedures are kept as raw (A, W) pairs |
 | `win_window.cpp` | handle table, tree and z-order, rects, `NtUserCreateWindowEx` (Wine's message sequence), `ShowWindow`, `SetWindowPos` (WINDOWPOSCHANGING / NCCALCSIZE / WINDOWPOSCHANGED), `DestroyWindow` (WM_DESTROY parent first, WM_NCDESTROY children first), activation and focus, window longs, props, `NtUserCall{Hwnd,HwndParam,NoParam,OneParam,TwoParam}` codes, `FindWindowEx`, `BuildHwndList`, `WindowFromPoint`, capture, enable |
 | `win_defwnd.cpp` | the default window procedure (`NtUserMessageCall(NtUserDefWindowProc)`): text, WM_NCCALCSIZE from the style (Windows 10 frame metrics), WM_NCHITTEST, WM_NCPAINT, WM_ERASEBKGND with the class brush, WM_CTLCOLOR*, WM_CLOSE, WM_WINDOWPOSCHANGED -> WM_MOVE/WM_SIZE, WM_ACTIVATE -> focus, Alt+F4 |
-| `win_message.cpp` | per-thread queues (posted, input, cross-thread sent), WM_PAINT and WM_TIMER pseudo-messages, `GetMessage`, `PeekMessage`, `MsgWaitForMultipleObjectsEx`, `WaitMessage`, `GetQueueStatus`, `NtUserMessageCall` codes, `DispatchMessage` (WM_PAINT / timer procs), `TranslateMessage` (US layout), timers, the input sink (driver events -> mouse / keyboard messages), key state, `SendInput`, cursor, caret (tracked, not drawn) |
+| `win_message.cpp` | per-thread queues (posted, input, cross-thread sent), WM_PAINT and WM_TIMER pseudo-messages, `GetMessage`, `PeekMessage`, `MsgWaitForMultipleObjectsEx`, `WaitMessage`, `GetQueueStatus`, `NtUserMessageCall` codes, `DispatchMessage` (WM_PAINT / timer procs), `TranslateMessage` (US layout), timers, the input sink and the thread-side processing of mouse input (hit test, activation, `WM_SETCURSOR`, double clicks), key state, `SendInput`, cursor, caret (tracked, not drawn) |
 | `win_paint.cpp` | update regions (bounding rectangle + erase / frame / internal-paint flags), `InvalidateRect`/`Rgn`, `ValidateRect`/`Rgn`, `RedrawWindow`, `GetUpdateRect`/`Rgn`, `BeginPaint`/`EndPaint`, `GetDC`/`GetDCEx`/`GetWindowDC`/`ReleaseDC`, `ScrollWindowEx`, the non-client frame (solid colours), window surfaces from the driver, flush, `ComposeFrame` / `ComposeLastPaintedFrame` |
 | `win_sysparams.cpp` | `GetSystemMetrics` (Windows 10 at 96 DPI), `SystemParametersInfo[ForDpi]`, DPI awareness, monitors (`EnumDisplayMonitors` via the callback, `GetMonitorInfo`, `MonitorFromRect/Window`), `EnumDisplaySettings`, `EnumDisplayDevices`, `SetSysColors` |
 
@@ -172,11 +172,30 @@ Not implemented yet (they stay Todo or are documented FIXMEs), roughly in the or
    the host's PEB, so `PEB.ApiSetMap` is the host's), i.e. to Wine's kernelbase: the first call through such an
    import raised 0x80000100. The GUI tests therefore run on `bin/machine-builtin`, the console's builtin-only DLL
    set (docs/TESTING.md).
-9. **Input**: `user::InputSink()` is an `IEventSink`; host-win32 installs it on its driver, host-uwp's counting
-   sink forwards to it. It only posts (any thread may call it): mouse events go to the window under the cursor
-   (or the capture window), keys to the focus window of the foreground thread; a click on an inactive top-level
-   window activates it on its own thread. GUI threads drain the driver queue (`ProcessEvents`) themselves while
-   they wait in `GetMessage` / `MsgWaitForMultipleObjectsEx`.
+9. **Input**: `user::InputSink()` is an `IEventSink`; the host installs it on its driver (host-win32) or forwards its
+   own sink's calls to it (host-uwp). It runs on whichever thread drains the driver (`ProcessEvents`, one thread at a
+   time), takes the module lock, and only *queues*, as wineserver does: it updates the asynchronous key state
+   (`GetAsyncKeyState`) and the cursor, then
+   * keys: WM_KEYDOWN/UP (WM_SYSKEYDOWN/UP with Alt held without Ctrl, for Alt itself and F10, and when nothing has the
+     focus) to the focus window of the foreground thread; lParam = repeat 1 | scan << 16 | extended << 24 | context
+     << 29 | previous state << 30 | transition << 31; the L/R modifier keys arrive as VK_SHIFT/CONTROL/MENU;
+   * pointer events: a *raw* message (base WM_* message, screen position, MK_* flags in wParam) for the thread that owns
+     the window under the cursor (the deepest child's thread, via `WindowsFromPoint`) or the capture window.
+   The thread that takes a raw mouse message off its queue finishes it (`ProcessMouseMessage`, Wine's
+   `process_mouse_message`): the hit test (`WM_NCHITTEST` to this thread's windows from the front, HTTRANSPARENT passes
+   the point on, a disabled popup is HTERROR), client or non-client message (wParam = hit test, screen coordinates), double
+   click translation (`CS_DBLCLKS`, `GetDoubleClickTime`, `SM_CXDOUBLECLK`), `WM_PARENTNOTIFY`, `WM_MOUSEACTIVATE` and
+   activation of the top-level window (WM_NCACTIVATE / WM_ACTIVATE(WA_CLICKACTIVE) / focus), then `WM_SETCURSOR`; under
+   capture none of the last three. `GetKeyState` / `GetKeyboardState` / `TranslateMessage` use the state as of the last
+   input message an application *took* (`input_key_state`), `GetAsyncKeyState` the hardware's, so a queued shift+A
+   translates to 'A' however fast it was injected. 0x01 (toggle) is kept for CapsLock/NumLock/ScrollLock only.
+   Message times are the guest's own tick count (KUSER_SHARED_DATA, what `GetTickCount` reads), `GetMessagePos` is the
+   screen position, both set per delivered message in `ntuser_thread_info`. GUI threads drain the driver themselves
+   while they pump or wait (`GetMessage`, `PeekMessage`, `MsgWaitForMultipleObjectsEx`, `GetQueueStatus`,
+   `GetAsyncKeyState`; the driver's `WakeHandle` is one of the wait handles). The wheel goes to the window under the
+   cursor, like Wine; input with no window of ours under the cursor / no focus is dropped (traced as `+user`).
+   Not done: WM_MOUSELEAVE/HOVER, raw input, hooks, dead keys and other layouts (only the plain US layout), the
+   journaling and key-repeat counts.
 10. **The first target is `tests/guest/window.c`** (`integration.guest_window`): RegisterClass,
    CreateWindowEx(WS_POPUP|WS_VISIBLE, 400x300 at 100,100), WM_PAINT with two FillRects, GetPixel
    read-back, PostMessage/SetTimer, GetMessage loop, exit 42; plus the screenshot pixels. It must

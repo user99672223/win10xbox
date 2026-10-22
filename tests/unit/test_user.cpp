@@ -5,6 +5,7 @@
 // Case names start with "user_" so `test_core user_` runs just these.
 #include "check.h"
 #include "../../core/user/user_internal.h"
+#include "../../core/user/user_syscalls.h"
 #include <windows.h>
 #include <cstring>
 #include <vector>
@@ -174,4 +175,49 @@ TEST(user_abi_layouts) {
     CHECK_EQ(sizeof(abi::GdiHandleEntry), static_cast<std::size_t>(24));
     CHECK_EQ(sizeof(abi::ThreadInfo), static_cast<std::size_t>(64));
     CHECK(sizeof(abi::ThreadInfo) <= 8 * (win10xbox::dispatch::detail::teb::Win32ClientInfoCount - 1));
+}
+
+// The plain US layout behind VkKeyScan / MapVirtualKey / ToUnicode / TranslateMessage: no guest, no module state.
+TEST(user_us_layout_is_consistent) {
+    namespace sys = win10xbox::user::sys;
+    const HKL us = nullptr;   // the layout argument is ignored: there is only one
+    for (WCHAR c = 0x20; c < 0x7f; ++c) {
+        const WORD vks = sys::NtUserVkKeyScanEx(c, us);
+        CHECK(vks != 0xffff);
+        const BYTE vk = LOBYTE(vks);
+        const UINT scan = sys::NtUserMapVirtualKeyEx(vk, MAPVK_VK_TO_VSC, us);
+        CHECK(scan != 0);
+        BYTE state[256] = {};
+        if (HIBYTE(vks) & 1) state[VK_SHIFT] = 0x80;
+        WCHAR out[4] = {};
+        CHECK_EQ(sys::NtUserToUnicodeEx(vk, scan, state, out, 4, 0, us), 1);
+        CHECK_EQ(out[0], c);
+        CHECK_EQ(sys::NtUserMapVirtualKeyEx(scan, MAPVK_VSC_TO_VK, us), static_cast<UINT>(vk));
+    }
+    CHECK_EQ(sys::NtUserVkKeyScanEx(L'a', us), static_cast<WORD>('A'));
+    CHECK_EQ(sys::NtUserVkKeyScanEx(L'A', us), static_cast<WORD>(0x100 | 'A'));
+    CHECK_EQ(sys::NtUserVkKeyScanEx(0x00e9, us), static_cast<WORD>(0xffff));   // no such key on a US keyboard
+    CHECK_EQ(sys::NtUserMapVirtualKeyEx('A', MAPVK_VK_TO_VSC, us), 0x1eu);
+    CHECK_EQ(sys::NtUserMapVirtualKeyEx(VK_LSHIFT, MAPVK_VK_TO_VSC, us), 0x2au);
+    CHECK_EQ(sys::NtUserMapVirtualKeyEx(0x2a, MAPVK_VSC_TO_VK, us), static_cast<UINT>(VK_SHIFT));
+    CHECK_EQ(sys::NtUserMapVirtualKeyEx(0x2a, MAPVK_VSC_TO_VK_EX, us), static_cast<UINT>(VK_LSHIFT));
+    CHECK_EQ(sys::NtUserMapVirtualKeyEx(0x1d, MAPVK_VSC_TO_VK_EX, us), static_cast<UINT>(VK_LCONTROL));
+    CHECK_EQ(sys::NtUserMapVirtualKeyEx('Q', MAPVK_VK_TO_CHAR, us), static_cast<UINT>('Q'));
+    // caps lock flips letters only; shift and caps together cancel; control makes control characters
+    BYTE state[256] = {};
+    WCHAR out[4] = {};
+    state[VK_CAPITAL] = 1;
+    CHECK_EQ(sys::NtUserToUnicodeEx('A', 0x1e, state, out, 4, 0, us), 1);
+    CHECK_EQ(out[0], L'A');
+    CHECK_EQ(sys::NtUserToUnicodeEx('1', 0x02, state, out, 4, 0, us), 1);
+    CHECK_EQ(out[0], L'1');
+    state[VK_SHIFT] = 0x80;
+    CHECK_EQ(sys::NtUserToUnicodeEx('A', 0x1e, state, out, 4, 0, us), 1);
+    CHECK_EQ(out[0], L'a');
+    state[VK_CAPITAL] = 0;
+    state[VK_SHIFT] = 0;
+    state[VK_CONTROL] = 0x80;
+    CHECK_EQ(sys::NtUserToUnicodeEx('A', 0x1e, state, out, 4, 0, us), 1);
+    CHECK_EQ(out[0], static_cast<WCHAR>(1));
+    CHECK_EQ(sys::NtUserToUnicodeEx('A', 0x1e | 0x8000, state, out, 4, 0, us), 0);   // a key up produces nothing
 }
