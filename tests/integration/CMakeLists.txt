@@ -119,12 +119,11 @@ set_tests_properties(integration.guest_window2 PROPERTIES
 
 # The input path (tests/guest/window_input.c): the host injects a scripted mouse and keyboard (WIN10XBOX_TEST_INJECT_INPUT,
 # host-win32/main.cpp), and the guest logs each message it receives and exits 42 once the whole sequence has arrived in
-# order. DISABLED until the input delivery slice (claude/youthful-cerf-l7xxsb-input) lands.
+# order. Input delivery is part of core/user (win_message.cpp), so this gates.
 win10xbox_guest_test(guest_window_input "C:\\guest\\guest_window_input.exe" 42
   "input: WM_LBUTTONDOWN x=50 y=50" "input: WM_CHAR ch=a" "input: WM_MOUSEWHEEL delta=120")
 set_tests_properties(integration.guest_window_input PROPERTIES
-  ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=sleep 1500\\;move 150,150\\;ldown\\;lup\\;key 0x41\\;wheel 120"
-  DISABLED TRUE)
+  ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=sleep 1500\\;move 150,150\\;ldown\\;lup\\;key 0x41\\;wheel 120")
 unset(_guest_machine)
 
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
