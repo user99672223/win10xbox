@@ -1,0 +1,462 @@
+name: host-win32-appcontainer
+
+# The layer inside a GENUINE AppContainer, on a real Windows runner. host-win32-smoke.yml proves the layer for a plain
+# console exe; the real target is an Xbox UWP app in an AppContainer, and the two worst bugs so far were AppContainer
+# specific and invisible to every runner:
+#   * GetFinalPathNameByHandleW is refused inside the console's AppContainer (the whole root cause of the
+#     kernel32/kernelbase forwarder bug). CI only SIMULATES that: WIN10XBOX_TEST_NO_HOST_PATHS=1 (core/dispatch/nt_file.cpp).
+#   * dbghelp.dll could not be bound inside the console's AppContainer, so there was no crash.dmp.
+# This workflow replaces two guesses by measurements, taken on the platform instead of inferred from the console's logs.
+#
+# HOW. tests/appcontainer/ac_launch.cpp creates an AppContainer profile (CreateAppContainerProfile), gives its SID exactly
+# the file system access it needs, and starts the program with CreateProcess + PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES.
+# No package is installed, so this works on Server SKUs. The child's TOKEN is read back while it is still suspended and
+# printed ("PROVENANCE OK: the child runs in AppContainer S-1-15-2-..."); a child that is not in the container is killed, so
+# a measurement here can never be a measurement of an ordinary process. tests/appcontainer/ac_probe.c is the control
+# experiment (same code run plain, in the container and in an LPAC) and ALSO contains negative controls: things the same
+# user may do as an ordinary process and the container must not (read an ungranted file, write to C:\Windows\Temp).
+#
+# WHAT THE CONTAINER IS GRANTED (and nothing else; ac_launch prints every grant with object counts, see the launch logs):
+#   read + execute  build/ac     the probe, which runs inside the container (a container cannot start an image it may not read)
+#   read + execute  build/bin    win10xbox.exe and everything under it
+#   modify          build/bin/machine   the guest's C:\ . host-uwp keeps its machine folder in LocalState, which the package
+#                                       may write, and the layer writes its registry overlay there at shutdown
+#   modify          ac-out       the logs, crash.txt/crash.dmp and TEMP of the runs
+# "modify" also sets a Low-integrity no-write-up label on the tree: an AppContainer runs at Low integrity, the default
+# label of a file is Medium, and mandatory integrity control could otherwise veto writes that the DACL allows.
+# Capabilities in the token are the ones host-uwp's manifest declares: internetClient, internetClientServer,
+# privateNetworkClientServer, codeGeneration.
+# NOT reproduced, and so not measured by this workflow: package identity and the AppModel, the dynamic-code mitigation that
+# a UWP process gets unless it has codeGeneration, WinRT, the Xbox's own OS policy. This is "AppContainer, the token and the
+# sandbox", not "UWP, the app model".
+#
+# THE RUNS (all in one step; each leaves ac-out/<label>.log (the child's stdout+stderr), .rc (exit code) and
+# .launch.log (what ac_launch did and the provenance block)):
+#   probe-plain            control: ac_probe as an ordinary process
+#   probe-ac               ac_probe in the AppContainer           -> measurements 1 and 2
+#   probe-lpac             ac_probe in a Less Privileged AppContainer (no ALL APPLICATION PACKAGES): a stricter data point
+#   smoke-plain            control: the smoke guest through the SAME plumbing without a container (no console, like a UWP app)
+#   smoke-plain-console    control: the same, but with the console of the shell (the console situation of host-win32-smoke)
+#   smoke-ac               THE RUN: win10xbox.exe + smoke_cui.exe in the AppContainer, no test hooks -> measurement 3
+#   smoke-ac-hook          the same with WIN10XBOX_TEST_NO_HOST_PATHS=1: the simulation INSIDE the container
+# The three measurements (also in the job summary and ac-out/ac-measurements.txt):
+#   1. does GetFinalPathNameByHandleW(VOLUME_NAME_DOS) fail inside the container? Evidence: the probe, and the layer's own
+#      "host path of image file ... unavailable" warning (core/dispatch/nt_section.cpp) in the smoke-ac log WITHOUT the hook.
+#   2. does dbghelp bind? Evidence: the probe, and the host's "dbghelp.dll bound / could not be bound" startup line.
+#   3. does the guest reach exit code 42 (with 0 unresolved KERNEL32 imports, the assertions of host-win32-smoke)?
+#
+# NON-GATING for now. The run and report steps carry continue-on-error: the job is green whatever the platform did, and
+# the answer is in the log and the summary. TO MAKE IT GATING once a run has been seen to pass: delete the
+# `continue-on-error: true` line of the "Report" step (the report already exits 1 unless smoke-ac had a genuine container
+# provenance, 0 unresolved imports and exit code 42, i.e. the assertions of host-win32-smoke). The build and staging
+# steps are not continue-on-error: if they fail the job is red, as in host-win32-smoke.
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "core/**"
+      - "host-win32/**"
+      - "tests/appcontainer/**"
+      - "host-uwp-lite/smoke_guest.c"
+      - "third_party/**"
+      - "machine/**"
+      - "tests/integration/prepare_machine.cmake"
+      - "CMakeLists.txt"
+      - "cmake/**"
+      - ".github/workflows/host-win32-appcontainer.yml"
+  pull_request:
+    paths:
+      - "core/**"
+      - "host-win32/**"
+      - "tests/appcontainer/**"
+      - "host-uwp-lite/smoke_guest.c"
+      - "third_party/**"
+      - "machine/**"
+      - "tests/integration/prepare_machine.cmake"
+      - "CMakeLists.txt"
+      - "cmake/**"
+      - ".github/workflows/host-win32-appcontainer.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: host-win32-appcontainer-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read   # the job downloads the wine-pe-builtin artifact
+
+jobs:
+  appcontainer:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: true }
+      - name: Nested submodules we need (zycore only; speakeasy's test corpora are not needed)
+        run: git submodule update --init --recursive third_party/zydis
+      - uses: ilammy/msvc-dev-cmd@v1
+        with: { arch: x64 }
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      # Same incantation as host-win32-smoke.yml.
+      - name: Fetch wine-pe builtin DLLs (optional)
+        shell: pwsh
+        continue-on-error: true
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          $id = gh run list --repo ${{ github.repository }} --workflow wine-pe.yml --branch ${{ github.ref_name }} --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+          if (-not $id) {
+            $id = gh run list --repo ${{ github.repository }} --workflow wine-pe.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+          }
+          if ($id) {
+            New-Item -ItemType Directory -Force -Path wine-pe/out/builtin | Out-Null
+            gh run download $id --repo ${{ github.repository }} --name wine-pe-builtin --dir wine-pe/out/builtin
+            Write-Host "downloaded wine-pe-builtin from run $id ($((Get-ChildItem wine-pe/out/builtin -Filter *.dll).Count) DLLs)"
+          } else {
+            Write-Host "no successful wine-pe run yet; the smoke cannot run without the Wine builtins"
+          }
+          $global:LASTEXITCODE = 0
+
+      # The host under test is built exactly as host-win32-smoke.yml builds it (same tree, same flags), so that "the same
+      # smoke" really is the same binary.
+      - name: Configure
+        env: { SCCACHE_GHA_ENABLED: "true" }
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          -DWIN10XBOX_BUILD_TESTS=ON -DWIN10XBOX_BUILD_DRIVERS=OFF -DWIN10XBOX_BUILD_UWP=OFF
+      - name: Build host-win32
+        env: { SCCACHE_GHA_ENABLED: "true" }
+        run: cmake --build build --target win10xbox
+
+      - name: Stage the machine folder (Wine builtins + NLS)
+        shell: pwsh
+        env: { SCCACHE_GHA_ENABLED: "true" }
+        run: |
+          cmake --build build --target prepare_machine
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $none = Join-Path $env:RUNNER_TEMP 'no-guest-dlls.txt'
+          Set-Content -Path $none -Value '# NLS data only: the guest DLLs are the Wine builtins'
+          ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine -CI -ListFile $none
+          $machine = 'build/bin/machine'
+          $missing = @()
+          if (-not (Test-Path "$machine/Windows/builtin/ntdll.dll")) { $missing += 'the Wine PE builtins (wine-pe-builtin artifact)' }
+          if (-not (Test-Path "$machine/Windows/System32/c_1252.nls")) { $missing += 'the NLS data (c_1252.nls)' }
+          if ($missing.Count -gt 0) {
+            Write-Host "::error::host-win32-appcontainer cannot run, missing: $($missing -join '; ')"
+            exit 1
+          }
+          $nb = @(Get-ChildItem "$machine/Windows/builtin" -Filter *.dll).Count
+          $nn = @(Get-ChildItem "$machine/Windows/System32" -Filter *.nls).Count
+          Write-Host "staged $nb Wine builtins and $nn NLS files in $machine"
+
+      - name: Build the console smoke guest (host-uwp-lite/smoke_guest.c)
+        shell: cmd
+        run: |
+          if not exist build\bin\machine\guest mkdir build\bin\machine\guest
+          cl /nologo /O2 /MT /std:c11 /utf-8 /W3 /D_CRT_SECURE_NO_WARNINGS /Fobuild\smoke_cui.obj /Febuild\bin\machine\guest\smoke_cui.exe host-uwp-lite\smoke_guest.c /link /SUBSYSTEM:CONSOLE
+          if errorlevel 1 exit /b 1
+
+      # The launcher and the probe are two small standalone programs, compiled directly like the smoke guest: they are
+      # not part of the CMake tree (MSVC-only Win32 code that only this workflow needs). Static CRT, so a container never
+      # needs a runtime DLL it might not be allowed to load. The launcher resolves the AppContainer API at run time, so
+      # there is no import library to get wrong.
+      - name: Build the AppContainer launcher and probe (tests/appcontainer)
+        shell: cmd
+        run: |
+          if not exist build\ac mkdir build\ac
+          cl /nologo /O2 /MT /EHsc /std:c++17 /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS /Fobuild\ac\ac_launch.obj /Febuild\ac\ac_launch.exe tests\appcontainer\ac_launch.cpp /link advapi32.lib
+          if errorlevel 1 exit /b 1
+          cl /nologo /O2 /MT /std:c11 /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS /Fobuild\ac\ac_probe.obj /Febuild\ac\ac_probe.exe tests\appcontainer\ac_probe.c /link advapi32.lib
+          if errorlevel 1 exit /b 1
+          rem informational: what a container has to be able to load to start the host
+          dumpbin /dependents build\bin\win10xbox.exe > build\ac\win10xbox.dependents.txt || exit /b 0
+          dumpbin /dependents build\ac\ac_probe.exe > build\ac\ac_probe.dependents.txt || exit /b 0
+
+      # ---------------------------------------------------------------------------------------------------------------
+      # The runs. continue-on-error: whatever happens, the report below prints the evidence.
+      # ---------------------------------------------------------------------------------------------------------------
+      - name: Run - controls and the AppContainer (non-gating)
+        id: runs
+        shell: bash
+        continue-on-error: true
+        timeout-minutes: 30
+        env:
+          MSYS2_ARG_CONV_EXCL: "*"   # Git Bash must not rewrite the Windows paths and NAME=VALUE arguments handed to native programs
+        run: |
+          # GitHub starts `shell: bash` as `bash -eo pipefail`. A launcher that exits non-zero (a container that could not
+          # start is exactly the kind of answer wanted here) must not end the step and skip the remaining runs.
+          set +e +o pipefail
+          OUT=ac-out
+          mkdir -p "$OUT/tmp"
+          AC=build/ac/ac_launch.exe
+          # -a: absolute. Some of these reach the probe and the host as plain arguments, and the child's current directory is ac-out.
+          OUTW=$(cygpath -aw "$OUT")
+          BIN=$(cygpath -aw build/bin)
+          MACHINE=$(cygpath -aw build/bin/machine)
+          ACDIR=$(cygpath -aw build/ac)
+          HOST=$(cygpath -aw build/bin/win10xbox.exe)
+          PROBE=$(cygpath -aw build/ac/ac_probe.exe)
+          README=$(cygpath -aw README.md)   # the negative control: a file of the workspace root that is NEVER granted
+
+          # the token's capabilities = host-uwp's Package.appxmanifest
+          CAPS=(--cap internetClient --cap internetClientServer --cap privateNetworkClientServer --cap codeGeneration)
+          # the file system access, the minimum that lets the run get as far as the platform's own behaviour (see the header)
+          GRANTS=(--grant-rx "$ACDIR" --grant-rx "$BIN" --grant-modify "$MACHINE" --grant-modify "$OUTW")
+          # TEMP of every run, container or not, is a directory the container may write (a UWP app gets its own TEMP too)
+          BASEENV=(--env "TEMP=$OUTW\\tmp" --env "TMP=$OUTW\\tmp")
+          XARGS=()
+
+          run() {   # run <label> <plain|plainc|ac|lpac> <timeout s> <image> [args...]
+            local label="$1" mode="$2" tmo="$3"; shift 3
+            local m=()
+            case "$mode" in
+              plain)  m=(--plain) ;;
+              plainc) m=(--plain --inherit-console) ;;
+              ac)     m=("${CAPS[@]}" "${GRANTS[@]}") ;;
+              lpac)   m=(--lpac "${CAPS[@]}" "${GRANTS[@]}") ;;
+            esac
+            echo
+            echo "################ $label ($mode) ################"
+            "$AC" "${m[@]}" "${BASEENV[@]}" "${XARGS[@]}" --timeout "$tmo" --log "$OUTW\\$label.log" --rc "$OUTW\\$label.rc" -- "$@" > "$OUT/$label.launch.log" 2>&1
+            echo "ac_launch exit status: $?" >> "$OUT/$label.launch.log"
+            cat "$OUT/$label.launch.log"
+          }
+          probe() { XARGS=(); run "$1" "$2" 120 "$PROBE" "$OUTW" "$MACHINE" "$README"; }
+          # smoke <label> <mode> [extra launcher args...]: the assertions of host-win32-smoke need the Wine warn channel
+          smoke() {
+            local label="$1" mode="$2"; shift 2
+            XARGS=(--env WIN10XBOX_DEBUG=+all --env 'WIN10XBOX_WINEDEBUG=+loaddll,warn+module' --env "WIN10XBOX_CRASH_DIR=$OUTW\\crash-$label" "$@")
+            run "$label" "$mode" 180 "$HOST" --machine "$MACHINE" 'C:\guest\smoke_cui.exe'
+          }
+
+          probe probe-plain plain
+          probe probe-ac ac
+          probe probe-lpac lpac
+          smoke smoke-plain plain
+          smoke smoke-plain-console plainc
+          smoke smoke-ac ac
+          smoke smoke-ac-hook ac --env WIN10XBOX_TEST_NO_HOST_PATHS=1
+          echo
+          echo "files in $OUT:"; ls -l "$OUT" | cut -c1-200
+          exit 0
+
+      # ---------------------------------------------------------------------------------------------------------------
+      # The report: the three measurements, then the host-win32-smoke assertions applied to the container run.
+      # ---------------------------------------------------------------------------------------------------------------
+      - name: Report - measurements and the smoke assertions
+        id: report
+        shell: bash
+        # NON-GATING. Delete this line to make the report (and with it the job) fail unless smoke-ac passed.
+        continue-on-error: true
+        run: |
+          # `bash -eo pipefail` by default: the greps below return 1 for "no match", which is an answer, not an error.
+          set +e +o pipefail
+          OUT=ac-out
+          summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          meas="$OUT/ac-measurements.txt"
+          mkdir -p "$OUT"; : > "$meas"
+          fail=0
+
+          say() { echo "$*" | tee -a "$meas"; }
+          md()  { echo "$*" >> "$summary"; }
+
+          # PROBE lines: "PROBE <id> | <OK|FAIL|INFO> | <detail>"
+          pline()   { if [ -f "$1" ]; then grep -a -m1 -F "PROBE $2 | " "$1" | tr -d '\r'; fi; true; }
+          pstat()   { local l; l=$(pline "$1" "$2"); if [ -z "$l" ]; then echo missing; else echo "$l" | awk -F' [|] ' '{print $2}'; fi; }
+          pdetail() { local l; l=$(pline "$1" "$2"); if [ -z "$l" ]; then echo "n/a"; else echo "$l" | sed -e 's/^PROBE [^ ]* | [A-Z]* | //'; fi; }
+          cnt()     { if [ -f "$OUT/$1.log" ]; then grep -a -c -i -- "$2" "$OUT/$1.log" || true; else echo 0; fi; }
+          rcof()    { if [ -s "$OUT/$1.rc" ]; then tr -d '\r\n' < "$OUT/$1.rc"; else echo none; fi; }
+          rcx()     { local r; r=$(rcof "$1"); case "$r" in ''|*[!0-9]*) echo "$r" ;; *) printf '%s (0x%08X)' "$r" "$r" ;; esac; }
+          prov() {
+            local f="$OUT/$1.launch.log"
+            if [ ! -s "$f" ]; then echo "not-run"
+            elif grep -a -q 'PROVENANCE OK' "$f"; then echo container
+            elif grep -a -q 'PROVENANCE: control run' "$f"; then echo control
+            elif grep -a -q 'PROVENANCE FAILURE' "$f"; then echo "NOT-A-CONTAINER"
+            else echo "did-not-start"; fi
+          }
+          clip() { cut -c1-"$1"; }   # clip <width>: filter
+
+          say "=============================================================================="
+          say "host-win32-appcontainer: what the platform did"
+          say "=============================================================================="
+          if [ -s "$OUT/probe-ac.launch.log" ]; then
+            say ""
+            say "CONTAINER SETUP (probe-ac.launch.log): the profile, the capability SIDs and every grant"
+            grep -a -E '^ac_launch: (os:|container:|profile|AppContainer SID|capability|grants|grant |  objects|  Low-integrity|  could not|FATAL|PROVENANCE|child token|launcher token: AppContainer)' "$OUT/probe-ac.launch.log" | tr -d '\r' | clip 260 | tee -a "$meas"
+          else
+            say "no probe-ac.launch.log: the launcher did not run (see the 'Run' step)"
+          fi
+          say ""
+          say "IS THE SANDBOX REAL, and did the grants work? (probe-ac; a FAIL of a ctl.* line is the expected, healthy answer)"
+          say "  negative controls - read of a file nobody granted: $(pstat "$OUT/probe-ac.log" ctl.read_ungranted) (FAIL = denied = enforced), write to C:\\Windows\\Temp: $(pstat "$OUT/probe-ac.log" ctl.write_windows_temp) (FAIL = denied = enforced)"
+          say "  grant check - must be OK, else the run fails for uninteresting reasons: write in ac-out: $(pstat "$OUT/probe-ac.log" fs.write_workdir), read the machine folder: $(pstat "$OUT/probe-ac.log" fs.read_machine), write in the machine folder: $(pstat "$OUT/probe-ac.log" fs.write_machine)"
+          if [ "$(pstat "$OUT/probe-ac.log" ctl.read_ungranted)" = OK ]; then say "  NOTE: the container could read an ungranted file: the boundary is not what this workflow assumes; read every result below accordingly"; fi
+          for f in fs.write_workdir fs.read_machine fs.write_machine; do
+            if [ "$(pstat "$OUT/probe-ac.log" $f)" = FAIL ]; then say "  NOTE: $f FAILED in the container: $(pdetail "$OUT/probe-ac.log" $f | clip 200)"; fi
+          done
+          if [ -f build/ac/win10xbox.dependents.txt ]; then say "  host imports (dumpbin /dependents): $(grep -ai '\.dll' build/ac/win10xbox.dependents.txt | tr -d '\r' | tr -s ' ' | tr '\n' ' ')"; fi
+
+          # ---- 1 --------------------------------------------------------------------------------------------------
+          say ""
+          say "=============================================================================="
+          say "MEASUREMENT 1: GetFinalPathNameByHandleW(FILE_NAME_NORMALIZED | VOLUME_NAME_DOS)"
+          say "  the call HostPathOfHandle makes (core/dispatch/nt_file.cpp), on a Wine builtin of the machine folder"
+          say "=============================================================================="
+          for ctx in plain ac lpac; do
+            f="$OUT/probe-$ctx.log"
+            say "  probe, $ctx: $(pstat "$f" gfpnbh.machine_ntdll.dos_normalized)   [token: AppContainer=$(pdetail "$f" token.is_appcontainer) lpac=$(pdetail "$f" token.is_lpac) integrity=$(pdetail "$f" token.integrity)]"
+            say "      $(pdetail "$f" gfpnbh.machine_ntdll.dos_normalized | clip 210)"
+          done
+          say "  the same handle opened with FILE_READ_ATTRIBUTES only (ac): $(pstat "$OUT/probe-ac.log" gfpnbh.machine_ntdll_attr.dos_normalized)"
+          say "  other files, ac: work_file=$(pstat "$OUT/probe-ac.log" gfpnbh.work_file.dos_normalized) exe=$(pstat "$OUT/probe-ac.log" gfpnbh.exe.dos_normalized) system_ntdll=$(pstat "$OUT/probe-ac.log" gfpnbh.system_ntdll.dos_normalized) machine_dir=$(pstat "$OUT/probe-ac.log" gfpnbh.machine_dir.dos_normalized)"
+          say "  mechanism, ac: \\\\.\\MountPointManager opens with no access: $(pstat "$OUT/probe-ac.log" mountmgr.open_noaccess), with FILE_READ_ATTRIBUTES: $(pstat "$OUT/probe-ac.log" mountmgr.open_readattr)"
+          say "  every variant on the machine ntdll, ac:"
+          for v in dos_normalized dos_opened nt_normalized guid_normalized none_normalized; do
+            say "      gfpnbh $v: $(pstat "$OUT/probe-ac.log" gfpnbh.machine_ntdll.$v)  $(pdetail "$OUT/probe-ac.log" gfpnbh.machine_ntdll.$v | clip 110)"
+          done
+          for v in fileinfo_normalized ntqueryinfo_filename ntqueryobject_name; do
+            say "      alt $v: $(pstat "$OUT/probe-ac.log" alt.machine_ntdll.$v)  $(pdetail "$OUT/probe-ac.log" alt.machine_ntdll.$v | clip 110)"
+          done
+          if [ -f "$OUT/probe-ac.log" ]; then grep -a -E '^PROBE alt\.querydosdevice' "$OUT/probe-ac.log" | tr -d '\r' | clip 200 | sed -e 's/^PROBE /      /' | tee -a "$meas"; fi
+          n_ac=$(cnt smoke-ac 'host path of image file')
+          n_hook=$(cnt smoke-ac-hook 'host path of image file')
+          n_plain=$(cnt smoke-plain 'host path of image file')
+          say "  the layer itself (nt_section.cpp warns 'host path of image file ... unavailable (Win32 error N)' when the call fails):"
+          say "      smoke-ac       (container, NO test hook): $n_ac line(s)"
+          say "      smoke-ac-hook  (container, hook set)    : $n_hook line(s)   <- the simulation, inside the container"
+          say "      smoke-plain    (no container, no hook)  : $n_plain line(s)"
+          if [ "$n_ac" -gt 0 ]; then grep -a -m2 'host path of image file' "$OUT/smoke-ac.log" | tr -d '\r' | clip 230 | sed -e 's/^/      /' | tee -a "$meas"; fi
+          ac1=$(pstat "$OUT/probe-ac.log" gfpnbh.machine_ntdll.dos_normalized)
+          pv_probe=$(prov probe-ac); pv_smoke=$(prov smoke-ac)
+          case "$ac1" in
+            FAIL) v1="REFUSED inside the genuine AppContainer: $(pdetail "$OUT/probe-ac.log" gfpnbh.machine_ntdll.dos_normalized | clip 120). The console's refusal is reproducible on a stock AppContainer; it is not Xbox-only."
+                  if [ "$n_ac" -gt 0 ]; then v1="$v1 The layer itself hit it in smoke-ac, which runs WITHOUT the test hook: that run exercises the real condition and can replace the WIN10XBOX_TEST_NO_HOST_PATHS simulation as the gate."; fi ;;
+            OK)   v1="WORKS inside the genuine AppContainer. The console's refusal is NOT generic AppContainer behaviour (Xbox-specific); WIN10XBOX_TEST_NO_HOST_PATHS=1 stays the only way to cover it." ;;
+            *)    v1="NOT MEASURED: probe-ac gave no answer (provenance of probe-ac: $pv_probe). See the launch log above." ;;
+          esac
+          if [ "$ac1" = OK ] && [ "$n_ac" -gt 0 ]; then v1="$v1 INCONSISTENT: the probe succeeded but the layer logged $n_ac refusal(s) in the container."; fi
+          if [ "$ac1" = FAIL ] && [ "$n_ac" -eq 0 ] && [ "$pv_smoke" = container ]; then v1="$v1 NOTE: the layer logged no refusal in smoke-ac (a different handle or access mask than the probe's, or the warning is off)."; fi
+          say ""
+          say "  ==> MEASUREMENT 1: $v1"
+
+          # ---- 2 --------------------------------------------------------------------------------------------------
+          say ""
+          say "=============================================================================="
+          say "MEASUREMENT 2: does dbghelp.dll bind inside the AppContainer?"
+          say "=============================================================================="
+          for ctx in plain ac lpac; do
+            f="$OUT/probe-$ctx.log"
+            say "  probe, $ctx: LoadLibrary(dbghelp.dll)=$(pstat "$f" dbghelp.loadlibrary) dbgcore.dll=$(pstat "$f" dbghelp.dbgcore) MiniDumpWriteDump export=$(pstat "$f" dbghelp.export) self-dump=$(pstat "$f" dbghelp.minidump_self)"
+            say "      $(pdetail "$f" dbghelp.loadlibrary | clip 200)"
+            say "      self-dump: $(pdetail "$f" dbghelp.minidump_self | clip 200)"
+          done
+          capline=$(grep -a -m1 'crash capture installed' "$OUT/smoke-ac.log" 2>/dev/null | tr -d '\r')
+          case "$capline" in
+            *"dbghelp.dll bound"*)        hb="BOUND ('dbghelp.dll bound: crash.dmp enabled')" ;;
+            *"could not be bound"*)       hb="NOT BOUND ($(echo "$capline" | grep -a -o 'HRESULT 0x[0-9a-fA-F]*' | head -1))" ;;
+            "")                           hb="not reported (smoke-ac never reached the host's crash-capture install; provenance: $pv_smoke)" ;;
+            *)                            hb="unrecognised line: $(echo "$capline" | clip 200)" ;;
+          esac
+          say "  host (win10xbox.exe in smoke-ac), crash.cpp's own bind: $hb"
+          say "  host in smoke-plain (control): $(grep -a -m1 'crash capture installed' "$OUT/smoke-plain.log" 2>/dev/null | tr -d '\r' | grep -a -o 'dbghelp.dll [a-z ]*bound[^;]*' | head -1)"
+          dl=$(pstat "$OUT/probe-ac.log" dbghelp.loadlibrary)
+          case "$dl" in
+            OK)   v2="BINDS inside the genuine AppContainer (probe: LoadLibrary OK, self-dump $(pstat "$OUT/probe-ac.log" dbghelp.minidump_self)); host: $hb. The console's failure is NOT generic AppContainer behaviour." ;;
+            FAIL) v2="DOES NOT BIND inside the genuine AppContainer: $(pdetail "$OUT/probe-ac.log" dbghelp.loadlibrary | clip 150); host: $hb. Reproduces the console's missing crash.dmp." ;;
+            *)    v2="NOT MEASURED (probe-ac gave no answer); host: $hb" ;;
+          esac
+          say ""
+          say "  ==> MEASUREMENT 2: $v2"
+
+          # ---- 3 --------------------------------------------------------------------------------------------------
+          say ""
+          say "=============================================================================="
+          say "MEASUREMENT 3: the smoke guest inside the AppContainer (the assertions of host-win32-smoke)"
+          say "=============================================================================="
+          md "### host-win32-appcontainer"
+          md ""
+          md "| run | context | KERNEL32 unresolved | guest exit code | guest entry reached | kernelbase loaded |"
+          md "|---|---|---|---|---|---|"
+          for r in smoke-plain smoke-plain-console smoke-ac smoke-ac-hook; do
+            n=$(cnt $r 'No implementation for KERNEL32'); rc=$(rcx $r); e=$(cnt $r 'guest entry reached'); kb=$(cnt $r 'kernelbase=1'); p=$(prov $r)
+            say "  $r: context=$p  KERNEL32 unresolved=$n  guest exit code=$rc (expected 42)  guest entry reached=$([ "$e" -gt 0 ] && echo yes || echo no)  kernelbase loaded=$([ "$kb" -gt 0 ] && echo yes || echo no)"
+            md "| $r | $p | $n | $rc | $([ "$e" -gt 0 ] && echo yes || echo no) | $([ "$kb" -gt 0 ] && echo yes || echo no) |"
+          done
+          nk=$(cnt smoke-ac 'No implementation for KERNEL32'); rk=$(rcof smoke-ac); rkx=$(rcx smoke-ac)
+          verdict="PASS"
+          if [ "$pv_smoke" != container ]; then verdict="NOT A CONTAINER RUN (provenance: $pv_smoke)"; fail=1
+          else
+            if [ "$nk" -ne 0 ]; then verdict="UNRESOLVED IMPORTS ($nk)"; fail=1; fi
+            if [ "$rk" != 42 ]; then [ "$verdict" = PASS ] && verdict="EXIT CODE $rkx" || verdict="$verdict + EXIT CODE $rkx"; fail=1; fi
+          fi
+          say ""
+          say "  ==> MEASUREMENT 3: smoke-ac $verdict  (0 unresolved KERNEL32 imports and exit code 42 are the host-win32-smoke assertions)"
+          if [ "$verdict" != PASS ]; then
+            echo "::warning::host-win32-appcontainer (non-gating): smoke-ac: $verdict"
+            say "  last lines of smoke-ac.log:"
+            if [ -f "$OUT/smoke-ac.log" ]; then tail -n 30 "$OUT/smoke-ac.log" | tr -d '\r' | clip 260 | sed -e 's/^/      /' | tee -a "$meas"; fi
+            say "  host lines of smoke-ac.log:"
+            if [ -f "$OUT/smoke-ac.log" ]; then grep -a '^host-win32: ' "$OUT/smoke-ac.log" | tr -d '\r' | head -n 20 | clip 300 | sed -e 's/^/      /' | tee -a "$meas"; fi
+          fi
+
+          md ""
+          md "**Measurement 1** - GetFinalPathNameByHandleW(VOLUME_NAME_DOS) inside the AppContainer: $v1"
+          md ""
+          md "**Measurement 2** - dbghelp.dll inside the AppContainer: $v2"
+          md ""
+          md "**Measurement 3** - smoke guest inside the AppContainer: $verdict (exit code $rkx, $nk unresolved KERNEL32 imports)"
+          md ""
+          md "Non-gating. Full evidence: the \`host-win32-appcontainer-logs\` artifact (ac-measurements.txt, every probe log, launch log, crash directory)."
+
+          # ---- everything the probes saw, for the record ----------------------------------------------------------
+          for ctx in plain ac lpac; do
+            say ""
+            say "---- probe-$ctx.log (token, file system, negative controls, dynamic code) ----"
+            if [ -f "$OUT/probe-$ctx.log" ]; then grep -a -E '^PROBE (probe|os\.|token\.|fs\.|ctl\.|codegen\.|summary)' "$OUT/probe-$ctx.log" | tr -d '\r' | clip 260 | tee -a "$meas"; else say "(no log)"; fi
+          done
+          for d in "$OUT"/crash-*; do
+            if [ -f "$d/crash.txt" ]; then
+              say ""
+              say "---- $d/crash.txt (first 150 lines) ----"
+              head -n 150 "$d/crash.txt" | tr -d '\r' | clip 260 | tee -a "$meas"
+            fi
+          done
+          if [ -f "$OUT/crash-smoke-ac/crash.txt" ]; then
+            py=""
+            for c in python3 python py; do
+              if "$c" -c 'import sys; sys.exit(0 if sys.version_info[0] >= 3 else 1)' >/dev/null 2>&1; then py="$c"; break; fi
+            done
+            if [ -n "$py" ] && [ -s build/bin/win10xbox.map ]; then
+              say ""
+              say "---- smoke-ac crash symbolized against build/bin/win10xbox.map ----"
+              "$py" host-win32/symbolize_crash.py --map build/bin/win10xbox.map --exe build/bin/win10xbox.exe --log "$OUT/smoke-ac.log" --dump "$OUT/crash-smoke-ac/crash.dmp" --label "smoke-ac" "$OUT/crash-smoke-ac/crash.txt" 2>&1 | tr -d '\r' | clip 400 | tee -a "$meas" || true
+            fi
+          fi
+
+          say ""
+          if [ "$fail" -ne 0 ]; then
+            say "host-win32-appcontainer: FAIL (smoke-ac: $verdict) - non-gating"
+            exit 1
+          fi
+          say "host-win32-appcontainer: PASS (genuine AppContainer, zero unresolved KERNEL32 imports, guest exit code 42)"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: host-win32-appcontainer-logs
+          # ac-out: every run's .log/.rc/.launch.log, ac-measurements.txt, the probes' self-dumps and the crash-<label>/
+          # directories (crash.txt, crash.dmp, entry-reached.txt). The map, exe and pdb are the files the runs executed.
+          path: |
+            ac-out
+            build/ac/*.dependents.txt
+            build/bin/win10xbox.map
+            build/bin/win10xbox.exe
+            build/bin/win10xbox.pdb
+          if-no-files-found: warn
+          retention-days: 7

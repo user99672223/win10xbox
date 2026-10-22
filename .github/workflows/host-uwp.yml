@@ -26,6 +26,7 @@ on:
       - "third_party/**"
       - "winexbox/**"
       - "machine/machine.default.json"
+      - "tests/appcontainer/uwp_activate.cpp"
       - ".github/workflows/host-uwp.yml"
   pull_request:
     paths:
@@ -34,6 +35,7 @@ on:
       - "third_party/**"
       - "winexbox/**"
       - "machine/machine.default.json"
+      - "tests/appcontainer/uwp_activate.cpp"
       - ".github/workflows/host-uwp.yml"
   workflow_dispatch:
 
@@ -150,3 +152,200 @@ jobs:
             build-uwp/AppPackages/*.cer
           if-no-files-found: error
           retention-days: 14
+
+  # ---------------------------------------------------------------------------------------------------------------------
+  # `run`: can a windows-latest runner INSTALL the signed .msix above and LAUNCH it? (an experiment, NON-GATING)
+  #
+  # The `msix` job stops at "built and packaged". This job takes the very artifact it uploaded (host-uwp-msix), trusts the
+  # self-signed certificate, installs the package, activates it by AUMID and reads the verdict files out of the package's
+  # LocalState: status.txt is the oracle (first line "RESULT: PASS ..." when the guest exited with the expected 42),
+  # entry-reached.txt says whether control reached the guest, crash.txt/trace.log say what happened if it did not.
+  #
+  # Nothing here is known to work. A runner is a Server SKU in a hosted session, and every step below can legitimately refuse:
+  # sideloading policy (0x80073CFF), certificate trust (0x800B0109), the AppX deployment service, the UWP shell (activation
+  # needs a desktop session), the package's own dependencies. The job is built so that WHICHEVER step refuses ends in the
+  # concrete error in the log and in the job summary, and the later steps still collect whatever exists. It does not try
+  # anything clever to get around a refusal beyond the one documented remedy (enabling trusted-app sideloading) tried once.
+  #
+  # continue-on-error at job level: the workflow's result stays the `msix` job's. It is a separate job so that no step here
+  # can change what the `msix` job gates on.
+  # ---------------------------------------------------------------------------------------------------------------------
+  run:
+    needs: msix
+    if: ${{ !cancelled() && needs.msix.result != 'skipped' }}
+    continue-on-error: true
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tests/appcontainer   # only the activation helper is needed
+      - uses: actions/download-artifact@v4
+        with:
+          name: host-uwp-msix
+          path: msix
+      - uses: ilammy/msvc-dev-cmd@v1
+        with: { arch: x64 }
+
+      # Compiled directly (static CRT), like the other small tools: not part of the CMake tree.
+      - name: Build the activation helper (tests/appcontainer/uwp_activate.cpp)
+        shell: cmd
+        run: |
+          cl /nologo /O2 /MT /EHsc /std:c++17 /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS /Fouwp_activate.obj /Feuwp_activate.exe tests\appcontainer\uwp_activate.cpp /link ole32.lib
+          if errorlevel 1 exit /b 1
+
+      # What the platform offers, before anything is attempted: it turns "activation failed" into an explanation.
+      - name: Survey the runner (can it host UWP apps at all?)
+        shell: powershell
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $os = Get-CimInstance Win32_OperatingSystem
+          Write-Host ("OS: {0} | version {1} | build {2} | SKU {3} | product type {4} (1 workstation, 2 DC, 3 server)" -f $os.Caption, $os.Version, $os.BuildNumber, $os.OperatingSystemSKU, $os.ProductType)
+          Write-Host ("this step runs in session {0} as {1}" -f [System.Diagnostics.Process]::GetCurrentProcess().SessionId, [Environment]::UserName)
+          foreach ($n in 'AppXSvc', 'ClipSVC', 'StateRepository', 'camsvc') {
+            $s = Get-Service -Name $n -ErrorAction SilentlyContinue
+            if ($s) { Write-Host ("service {0}: {1}, start type {2}" -f $n, $s.Status, $s.StartType) } else { Write-Host ("service {0}: not present" -f $n) }
+          }
+          foreach ($p in 'explorer', 'sihost', 'ApplicationFrameHost', 'ShellExperienceHost', 'RuntimeBroker') {
+            Write-Host ("process {0}: {1} running" -f $p, @(Get-Process -Name $p -ErrorAction SilentlyContinue).Count)
+          }
+          $pol = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Appx' -ErrorAction SilentlyContinue
+          Write-Host ("policy Appx\AllowAllTrustedApps = {0}" -f $(if ($pol) { $pol.AllowAllTrustedApps } else { '(not set)' }))
+          $unlock = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock' -ErrorAction SilentlyContinue
+          Write-Host ("AppModelUnlock AllowAllTrustedApps = {0}, AllowDevelopmentWithoutDevLicense = {1}" -f $(if ($unlock) { $unlock.AllowAllTrustedApps } else { '(not set)' }), $(if ($unlock) { $unlock.AllowDevelopmentWithoutDevLicense } else { '(not set)' }))
+          Write-Host "installed packages named win10xbox*: $(@(Get-AppxPackage -Name 'win10xbox*' -ErrorAction SilentlyContinue).Count)"
+          exit 0
+
+      - name: Trust the certificate and install the package
+        id: install
+        shell: powershell
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $msix = Get-ChildItem -Path msix -Recurse -Filter *.msix | Select-Object -First 1
+          $cer = Get-ChildItem -Path msix -Recurse -Filter *.cer | Select-Object -First 1
+          if (-not $msix) { Write-Host '::error::the host-uwp-msix artifact holds no .msix'; exit 1 }
+          Write-Host ("package: {0} ({1:N1} MB)" -f $msix.FullName, ($msix.Length / 1MB))
+          if ($cer) {
+            # Self-signed code-signing certificate CN=Dev: it has to be trusted before the package signature validates.
+            # TrustedPeople is the store sideloading looks at; Root is what host-uwp/package.cmd tells a laptop owner to use.
+            foreach ($store in 'Cert:\LocalMachine\TrustedPeople', 'Cert:\LocalMachine\Root') {
+              try { Import-Certificate -FilePath $cer.FullName -CertStoreLocation $store | Out-Null; Write-Host "certificate imported into $store" }
+              catch { Write-Host "::warning::could not import the certificate into ${store}: $($_.Exception.Message)" }
+            }
+          } else {
+            Write-Host '::warning::the artifact holds no .cer: the signature cannot be trusted'
+          }
+          $installed = $false
+          for ($attempt = 1; $attempt -le 2 -and -not $installed; $attempt++) {
+            try {
+              Add-AppxPackage -Path $msix.FullName -ErrorAction Stop
+              $installed = $true
+              Write-Host "Add-AppxPackage: SUCCEEDED (attempt $attempt)"
+            } catch {
+              $msg = $_.Exception.Message
+              Write-Host "::warning::Add-AppxPackage FAILED (attempt $attempt): $msg"
+              Write-Host ("error id: {0}" -f $_.FullyQualifiedErrorId)
+              if ($attempt -eq 1 -and $msg -match '0x80073CFF') {
+                # "To install this app you need either a Windows developer license or a sideloading-enabled system."
+                Write-Host 'sideloading is not enabled on this system: enabling trusted-app installation (policy Appx\AllowAllTrustedApps=1) and trying once more'
+                New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Appx' -Force | Out-Null
+                New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Appx' -Name AllowAllTrustedApps -Value 1 -PropertyType DWord -Force | Out-Null
+              } else {
+                break
+              }
+            }
+          }
+          if (-not $installed) {
+            Write-Host '--- recent AppX deployment errors and warnings ---'
+            try {
+              Get-WinEvent -LogName 'Microsoft-Windows-AppXDeploymentServer/Operational' -MaxEvents 40 -ErrorAction Stop |
+                Where-Object { $_.LevelDisplayName -eq 'Error' -or $_.LevelDisplayName -eq 'Warning' } |
+                Select-Object -First 12 |
+                ForEach-Object { Write-Host ("[{0}] id {1}: {2}" -f $_.TimeCreated.ToString('HH:mm:ss'), $_.Id, ($_.Message -split "`n")[0]) }
+            } catch { Write-Host "(cannot read the AppX deployment log: $($_.Exception.Message))" }
+            exit 1
+          }
+          Get-AppxPackage -Name win10xbox.uwp | Format-List Name, PackageFullName, PackageFamilyName, InstallLocation, Status | Out-String | Write-Host
+
+      - name: Launch by AUMID and wait for the app to end
+        id: launch
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        shell: powershell
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $pkg = Get-AppxPackage -Name win10xbox.uwp
+          $aumid = "$($pkg.PackageFamilyName)!App"
+          Write-Host "AUMID: $aumid (expected win10xbox.uwp_eqad6j9zhtw80!App)"
+          & .\uwp_activate.exe $aumid --package-full-name $pkg.PackageFullName --timeout 240
+          $rc = $LASTEXITCODE
+          Write-Host "uwp_activate exit status: $rc (0 ended, 10 activation refused, 11 still running at the timeout, 12 COM setup failed)"
+          Set-Content -Path uwp-activate.rc -Value $rc
+          exit 0
+
+      # The files are the test oracle: status.txt first.
+      - name: Read the verdict files out of LocalState
+        id: verdict
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        shell: powershell
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $pkg = Get-AppxPackage -Name win10xbox.uwp
+          $ls = Join-Path $env:LOCALAPPDATA ("Packages\" + $pkg.PackageFamilyName + "\LocalState")
+          Write-Host "LocalState: $ls (exists: $(Test-Path $ls))"
+          New-Item -ItemType Directory -Force -Path uwp-evidence | Out-Null
+          if (Test-Path $ls) {
+            Get-ChildItem -Path $ls -File | ForEach-Object { Copy-Item -Path $_.FullName -Destination uwp-evidence -Force; Write-Host ("  {0,-24} {1,10:N0} bytes" -f $_.Name, $_.Length) }
+          }
+          $status = Join-Path $ls 'status.txt'
+          $first = '(no status.txt)'
+          if (Test-Path $status) {
+            Write-Host '--- status.txt ---'
+            Get-Content -Path $status | ForEach-Object { Write-Host $_ }
+            $first = (Get-Content -Path $status -TotalCount 1)
+          }
+          foreach ($f in 'crash.txt') {
+            $p = Join-Path $ls $f
+            if (Test-Path $p) { Write-Host "--- $f (first 60 lines) ---"; Get-Content -Path $p -TotalCount 60 | ForEach-Object { Write-Host $_ } }
+          }
+          foreach ($f in 'stdout.txt', 'trace.log') {
+            $p = Join-Path $ls $f
+            if (Test-Path $p) { Write-Host "--- $f (last 40 lines) ---"; Get-Content -Path $p -Tail 40 | ForEach-Object { Write-Host $_ } }
+          }
+          $entry = Test-Path (Join-Path $ls 'entry-reached.txt')
+          $act = '(not run)'
+          if (Test-Path uwp-activate.rc) { $act = (Get-Content uwp-activate.rc -TotalCount 1) }
+          $lines = @('### host-uwp: install and run on a windows-latest runner (experiment, non-gating)')
+          $lines += ('- OS: ' + (Get-CimInstance Win32_OperatingSystem).Caption + ' build ' + (Get-CimInstance Win32_OperatingSystem).BuildNumber)
+          $lines += '- Add-AppxPackage: SUCCEEDED'
+          $lines += ('- uwp_activate exit status: ' + $act + ' (0 ended, 10 activation refused, 11 still running at the timeout)')
+          $lines += ('- guest entry reached (entry-reached.txt): ' + $entry)
+          $lines += ('- verdict, first line of status.txt: `' + $first + '`')
+          $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($first -like 'RESULT: PASS*') { Write-Host 'host-uwp run: PASS'; exit 0 }
+          Write-Host "::warning::host-uwp run (non-gating): no PASS verdict: $first"
+          exit 1
+
+      - name: Summary of what stopped the run (when it did not get as far as a verdict)
+        if: ${{ !cancelled() && (steps.install.outcome != 'success' || steps.launch.outcome != 'success') }}
+        shell: powershell
+        run: |
+          $lines = @('### host-uwp: install and run on a windows-latest runner (experiment, non-gating)')
+          $lines += ('- install step: ${{ steps.install.outcome }}')
+          $lines += ('- launch step: ${{ steps.launch.outcome }}')
+          $lines += '- the concrete error is in the log of that step (Add-AppxPackage HRESULT, or the ActivateApplication HRESULT printed by uwp_activate)'
+          $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          exit 0
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: host-uwp-run-evidence
+          path: |
+            uwp-evidence
+            uwp-activate.rc
+          if-no-files-found: ignore
+          retention-days: 7
