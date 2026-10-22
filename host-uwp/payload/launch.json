@@ -11,6 +11,9 @@
 {
   // window.exe is looked up in C:\guest (LocalState\machine\guest, filled from the package).
   "guest": "window.exe",
+  // Seconds the window stays on the TV after it has painted (window.exe's only argument); it then
+  // exits 42 and the app keeps presenting the last frame.
+  "args": ["30"],
   "expect_exit_code": 42,
 
   // The window manager and GDI channels of core/user. The host appends +modules (the channel
