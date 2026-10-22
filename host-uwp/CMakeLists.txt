@@ -167,9 +167,14 @@ target_link_libraries(host_uwp PRIVATE
 # /DELAYLOAD:dbghelp.dll: crash.cpp binds it at startup (__HrLoadAllImportsForDll) and
 # treats a failure as "no crash.dmp". A hard import would stop the whole package from
 # starting if the console could not load dbghelp.dll inside the AppContainer.
+# /MAP + /MAPINFO:EXPORTS so a crash address from the console can be turned into a function name offline, the way
+# host-win32 does it (host-win32/symbolize_crash.py reads this format). An on-hardware crash record can only give
+# "win10xbox-uwp.exe+0xNNNN": without the map and the pdb that offset is unattributable, which cost a full debugging
+# session once already. The map is produced by the same link as the exe, so they always match.
 target_link_options(host_uwp PRIVATE
   /APPCONTAINER /SUBSYSTEM:WINDOWS /ENTRY:wWinMainCRTStartup /MANIFEST:NO /INCREMENTAL:NO
-  /DELAYLOAD:dbghelp.dll)
+  /DELAYLOAD:dbghelp.dll
+  /MAP:${CMAKE_BINARY_DIR}/bin/win10xbox-uwp.map /MAPINFO:EXPORTS)
 
 # ---------------------------------------------------------------------------
 # The guest programs (plain Win32, NOT AppContainer; static CRT via the global setting)

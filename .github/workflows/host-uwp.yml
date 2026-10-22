@@ -150,6 +150,9 @@ jobs:
           path: |
             build-uwp/AppPackages/*.msix
             build-uwp/AppPackages/*.cer
+            build-uwp/bin/win10xbox-uwp.map
+            build-uwp/bin/win10xbox-uwp.pdb
+            build-uwp/bin/win10xbox-uwp.exe
           if-no-files-found: error
           retention-days: 14
 
