@@ -77,11 +77,11 @@ console-side "can a Game-bucket app resume its child" question (probe-v2 item 1)
   variable, exit 7) and 12 unit tests in `tests/unit/test_syscalls_process.cpp` (policies, refusals, privilege split,
   quoting/command line/environment helpers, and a real suspended spawn -> resume -> wait -> exit 42 through the asm
   entry with a non-inheritable stdout pipe). Local: `100% tests passed, 0 tests failed out of 32`.
-* `ci.yml` run [39867793207](https://github.com/user99672223/win10xbox/actions/runs/39867793207) on `a9bcd14`: linux-cross
-  (60/60, `ctest gate: PASS`), windows (Debug) and windows (RelWithDebInfo) (40/40 each, gate PASS), `integration.guest_spawn`
+* `ci.yml` run [39869487010](https://github.com/user99672223/win10xbox/actions/runs/39869487010) on `503d3a0`: linux-cross
+  (61/61, `ctest gate: PASS`), windows (Debug) and windows (RelWithDebInfo) (41/41 each, gate PASS), `integration.guest_spawn`
   passed on both Windows configs (real `CreateProcessW` of the host). linux-cross failed once on
   `integration.guest_window_input2` ("another thread's window: delivered on that thread", core/user input, not this
-  change) and passed on the re-run of the same commit; run [39847437801](https://github.com/user99672223/win10xbox/actions/runs/39847437801)
+  change) and passed on the re-run of the same commit (the run before, 39867793207 on `a9bcd14`; on `503d3a0` linux-cross's first attempt died in an apt mirror timeout and passed on re-run); run [39847437801](https://github.com/user99672223/win10xbox/actions/runs/39847437801)
   (`ae63311`) was green on all three jobs as well (its linux-cross first attempt died in an apt mirror timeout).
 * Found by the test and fixed on the way: a command line passed through `process::Launch` was not NUL-terminated in the
   parameter block (also fixed independently on main; the merged version is main's). First Windows run failed to build
