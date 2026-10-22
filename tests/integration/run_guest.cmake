@@ -6,6 +6,9 @@
 # EXPECT_REGEX/FORBID_REGEX match the guest's stdout. The layer's own trace
 # output goes to stderr, so assertions about it use the TRACE variants:
 #   [-DEXPECT_TRACE_REGEX=<regex;regex...>] [-DFORBID_TRACE_REGEX=<regex>]
+# -DREQUIRE_BUILTIN_DLLS=ON adds +modules to WIN10XBOX_DEBUG and fails unless every system DLL the guest
+# mapped (C:\Windows\System32\<x>.dll in the modules trace) came from <machine>\Windows\builtin, with
+# user32.dll among them; the list is printed either way.
 # Prints "SKIP: ..." and exits 77 (cmake >= 3.29) when the machine folder has
 # no Wine builtins or no Windows NLS data (c_1252.nls, staged by
 # machine/import_windows_dlls.ps1); the test sets both SKIP_RETURN_CODE 77 and
@@ -36,6 +39,13 @@ string(REPLACE "/" "\\" _machine "${_machine}")
 set(_cmd ${EMULATOR} "${HOST}" --machine "${_machine}" "${_program}")
 if(DEBUG_SPEC)
   set(ENV{WIN10XBOX_DEBUG} "${DEBUG_SPEC}")
+endif()
+if(REQUIRE_BUILTIN_DLLS)
+  if("$ENV{WIN10XBOX_DEBUG}" STREQUAL "")
+    set(ENV{WIN10XBOX_DEBUG} "+modules")
+  else()
+    set(ENV{WIN10XBOX_DEBUG} "$ENV{WIN10XBOX_DEBUG},+modules")
+  endif()
 endif()
 execute_process(COMMAND ${_cmd} RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 120)
 message("${out}")
@@ -73,6 +83,33 @@ foreach(re ${EXPECT_TRACE_REGEX})
 endforeach()
 if(FORBID_TRACE_REGEX AND err MATCHES "${FORBID_TRACE_REGEX}")
   string(APPEND _fail "trace output matches forbidden '${FORBID_TRACE_REGEX}'\n")
+endif()
+if(REQUIRE_BUILTIN_DLLS)
+  # trace:modules:Xl_NtCreateSection section <h>: C:\Windows\System32\x.dll (<n> bytes, host path <path>)
+  string(REGEX MATCHALL "C:\\\\Windows\\\\System32\\\\[^ \\\\]+ \\([0-9]+ bytes, host path [^)\n]+\\)" _maps "${err}")
+  set(_builtin "")
+  set(_native "")
+  foreach(m ${_maps})
+    string(REGEX REPLACE "^C:\\\\Windows\\\\System32\\\\([^ ]+) .*" "\\1" _dll "${m}")
+    if(m MATCHES "host path [^)]*\\\\Windows\\\\builtin\\\\[^\\\\)]+\\)$")
+      list(APPEND _builtin "${_dll}")
+    else()
+      list(APPEND _native "${_dll}")
+    endif()
+  endforeach()
+  list(REMOVE_DUPLICATES _builtin)
+  string(REPLACE ";" " " _b "${_builtin}")
+  message("guest system DLLs from Windows\\builtin: ${_b}")
+  if(_native)
+    list(REMOVE_DUPLICATES _native)
+    string(REPLACE ";" " " _n "${_native}")
+    string(APPEND _fail "guest mapped system DLLs from outside Windows\\builtin: ${_n}\n")
+  endif()
+  string(TOLOWER "${_builtin}" _builtin_lc)
+  list(FIND _builtin_lc "user32.dll" _u32)
+  if(_u32 LESS 0)
+    string(APPEND _fail "no builtin user32.dll in the modules trace (is +modules on?)\n")
+  endif()
 endif()
 # WIN10XBOX_EXPECT_SCREENSHOT_PIXELS="x,y,aarrggbb|x,y,aarrggbb": the host wrote WIN10XBOX_SCREENSHOT (a 32-bit
 # top-down BMP of the virtual screen, see core/user); check pixels of it.

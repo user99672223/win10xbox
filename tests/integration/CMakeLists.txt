@@ -41,13 +41,18 @@ endif()
 
 # The machine folder is WIN10XBOX_MACHINE_DIR unless the caller sets _guest_machine.
 function(win10xbox_guest_test name program exit_code)
+  # On the builtin-only folder, also prove from the modules trace that no native system DLL was mapped.
+  set(_require_builtin OFF)
   if(NOT _guest_machine)
     set(_guest_machine ${WIN10XBOX_MACHINE_DIR})
+  elseif(_guest_machine STREQUAL WIN10XBOX_BUILTIN_MACHINE_DIR)
+    set(_require_builtin ON)
   endif()
   add_test(NAME integration.${name}
     COMMAND ${CMAKE_COMMAND}
       -DHOST=$<TARGET_FILE:win10xbox>
       -DMACHINE=${_guest_machine}
+      -DREQUIRE_BUILTIN_DLLS=${_require_builtin}
       -DPROGRAM=${program}
       -DEXPECT_EXIT=${exit_code}
       "-DEXPECT_REGEX=${ARGN}"

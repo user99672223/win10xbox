@@ -166,6 +166,12 @@ Not implemented yet (they stay Todo or are documented FIXMEs), roughly in the or
    and `native,builtin` loaded them: native win32u then made Windows-numbered win32k syscalls into Wine's table.
    (If route B -- forwarding to the host's win32k, measured in STATUS.md -- is ever taken, this is the switch to
    revisit.)
+   That alone is not enough on a machine folder full of *other* native DLLs: Wine's user32/gdi32 import
+   advapi32 and sechost, and the runner's build-26100 advapi32/sechost/rpcrt4 import ntdll exports Wine 11.9 lacks
+   and resolve `api-ms-win-core-crt-l2-1-0` to `kernelbase.dll` through the host's apiset schema (the guest shares
+   the host's PEB, so `PEB.ApiSetMap` is the host's), i.e. to Wine's kernelbase: the first call through such an
+   import raised 0x80000100. The GUI tests therefore run on `bin/machine-builtin`, the console's builtin-only DLL
+   set (docs/TESTING.md).
 9. **Input**: `user::InputSink()` is an `IEventSink`; host-win32 installs it on its driver, host-uwp's counting
    sink forwards to it. It only posts (any thread may call it): mouse events go to the window under the cursor
    (or the capture window), keys to the focus window of the foreground thread; a click on an inactive top-level
@@ -183,7 +189,7 @@ Not implemented yet (they stay Todo or are documented FIXMEs), roughly in the or
 tools/dev/build-mingw.sh              # configure + build (llvm-mingw, /opt/llvm-mingw)
 # builtins: wine-pe/out/builtin exists (wine-pe/build.sh); NLS: see HANDOFF trap 1
 ctest --test-dir build-mingw -R guest_window --output-on-failure
-WIN10XBOX_DEBUG=+user,+gdi,+relay wine build-mingw/bin/win10xbox.exe --machine Z:/.../build-mingw/bin/machine C:\guest\guest_window.exe
+WIN10XBOX_DEBUG=+user,+gdi,+relay wine build-mingw/bin/win10xbox.exe --machine Z:/.../build-mingw/bin/machine-builtin C:\guest\guest_window.exe
 ```
 
 `WIN10XBOX_DEBUG=+relay` shows every syscall with arguments and status (the win32u ones included),
