@@ -8,6 +8,8 @@
 #include "../launch_config.h"
 
 #include <cstdio>
+#include <fstream>
+#include <iterator>
 #include <string>
 
 using namespace w10x_uwp;
@@ -231,9 +233,32 @@ namespace
         CHECK(QuoteArg(std::wstring(L"two words")) == L"\"two words\"");
         CHECK(QuoteArg(std::wstring(L"C:\\my dir\\")) == L"\"C:\\my dir\\\\\"");
     }
+
+    // The files the package actually ships (payload\launch.json is what a fresh install runs):
+    // a parse error there would only show up on the console.
+    void TestPackagedPayload(const std::string& dir)
+    {
+        auto parse = [&](const char* name, LaunchConfig* c) {
+            std::ifstream f(dir + "/" + name, std::ios::binary);
+            const std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            std::string err;
+            const bool ok = f.good() || f.eof() ? ParseLaunchConfig(text, c, &err) : false;
+            if (!ok) std::printf("FAIL  payload/%s: %s\n", name, text.empty() ? "cannot read" : err.c_str());
+            return ok && !text.empty();
+        };
+        LaunchConfig c;
+        CHECK(parse("launch.json", &c));
+        CHECK(c.guest == "C:\\guest\\window.exe");
+        CHECK(c.has_expect_exit_code && c.expect_exit_code == 42);
+        CHECK(!c.exit_when_done && c.timeout_sec == 600);
+        CHECK(c.trace == "+user,+gdi");
+        LaunchConfig e;
+        CHECK(parse("launch.example.json", &e));
+        CHECK(e.guest == "C:\\guest\\hello.exe");   // documents the built-in defaults
+    }
 }  // namespace
 
-int main()
+int main(int argc, char** argv)
 {
     TestDefaults();
     TestFull();
@@ -243,6 +268,7 @@ int main()
     TestLimits();
     TestPathHelpers();
     TestQuoting();
+    if (argc > 1) TestPackagedPayload(argv[1]);   // ctest passes host-uwp/payload
     std::printf("host_uwp_selftest: %d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

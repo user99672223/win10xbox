@@ -103,14 +103,11 @@ NTSTATUS NTAPI User_NtCallbackReturn(void* result, ULONG size, NTSTATUS status) 
 void SetDisplayDriver(winexbox::IWinexboxDriver* driver) { detail::g_driver = driver; }
 
 winexbox::IWinexboxDriver* DisplayDriver() {
-    if (!detail::g_driver) {
-        detail::LockGuard lock;
-        if (!detail::g_driver) {
-            FIXME(user, "no display driver set by the host: creating a headless one");
-            detail::g_owned_driver = new std::unique_ptr<winexbox::IWinexboxDriver>(winexbox::CreateHeadlessDriver());
-            detail::g_driver = detail::g_owned_driver->get();
-        }
-    }
+    // No on-demand headless driver in this skeleton: winexbox::CreateHeadlessDriver lives in the
+    // winexbox library, which links against win10xbox_core and is absent from several executables
+    // that link core (win10xbox.exe, drv_host, test_drivers, host-uwp-lite), so calling it here made
+    // all of them fail to link. Null until the host calls SetDisplayDriver.
+    (void)detail::g_owned_driver;
     return detail::g_driver;
 }
 

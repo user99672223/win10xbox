@@ -27,6 +27,10 @@ on:
       - "winexbox/**"
       - "machine/machine.default.json"
       - "tests/appcontainer/uwp_activate.cpp"
+      - "tests/guest/**"                      # bundled guests (host-uwp/CMakeLists.txt HOST_UWP_GUESTS)
+      - "tests/drivers/drv_client.c"
+      - "tests/drivers/our_test_device.h"
+      - "host-uwp-lite/smoke_guest.c"
       - ".github/workflows/host-uwp.yml"
   pull_request:
     paths:
@@ -36,6 +40,10 @@ on:
       - "winexbox/**"
       - "machine/machine.default.json"
       - "tests/appcontainer/uwp_activate.cpp"
+      - "tests/guest/**"                      # bundled guests (host-uwp/CMakeLists.txt HOST_UWP_GUESTS)
+      - "tests/drivers/drv_client.c"
+      - "tests/drivers/our_test_device.h"
+      - "host-uwp-lite/smoke_guest.c"
       - ".github/workflows/host-uwp.yml"
   workflow_dispatch:
 
@@ -138,13 +146,18 @@ jobs:
         shell: cmd
         run: call host-uwp\package.cmd build-uwp
 
-      # The launch.json parser (host-uwp/launch_config.cpp, portable code) against
-      # selftest/selftest.cpp: a console program with no layer, WinRT or package, so it runs
-      # on the runner. After Package on purpose: a failure turns the job red, but the .msix is
-      # still produced and uploaded (see the upload condition below).
-      - name: Selftest (launch.json parser)
+      # Two console programs with no layer, WinRT or package, so they run on the runner:
+      #   host_uwp.selftest  the launch.json parser (host-uwp/launch_config.cpp) against
+      #                      selftest/selftest.cpp, plus the packaged payload/*.json files;
+      #   host_uwp.blit      the presenter's frame path (host-uwp/blit.cpp, the code the console
+      #                      runs): a WARP device, a synthetic BGRA frame uploaded and copied into a
+      #                      64x64 render target, read back through a staging texture and checked
+      #                      pixel by pixel. Only CreateSwapChainForCoreWindow is left to the console.
+      # After Package on purpose: a failure turns the job red, but the .msix is still produced
+      # and uploaded (see the upload condition below).
+      - name: Selftest (launch.json parser, D3D11 blit on WARP)
         id: selftest
-        run: ctest --test-dir build-uwp --output-on-failure --no-tests=error -R host_uwp.selftest
+        run: ctest --test-dir build-uwp --output-on-failure --no-tests=error -R "host_uwp\."
 
       - name: Summary
         if: always()
@@ -152,7 +165,7 @@ jobs:
         run: |
           $stage = 'build-uwp/AppX'
           $builtins = @(Get-ChildItem "$stage/payload/builtin" -Filter *.dll -ErrorAction SilentlyContinue).Count
-          $guests = @(Get-ChildItem "$stage/payload/guest" -Filter *.exe -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) -join ', '
+          $guests = @(Get-ChildItem "$stage/payload/guest" -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) -join ', '
           $msix = Get-ChildItem build-uwp/AppPackages -Filter *.msix -ErrorAction SilentlyContinue | Select-Object -First 1
           $lines = @('### host-uwp (build + package; NOT run on hardware)')
           if ($msix) { $lines += ('- package: `{0}` ({1:N1} MB), version 1.0.0.${{ github.run_number }}' -f $msix.Name, ($msix.Length / 1MB)) } else { $lines += '- package: NOT produced' }
@@ -160,7 +173,7 @@ jobs:
           $lines += '- winmd bundled: ' + (Test-Path "$stage/Win10XboxUwp.winmd")
           $lines += '- bundled guests: ' + $(if ($guests) { $guests } else { 'none' })
           $lines += '- packaged default launch.json: ' + (Test-Path "$stage/payload/launch.json")
-          $lines += '- launch.json selftest: ${{ steps.selftest.outcome }}'
+          $lines += '- selftests (launch.json parser, D3D11 blit on WARP): ${{ steps.selftest.outcome }}'
           $lines += '- AUMID: `win10xbox.uwp_eqad6j9zhtw80!App`'
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           $global:LASTEXITCODE = 0
@@ -186,6 +199,20 @@ jobs:
           }
           if ($mb -lt 10) {
             Write-Host "::error::package is only $mb MB; a complete one is about 21 MB. The builtins are probably missing from the payload even though the staging directory has them."
+            exit 1
+          }
+          # Every guest the package is meant to carry to the console (host-uwp/CMakeLists.txt
+          # HOST_UWP_GUESTS), and the packaged default launch.json naming the GUI guest.
+          $expected = @('window.exe', 'hello.exe', 'hello_cui.exe', 'guest_hello.exe', 'guest_cpuid.exe',
+                        'guest_sleep.exe', 'guest_dll.dll', 'smoke_cui.exe', 'drv_client.exe')
+          $missing = @($expected | Where-Object { -not (Test-Path "$stage/payload/guest/$_") })
+          Write-Host ("bundled guests: " + (@(Get-ChildItem "$stage/payload/guest" -File | ForEach-Object { $_.Name }) -join ', '))
+          if ($missing.Count -gt 0) {
+            Write-Host "::error::the package is missing bundled guest(s): $($missing -join ', ')"
+            exit 1
+          }
+          if (-not (Select-String -Path "$stage/payload/launch.json" -Pattern '"guest": "window.exe"' -Quiet)) {
+            Write-Host "::error::payload/launch.json in the package does not run window.exe"
             exit 1
           }
 
