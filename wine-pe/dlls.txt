@@ -35,6 +35,16 @@ imm32
 ws2_32
 winmm
 
+# --- imported by the Sysinternals Coreinfo64 / PsInfo64 guests (docs/slices/sysinfo.md) ---
+comdlg32
+pdh
+mpr
+netapi32
+netutils
+iphlpapi
+dnsapi
+nsi
+
 # --- COM -------------------------------------------------------------------
 ole32
 oleaut32
