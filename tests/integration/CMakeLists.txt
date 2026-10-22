@@ -27,7 +27,7 @@ add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_window guest_window2 guest_window_input
-                   guest_window_text)
+                   guest_window_text guest_audio_probe)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -227,3 +227,22 @@ win10xbox_guest_tls_test(guest_view_violation_detected 42 "+dispatch,+modules"
   "WIN10XBOX_TEST_GUEST_VIEW_VIOLATION=1"
   "host state reached under the guest TLS view [0-9]+ times \\(last: dispatch::ExportCache\\), [1-9][0-9]* trace lines dropped"
   "")
+
+# ---- Audio: the guest's COM/WASAPI/XAudio2 reaches the HOST's real audio stack (core/audio) ----------------------
+# tests/guest/audio_probe.c prints one PASS/FAIL + HRESULT line per step. audio_probe_test.cmake runs it directly on the
+# host (the real answer: on a headless runner the "no device" codes) and through the layer on the builtin-only machine
+# folder, with the bridge stubs staged into its Windows\builtin, and requires the same verdict and HRESULT for every step.
+add_test(NAME integration.guest_audio_probe
+  COMMAND ${CMAKE_COMMAND}
+    -DHOST=$<TARGET_FILE:win10xbox>
+    -DMACHINE=${WIN10XBOX_BUILTIN_MACHINE_DIR}
+    -DPROBE=$<TARGET_FILE:guest_audio_probe>
+    -DSTUB_DIR=${CMAKE_BINARY_DIR}/bin/audio_stub
+    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/audio_probe_test.cmake)
+set_tests_properties(integration.guest_audio_probe PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "guest_e2e"
+  TIMEOUT 180)

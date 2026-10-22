@@ -2,6 +2,7 @@
 // Sequence and PEB take-over are documented in docs/DISPATCHER.md.
 #include "internal.h"
 #include "win10xbox/config.h"
+#include "win10xbox/audio.h"
 #if WIN10XBOX_HAVE_VFS
 #include "win10xbox/vfs.h"
 #endif
@@ -590,6 +591,7 @@ int Launch(const LaunchOptions& opts) {
     LoadCpuPolicy(root);
 #endif
     RegisterNtdllUnixLib();
+    audio::Initialize(root);   // host audio DLLs + guest CLSID registration; before the PEB take-over (core/audio)
 
     if ((s = MapGuestNtdll(root))) return static_cast<int>(s);
 

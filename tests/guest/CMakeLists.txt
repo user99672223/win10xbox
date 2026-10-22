@@ -81,3 +81,21 @@ if(NOT CMAKE_CROSSCOMPILING_EMULATOR)
   add_test(NAME guest.window_text COMMAND guest_window_text)
   set_tests_properties(guest.window_text PROPERTIES PASS_REGULAR_EXPRESSION "text: done")
 endif()
+
+# The audio probe (tests/guest/audio_probe.c): WASAPI + XAudio2, one PASS/FAIL line with the HRESULT per step. It is a
+# measurement and exits 0; integration.guest_audio_probe requires the layer's answers to equal the host's own.
+add_executable(guest_audio_probe audio_probe.c)
+win10xbox_add_guest(guest_audio_probe)
+# The two guest stubs of the audio bridge (core/audio): built as mmdevapi.dll / xaudio2_9.dll, NOT into bin/guest (a
+# native run of the probe would load the stub from its own directory); the integration test stages them into the
+# machine folder's Windows\builtin.
+set(WIN10XBOX_AUDIO_STUB_DIR ${CMAKE_BINARY_DIR}/bin/audio_stub)
+foreach(_stub mmdevapi:mmdevapi_stub.c xaudio2_9:xaudio2_stub.c)
+  string(REPLACE ":" ";" _p ${_stub})
+  list(GET _p 0 _dll)
+  list(GET _p 1 _src)
+  add_library(guest_audio_${_dll} SHARED ${CMAKE_SOURCE_DIR}/core/audio/guest/${_src})
+  set_target_properties(guest_audio_${_dll} PROPERTIES OUTPUT_NAME ${_dll} PREFIX ""
+    RUNTIME_OUTPUT_DIRECTORY ${WIN10XBOX_AUDIO_STUB_DIR} LIBRARY_OUTPUT_DIRECTORY ${WIN10XBOX_AUDIO_STUB_DIR}
+    ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib/audio_stub)
+endforeach()
