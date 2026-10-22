@@ -25,9 +25,8 @@ that has ever run.
 | Tier | What | Gating? |
 |---|---|---|
 | Xbox hardware | one guest, exit 42, 188 calls across **34 distinct syscalls** | manual |
-| Real Windows CI | same + a **genuine AppContainer** + the exit-code path | ✅ yes |
-| Wine on Linux CI | 26 tests, 14 of them guest end-to-end | ✅ yes |
-| Wine only | M3 conformance baseline; M4 KMDF + layout checks are mingw-only | ❌ no |
+| Real Windows CI | same + a **genuine AppContainer** + the exit-code path; all guest/driver end-to-end tests, M4 KMDF + layout check (WDK), every bundled guest's exit code | ✅ yes |
+| Wine on Linux CI | the whole ctest suite, M3 conformance baseline (`wine_conformance`) included | ✅ yes |
 
 ## What has never been tested — do not assume otherwise
 
@@ -113,8 +112,8 @@ procedures run through `PEB.KernelCallbackTable[NtUserCallWinProc]` and end with
 ```bash
 tools/dev/build-mingw.sh            # configure + build into build-mingw/
 # stage NLS (see trap 1), then:
-ctest --test-dir build-mingw --label-exclude wine_conformance   # 26/26 expected
-ctest --test-dir build-mingw -L guest_e2e                       # 14/14 expected
+ctest --test-dir build-mingw --output-junit ctest-junit.xml      # everything (wine_conformance needs wine-pe/fetch-wine.sh)
+python3 tools/ci/check_ctest_run.py --build build-mingw --junit ctest-junit.xml --require-label guest_e2e   # skips = FAIL
 ```
 
 Workflows: `ci.yml` (gates), `host-win32-smoke.yml` (real-Windows guest, gates),
@@ -130,7 +129,8 @@ before the PEB takeover: `WIN10XBOX_TEST_NO_HOST_PATHS`, `WIN10XBOX_TEST_TLS_IND
 
 1. **Pixels.** The four steps under "Shortest path to something visible". This is the goal; it is
    not blocked on anything below.
-2. **Close the `guest_e2e` Windows gate** (task #12) *while* doing 1, not before it. Those tests
+2. ~~**Close the `guest_e2e` Windows gate** (task #12)~~ **Done 2026-10-22**: stdio was captured all along;
+   two real bugs were hiding behind the non-blocking step (`docs/STATUS.md`, top). What the old text said: those tests
    run on Windows but cannot fail the build, because guest stdio is not captured there. That is
    the exact hole that let four bugs sit in "green" code — but it is a standing-protection task,
    so fold it in rather than letting it hold the screen hostage.
@@ -151,7 +151,7 @@ get `drivers/` running somewhere other than mingw, and **watch the ctest skip co
 pass count** (trap 1). When a hardware trip is needed, combine everything into one run — each trip
 costs the user real time.
 
-Open tasks worth reading: #12 (Windows stdio capture / gating), #13 (port the host module table
+Open tasks worth reading: #12 is closed (2026-10-22, `STATUS.md`), #13 (port the host module table
 to the other two `crash.cpp` copies), #15 (use NT paths so `HostPathOfHandle` works inside an
 AppContainer — measured to work, would replace byte-comparison identity).
 

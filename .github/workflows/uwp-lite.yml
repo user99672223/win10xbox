@@ -11,22 +11,12 @@ name: uwp-lite
 # that is the configuration core/ is known to build in. RelWithDebInfo (O2 +
 # NDEBUG) is one of the two configurations ci.yml gates on.
 
+# Every push to every branch, no path filter: the whole project is tested
+# continuously (docs/HANDOFF.md, standing testing rule).
 on:
   push:
     branches: ["**"]
-    paths:
-      - "host-uwp-lite/**"
-      - "core/**"
-      - "third_party/**"
-      - "machine/machine.default.json"
-      - ".github/workflows/uwp-lite.yml"
   pull_request:
-    paths:
-      - "host-uwp-lite/**"
-      - "core/**"
-      - "third_party/**"
-      - "machine/machine.default.json"
-      - ".github/workflows/uwp-lite.yml"
   workflow_dispatch:
 
 concurrency:

@@ -1,0 +1,166 @@
+win10xbox: honour KUSER_SHARED_DATA.TickCountMultiplier
+
+Wine's GetTickCount, GetTickCount64 (kernelbase and kernel32), NtGetTickCount
+(ntdll) and win32u's message clock read KUSER_SHARED_DATA.TickCount and ignore
+TickCountMultiplier, because Wine's server stores TickCount in milliseconds and
+sets the multiplier to 1 << 24. Under win10xbox on a real Windows host (and on
+the Xbox) the guest reads the HOST's KUSER_SHARED_DATA, where TickCount counts
+15.625 ms ticks and the multiplier is 0x0fa00000, so every guest tick count ran
+15.625 times slow: integration.driver_ioctl measured a 127 ms kernel timer as
+"wall_ms=8" on the windows-latest runner (ci.yml run 39818491081). Convert with
+the multiplier, the way Windows' own ntdll does; under a Wine host the
+multiplier is 1 << 24 and the result is unchanged.
+
+diff --git a/dlls/kernel32/sync.c b/dlls/kernel32/sync.c
+index 5b2a848..fb437e0 100644
+--- a/dlls/kernel32/sync.c
++++ b/dlls/kernel32/sync.c
+@@ -78,6 +78,18 @@ static BOOL get_open_object_attributes( OBJECT_ATTRIBUTES *attr, UNICODE_STRING
+     return TRUE;
+ }
+ 
++/* win10xbox: honour TickCountMultiplier. Wine's server keeps TickCount in
++ * milliseconds with a multiplier of 1 << 24, but on a real Windows host (and on
++ * the Xbox) the guest reads the host's KUSER_SHARED_DATA, where TickCount counts
++ * 15.625 ms ticks and the multiplier is 0x0fa00000. Ignoring it made GetTickCount
++ * run 15.625 times slow there. */
++static inline ULONGLONG w10x_ticks_to_ms( ULONGLONG ticks )
++{
++    ULONGLONG mul = user_shared_data->TickCountMultiplier;
++    if (!mul) mul = 1 << 24;
++    return (ticks >> 24) * mul + (((ticks & 0xffffff) * mul) >> 24);
++}
++
+ /******************************************************************************
+  *           GetTickCount64       (KERNEL32.@)
+  */
+@@ -91,8 +103,7 @@ ULONGLONG WINAPI DECLSPEC_HOTPATCH GetTickCount64(void)
+         low = user_shared_data->TickCount.LowPart;
+     }
+     while (high != user_shared_data->TickCount.High2Time);
+-    /* note: we ignore TickCountMultiplier */
+-    return (ULONGLONG)high << 32 | low;
++    return w10x_ticks_to_ms( (ULONGLONG)high << 32 | low );
+ }
+ 
+ /***********************************************************************
+@@ -100,8 +111,7 @@ ULONGLONG WINAPI DECLSPEC_HOTPATCH GetTickCount64(void)
+  */
+ DWORD WINAPI DECLSPEC_HOTPATCH GetTickCount(void)
+ {
+-    /* note: we ignore TickCountMultiplier */
+-    return user_shared_data->TickCount.LowPart;
++    return (DWORD)GetTickCount64();
+ }
+ 
+ /***********************************************************************
+diff --git a/dlls/kernelbase/sync.c b/dlls/kernelbase/sync.c
+index 94036ac..5c97e2e 100644
+--- a/dlls/kernelbase/sync.c
++++ b/dlls/kernelbase/sync.c
+@@ -175,13 +175,24 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetSystemTimes( FILETIME *idle, FILETIME *kernel,
+ }
+ 
+ 
++/* win10xbox: honour TickCountMultiplier. Wine's server keeps TickCount in
++ * milliseconds with a multiplier of 1 << 24, but on a real Windows host (and on
++ * the Xbox) the guest reads the host's KUSER_SHARED_DATA, where TickCount counts
++ * 15.625 ms ticks and the multiplier is 0x0fa00000. Ignoring it made GetTickCount
++ * run 15.625 times slow there. */
++static inline ULONGLONG w10x_ticks_to_ms( ULONGLONG ticks )
++{
++    ULONGLONG mul = user_shared_data->TickCountMultiplier;
++    if (!mul) mul = 1 << 24;
++    return (ticks >> 24) * mul + (((ticks & 0xffffff) * mul) >> 24);
++}
++
+ /******************************************************************************
+  *           GetTickCount   (kernelbase.@)
+  */
+ ULONG WINAPI DECLSPEC_HOTPATCH GetTickCount(void)
+ {
+-    /* note: we ignore TickCountMultiplier */
+-    return user_shared_data->TickCount.LowPart;
++    return (ULONG)GetTickCount64();
+ }
+ 
+ 
+@@ -198,8 +209,7 @@ ULONGLONG WINAPI DECLSPEC_HOTPATCH GetTickCount64(void)
+         low = user_shared_data->TickCount.LowPart;
+     }
+     while (high != user_shared_data->TickCount.High2Time);
+-    /* note: we ignore TickCountMultiplier */
+-    return (ULONGLONG)high << 32 | low;
++    return w10x_ticks_to_ms( (ULONGLONG)high << 32 | low );
+ }
+ 
+ 
+diff --git a/dlls/ntdll/time.c b/dlls/ntdll/time.c
+index 5a96a1e..920b2b6 100644
+--- a/dlls/ntdll/time.c
++++ b/dlls/ntdll/time.c
+@@ -398,10 +398,29 @@ BOOL WINAPI DECLSPEC_HOTPATCH RtlQueryPerformanceFrequency( LARGE_INTEGER *frequ
+  * NtGetTickCount   (NTDLL.@)
+  * ZwGetTickCount   (NTDLL.@)
+  */
++/* win10xbox: honour TickCountMultiplier. Wine's server keeps TickCount in
++ * milliseconds with a multiplier of 1 << 24, but on a real Windows host (and on
++ * the Xbox) the guest reads the host's KUSER_SHARED_DATA, where TickCount counts
++ * 15.625 ms ticks and the multiplier is 0x0fa00000. Ignoring it made GetTickCount
++ * run 15.625 times slow there. */
++static inline ULONGLONG w10x_ticks_to_ms( ULONGLONG ticks )
++{
++    ULONGLONG mul = user_shared_data->TickCountMultiplier;
++    if (!mul) mul = 1 << 24;
++    return (ticks >> 24) * mul + (((ticks & 0xffffff) * mul) >> 24);
++}
++
+ ULONG WINAPI DECLSPEC_HOTPATCH NtGetTickCount(void)
+ {
+-    /* note: we ignore TickCountMultiplier */
+-    return user_shared_data->TickCount.LowPart;
++    ULONG high, low;
++
++    do
++    {
++        high = user_shared_data->TickCount.High1Time;
++        low = user_shared_data->TickCount.LowPart;
++    }
++    while (high != user_shared_data->TickCount.High2Time);
++    return (ULONG)w10x_ticks_to_ms( (ULONGLONG)high << 32 | low );
+ }
+ 
+ /***********************************************************************
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index a0eb097..05859f2 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -65,6 +65,18 @@ static ULONG atomic_load_ulong( const volatile ULONG *ptr )
+ #endif
+ }
+ 
++/* win10xbox: honour TickCountMultiplier. Wine's server keeps TickCount in
++ * milliseconds with a multiplier of 1 << 24, but on a real Windows host (and on
++ * the Xbox) the guest reads the host's KUSER_SHARED_DATA, where TickCount counts
++ * 15.625 ms ticks and the multiplier is 0x0fa00000. Ignoring it made GetTickCount
++ * run 15.625 times slow there. */
++static inline ULONGLONG w10x_ticks_to_ms( ULONGLONG ticks )
++{
++    ULONGLONG mul = user_shared_data->TickCountMultiplier;
++    if (!mul) mul = 1 << 24;
++    return (ticks >> 24) * mul + (((ticks & 0xffffff) * mul) >> 24);
++}
++
+ static UINT64 get_tick_count(void)
+ {
+     ULONG high, low;
+@@ -75,8 +87,7 @@ static UINT64 get_tick_count(void)
+         low = atomic_load_ulong( &user_shared_data->TickCount.LowPart );
+     }
+     while (high != atomic_load_long( &user_shared_data->TickCount.High2Time ));
+-    /* note: we ignore TickCountMultiplier */
+-    return (UINT64)high << 32 | low;
++    return w10x_ticks_to_ms( (UINT64)high << 32 | low );
+ }
+ 
+ #define MAX_WINPROC_RECURSION  64

@@ -1,12 +1,16 @@
-/* Layout facts both headers must agree on: S(type) = sizeof, O(type, field) = offsetof. */
+/* Layout facts both headers must agree on: S(type) = sizeof, O(type, field) = offsetof.
+ * OB(type, field, byte): offsetof(type, field), where Microsoft's WDK declares `field` as a bit field inside the
+ * byte `byte` (offsetof cannot take a bit field; the mingw-w64 ddk declares a plain UCHAR).
+ * SA(type, align): sizeof(type), where the WDK declares the type DECLSPEC_ALIGN(align) and the mingw-w64 ddk does
+ * not: compared exactly against the WDK, and against mingw-w64's size rounded up to that alignment. */
 S(LIST_ENTRY) S(UNICODE_STRING) S(IO_STATUS_BLOCK) S(LARGE_INTEGER)
 S(DISPATCHER_HEADER) S(KEVENT) S(KSEMAPHORE) S(KMUTANT) S(KTIMER) S(KDPC) S(KDEVICE_QUEUE) S(KDEVICE_QUEUE_ENTRY)
 S(WAIT_CONTEXT_BLOCK) S(FAST_MUTEX) S(MDL) S(WORK_QUEUE_ITEM)
 O(KDPC, DeferredRoutine) O(KDPC, DeferredContext) O(KDPC, SystemArgument1) O(KDPC, SystemArgument2) O(KDPC, DpcData)
 O(KTIMER, DueTime) O(KTIMER, TimerListEntry) O(KTIMER, Dpc) O(KTIMER, Period)
-O(KMUTANT, OwnerThread) O(KMUTANT, Abandoned)
+O(KMUTANT, OwnerThread) OB(KMUTANT, Abandoned, MutantFlags)
 O(MDL, MdlFlags) O(MDL, MappedSystemVa) O(MDL, StartVa) O(MDL, ByteCount) O(MDL, ByteOffset)
-S(DEVICE_OBJECT)
+SA(DEVICE_OBJECT, 16)
 O(DEVICE_OBJECT, DriverObject) O(DEVICE_OBJECT, NextDevice) O(DEVICE_OBJECT, AttachedDevice) O(DEVICE_OBJECT, CurrentIrp)
 O(DEVICE_OBJECT, Flags) O(DEVICE_OBJECT, Characteristics) O(DEVICE_OBJECT, DeviceExtension) O(DEVICE_OBJECT, DeviceType)
 O(DEVICE_OBJECT, StackSize) O(DEVICE_OBJECT, Queue) O(DEVICE_OBJECT, AlignmentRequirement) O(DEVICE_OBJECT, DeviceQueue)

@@ -1,12 +1,56 @@
 # Testing
 
-| Suite | Where | Runs on |
+| Suite | Where | Runs on (every push, every branch; all gating) |
 |-------|-------|---------|
-| `unit.*` | `tests/unit` | linux-cross (Wine) + windows |
-| `integration.*` | `tests/integration` | windows (real EXEs through host-win32) |
-| Wine conformance subset (`wine_conformance`) | `tests/wine-tests` | linux-cross (Wine), non-blocking; windows: skips (see below) |
-| `drivers.*`, `integration.driver_*` | `tests/drivers` | linux-cross (Wine) + windows (see below) |
+| `unit.*`, `guest.*` | `tests/unit`, `tests/guest` | linux-cross (llvm-mingw + Wine) + windows (MSVC Debug and RelWithDebInfo) |
+| `integration.*` (label `guest_e2e`: real guest PEs through `win10xbox.exe`) | `tests/integration`, `tests/host_exit` | linux-cross + windows |
+| Wine conformance subset (`wine_conformance`) | `tests/wine-tests` | linux-cross, gated on the recorded baseline; windows: not registered (MSVC cannot build Wine's tests) |
+| `drivers.unit`, `drivers.layout` (label `drivers`), `integration.driver_*` (label `driver_e2e`) | `tests/drivers` | linux-cross + windows (KMDF driver and layout check against the WDK on MSVC) |
+| every bundled guest through the host, exit code checked (`tools/ci/smoke_guests.ps1`) | `ci.yml` windows, `host-win32-smoke.yml` | windows (desktop machine folder) + windows (console conditions) |
 | kmtest subset | `tests/kmtest` | windows (M4, not yet started: `tests/drivers/kmtest.h` is a minimal in-driver harness) |
+
+## What gates where (CI)
+
+Every workflow except `wine-pe.yml` (which only rebuilds Wine, on `wine-pe/**` changes and weekly) runs on every
+push to every branch; nothing is `continue-on-error` except the diagnostics steps that only print.
+
+* **`ci.yml` linux-cross** (llvm-mingw, guests under Wine): `wine-pe/fetch-wine.sh` (shallow clone of the pinned Wine
+  tag, a few seconds), the Wine PE builtins **and** the widl-generated headers (`wine-pe-include`, for
+  `advapi32/registry`), then the full `ctest` with nothing excluded (55 registered after merging `cdd901a`: 13 `guest_e2e` + 1 DISABLED, 2
+  `driver_e2e`, 2 `drivers`, 28 `wine_conformance`, ...; about 4 minutes of tests).
+* **`ci.yml` windows** (MSVC, Debug and RelWithDebInfo, machine folder with the runner's System32 DLLs and NLS
+  data): the full `ctest` (the guest's stdout is captured on real Windows; see `docs/STATUS.md`), then every bundled
+  guest through `win10xbox.exe` / `drv_host.exe` with its exit code. The WDK is not on the image: its km headers come
+  from the pinned NuGet package `Microsoft.Windows.WDK.x64` (`tools/ci/fetch_wdk_km.ps1`, SHA-256 checked).
+* **`host-win32-smoke.yml`**: the KERNEL32-import proof (unchanged), then every bundled guest under console
+  conditions (Wine builtins only, `WIN10XBOX_TEST_NO_HOST_PATHS=1`).
+* **`host-win32-appcontainer.yml`**, **`host-uwp.yml`**, **`uwp-lite.yml`**: their own gates, unchanged.
+
+The Windows jobs' log artifacts (`windows-<config>-logs`, `host-win32-smoke-logs`, `host-win32-appcontainer-logs`)
+carry `build/bin/crash.txt`, `crash.dmp` and `entry-reached.txt` (written by `host-win32/crash.cpp` when a guest dies)
+and `build/bin/*.bmp` (the GUI tests' screenshots), besides the ctest logs and the JUnit file.
+
+Two mechanisms close the "100% tests passed, everything skipped" trap (`docs/HANDOFF.md`, trap 1):
+
+1. **The Wine PE builtins are mandatory** (`tools/ci/fetch_wine_pe.py`, used by every job that runs a guest except
+   host-uwp's own step): a `wine-pe` run of the same commit is waited for (so a change to `wine-pe/patches` is tested
+   with the DLLs it produces); otherwise the newest successful run that still holds the artifacts; every GitHub query
+   is retried; no builtins = red job.
+2. **The ctest gate** (`tools/ci/check_ctest_run.py`, step "Gate - nothing skipped" after every `ctest`): compares
+   `ctest --show-only=json-v1` (what is registered) with `ctest --output-junit` (what ran). Any skipped, not-run or
+   failed test fails the job, and so does a label with fewer tests than its floor (`guest_e2e` >= 1, `driver_e2e` >= 2,
+   `drivers` >= 2, and on linux-cross `wine_conformance` >= 1). Counts come from ctest, never from a list of names,
+   so new tests are picked up automatically. A test registered `DISABLED` (today: `integration.guest_window`, until
+   core/user lands) is reported as "not run on purpose", is not a skip and does not count towards a floor.
+
+The guests the smoke step runs, with their exit codes, are the table in `tools/ci/smoke_guests.ps1`
+(`guest_hello` 42, `guest_cpuid` 0, `guest_sleep` 7, `guest_smoke_cui` / `guest_smoke` 42, `drv_client` and
+`drv_kmdf_client` through `drv_host` 0); a guest in the machine folder that is not in the table is listed and stays
+gated by its ctest entry. `guest_dll.dll` is a DLL, exercised by `unit.core` (`test_loader.cpp`).
+
+The one exclusion: `wine_conformance` does not run on the Windows jobs. Its guests are Wine's own test sources, which
+build only with clang against Wine's headers; with MSVC no test is registered. (They would need llvm-mingw and the
+Wine sources on the Windows runner, and a second, real-Windows baseline.)
 
 ## Wine test subset (M3 fidelity baseline)
 
@@ -119,11 +163,10 @@ ctest --test-dir build-wt -L wine_conformance -R wine_conformance.ntdll.om -V   
 cmake --build build-wt --target wine_tests_report                      # the table
 ```
 
-CI (non-blocking, like `guest_e2e`): run the same `ctest -L wine_conformance`
-as a separate step with `continue-on-error: true`, and exclude the label from
-the blocking run (`ctest -LE wine_conformance`). The step needs
-`wine-pe/fetch-wine.sh` (and the wine-pe artifact must also provide the
-`include/` headers for `advapi32/registry`, or that test skips). Per-test cap:
+CI: gated on ci.yml's linux-cross job, in the same `ctest` run as everything
+else (no label excluded). The job runs `wine-pe/fetch-wine.sh` before
+configuring and downloads `wine-pe-include` (the generated headers
+`advapi32/registry` needs) with the builtins. Per-test cap:
 `-DWIN10XBOX_WINE_TEST_TIMEOUT=<seconds>` (default 60).
 
 ### Expanding the subset
@@ -143,10 +186,16 @@ lower the baseline in the same commit so the gain is locked in.
 | ctest | label | what |
 |-------|-------|------|
 | `drivers.unit` | `drivers` | loads the real drivers into the host and drives them through the dispatcher entry points (27 cases) |
-| `drivers.layout` | `drivers` | `ntk.h` / WDF shim structure layouts vs the mingw-w64 ddk and KMDF 1.33 headers (mingw only) |
+| `drivers.layout` | `drivers` | `ntk.h` / WDF shim structure layouts vs Microsoft's kernel headers (mingw-w64 ddk with llvm-mingw, the WDK's km headers with MSVC) and KMDF 1.33 |
 | `integration.driver_ioctl` | `driver_e2e` | `drv_host.exe --driver OurTestDevice.sys C:\guest\drv_client.exe`: `CreateFile("\\.\OurTestDevice")` + `DeviceIoControl` through the Wine ntdll, the dispatcher and the IRP engine |
 | `integration.driver_kmdf_ioctl` | `driver_e2e` | the same for the KMDF driver on the WDF shim |
 
 The `driver_e2e` tests need the same machine folder as the guest tests (Wine builtins + NLS data) and SKIP (exit 77)
 without it; `drivers.unit` needs nothing. Run: `ctest --test-dir <build> -L driver --output-on-failure`.
+
+All four build and gate with both toolchains. With MSVC the KMDF driver, its client and `layout_check` need the WDK's
+km headers: CMake finds them next to the Windows SDK (`Windows Kits\10\Include\<ver>\km`) or takes
+`-DWIN10XBOX_DDK_INCLUDE=<km dir>`; CI uses the NuGet package (`tools/ci/fetch_wdk_km.ps1`). Two facts only the WDK
+showed: `KMUTANT.Abandoned` is a bit field of `MutantFlags` (`OB()` in `layout_list.inc`), and `DEVICE_OBJECT` is
+`DECLSPEC_ALIGN(16)`, size 0x150 (mingw-w64 omits the alignment: 0x148; `SA()`).
 
