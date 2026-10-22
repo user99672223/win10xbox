@@ -55,6 +55,14 @@ add_executable(guest_window_text window_text.c)
 target_link_libraries(guest_window_text PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window_text)
 
+# msctf.dll stand-in for the native-GUI machine folder (tests/guest/msctf_stub.c); staged by prepare_machine.cmake into
+# its Windows/System32 only, so no other machine sees it.
+add_library(msctf_stub SHARED msctf_stub.c)
+set_target_properties(msctf_stub PROPERTIES OUTPUT_NAME msctf PREFIX ""
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/native-gui-stubs
+  LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/native-gui-stubs
+  ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib/guest)
+
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
 add_test(NAME guest.hello COMMAND guest_hello)
 set_tests_properties(guest.hello PROPERTIES PASS_REGULAR_EXPRESSION "hello from guest")
