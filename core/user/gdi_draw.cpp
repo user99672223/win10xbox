@@ -796,15 +796,11 @@ BOOL WINAPI NtGdiExtTextOutW(HDC hdc, INT x, INT y, UINT flags, const RECT* rect
         TRACE(gdi, "%p (%d,%d) %.*ls (not drawn)", hdc, x, y, static_cast<int>(count), str);
     }
     if (dc->attr->text_align & TA_UPDATECP) {
-        TEXTMETRICW tm{};
-        LockGuard* none = nullptr;
-        (void)none;
         auto* f = GdiGetT<FontObj>(dc->font, abi::kObjFont);
         int h = f ? f->lf.lfHeight : 16;
         if (h < 0) h = -h;
         if (!h) h = 16;
         dc->attr->cur_pos.x += static_cast<LONG>(count) * ((h * 7 + 8) / 16);
-        (void)tm;
     }
     return TRUE;
 }

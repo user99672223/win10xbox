@@ -22,7 +22,7 @@ set(_prepare_args
 add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
-  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_window)
+  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_window guest_window2)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -83,6 +83,17 @@ win10xbox_guest_test(guest_window "C:\\guest\\guest_window.exe" 42
   "window: pixel\\(10,10\\)=00dc5000 pixel\\(30,30\\)=000000ff" "window: done")
 set_tests_properties(integration.guest_window PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=110,110,ff0050dc|130,130,ffff0000")
+
+# The second GUI guest (tests/guest/window2.c): an overlapped window with a frame, double-buffered painting
+# through a memory DC, a timer that repaints and then destroys the window, a PeekMessage loop on
+# MsgWaitForMultipleObjectsEx. It checks itself (exit 42); the screenshot is the last frame it painted: the
+# client area at screen (58,91) shows the green and the yellow square, the caption bar the active caption colour.
+win10xbox_guest_test(guest_window2 "C:\\guest\\guest_window2.exe" 42
+  "window2: client=320x200" "window2: text=win10xbox two"
+  "window2: pixel\\(5,5\\)=0000ff00 pixel\\(20,20\\)=0000ffff"
+  "window2: timer=2 destroy=1 ncdestroy=1 iswindow=0" "window2: done")
+set_tests_properties(integration.guest_window2 PROPERTIES
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window2.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=63,96,ff00ff00|78,111,ffffff00|100,75,ff99b4d1")
 
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
 set_tests_properties(integration.guest_hello_appcontainer_sim PROPERTIES

@@ -10,6 +10,8 @@
 #include "user_syscalls.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace win10xbox::user {
@@ -365,8 +367,7 @@ void RouteInput(const winexbox::InputEvent& ev) {
             HWND top = TopLevelOf(target);
             if (WindowObj* tw = Win(top); tw && s.foreground != top && !(tw->ex_style & WS_EX_NOACTIVATE)) {
                 if (UserThread* tt = FindUserThreadById(tw->tid)) {
-                    QueuedMsg q;   // processed by that thread: a private message asks it to activate
-                    (void)q;
+                    // activation runs on the window's thread: a private WM_NULL asks it to (see GetMessage)
                     s.foreground = top;
                     PostThreadMessageInternal(tt, top, WM_NULL, 0x57A1, reinterpret_cast<LPARAM>(top));
                 }

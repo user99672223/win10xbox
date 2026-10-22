@@ -26,9 +26,7 @@ namespace {
 constexpr std::uint32_t kFirstUserHandle = 0x20;
 constexpr std::uint32_t kMaxUserHandles = 0xffef - kFirstUserHandle;
 
-HWND MakeHwnd(std::uint32_t slot, WORD gen) {
-    return reinterpret_cast<HWND>(static_cast<ULONG_PTR>((kFirstUserHandle + slot) | (static_cast<DWORD>(gen) << 16)));
-}
+HWND MakeHwnd(std::uint32_t slot, WORD gen) { return EncodeHwnd(slot, gen); }
 
 WindowObj* AllocWindow() {
     State& s = S();
@@ -157,16 +155,26 @@ HWND ActivateOtherWindow(HWND hwnd) {
 
 // ---- Lookup and geometry -------------------------------------------------------------
 
-WindowObj* Win(HWND hwnd) {
-    State* s = StateIfAny();
-    if (!s || !hwnd) return nullptr;
+HWND EncodeHwnd(std::uint32_t slot, WORD generation) {
+    return reinterpret_cast<HWND>(static_cast<ULONG_PTR>((kFirstUserHandle + slot) | (static_cast<DWORD>(generation) << 16)));
+}
+
+bool DecodeHwnd(HWND hwnd, std::uint32_t* slot, WORD* generation) {
     const auto v = static_cast<std::uint32_t>(reinterpret_cast<ULONG_PTR>(hwnd));
     const std::uint32_t low = v & 0xffff;
-    if (low < kFirstUserHandle) return nullptr;
-    const std::uint32_t slot = low - kFirstUserHandle;
+    if (!hwnd || low < kFirstUserHandle || low > kFirstUserHandle + kMaxUserHandles) return false;
+    *slot = low - kFirstUserHandle;
+    *generation = static_cast<WORD>(v >> 16);   // 0 / 0xffff: a truncated (16-bit) handle, any generation
+    return true;
+}
+
+WindowObj* Win(HWND hwnd) {
+    State* s = StateIfAny();
+    std::uint32_t slot;
+    WORD gen;
+    if (!s || !DecodeHwnd(hwnd, &slot, &gen)) return nullptr;
     if (slot >= s->windows.size() || !s->windows[slot]) return nullptr;
-    const std::uint32_t hi = v >> 16;
-    if (hi && hi != 0xffff && hi != s->generations[slot]) return nullptr;
+    if (gen && gen != 0xffff && gen != s->generations[slot]) return nullptr;
     return s->windows[slot];
 }
 
@@ -760,7 +768,6 @@ void FixCsCoordinates(CREATESTRUCTW* cs, int* sw) {
     WorkAreaRect(&work);
     if (cs->x == CW_USEDEFAULT) {
         if (cs->y != CW_USEDEFAULT && cs->y >= 0 && cs->y <= SW_MAX) *sw = cs->y;   // y is the show command
-        static_assert(sizeof(State) > 0);
         State& s = S();
         int n = 0;
         if (WindowObj* desk = Win(s.desktop)) n = static_cast<int>(desk->children.size() % 8);

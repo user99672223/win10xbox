@@ -326,6 +326,11 @@ const COLORREF kSysColors[31] = {
     RGB(0, 120, 215),     // COLOR_MENUHILIGHT
     RGB(240, 240, 240),   // COLOR_MENUBAR
 };
+// The 20 static colours of the default palette.
+const BYTE kStaticPalette[20][3] = {
+    {0, 0, 0}, {128, 0, 0}, {0, 128, 0}, {128, 128, 0}, {0, 0, 128}, {128, 0, 128}, {0, 128, 128},
+    {192, 192, 192}, {192, 220, 192}, {166, 202, 240}, {255, 251, 240}, {160, 160, 164}, {128, 128, 128},
+    {255, 0, 0}, {0, 255, 0}, {255, 255, 0}, {0, 0, 255}, {255, 0, 255}, {0, 255, 255}, {255, 255, 255}};
 COLORREF g_sys_colors[31];
 bool g_sys_colors_init = false;
 
@@ -387,11 +392,7 @@ void CreateGdiTable(State& s) {
     s.stock[DEVICE_DEFAULT_FONT] = StockFont(system);
     {
         auto* pal = new PaletteObj;   // DEFAULT_PALETTE: the 20 static colours
-        static const BYTE k20[20][3] = {
-            {0, 0, 0}, {128, 0, 0}, {0, 128, 0}, {128, 128, 0}, {0, 0, 128}, {128, 0, 128}, {0, 128, 128},
-            {192, 192, 192}, {192, 220, 192}, {166, 202, 240}, {255, 251, 240}, {160, 160, 164}, {128, 128, 128},
-            {255, 0, 0}, {0, 255, 0}, {255, 255, 0}, {0, 0, 255}, {255, 0, 255}, {0, 255, 255}, {255, 255, 255}};
-        for (const auto& c : k20) pal->entries.push_back(PALETTEENTRY{c[0], c[1], c[2], 0});
+        for (const auto& c : kStaticPalette) pal->entries.push_back(PALETTEENTRY{c[0], c[1], c[2], 0});
         s.stock[DEFAULT_PALETTE] = GdiAlloc(pal, abi::kObjPal);
     }
     s.stock[SYSTEM_FIXED_FONT] = StockFont(system_fixed);

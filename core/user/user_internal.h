@@ -442,6 +442,9 @@ ULONG_PTR GetClassLongSize(HWND hwnd, INT offset, UINT size, bool ansi);
 WinProc ResolveWinProc(WNDPROC func, bool ansi);   // fills the other half for known builtin procs
 
 // win_window.cpp
+// HWND = (0x20 + slot) | (generation << 16), generation 1..0x7fff (win_window.cpp).
+HWND EncodeHwnd(std::uint32_t slot, WORD generation);
+bool DecodeHwnd(HWND hwnd, std::uint32_t* slot, WORD* generation);
 WindowObj* Win(HWND hwnd);                     // full or short handle; null if invalid
 WindowObj* WinChecked(HWND hwnd);              // sets ERROR_INVALID_WINDOW_HANDLE when invalid
 HWND DesktopWindow();                          // creates it on first use

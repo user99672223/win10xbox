@@ -76,6 +76,9 @@ std::wstring ApplyDllRule(wchar_t letter, std::wstring_view rest) {
     std::wstring native = root + L"\\Windows\\System32\\" + std::wstring(file);
     std::wstring_view base = file.substr(0, file.size() - 4);
     if (IEquals(base, L"ntdll") || IEquals(base, L"kernel32") || IEquals(base, L"kernelbase")) return builtin;
+    // the GUI stack is Wine's too: core/user implements Wine's win32u contract (E1, docs/GUI.md)
+    if (IEquals(base, L"win32u") || IEquals(base, L"user32") || IEquals(base, L"gdi32") || IEquals(base, L"imm32"))
+        return builtin;
     if (FileExists(native)) return native;
     if (FileExists(builtin)) return builtin;
     return native;
