@@ -49,6 +49,11 @@ add_executable(guest_window_text window_text.c)
 target_link_libraries(guest_window_text PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window_text)
 
+# Wine's builtin comctl32 (ListView/TreeView/Progress/Trackbar/StatusBar) through the layer (tests/guest/comctl.c).
+add_executable(guest_comctl comctl.c)
+target_link_libraries(guest_comctl PRIVATE user32 gdi32 comctl32)
+win10xbox_add_guest(guest_comctl)
+
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
 add_test(NAME guest.hello COMMAND guest_hello)
 set_tests_properties(guest.hello PROPERTIES PASS_REGULAR_EXPRESSION "hello from guest")

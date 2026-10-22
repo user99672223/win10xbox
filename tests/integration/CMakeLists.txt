@@ -27,7 +27,7 @@ add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_window guest_window2 guest_window_input
-                   guest_window_text)
+                   guest_window_text guest_comctl)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -138,6 +138,13 @@ win10xbox_guest_test(guest_window_text "C:\\guest\\guest_window_text.exe" 42
 set_tests_properties(integration.guest_window_text PROPERTIES
   DISABLED TRUE
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_text.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=121,123,ff000000|123,123,ffffffff|131,123,ff000000")
+# comctl32 (Wine's builtin) controls: ListView/TreeView/Progress/Trackbar/StatusBar created, filled, state read back
+# with messages and painted; the guest samples each control's pixels (tests/guest/comctl.c).
+win10xbox_guest_test(guest_comctl "C:\\guest\\guest_comctl.exe" 42
+  "comctl: init ok" "comctl: created lv=1 tv=1 pb=1 tb=1 sb=1"
+  "comctl: lv count=3 tv count=2 pb pos=60 tb pos=7 sb parts=2" "comctl: distinct colours" "comctl: done")
+set_tests_properties(integration.guest_comctl PROPERTIES
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_comctl.bmp")
 unset(_guest_machine)
 
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
