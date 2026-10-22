@@ -44,3 +44,22 @@ combase
 programs/services
 wbemprox
 programs/wineboot
+
+# --- wt-misc: DLLs under Wine conformance test (wine-pe/tests) + their imports
+cabinet
+psapi
+userenv
+xmllite
+propsys
+dbghelp
+msxml3
+setupapi
+cfgmgr32
+urlmon
+wininet
+iertutil
+mpr
+crypt32
+bcrypt
+ncrypt
+wintrust
