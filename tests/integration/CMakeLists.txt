@@ -187,6 +187,29 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   unset(_guest_forbid_trace)
 endif()
 
+# The official CPython 3.12 embeddable package (python.org zip, nothing compiled), unpacked by
+# tools/ci/fetch_python.ps1 (a named step of ci.yml's windows job) into <machine>/guest/python before ctest runs.
+# Registered where that step exists: MSVC builds, or -DWIN10XBOX_REAL_PYTHON=ON after unpacking the zip there.
+option(WIN10XBOX_REAL_PYTHON "Register the real-Python guest tests (the embeddable zip in <machine>/guest/python)" OFF)
+if(MSVC OR WIN10XBOX_REAL_PYTHON)
+  configure_file(${CMAKE_SOURCE_DIR}/tests/guest/python/smoke.py ${CMAKE_BINARY_DIR}/bin/guest/python_smoke.py COPYONLY)
+  # (a) python -c: print(1+1), then exit code 42 through sys.exit (no ';': it would split the CMake list).
+  set(_guest_args "-c;__import__('sys').exit(print(1+1) or 42)")
+  win10xbox_guest_test(real_python_c "C:\\guest\\python\\python.exe" 42 "^2[^0-9a-z]")
+  # (b) tests/guest/python/smoke.py: each check prints "py: <name> ok", and each is its own assertion.
+  set(_guest_args "C:\\guest\\python_smoke.py;alpha;beta gamma")
+  set(_py_checks arith argv version json hashlib hashlib.openssl zlib sqlite3 ctypes ctypes.callback
+    file.write file.read file.rename os.listdir threading threading.queue time)
+  set(_py_expect "")
+  foreach(_s ${_py_checks})
+    string(REPLACE "." "\\." _re "${_s}")
+    list(APPEND _py_expect "py: ${_re} ok")
+  endforeach()
+  win10xbox_guest_test(real_python "C:\\guest\\python\\python.exe" 42 ${_py_expect} "py: done fails=0")
+  set_tests_properties(integration.real_python PROPERTIES FAIL_REGULAR_EXPRESSION "py: [a-z.]+ FAILED")
+  unset(_guest_args)
+endif()
+
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
 set_tests_properties(integration.guest_hello_appcontainer_sim PROPERTIES
   ENVIRONMENT "WIN10XBOX_TEST_NO_HOST_PATHS=1")

@@ -170,6 +170,16 @@ jobs:
       - name: Build Lua 5.4.7 (real guest program)
         shell: pwsh
         run: ./tools/ci/build_lua.ps1 -Out build/bin/machine/guest
+      # The official CPython 3.12 embeddable package from python.org (pinned SHA-256, checked on every run), unpacked
+      # unchanged into build/bin/machine/guest/python; the Test step runs it (integration.real_python*).
+      - name: Cache the Python embeddable zip
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/python-embed
+          key: python-3.12.10-embed-amd64-4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3
+      - name: Fetch Python 3.12 embeddable (real guest program)
+        shell: pwsh
+        run: ./tools/ci/fetch_python.ps1 -Out build/bin/machine/guest/python
       # The whole suite, end-to-end included. The guest's stdout IS captured on
       # real Windows: run 39818491081 (RelWithDebInfo, the one job of that run
       # that had the builtins) printed "hello from guest" and passed 11 of 13
