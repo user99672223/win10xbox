@@ -182,7 +182,9 @@ jobs:
           # Every guest the package is meant to carry to the console (host-uwp/CMakeLists.txt
           # HOST_UWP_GUESTS), and the packaged default launch.json naming the GUI guest.
           $expected = @('window.exe', 'hello.exe', 'hello_cui.exe', 'guest_hello.exe', 'guest_cpuid.exe',
-                        'guest_sleep.exe', 'guest_dll.dll', 'smoke_cui.exe', 'drv_client.exe')
+                        'guest_sleep.exe', 'guest_dll.dll', 'smoke_cui.exe', 'drv_client.exe',
+                        'guest_window2.exe', 'guest_window_input.exe', 'guest_window_input2.exe',
+                        'guest_window_text.exe', 'smoke.exe')
           $missing = @($expected | Where-Object { -not (Test-Path "$stage/payload/guest/$_") })
           Write-Host ("bundled guests: " + (@(Get-ChildItem "$stage/payload/guest" -File | ForEach-Object { $_.Name }) -join ', '))
           if ($missing.Count -gt 0) {
@@ -193,6 +195,37 @@ jobs:
             Write-Host "::error::payload/launch.json in the package does not run window.exe"
             exit 1
           }
+
+      # Package contents: list what makeappx actually put in the .msix, check every guest of
+      # payload/guests.txt (and every tests/guest/*.c) is in it, report sizes, and keep the package
+      # under the console sideload budget (Dev Mode installs; 2 GB hard cap, we fail above 500 MB).
+      - name: Verify package contents + size report
+        if: ${{ !cancelled() && hashFiles('build-uwp/AppPackages/*.msix') != '' }}
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $msix = Get-ChildItem build-uwp/AppPackages -Filter *.msix | Select-Object -First 1
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($msix.FullName)
+          $entries = @($zip.Entries | ForEach-Object { [uri]::UnescapeDataString($_.FullName) })
+          $groups = $zip.Entries | Group-Object { ([uri]::UnescapeDataString($_.FullName) -split '/')[0..1] -join '/' } |
+            ForEach-Object { [pscustomobject]@{ Dir = $_.Name; Files = $_.Count; MB = [math]::Round(($_.Group | Measure-Object Length -Sum).Sum / 1MB, 2) } }
+          $zip.Dispose()
+          $groups | Sort-Object MB -Descending | Format-Table -AutoSize | Out-String | Write-Host
+          $want = @(Get-Content build-uwp/AppX/payload/guests.txt | Where-Object { $_ })
+          foreach ($c in Get-ChildItem tests/guest -Filter *.c) {
+            $n = if ($c.BaseName -eq 'dll') { 'guest_dll.dll' } elseif ($c.BaseName -eq 'window') { 'window.exe' } else { "guest_$($c.BaseName).exe" }
+            if ($want -notcontains $n) { $want += $n }
+          }
+          $missing = @($want | Where-Object { $entries -notcontains "payload/guest/$_" })
+          Write-Host "guests expected in package: $($want.Count); missing: $($missing.Count)"
+          $mb = [math]::Round($msix.Length / 1MB, 1)
+          $lines = @('### host-uwp package contents', "- package size: $mb MB (budget 500 MB)", "- guests: $($want -join ', ')", '', '| dir | files | MB |', '|---|---|---|')
+          $lines += @($groups | ForEach-Object { "| $($_.Dir) | $($_.Files) | $($_.MB) |" })
+          $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($entries -notcontains 'payload/guests.txt') { Write-Host '::error::payload/guests.txt manifest missing from package'; exit 1 }
+          if (-not ($entries | Where-Object { $_ -like 'payload/builtin/*.dll' })) { Write-Host '::error::no Wine builtins in package'; exit 1 }
+          if ($missing.Count -gt 0) { Write-Host "::error::guest(s) missing from the .msix: $($missing -join ', ')"; exit 1 }
+          if ($mb -gt 500) { Write-Host "::error::package is $mb MB, over the 500 MB sideload budget"; exit 1 }
 
       # Upload whenever a package exists, even if the selftest step failed (the job is then
       # red, but the owner still gets the .msix to look at). No package (the build failed)

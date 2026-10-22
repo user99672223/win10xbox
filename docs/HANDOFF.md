@@ -48,6 +48,16 @@ Branches `claude/youthful-cerf-l7xxsb-<slice>`, each from main. Full table with 
   `-clipboard`, `-hooks` (timers and hooks), `-guiapp` (real GUI program), `-net` (ws2_32/AFD), `-audio`,
   `-uwpchild` (child processes in UWP), `-d3d` (ImGui on d3d11 via route B).
 
+### Package contents
+
+The host-uwp .msix (artifact host-uwp-msix) carries `payload/builtin/*.dll` (Wine PE builtins from the wine-pe run),
+`payload/guest/*` (every guest of host-uwp/CMakeLists.txt HOST_UWP_GUESTS: window, hello, hello_cui, guest_hello,
+guest_cpuid, guest_sleep, guest_dll.dll, smoke_cui, smoke, drv_client, guest_window2, guest_window_input,
+guest_window_input2, guest_window_text) and `payload/guests.txt` (one file name per line, written by stage.cmake).
+host-uwp.yml step "Verify package contents + size report" opens the .msix, fails if any guests.txt entry or any
+tests/guest/*.c guest is missing, if no builtins are present, or if the package exceeds a 500 MB sideload budget, and
+writes a per-directory size table to the job summary. Gaps: NLS files are not bundled; tests/guest/lua is not bundled.
+
 ## Install the package on the console
 
 1. Artifact `host-uwp-msix` from the latest green `host-uwp.yml` run on main. Latest green as of this
