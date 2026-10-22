@@ -190,6 +190,8 @@ BOOL WINAPI NtGdiGetBitmapDimension(HBITMAP bitmap, SIZE* size);
 BOOL WINAPI NtGdiSetBitmapDimension(HBITMAP hbitmap, INT x, INT y, SIZE* prev_size);
 INT WINAPI NtGdiGetDIBitsInternal(HDC hdc, HBITMAP hbitmap, UINT startscan, UINT lines, void* bits, BITMAPINFO* info,
                                   UINT coloruse, UINT max_bits, UINT max_info);
+// Not a Wine 11.9 win32u syscall (gdi32's SetDIBits goes through other entry points); kept as the internal
+// helper CreateDIBitmap's CBM_INIT path uses, and therefore not in W10X_USER_SYSCALLS.
 INT WINAPI NtGdiSetDIBitsInternal(HDC hdc, HBITMAP hbitmap, UINT startscan, UINT lines, const void* bits,
                                   const BITMAPINFO* info, UINT coloruse, UINT max_bits, UINT max_info);
 HRGN WINAPI NtGdiCreateRectRgn(INT left, INT top, INT right, INT bottom);
@@ -332,7 +334,7 @@ INT WINAPI NtGdiStretchDIBitsInternal(HDC hdc, INT x_dst, INT y_dst, INT width_d
     X(NtGdiExtCreatePen) X(NtGdiHfontCreate) X(NtGdiCreateBitmap) X(NtGdiCreateCompatibleBitmap) \
     X(NtGdiCreateDIBSection) X(NtGdiCreateDIBitmapInternal) X(NtGdiDeleteObjectApp) X(NtGdiExtGetObjectW) \
     X(NtGdiUnrealizeObject) X(NtGdiGetBitmapBits) X(NtGdiSetBitmapBits) X(NtGdiGetBitmapDimension) \
-    X(NtGdiSetBitmapDimension) X(NtGdiGetDIBitsInternal) X(NtGdiSetDIBitsInternal) X(NtGdiCreateRectRgn) \
+    X(NtGdiSetBitmapDimension) X(NtGdiGetDIBitsInternal) X(NtGdiCreateRectRgn) \
     X(NtGdiExtCreateRegion) X(NtGdiCombineRgn) \
     X(NtGdiGetRgnBox) X(NtGdiSetRectRgn) X(NtGdiOffsetRgn) X(NtGdiPtInRegion) X(NtGdiRectInRegion) X(NtGdiEqualRgn) \
     X(NtGdiGetRegionData) X(NtGdiCreatePaletteInternal) X(NtGdiDoPalette) X(NtGdiGetNearestPaletteIndex) \

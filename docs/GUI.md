@@ -91,7 +91,7 @@ except the few that return an `NTSTATUS` (`NtUserBuildHwndList`, `NtUserInitiali
 
 ### What is implemented (2026-10-22)
 
-235 win32u syscalls are registered (`W10X_USER_SYSCALLS`; plus the ntdll-side `NtCallbackReturn`): enough for
+234 win32u syscalls are registered (`W10X_USER_SYSCALLS`, listed as Emulate in docs/SYSCALLS.md; plus the ntdll-side `NtCallbackReturn`): enough for
 `tests/guest/window.c` (frameless popup, FillRect, GetPixel, timers, PostMessage) and `tests/guest/window2.c`
 (captioned overlapped window, AdjustWindowRectEx, Set/GetWindowText, ShowWindow/UpdateWindow, memory DC +
 CreateCompatibleBitmap + BitBlt, InvalidateRect, KillTimer, DestroyWindow, PeekMessage on

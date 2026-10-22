@@ -75,6 +75,16 @@ without returning (`NtContinue`, `NtContinueEx`, `NtRaiseException`,
 Guest and host therefore keep separate FLS universes; `RtlFls*` is *not*
 forwarded.
 
+A guest thread starts with **no** TLS vector in the TEB (`EnterGuest` stores 0
+in `ThreadLocalStoragePointer` just before calling `LdrInitializeThunk`; the
+host's vector is already in `ThreadState::host_tls`). Wine's loader runs
+`alloc_tls_slot` for every statically imported DLL with a TLS directory before
+`alloc_thread_tls`, and it frees and replaces slot *i* of whatever vector the
+TEB holds; entering with the host's vector there freed the host's own TLS
+blocks (0xC0000374 on Windows as soon as a guest imported user32 -> native
+advapi32 -> msvcrt). For the same reason `NtGetNextThread` enumerates guest
+threads only.
+
 ### The guest-view window (no host code in here)
 
 `LeaveToGuestView()` installs the **guest's** `ThreadLocalStoragePointer`, and

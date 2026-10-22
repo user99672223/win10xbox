@@ -157,7 +157,7 @@ jobs:
       # layout check are NOT-MSVC-only.)
       - name: Test (end-to-end, real-Windows bring-up, non-blocking)
         continue-on-error: true
-        env: { WIN10XBOX_DEBUG: "+all" }
+        env: { WIN10XBOX_DEBUG: "+all", WIN10XBOX_WINEDEBUG: "+loaddll,+module" }
         run: ctest --test-dir build --output-on-failure --timeout 300 --label-regex "guest_e2e|driver_e2e"
       - uses: actions/upload-artifact@v4
         if: always()
