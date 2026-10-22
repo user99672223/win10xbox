@@ -160,4 +160,170 @@ ForwardResult ApplyRtlForwarding(const loader::MappedImage& img) {
     return r;
 }
 
+namespace {
+
+struct ExportView {
+    const std::uint8_t* base = nullptr;
+    const IMAGE_EXPORT_DIRECTORY* dir = nullptr;
+    std::uint32_t dir_rva = 0, dir_size = 0;
+    const DWORD* functions = nullptr;
+    const DWORD* names = nullptr;
+    const WORD* ordinals = nullptr;
+    bool Open(const void* image) {
+        base = static_cast<const std::uint8_t*>(image);
+        auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+        const auto& d = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+        if (!d.VirtualAddress || !d.Size) return false;
+        dir_rva = d.VirtualAddress;
+        dir_size = d.Size;
+        dir = reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(base + dir_rva);
+        functions = reinterpret_cast<const DWORD*>(base + dir->AddressOfFunctions);
+        names = reinterpret_cast<const DWORD*>(base + dir->AddressOfNames);
+        ordinals = reinterpret_cast<const WORD*>(base + dir->AddressOfNameOrdinals);
+        return true;
+    }
+    const char* Name(std::uint32_t i) const { return reinterpret_cast<const char*>(base + names[i]); }
+    bool Has(const char* name) const {   // names are sorted (binary search, like every loader)
+        std::uint32_t lo = 0, hi = dir->NumberOfNames;
+        while (lo < hi) {
+            const std::uint32_t mid = (lo + hi) / 2;
+            const int c = std::strcmp(Name(mid), name);
+            if (!c) return true;
+            if (c < 0) lo = mid + 1; else hi = mid;
+        }
+        return false;
+    }
+};
+
+bool IsCodeRva(const std::uint8_t* base, std::uint32_t rva) {
+    auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+    auto* sec = IMAGE_FIRST_SECTION(nt);
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i)
+        if (rva >= sec[i].VirtualAddress && rva < sec[i].VirtualAddress + sec[i].Misc.VirtualSize)
+            return (sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) != 0;
+    return false;
+}
+
+}  // namespace
+
+std::size_t ExtendGuestNtdllExports(const loader::MappedImage& img) {
+    ExportView guest, host;
+    if (!guest.Open(img.base) || !host.Open(HostNtdll())) {
+        WARN(dispatch, "ntdll exports: no export directory to extend");
+        return 0;
+    }
+    struct Add { const char* name; const void* target; };
+    std::vector<Add> add;
+    for (std::uint32_t i = 0; i < host.dir->NumberOfNames; ++i) {
+        const char* name = host.Name(i);
+        const std::uint32_t fn_rva = host.functions[host.ordinals[i]];
+        if (fn_rva >= host.dir_rva && fn_rva < host.dir_rva + host.dir_size) continue;   // forwarder
+        if (!IsCodeRva(host.base, fn_rva)) continue;                                      // data: cannot be a jump
+        if (guest.Has(name)) continue;
+        // A Wine host's own unix-side plumbing (development runs only) is not the guest's to call.
+        if (!std::strncmp(name, "__wine", 6) || !std::strncmp(name, "wine_", 5)) continue;
+        add.push_back({name, host.base + fn_rva});
+    }
+    if (add.empty()) return 0;
+    const std::uint32_t old_funcs = guest.dir->NumberOfFunctions, old_names = guest.dir->NumberOfNames;
+    std::size_t strings = 0;
+    for (auto& a : add) strings += std::strlen(a.name) + 1;
+    const std::size_t thunks = add.size() * kSlotSize;
+    const std::size_t total = thunks + sizeof(IMAGE_EXPORT_DIRECTORY) + 4 * (old_funcs + add.size()) +
+                              4 * (old_names + add.size()) + 2 * (old_names + add.size()) + strings + 64;
+    // One allocation within 4 GiB above the image: export RVAs are 32-bit and unsigned.
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(img.base);
+    const std::uintptr_t gran = si.dwAllocationGranularity;
+    std::uint8_t* mem = nullptr;
+    for (std::uintptr_t a = (base + img.size + gran - 1) & ~(gran - 1); a + total - base < 0xFFFF0000ull && !mem;
+         a += gran) {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (!VirtualQuery(reinterpret_cast<void*>(a), &mbi, sizeof mbi) || mbi.State != MEM_FREE) continue;
+        mem = static_cast<std::uint8_t*>(VirtualAlloc(reinterpret_cast<void*>(a), total, MEM_RESERVE | MEM_COMMIT,
+                                                      PAGE_READWRITE));
+    }
+    if (!mem) {
+        WARN(dispatch, "ntdll exports: no room within 4 GiB of the guest ntdll for %zu more exports", add.size());
+        return 0;
+    }
+    auto rva_of = [&](const void* p) {
+        return static_cast<DWORD>(reinterpret_cast<std::uintptr_t>(p) - base);
+    };
+    // Jumps first (outside the directory's range, or the loader would take them for forwarder strings).
+    std::uint8_t* t = mem;
+    std::vector<DWORD> new_fn_rva;
+    for (auto& a : add) {
+        const std::uint8_t code[6] = {0xFF, 0x25, 0, 0, 0, 0};   // jmp [rip+0]
+        std::memcpy(t, code, sizeof code);
+        const std::uint64_t target = reinterpret_cast<std::uint64_t>(a.target);
+        std::memcpy(t + 6, &target, 8);
+        std::memset(t + 14, 0xCC, kSlotSize - 14);
+        new_fn_rva.push_back(rva_of(t));
+        t += kSlotSize;
+    }
+    auto* dir = reinterpret_cast<IMAGE_EXPORT_DIRECTORY*>(mem + thunks);
+    *dir = *guest.dir;
+    auto* functions = reinterpret_cast<DWORD*>(dir + 1);
+    std::memcpy(functions, guest.functions, 4 * old_funcs);
+    for (std::size_t k = 0; k < add.size(); ++k) functions[old_funcs + k] = new_fn_rva[k];
+    auto* names = functions + old_funcs + add.size();
+    auto* ords = reinterpret_cast<WORD*>(names + old_names + add.size());
+    char* str = reinterpret_cast<char*>(ords + old_names + add.size());
+    // Merge the two sorted name lists (the host's are sorted too, and `add` keeps its order).
+    std::uint32_t gi = 0, out = 0;
+    std::size_t ai = 0;
+    while (gi < old_names || ai < add.size()) {
+        const bool take_guest = ai == add.size() || (gi < old_names && std::strcmp(guest.Name(gi), add[ai].name) < 0);
+        if (take_guest) {
+            names[out] = guest.names[gi];
+            ords[out] = guest.ordinals[gi];
+            ++gi;
+        } else {
+            const std::size_t n = std::strlen(add[ai].name) + 1;
+            std::memcpy(str, add[ai].name, n);
+            names[out] = rva_of(str);
+            ords[out] = static_cast<WORD>(old_funcs + ai);
+            str += n;
+            ++ai;
+        }
+        ++out;
+    }
+    dir->NumberOfFunctions = static_cast<DWORD>(old_funcs + add.size());
+    dir->NumberOfNames = static_cast<DWORD>(old_names + add.size());
+    dir->AddressOfFunctions = rva_of(functions);
+    dir->AddressOfNames = rva_of(names);
+    dir->AddressOfNameOrdinals = rva_of(ords);
+    // Guest functions whose RVA lies in the OLD directory's range would have been forwarders; the new range no
+    // longer covers them.
+    std::size_t old_forwarders = 0;
+    for (std::uint32_t i = 0; i < old_funcs; ++i)
+        if (guest.functions[i] >= guest.dir_rva && guest.functions[i] < guest.dir_rva + guest.dir_size) ++old_forwarders;
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(img.base);
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(static_cast<std::uint8_t*>(img.base) + dos->e_lfanew);
+    auto& d = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    const DWORD dir_rva = rva_of(dir);
+    const DWORD dir_size = static_cast<DWORD>(reinterpret_cast<std::uint8_t*>(str) - reinterpret_cast<std::uint8_t*>(dir));
+    MEMORY_BASIC_INFORMATION mbi{};
+    VirtualQuery(&d, &mbi, sizeof mbi);
+    DWORD old = 0;
+    const bool flip = !(mbi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY));
+    if (flip) VirtualProtect(&d, sizeof d, PAGE_READWRITE, &old);
+    d.VirtualAddress = dir_rva;
+    d.Size = dir_size;
+    if (flip) VirtualProtect(&d, sizeof d, old, &old);
+    VirtualProtect(mem, thunks, PAGE_EXECUTE_READ, &old);
+    VirtualProtect(mem + thunks, total - thunks, PAGE_READONLY, &old);
+    FlushInstructionCache(GetCurrentProcess(), mem, thunks);
+    std::string sample;
+    for (std::size_t k = 0; k < add.size() && k < 6; ++k) (sample += k ? ", " : "") += add[k].name;
+    TRACE(dispatch, "guest ntdll: %zu host ntdll code exports added as jumps (%s%s); export directory now at %p%s",
+          add.size(), sample.c_str(), add.size() > 6 ? ", ..." : "", static_cast<void*>(dir),
+          old_forwarders ? " -- WARNING: the old directory had forwarders" : "");
+    return add.size();
+}
+
 }  // namespace win10xbox::dispatch::detail

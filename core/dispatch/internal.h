@@ -511,5 +511,11 @@ struct ForwardResult { std::size_t forwarded = 0, skipped = 0; };
 ForwardResult ApplyRtlForwarding(const loader::MappedImage& guest_ntdll);
 // Writes a 5-byte rel32 jmp at `from` to `to` via a near trampoline. Exposed for tests.
 bool PatchJump(void* from, const void* to);
+// Adds to the guest ntdll's export table every CODE export of the host ntdll that Wine's ntdll does not have,
+// each as a jump to the host function, so a native DLL's imports of them resolve instead of binding to Wine's
+// raising stubs ("No implementation for ntdll.dll.X"): the native user32 imports ~20 of them. The new
+// directory and the jumps live in one allocation within 4 GiB above the image (export RVAs are 32-bit).
+// The image must still be writable. Returns how many names were added.
+std::size_t ExtendGuestNtdllExports(const loader::MappedImage& guest_ntdll);
 
 }  // namespace win10xbox::dispatch::detail

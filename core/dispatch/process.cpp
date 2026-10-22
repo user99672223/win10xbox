@@ -368,6 +368,8 @@ NTSTATUS MapGuestNtdll(const std::wstring& root) {
         ERR(process, "guest ntdll lacks LdrInitializeThunk/RtlUserThreadStart");
         return st::InvalidImageFormat;
     }
+    // Last: loader::FindExport (above) only accepts an export directory inside the image.
+    ExtendGuestNtdllExports(view->image);
     s = FinalizeView(view);
     if (!NtSuccess(s)) return s;
     TRACE(process, "guest ntdll at %p: %zu stubs, LdrInitializeThunk=%p", base, view->stubs,
