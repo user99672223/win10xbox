@@ -44,3 +44,10 @@ combase
 programs/services
 wbemprox
 programs/wineboot
+
+# --- imaging / text (wine-pe/tests: windowscodecs, gdiplus, dwrite tests) ---
+propsys
+windowscodecs
+mlang
+gdiplus
+dwrite
