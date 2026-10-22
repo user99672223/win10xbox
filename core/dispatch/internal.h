@@ -69,6 +69,10 @@ constexpr std::uint32_t FlsData                   = 0x17C8;
 // it is the one per-thread surface the guest's TlsAlloc and our ThreadState
 // slot share. See "The TLS slot we hold" in docs/DISPATCHER.md.
 constexpr std::uint32_t TlsSlotCount              = 64;
+// TEB.Win32ClientInfo[62]: user32 reads `struct ntuser_thread_info` at its start (ntuser.h NtUserGetThreadInfo);
+// core/user keeps its own per-thread pointer in the LAST slot.
+constexpr std::uint32_t Win32ClientInfo           = 0x800;
+constexpr std::uint32_t Win32ClientInfoCount      = 62;
 }
 namespace peb {
 constexpr std::uint32_t ImageBaseAddress   = 0x10;
@@ -94,6 +98,10 @@ constexpr std::uint32_t CSDVersion         = 0x2E8;   // UNICODE_STRING
 // `system_actctx` inside Wine's ntdll when the EXE has no manifest), and a Wine ACTIVATION_CONTEXT is not Microsoft's
 // ACTIVATION_CONTEXT_DATA blob. Offset checked against wine-src/include/winternl.h (x64: 0x2f8).
 constexpr std::uint32_t ActivationContextData = 0x2F8;
+// The win32k surface (core/user): user32 reads PEB.KernelCallbackTable (set by its DllMain, read back by our
+// user-mode callback), gdi32 decodes every HGDIOBJ through PEB.GdiSharedHandleTable (x64: 0x58 / 0xF8).
+constexpr std::uint32_t KernelCallbackTable = 0x58;
+constexpr std::uint32_t GdiSharedHandleTable = 0xF8;
 }
 inline std::uint8_t* CurrentPeb() { return reinterpret_cast<std::uint8_t*>(__readgsqword(teb::Peb)); }
 template <class T> T& PebField(std::uint32_t off) { return *reinterpret_cast<T*>(CurrentPeb() + off); }
@@ -307,6 +315,8 @@ const ImplDef* FileImpls();
 const ImplDef* SectionImpls();
 const ImplDef* ProcessImpls();
 const ImplDef* SubsystemImpls();
+// core/user: the win32u surface (NtUser*/NtGdi*, ids 0x1000..) and NtCallbackReturn.
+const ImplDef* UserImpls();
 // Subsystem groups compiled out: their Emulate entries pass through to the
 // host (registry/token/clock reads must work for Wine's loader_init) except
 // the names listed by NeverPassThrough().
