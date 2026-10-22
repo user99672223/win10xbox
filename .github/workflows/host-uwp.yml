@@ -439,3 +439,131 @@ jobs:
             uwp-activate.rc
           if-no-files-found: ignore
           retention-days: 7
+
+  # ---------------------------------------------------------------------------------------------------------------------
+  # `launcher`: GATING. The on-console launcher (host-uwp/launcher.cpp, docs/HANDOFF.md "Launcher") on the runner's CoreWindow.
+  #
+  # Installs the same signed .msix as `run`, writes LocalState\launch.json with "picker": true and the test hook
+  # "autoselect": "hello_cui.exe" (the launcher chooses that entry itself, no gamepad needed), activates the app and asserts on
+  # LocalState\launcher_result.txt: the guest ran (ran=yes), its exit code was captured (42) and its stdout reached the result
+  # screen's tail (the launcher's "last 20 lines"). The list and result screens go through the real presenter on the runner's
+  # CoreWindow; only the gamepad/keyboard navigation itself is not driven here.
+  #
+  # Unlike `run` (an experiment) this job is not continue-on-error: `run` has installed and activated the package on
+  # windows-latest, which is what makes this a usable gate.
+  # ---------------------------------------------------------------------------------------------------------------------
+  launcher:
+    needs: msix
+    if: ${{ !cancelled() && needs.msix.result == 'success' }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tests/appcontainer
+      - uses: actions/download-artifact@v4
+        with:
+          name: host-uwp-msix
+          path: msix
+      - uses: ilammy/msvc-dev-cmd@v1
+        with: { arch: x64 }
+
+      - name: Build the activation helper (tests/appcontainer/uwp_activate.cpp)
+        shell: cmd
+        run: |
+          cl /nologo /O2 /MT /EHsc /std:c++17 /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS /Fouwp_activate.obj /Feuwp_activate.exe tests\appcontainer\uwp_activate.cpp /link ole32.lib
+          if errorlevel 1 exit /b 1
+
+      - name: Trust the certificate and install the package
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $msix = Get-ChildItem -Path msix -Recurse -Filter *.msix | Select-Object -First 1
+          $cer = Get-ChildItem -Path msix -Recurse -Filter *.cer | Select-Object -First 1
+          if (-not $msix -or -not $cer) { Write-Host '::error::the host-uwp-msix artifact holds no .msix/.cer'; exit 1 }
+          foreach ($store in 'Cert:\LocalMachine\TrustedPeople', 'Cert:\LocalMachine\Root') {
+            try { Import-Certificate -FilePath $cer.FullName -CertStoreLocation $store | Out-Null; Write-Host "certificate imported into $store" }
+            catch { Write-Host "::warning::could not import the certificate into ${store}: $($_.Exception.Message)" }
+          }
+          $installed = $false
+          for ($attempt = 1; $attempt -le 2 -and -not $installed; $attempt++) {
+            try { Add-AppxPackage -Path $msix.FullName -ErrorAction Stop; $installed = $true; Write-Host "Add-AppxPackage: SUCCEEDED (attempt $attempt)" }
+            catch {
+              $msg = $_.Exception.Message
+              Write-Host "::warning::Add-AppxPackage FAILED (attempt $attempt): $msg"
+              if ($attempt -eq 1 -and $msg -match '0x80073CFF') {
+                New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Appx' -Force | Out-Null
+                New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Appx' -Name AllowAllTrustedApps -Value 1 -PropertyType DWord -Force | Out-Null
+              } else { break }
+            }
+          }
+          if (-not $installed) { Write-Host '::error::the package could not be installed'; exit 1 }
+
+      # LocalState\launch.json: the picker with the test hook. The folder may not exist before the first run, and a folder
+      # made by this user is not writable by the AppContainer unless it is granted (ALL APPLICATION PACKAGES, S-1-15-2-1).
+      - name: Write LocalState launch.json (picker + autoselect hello_cui.exe)
+        shell: powershell
+        run: |
+          $pkg = Get-AppxPackage -Name win10xbox.uwp
+          $ls = Join-Path $env:LOCALAPPDATA ("Packages\" + $pkg.PackageFamilyName + "\LocalState")
+          New-Item -ItemType Directory -Force -Path $ls | Out-Null
+          $json = '{ "picker": true, "autoselect": "hello_cui.exe", "expect_exit_code": 42, "exit_when_done": true, "timeout_sec": 180 }'
+          Set-Content -Path (Join-Path $ls 'launch.json') -Value $json -Encoding ascii
+          & icacls $ls /grant '*S-1-15-2-1:(OI)(CI)F' /T | Out-Host
+          Write-Host "LocalState: $ls"
+          Get-Content (Join-Path $ls 'launch.json') | Out-Host
+
+      - name: Launch by AUMID and wait for the app to end
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $pkg = Get-AppxPackage -Name win10xbox.uwp
+          $aumid = "$($pkg.PackageFamilyName)!App"
+          & .\uwp_activate.exe $aumid --package-full-name $pkg.PackageFullName --timeout 240
+          $rc = $LASTEXITCODE
+          Write-Host "uwp_activate exit status: $rc (0 ended, 10 activation refused, 11 still running at the timeout, 12 COM setup failed)"
+          Set-Content -Path uwp-activate.rc -Value $rc
+          exit 0
+
+      - name: Collect the evidence and assert on launcher_result.txt
+        id: assert
+        if: ${{ !cancelled() }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $pkg = Get-AppxPackage -Name win10xbox.uwp
+          $ls = Join-Path $env:LOCALAPPDATA ("Packages\" + $pkg.PackageFamilyName + "\LocalState")
+          New-Item -ItemType Directory -Force -Path uwp-evidence | Out-Null
+          if (Test-Path $ls) { Get-ChildItem -Path $ls -File | ForEach-Object { Copy-Item -Path $_.FullName -Destination uwp-evidence -Force; Write-Host ("  {0,-24} {1,10:N0} bytes" -f $_.Name, $_.Length) } }
+          foreach ($f in 'status.txt', 'launcher_result.txt') {
+            $p = Join-Path $ls $f
+            if (Test-Path $p) { Write-Host "--- $f ---"; Get-Content -Path $p | ForEach-Object { Write-Host $_ } } else { Write-Host "--- $f: MISSING ---" }
+          }
+          foreach ($f in 'crash.txt') { $p = Join-Path $ls $f; if (Test-Path $p) { Write-Host "--- $f (first 60 lines) ---"; Get-Content -Path $p -TotalCount 60 | ForEach-Object { Write-Host $_ } } }
+          $p = Join-Path $ls 'trace.log'
+          if (Test-Path $p) { Write-Host '--- trace.log (lines mentioning the launcher or display, last 60) ---'; Select-String -Path $p -Pattern 'launcher|display:' | Select-Object -Last 60 | ForEach-Object { Write-Host $_.Line } }
+          $result = Join-Path $ls 'launcher_result.txt'
+          $text = if (Test-Path $result) { Get-Content -Path $result -Raw } else { '' }
+          $fail = @()
+          if (-not $text) { $fail += 'LocalState\launcher_result.txt was not written (the launcher did not run the entry)' }
+          else {
+            if ($text -notmatch '(?m)^guest=hello_cui\.exe\s*$') { $fail += 'result is not for hello_cui.exe' }
+            if ($text -notmatch '(?m)^ran=yes\s*$') { $fail += 'the guest did not run (ran=yes missing)' }
+            if ($text -notmatch '(?m)^exit_code=42\s*$') { $fail += 'exit code 42 was not captured' }
+            if ($text -notmatch '(?m)^\s+\| hello from guest\s*$') { $fail += 'the guest stdout (hello from guest) is not in the result tail' }
+          }
+          $lines = @('### host-uwp launcher (picker + autoselect on the runner CoreWindow)')
+          if ($fail.Count -eq 0) { $lines += '- PASS: hello_cui.exe launched from the picker, exit code 42 and its stdout captured in launcher_result.txt' }
+          else { $fail | ForEach-Object { $lines += "- FAIL: $_"; Write-Host "::error::$_" } }
+          $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($fail.Count -gt 0) { exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: host-uwp-launcher-evidence
+          path: |
+            uwp-evidence
+            uwp-activate.rc
+          if-no-files-found: ignore
+          retention-days: 7
