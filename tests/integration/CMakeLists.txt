@@ -147,7 +147,20 @@ set_tests_properties(integration.guest_window_text PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_text.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=121,123,ff000000|123,123,ffffffff|131,123,ff000000")
 unset(_guest_machine)
 
-win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
+# ---- Real programs: TinyCC (tools/ci/build_tcc.ps1, a ci.yml step on MSVC) compiles hello.c and runs it --------
+option(WIN10XBOX_REAL_TCC "Register integration.real_tcc (tcc.exe must be in <machine>/guest/tcc)" OFF)
+if(MSVC OR WIN10XBOX_REAL_TCC)
+  add_test(NAME integration.real_tcc COMMAND ${CMAKE_COMMAND}
+    -DHOST=$<TARGET_FILE:win10xbox>
+    -DMACHINE=${WIN10XBOX_MACHINE_DIR}
+    -DSOURCE=${CMAKE_SOURCE_DIR}/tests/guest/tcc/hello.c
+    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_tcc.cmake)
+  set_tests_properties(integration.real_tcc PROPERTIES FIXTURES_REQUIRED w10x_machine
+    SKIP_RETURN_CODE 77 SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "guest_e2e" TIMEOUT 400)
+endif()
+
+win10xbox_guest_test(guest_hello_appcontainer_sim"C:\\guest\\guest_hello.exe" 42 "hello from guest")
 set_tests_properties(integration.guest_hello_appcontainer_sim PROPERTIES
   ENVIRONMENT "WIN10XBOX_TEST_NO_HOST_PATHS=1")
 
