@@ -5,9 +5,9 @@
 # The Wine sources are NOT copied into this repository: they are compiled from
 # wine-pe/wine-src (wine-pe/fetch-wine.sh) at configure/build time, and the
 # resulting guests are only ever built into the build tree (bin/guest-wine/).
-# Without wine-src, or with a toolchain that cannot build them (MSVC), no guest
-# is built and every wine_conformance test SKIPs (exit code 77), like the guest
-# e2e tests do without the Wine builtins or NLS data.
+# Without wine-src no guest is built and every wine_conformance test SKIPs (exit
+# code 77), like the guest e2e tests do without the Wine builtins or NLS data.
+# With MSVC, which cannot build them at all, the tests are not registered.
 #
 # Every test carries the ctest label `wine_conformance` and checks a recorded
 # baseline instead of "all green": most of Wine's tests fail or crash on the
@@ -41,6 +41,13 @@ else()
   else()
     set(_why "cannot determine the clang resource directory")
   endif()
+endif()
+if(MSVC)
+  # Not a skip but a toolchain fact: with MSVC these guests can never be built, so no test is registered (a test
+  # that can only SKIP would fail CI's ctest gate, tools/ci/check_ctest_run.py). The subset runs, gated, on the
+  # llvm-mingw + Wine job (ci.yml linux-cross); see docs/TESTING.md.
+  message(STATUS "wine-tests: ${_why}; no wine_conformance tests in this build")
+  return()
 endif()
 if(_can_build)
   message(STATUS "wine-tests: building Wine conformance guests from ${WIN10XBOX_WINE_SRC_DIR}")

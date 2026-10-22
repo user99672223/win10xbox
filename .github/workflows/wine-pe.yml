@@ -1,8 +1,10 @@
 name: wine-pe
 
 # Builds Wine's PE ("builtin") DLLs with llvm-mingw and publishes them as the
-# `wine-pe-builtin` artifact. The Windows job in ci.yml downloads the latest
-# successful artifact. Output is LGPL-2.1+ (see wine-pe/README.md).
+# `wine-pe-builtin` artifact (plus the widl-generated headers as
+# `wine-pe-include`). Every job that runs guests downloads them through
+# tools/ci/fetch_wine_pe.py, which waits for this workflow when it runs for the
+# same commit. Output is LGPL-2.1+ (see wine-pe/README.md).
 
 on:
   workflow_dispatch:
@@ -89,6 +91,18 @@ jobs:
         with:
           name: wine-pe-builtin
           path: wine-pe/out/builtin/
+          if-no-files-found: error
+          retention-days: 30
+
+      # The headers Wine generates from .idl (widl) while building the DLLs. The
+      # wine_conformance tests that include them (advapi32/registry) are built
+      # by ci.yml's linux-cross job, which has the Wine sources but not this
+      # build tree; without these headers that test would SKIP, and the job's
+      # ctest gate fails on any skip.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wine-pe-include
+          path: wine-pe/build/include/
           if-no-files-found: error
           retention-days: 30
 

@@ -628,7 +628,9 @@ typedef struct _WAIT_CONTEXT_BLOCK {
     PKDPC BufferChainingDpc;
 } WAIT_CONTEXT_BLOCK, *PWAIT_CONTEXT_BLOCK;
 
-typedef struct _DEVICE_OBJECT {
+/* DECLSPEC_ALIGN(MEMORY_ALLOCATION_ALIGNMENT) in the WDK's wdm.h: sizeof is 0x150, not 0x148 (drivers.layout on
+ * MSVC against the WDK, ci.yml run 39826229792; the mingw-w64 ddk omits the alignment). */
+typedef struct NTK_ALIGN(16) _DEVICE_OBJECT {
     CSHORT Type;
     USHORT Size;
     LONG ReferenceCount;
