@@ -281,10 +281,20 @@ __declspec(noinline) void ProbeStack(std::size_t bytes) {
     ctx.Rcx = reinterpret_cast<std::uint64_t>(start);
     ctx.Rdx = reinterpret_cast<std::uint64_t>(arg);
     TRACE(process, "thread %04lx entering guest: start=%p arg=%p", GetCurrentThreadId(), start, arg);
-    // The TEB holds the host's TLS/FLS pointers here, which is what the guest
-    // view starts from (ThreadState::guest_* == host_*). Wine's loader_init
-    // installs its own; core/asm keeps both from then on.
-    G().ldr_init(&ctx, 0, 0, 0);
+    // The guest view starts with NO static-TLS array, like a fresh thread before its loader has run: Wine's
+    // LdrInitializeThunk installs its own (alloc_thread_tls), and core/asm keeps both from then on. Until then
+    // Wine's loader may load DLLs that have a TLS directory, and alloc_tls_slot writes a block into the array
+    // of every thread whose TEB.ThreadLocalStoragePointer is non-NULL and frees what that slot held: with the
+    // host's array still in the TEB, that freed a host TLS block (heap corruption 0xC0000374 as soon as the
+    // native gdi32full.dll was imported). The call target is resolved before the TEB changes: host code after
+    // the store would read its TLS through NULL (the guest-view window rule). FLS needs nothing: Wine's
+    // loader always installs its own FlsSlots.
+    // Without a ThreadState there is no view switch at all, and the host keeps its array.
+    const auto ldr_init = G().ldr_init;
+    ThreadState* const self = CurrentThreadState();
+    if (self) __writegsqword(teb::ThreadLocalStoragePointer, 0);
+    ldr_init(&ctx, 0, 0, 0);
+    if (self) __writegsqword(teb::ThreadLocalStoragePointer, self->host_tls);
     ERR(process, "guest LdrInitializeThunk returned");
     detail::GuestThreadExit(st::Unsuccessful);
 }
