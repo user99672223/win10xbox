@@ -252,8 +252,7 @@ So a real host path *is* obtainable inside an AppContainer by asking for an NT p
 
 **2. `dbghelp.dll` BINDS inside a genuine AppContainer** — `LoadLibrary` OK and a real self-dump written, in AC and
 LPAC, and the host's own `crash.cpp` reports `dbghelp.dll bound: crash.dmp enabled`. So the console's failure to bind it
-is **not** generic AppContainer behaviour; it is Xbox-specific. The delay-load hedge was the right call regardless, but
-the missing `crash.dmp` on hardware is an Xbox property, not an AppContainer one.
+is **not** generic AppContainer behaviour. **Nor is it Xbox behaviour** — corrected by the hardware run of `host-uwp` 1.0.0.8, where `crash.cpp` reported `dbghelp.dll bound: crash.dmp enabled` on the console itself. So the earlier `0x800736b2` from host-uwp-lite 1.0.0.4 was *not* a general inability to bind dbghelp on Xbox, and the prediction made here that the console could not bind it was **wrong**. Console crash dumps are available; Device Portal per-app dump collection is also enabled now.
 
 **3. The smoke guest reaches exit 42 inside the container**, with 0 unresolved imports, matching `smoke-plain` and
 `smoke-plain-console` (the two controls that separate a console effect from a container effect, since the container
