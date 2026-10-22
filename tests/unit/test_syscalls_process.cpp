@@ -246,6 +246,7 @@ TEST(syscalls_process_host_environment_entries) {
 
 namespace {
 
+struct ClientId { void* UniqueProcess; void* UniqueThread; };
 struct PsAttr { ULONG_PTR Attribute; SIZE_T Size; ULONG_PTR Value; SIZE_T* ReturnLength; };
 constexpr ULONG_PTR kInput = 0x20000, kThread = 0x10000;
 constexpr ULONG_PTR kImageName = 5 | kInput, kClientId = 3 | kThread, kImageInfo = 6, kTokenAttr = 2 | kInput | 0x40000;
@@ -322,12 +323,12 @@ struct ChildConfig {
 };
 
 NTSTATUS CreateChild(const std::wstring& image_nt, void* params, std::vector<PsAttr> extra, ULONG thread_flags,
-                     HANDLE* process, HANDLE* thread, CLIENT_ID* id, std::uint8_t* image_info, std::uint8_t* create_info) {
+                     HANDLE* process, HANDLE* thread, ClientId* id, std::uint8_t* image_info, std::uint8_t* create_info) {
     std::vector<PsAttr> attrs;
     SIZE_T return_length = 0;
     if (!image_nt.empty())
         attrs.push_back({kImageName, image_nt.size() * 2, reinterpret_cast<ULONG_PTR>(image_nt.c_str()), nullptr});
-    attrs.push_back({kClientId, sizeof(CLIENT_ID), reinterpret_cast<ULONG_PTR>(id), nullptr});
+    attrs.push_back({kClientId, sizeof(ClientId), reinterpret_cast<ULONG_PTR>(id), nullptr});
     attrs.push_back({kImageInfo, 0x40, reinterpret_cast<ULONG_PTR>(image_info), &return_length});
     for (const PsAttr& a : extra) attrs.push_back(a);
     // PS_ATTRIBUTE_LIST: TotalLength, then the attributes
@@ -360,7 +361,7 @@ TEST(syscalls_process_create_user_process_argument_errors) {
     Machine machine;
     ChildConfig cfg(machine.root);
     HANDLE p = nullptr, t = nullptr;
-    CLIENT_ID id{};
+    ClientId id{};
     std::uint8_t image_info[0x40], create_info[0x58];
     void* params = MakeParams(L"C:\\guest\\guest_hello.exe", L"C:\\guest\\guest_hello.exe", L"C:\\");
     CHECK(params != nullptr);
@@ -407,7 +408,7 @@ TEST(syscalls_process_create_user_process_runs_a_child) {
     std::memcpy(static_cast<std::uint8_t*>(params) + kStdOutOffset, &write_end, sizeof write_end);
 
     HANDLE p = nullptr, t = nullptr;
-    CLIENT_ID id{};
+    ClientId id{};
     std::uint8_t image_info[0x40] = {}, create_info[0x58];
     std::memset(create_info, 0xCC, sizeof create_info);
     NTSTATUS s = CreateChild(L"\\??\\C:\\guest\\guest_hello.exe", params, {}, 1 /*suspended*/, &p, &t, &id, image_info,

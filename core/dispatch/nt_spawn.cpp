@@ -39,10 +39,11 @@ enum : ULONG_PTR {
     kPsParentProcess = 0, kPsDebugPort = 1, kPsToken = 2, kPsClientId = 3, kPsTebAddress = 4, kPsImageName = 5,
     kPsImageInfo = 6, kPsHandleList = 11, kPsJobList = 19, kPsMachineType = 28,
 };
+struct ClientIdPair { PVOID UniqueProcess; PVOID UniqueThread; };   // CLIENT_ID (not in every SDK's winternl.h)
 constexpr std::size_t kCreateInfoSize = 0x58;       // sizeof(PS_CREATE_INFO) on x64
 constexpr std::uint32_t kCreateInfoState = 8;       // PS_CREATE_STATE State, after the SIZE_T Size
 constexpr std::uint32_t kPsCreateFailOnFileOpen = 1, kPsCreateFailExeFormat = 3, kPsCreateSuccess = 6;
-constexpr std::size_t kClientIdSize = 16, kImageInfoSize = 0x40;
+constexpr std::size_t kClientIdSize = sizeof(ClientIdPair), kImageInfoSize = 0x40;
 
 constexpr ULONG kProcessBreakaway = 0x1, kProcessNoDebugInherit = 0x2, kProcessInheritHandles = 0x4,
                 kProcessSuspended = 0x200;
@@ -598,9 +599,9 @@ NTSTATUS NTAPI Xl_NtCreateUserProcess(PHANDLE process_handle, PHANDLE thread_han
         const auto number = a.Attribute & kAttrNumberMask;
         std::size_t written = 0;
         if (number == kPsClientId) {
-            CLIENT_ID id{};
-            id.UniqueProcess = reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(pi.dwProcessId));
-            id.UniqueThread = reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(pi.dwThreadId));
+            ClientIdPair id{};
+            id.UniqueProcess = reinterpret_cast<PVOID>(static_cast<std::uintptr_t>(pi.dwProcessId));
+            id.UniqueThread = reinterpret_cast<PVOID>(static_cast<std::uintptr_t>(pi.dwThreadId));
             written = std::min<std::size_t>(a.Size, sizeof id);
             std::memcpy(a.ValuePtr, &id, written);
         } else if (number == kPsImageInfo) {
@@ -626,7 +627,7 @@ NTSTATUS NTAPI Xl_NtCreateProcessEx(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, HA
     return st::NotSupported;
 }
 
-NTSTATUS NTAPI Xl_NtCreateThread(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, HANDLE process, PCLIENT_ID, PCONTEXT, PVOID,
+NTSTATUS NTAPI Xl_NtCreateThread(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, HANDLE process, PVOID /*CLIENT_ID*/, PCONTEXT, PVOID,
                                  BOOLEAN) {
     // The pre-Vista creator: the caller allocates the stack (INITIAL_TEB) and supplies a full CONTEXT to start from.
     // Guest threads are host threads that enter Wine's per-thread loader init (E4), which NtCreateThreadEx
