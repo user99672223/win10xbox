@@ -159,6 +159,17 @@ jobs:
       - name: Populate machine folder from the runner's System32 (never committed)
         shell: pwsh
         run: ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine -CI
+      # A real program that is not ours: 7-Zip 24.09's 7zr.exe from the official source tarball (pinned SHA-256, the
+      # cache key carries it), nmake in CPP/7zip/Bundles/Alone7z -> build/bin/machine/guest/7zr.exe; run by
+      # integration.real7z (tests/integration/real7z.cmake).
+      - name: Cache the 7-Zip source tarball
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/sevenzip-src
+          key: sevenzip-24.09-49c05169f49572c1128453579af1632a952409ced028259381dac30726b6133a
+      - name: Build 7-Zip 7zr.exe (real guest program)
+        shell: pwsh
+        run: ./tools/ci/build_7zip.ps1 -Out build/bin/machine/guest
       # The whole suite, end-to-end included. The guest's stdout IS captured on
       # real Windows: run 39818491081 (RelWithDebInfo, the one job of that run
       # that had the builtins) printed "hello from guest" and passed 11 of 13

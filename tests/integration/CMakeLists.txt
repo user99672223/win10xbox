@@ -227,3 +227,18 @@ win10xbox_guest_tls_test(guest_view_violation_detected 42 "+dispatch,+modules"
   "WIN10XBOX_TEST_GUEST_VIEW_VIOLATION=1"
   "host state reached under the guest TLS view [0-9]+ times \\(last: dispatch::ExportCache\\), [1-9][0-9]* trace lines dropped"
   "")
+
+# ---- Real program: 7-Zip's 7zr.exe (docs/TESTING.md, "Real programs") --------------------------------------------
+# Built from the official source by tools/ci/build_7zip.ps1 (a named step of ci.yml's windows job, which leaves it at
+# <machine>/guest/7zr.exe before ctest runs). Registered only where that step exists (MSVC) or with
+# -DWIN10XBOX_REAL_7Z=ON after putting a 7zr.exe into the machine folder; never on linux-cross's skip floor.
+option(WIN10XBOX_REAL_7Z "Register integration.real7z (7zr.exe must be in <machine>/guest)" OFF)
+if(MSVC OR WIN10XBOX_REAL_7Z)
+  add_test(NAME integration.real7z
+    COMMAND ${CMAKE_COMMAND} -DHOST=$<TARGET_FILE:win10xbox> -DMACHINE=${WIN10XBOX_MACHINE_DIR}
+      -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR} -P ${CMAKE_CURRENT_SOURCE_DIR}/real7z.cmake)
+  set_tests_properties(integration.real7z PROPERTIES
+    FIXTURES_REQUIRED w10x_machine
+    LABELS "guest_e2e;real7z"
+    TIMEOUT 900)
+endif()
