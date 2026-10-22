@@ -27,7 +27,7 @@ add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_window guest_window2 guest_window_input
-                   guest_window_text)
+                   guest_window_input2 guest_window_text)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -40,7 +40,9 @@ if(NOT _vendor)
   set(_vendor "[A-Za-z]+")
 endif()
 
-# The machine folder is WIN10XBOX_MACHINE_DIR unless the caller sets _guest_machine.
+# The machine folder is WIN10XBOX_MACHINE_DIR unless the caller sets _guest_machine; the guest's command-line
+# arguments (a list, one element each) are _guest_args if the caller sets it, and _guest_debug / _guest_forbid_trace
+# (a WIN10XBOX_DEBUG spec and a regex the layer's trace must not match) if it wants to assert on the trace.
 function(win10xbox_guest_test name program exit_code)
   # On the builtin-only folder, also prove from the modules trace that no native system DLL was mapped.
   set(_require_builtin OFF)
@@ -55,9 +57,12 @@ function(win10xbox_guest_test name program exit_code)
       -DMACHINE=${_guest_machine}
       -DREQUIRE_BUILTIN_DLLS=${_require_builtin}
       -DPROGRAM=${program}
+      "-DPROGRAM_ARGS=${_guest_args}"
+      "-DDEBUG_SPEC=${_guest_debug}"
+      "-DFORBID_TRACE_REGEX=${_guest_forbid_trace}"
       -DEXPECT_EXIT=${exit_code}
       "-DEXPECT_REGEX=${ARGN}"
-      "-DARGS=${_guest_args}" "-DINPUT_FILE=${_guest_input}" "-DGUEST_FILE=${_guest_file}"
+      "-DINPUT_FILE=${_guest_input}" "-DGUEST_FILE=${_guest_file}"
       -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
   set_tests_properties(integration.${name} PROPERTIES
@@ -126,20 +131,62 @@ win10xbox_guest_test(guest_window_input "C:\\guest\\guest_window_input.exe" 42
   "input: WM_LBUTTONDOWN x=50 y=50" "input: WM_CHAR ch=a" "input: WM_MOUSEWHEEL delta=120")
 set_tests_properties(integration.guest_window_input PROPERTIES
   ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=sleep 1500\\;move 150,150\\;ldown\\;lup\\;key 0x41\\;wheel 120")
+# Input semantics (tests/guest/window_input2.c): the host script covers the driver path (move, double click, right
+# click, wheel, key; the guest compares every message with its hit test / WM_SETCURSOR companions), the guest the rest with
+# SendInput. It prints PASS/FAIL per case and exits 42 only when every case passed.
+win10xbox_guest_test(guest_window_input2 "C:\\guest\\guest_window_input2.exe" 42
+  "PASS host-injected move, double click" "PASS caps lock on" "PASS click on an inactive window" "PASS capture: a click outside"
+  "PASS child: click" "PASS US layout: VkKeyScan" "window_input2: [0-9]+ passed, 0 failed")
+set_tests_properties(integration.guest_window_input2 PROPERTIES
+  ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=sleep 3000\\;move 150,150\\;ldown\\;lup\\;ldown\\;lup\\;rdown\\;rup\\;wheel -120\\;key 0x42"
+  FAIL_REGULAR_EXPRESSION "FAIL ")
 # The text GUI guest (tests/guest/window_text.c): a 400x300 WS_POPUP window at (100,100), client origin = screen
 # origin (100,100). It draws "HI" at client (20,20) and "Hello/Xbox" into (20,60)-(380,120) with the stock system
 # font, then reads the glyph pixels back with GetPixel and exits 42. The screenshot checks three of them at screen
 # coordinates: H(1,3) black at (121,123), H(3,3) white at (123,123), I(3,3) black at (131,123) (I's cell starts at
-# x offset 8). Stays DISABLED until the text rendering slice (claude/youthful-cerf-l7xxsb-text) lands, so CI stays
-# green meanwhile.
+# x offset 8).
 win10xbox_guest_test(guest_window_text "C:\\guest\\guest_window_text.exe" 42
   "text: class registered" "text: created hwnd=" "text: painted"
   "text: pixels H\\(1,3\\)=00000000 H\\(6,3\\)=00000000 H\\(3,3\\)=00ffffff I\\(3,3\\)=00000000 bg=00ffffff"
   "text: done")
 set_tests_properties(integration.guest_window_text PROPERTIES
-  DISABLED TRUE
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_text.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=121,123,ff000000|123,123,ffffffff|131,123,ff000000")
 unset(_guest_machine)
+
+# ---- Real programs: the first guests that are not ours ----------------------------------------------------------
+# Lua 5.4.7, built from the upstream tarball with MSVC by tools/ci/build_lua.ps1 (a named step of ci.yml's windows
+# job, which leaves it at <machine>/guest/lua.exe before ctest runs). Registered only where that step exists: MSVC
+# builds, or any build configured with -DWIN10XBOX_REAL_PROGRAMS=ON after putting a lua.exe into the machine folder
+# (docs/TESTING.md, "Real programs"). Not registered on linux-cross, so its skip floor never counts them.
+option(WIN10XBOX_REAL_PROGRAMS "Register the real-program guest tests (lua.exe must be in <machine>/guest)" OFF)
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  configure_file(${CMAKE_SOURCE_DIR}/tests/guest/lua/smoke.lua ${CMAKE_BINARY_DIR}/bin/guest/lua_smoke.lua COPYONLY)
+  # (a) the command line: -e with a quoted argument, and the exit code from os.exit.
+  set(_guest_args "-e;print('hello from lua', 6*7) os.exit(42)")
+  win10xbox_guest_test(lua_hello "C:\\guest\\lua.exe" 42 "hello from lua\t42")
+  # (b) the script (tests/guest/lua/smoke.lua): every section prints "smoke: <name> ok".
+  set(_guest_args "C:\\guest\\lua_smoke.lua;alpha;beta gamma")
+  set(_lua_sections argv format format.g sort sort.words io.write os.time os.date os.date.t os.clock getenv getenv.none
+    io.open.write file.close io.open.read file.line1 file.line2 file.rest file.size os.rename os.remove file.gone
+    io.open.missing os.tmpname tmpname.open io.lines dofile require pcall pcall.table pcall.runtime xpcall string.rep string.rep.sub string.rep.sep table.concat gc)
+  set(_lua_expect "")
+  foreach(_s ${_lua_sections})
+    string(REPLACE "." "\\." _re "${_s}")
+    list(APPEND _lua_expect "smoke: ${_re} ok")
+  endforeach()
+  win10xbox_guest_test(lua_smoke "C:\\guest\\lua.exe" 42 ${_lua_expect} "smoke: done fails=0")
+  set_tests_properties(integration.lua_smoke PROPERTIES FAIL_REGULAR_EXPRESSION "smoke: [a-z.]+ FAILED")
+  # (c) the host-side unwind tables: every image the guest maps must be registered with the host's
+  # RtlAddFunctionTable (the host walks guest frames for pcall/longjmp and for SEH). Before the fix the lookup of
+  # that export failed for every image mapped after the PEB take-over (docs/STATUS.md, "Real programs").
+  set(_guest_args "-e;print(pcall(error, 'x')) os.exit(42)")
+  set(_guest_debug "-all,+loader")
+  set(_guest_forbid_trace "RtlAddFunctionTable failed")
+  win10xbox_guest_test(lua_unwind_tables "C:\\guest\\lua.exe" 42 "false\tx")
+  unset(_guest_args)
+  unset(_guest_debug)
+  unset(_guest_forbid_trace)
+endif()
 
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
 set_tests_properties(integration.guest_hello_appcontainer_sim PROPERTIES

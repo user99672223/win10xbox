@@ -170,6 +170,17 @@ jobs:
       - name: Build the SQLite shell (pinned, SHA-256 verified)
         shell: pwsh
         run: ./tools/ci/build_sqlite.ps1 -OutDir build/bin/machine/guest
+      # The first program that is not ours: Lua 5.4.7, built from the upstream tarball (pinned SHA-256, checked on
+      # every run, restored from the cache or downloaded) with cl /O2 /MT into build/bin/machine/guest/lua.exe;
+      # the Test and Smoke steps below run it (integration.lua_*, docs/STATUS.md "Real programs").
+      - name: Cache the Lua source tarball
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/lua-src
+          key: lua-5.4.7-9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30
+      - name: Build Lua 5.4.7 (real guest program)
+        shell: pwsh
+        run: ./tools/ci/build_lua.ps1 -Out build/bin/machine/guest
       # The whole suite, end-to-end included. The guest's stdout IS captured on
       # real Windows: run 39818491081 (RelWithDebInfo, the one job of that run
       # that had the builtins) printed "hello from guest" and passed 11 of 13
@@ -191,7 +202,7 @@ jobs:
       - name: Smoke - every bundled guest through the host
         if: ${{ !cancelled() }}
         shell: pwsh
-        run: ./tools/ci/smoke_guests.ps1 -Bin build/bin -Machine build/bin/machine -LogDir build/guest-smoke
+        run: ./tools/ci/smoke_guests.ps1 -Bin build/bin -Machine build/bin/machine -LogDir build/guest-smoke -RealPrograms
       # crash.txt / crash.dmp / entry-reached.txt: what host-win32/crash.cpp writes into build/bin when a guest run
       # (ctest or the smoke step) dies; *.bmp: the GUI tests' screenshots (WIN10XBOX_SCREENSHOT).
       - uses: actions/upload-artifact@v4

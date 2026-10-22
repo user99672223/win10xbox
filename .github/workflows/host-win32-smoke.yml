@@ -421,12 +421,23 @@ jobs:
           fi
           echo "host-win32-smoke: PASS (zero unresolved KERNEL32 imports, guest exit code 42)"
 
+      # Lua 5.4.7, built as in ci.yml (tools/ci/build_lua.ps1), so the first real program also runs under the
+      # console's conditions (builtin DLLs only, host paths unknown).
+      - name: Cache the Lua source tarball
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/lua-src
+          key: lua-5.4.7-9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30
+      - name: Build Lua 5.4.7 (real guest program)
+        shell: pwsh
+        run: ./tools/ci/build_lua.ps1 -Out build/bin/machine/guest
+
       # Every bundled guest (prepare_machine copied bin/guest into the machine
       # folder), console conditions, each gated on its exit code and output.
       - name: Gate - every bundled guest through the host (console conditions)
         if: ${{ !cancelled() }}
         shell: pwsh
-        run: ./tools/ci/smoke_guests.ps1 -Bin build/bin -Machine build/bin/machine -LogDir guest-smoke -ConsoleConditions
+        run: ./tools/ci/smoke_guests.ps1 -Bin build/bin -Machine build/bin/machine -LogDir guest-smoke -ConsoleConditions -RealPrograms
 
       - uses: actions/upload-artifact@v4
         if: always()

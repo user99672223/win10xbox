@@ -126,6 +126,14 @@ NTSTATUS FallbackTranslateNt(std::wstring_view guest, std::wstring* host) {
 
 constexpr ULONG kFileNameInformation = 9;
 constexpr ULONG kFileNormalizedNameInformation = 48;
+constexpr ULONG kFileRenameInformation = 10;
+constexpr ULONG kFileLinkInformation = 11;
+constexpr ULONG kFileRenameInformationBypassAccessCheck = 56;
+constexpr ULONG kFileLinkInformationBypassAccessCheck = 57;
+constexpr ULONG kFileRenameInformationEx = 65;
+constexpr ULONG kFileRenameInformationExBypassAccessCheck = 66;
+constexpr ULONG kFileLinkInformationEx = 72;
+constexpr ULONG kFileLinkInformationExBypassAccessCheck = 73;
 
 bool IsKnownDllsName(const OBJECT_ATTRIBUTES* oa) {
     if (!oa || oa->RootDirectory) return false;
@@ -314,6 +322,43 @@ static NTSTATUS NTAPI Xl_NtQueryInformationFile(HANDLE file, PIO_STATUS_BLOCK io
     return s;
 }
 
+// FILE_RENAME_INFORMATION / FILE_LINK_INFORMATION carry the target as an NT path inside the buffer (Wine's
+// MoveFileExW and CreateHardLinkW send "\??\C:\..."), so the host would look for it on its own C: drive. Same
+// layout for both: { BOOLEAN/ULONG Flags; HANDLE RootDirectory; ULONG FileNameLength; WCHAR FileName[] }.
+static NTSTATUS NTAPI Xl_NtSetInformationFile(HANDLE file, PIO_STATUS_BLOCK io, PVOID buffer, ULONG length,
+                                              ULONG klass) {
+    switch (klass) {
+    case kFileRenameInformation: case kFileLinkInformation:
+    case kFileRenameInformationBypassAccessCheck: case kFileLinkInformationBypassAccessCheck:
+    case kFileRenameInformationEx: case kFileRenameInformationExBypassAccessCheck:
+    case kFileLinkInformationEx: case kFileLinkInformationExBypassAccessCheck:
+        break;
+    default:
+        return Host().NtSetInformationFile(file, io, buffer, length, klass);
+    }
+    constexpr ULONG kHeader = 20;   // offsetof(FILE_RENAME_INFORMATION, FileName) on x64
+    if (!buffer || length < kHeader) return Host().NtSetInformationFile(file, io, buffer, length, klass);
+    auto* in = static_cast<const std::uint8_t*>(buffer);
+    HANDLE root;
+    ULONG name_bytes;
+    std::memcpy(&root, in + 8, sizeof root);
+    std::memcpy(&name_bytes, in + 16, sizeof name_bytes);
+    if (root || name_bytes > length - kHeader)   // relative to a host handle, or malformed: the host decides
+        return Host().NtSetInformationFile(file, io, buffer, length, klass);
+    std::wstring host;
+    NTSTATUS s = TranslateGuestNtPath(std::wstring_view(reinterpret_cast<const wchar_t*>(in + kHeader), name_bytes / 2), &host);
+    if (s == st::NotSupported) return Host().NtSetInformationFile(file, io, buffer, length, klass);
+    if (s) return s;
+    const ULONG new_bytes = static_cast<ULONG>(host.size() * sizeof(wchar_t));
+    std::vector<std::uint8_t> out(kHeader + new_bytes + sizeof(wchar_t), 0);
+    std::memcpy(out.data(), in, 16);   // flags + RootDirectory (padding included)
+    std::memcpy(out.data() + 16, &new_bytes, sizeof new_bytes);
+    std::memcpy(out.data() + kHeader, host.data(), new_bytes);
+    TRACE(dispatch, "NtSetInformationFile class %lu: target '%.*ls' -> '%ls'", static_cast<unsigned long>(klass),
+          static_cast<int>(name_bytes / 2), reinterpret_cast<const wchar_t*>(in + kHeader), host.c_str());
+    return Host().NtSetInformationFile(file, io, out.data(), static_cast<ULONG>(out.size()), klass);
+}
+
 static NTSTATUS NTAPI Xl_NtOpenDirectoryObject(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr) {
     // E3: no KnownDlls, so Wine's loader searches the file system through the VFS.
     if (IsKnownDllsName(attr)) return st::ObjectNameNotFound;
@@ -379,6 +424,7 @@ const ImplDef* FileImpls() {
         {"NtQueryFullAttributesFile", reinterpret_cast<void*>(&Xl_NtQueryFullAttributesFile)},
         {"NtDeleteFile", reinterpret_cast<void*>(&Xl_NtDeleteFile)},
         {"NtQueryInformationFile", reinterpret_cast<void*>(&Xl_NtQueryInformationFile)},
+        {"NtSetInformationFile", reinterpret_cast<void*>(&Xl_NtSetInformationFile)},
         {"NtOpenDirectoryObject", reinterpret_cast<void*>(&Xl_NtOpenDirectoryObject)},
         {"NtOpenSymbolicLinkObject", reinterpret_cast<void*>(&Xl_NtOpenSymbolicLinkObject)},
         {"NtLockFile", reinterpret_cast<void*>(&Xl_NtLockFile)},

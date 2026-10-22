@@ -3,18 +3,22 @@
 # windows job of ci.yml (desktop machine folder) and by host-win32-smoke.yml (console-like machine folder, with
 # -ConsoleConditions).
 #
-#   tools/ci/smoke_guests.ps1 -Bin build/bin -Machine build/bin/machine [-LogDir guest-smoke] [-ConsoleConditions]
+#   tools/ci/smoke_guests.ps1 -Bin build/bin -Machine build/bin/machine [-LogDir guest-smoke] [-ConsoleConditions] [-RealPrograms]
 #
 # The table below is the set of guests this repository builds, with the exit code each one returns when it ran to
 # completion (tests/guest/README.md, host-uwp-lite/README.md, tests/drivers). A guest in the table that was not built
 # or is missing from the machine folder FAILS the run. A guest in the machine folder that is not in the table is
 # listed (it is still gated by its ctest entry, if it has one) but does not fail this step, so a new guest never
 # breaks CI before someone decides its expected exit code here.
+# Rows marked Real = $true are programs that are not ours (Lua, built by tools/ci/build_lua.ps1 into the machine
+# folder's guest directory); they run, and fail when missing, only with -RealPrograms, which the workflows that
+# build them pass. Args = the guest's command-line arguments.
 param(
   [Parameter(Mandatory = $true)] [string] $Bin,
   [Parameter(Mandatory = $true)] [string] $Machine,
   [string] $LogDir = 'guest-smoke',
   [switch] $ConsoleConditions,
+  [switch] $RealPrograms,
   [int] $TimeoutSeconds = 180
 )
 $ErrorActionPreference = 'Stop'
@@ -32,9 +36,9 @@ foreach ($sys in @(Get-ChildItem (Join-Path $Bin 'drivers') -Filter *.sys -Error
   Copy-Item $sys.FullName -Destination $drivers -Force
 }
 
-# name, host, guest image (in <machine>\guest), driver (or ''), expected exit code, stdout regex (or '');
-# optional: Args (the guest's command line), Stdin (a file the guest reads as standard input), Fresh (a path under the
-# machine folder deleted before the run, so the run starts from nothing, and required to exist after it)
+# name, host, guest image (in <machine>\guest), driver (or ''), expected exit code, stdout regex (or ''), Args, Real; optional:
+# Args (the guest's command line), Stdin (a file the guest reads as standard input), Fresh (a path under the machine
+# folder deleted before the run, so the run starts from nothing, and required to exist after it)
 $table = @(
   @{ Name = 'guest_hello';     Host = $host_exe; Guest = 'guest_hello.exe';     Driver = '';                  Exit = 42; Out = 'hello from guest' },
   @{ Name = 'guest_cpuid';     Host = $host_exe; Guest = 'guest_cpuid.exe';     Driver = '';                  Exit = 0;  Out = 'cpuid\.1\.ecx=' },
@@ -50,12 +54,20 @@ $table = @(
   @{ Name = 'guest_lockfile';  Host = $host_exe; Guest = 'guest_lockfile.exe';  Driver = '';                  Exit = 42; Out = 'lockfile: done' },
   # The SQLite shell (tools/ci/build_sqlite.ps1), a program this repository did not write: an in-memory query, then
   # tests/guest/sqlite/smoke.sql against a database file in the machine folder.
-  @{ Name = 'sqlite3_memory';  Host = $host_exe; Guest = 'sqlite3.exe';         Driver = '';                  Exit = 0;  Out = '(?m)^42\r?$';
+  @{ Name = 'sqlite3_memory';  Host = $host_exe; Guest = 'sqlite3.exe';         Driver = '';                  Exit = 0;  Out = '(?m)^42\r?$'; Real = $true;
      Args = @('-batch', ':memory:', 'select 6*7;') },
-  @{ Name = 'sqlite3_script';  Host = $host_exe; Guest = 'sqlite3.exe';         Driver = '';                  Exit = 42; Out = '(?s)plum\|7.*CREATE INDEX fruit_name.*COMMIT;.*date\|10\|1\|1\r?\nok';
+  @{ Name = 'sqlite3_script';  Host = $host_exe; Guest = 'sqlite3.exe';         Driver = '';                  Exit = 42; Real = $true; Out = '(?s)plum\|7.*CREATE INDEX fruit_name.*COMMIT;.*date\|10\|1\|1\r?\nok';
      Args = @('-batch', 'C:\Users\User\smoke.db'); Stdin = (Join-Path $PSScriptRoot '..\..\tests\guest\sqlite\smoke.sql');
-     Fresh = 'Users\User\smoke.db' }
+     Fresh = 'Users\User\smoke.db' },
+  @{ Name = 'lua_hello';       Host = $host_exe; Guest = 'lua.exe';             Driver = '';                  Exit = 42; Out = 'hello from lua\t42'; Real = $true
+     Args = @('-e', "print('hello from lua', 6*7) os.exit(42)") },
+  @{ Name = 'lua_smoke';       Host = $host_exe; Guest = 'lua.exe';             Driver = '';                  Exit = 42; Out = 'smoke: done fails=0'; Real = $true
+     Args = @('C:\guest\lua_smoke.lua', 'alpha', 'beta gamma') }
 )
+if (-not $RealPrograms) {
+  Write-Host "real programs not run here (no -RealPrograms): $(($table | Where-Object { $_.Real } | ForEach-Object { $_.Name }) -join ', ')"
+  $table = @($table | Where-Object { -not $_.Real })
+}
 
 $saved = @{}
 if ($ConsoleConditions) {
@@ -121,6 +133,7 @@ foreach ($t in $table) {
 foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
 
 $known = $table | ForEach-Object { $_.Guest } | Select-Object -Unique
+if (-not $RealPrograms) { $known += 'lua.exe', 'sqlite3.exe' }   # not built here; not "unlisted" either
 $extra = @(Get-ChildItem (Join-Path $Machine 'guest') -Filter *.exe -ErrorAction SilentlyContinue |
            Where-Object { $known -notcontains $_.Name } | ForEach-Object { $_.Name })
 if ($extra.Count -gt 0) {
