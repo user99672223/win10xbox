@@ -100,7 +100,7 @@ if(BUILTIN_ONLY_MACHINE)
 endif()
 
 # -DNATIVE_GUI_MACHINE=<dir>: route B's folder (docs/GUI.md "Route B: native win32k"): the builtin-only set plus
-# the NATIVE GUI DLLs from MACHINE's System32 (user32, win32u, gdi32, gdi32full, msvcp_win, imm32: what the
+# the NATIVE GUI DLLs from MACHINE's System32 (user32, win32u, gdi32, gdi32full, msvcp_win, imm32, msctf: what the
 # native user32 pulls in that must be native), machine.json "gui": "native", "*": "builtin,native" and "native"
 # for those six. Everything else stays Wine's: a whole native chain (msvcrt, rpcrt4, advapi32...) imports CRT
 # apisets and ntdll internals Wine's builtins do not provide. Without the native DLLs (any non-Windows host) the
@@ -111,7 +111,7 @@ if(NATIVE_GUI_MACHINE)
             ProgramData "Program Files" "Program Files (x86)" guest)
     file(MAKE_DIRECTORY "${NATIVE_GUI_MACHINE}/${d}")
   endforeach()
-  set(_gui_dlls user32.dll win32u.dll gdi32.dll gdi32full.dll msvcp_win.dll imm32.dll)
+  set(_gui_dlls user32.dll win32u.dll gdi32.dll gdi32full.dll msvcp_win.dll imm32.dll msctf.dll)
   file(GLOB _files "${MACHINE}/Windows/builtin/*" "${MACHINE}/guest/*" "${MACHINE}/Windows/System32/*.nls"
                    "${MACHINE}/Windows/Globalization/Sorting/*.nls")
   foreach(n ${_gui_dlls})

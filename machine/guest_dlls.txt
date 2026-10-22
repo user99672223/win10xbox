@@ -24,6 +24,7 @@ gdi32.dll
 gdi32full.dll
 msvcp_win.dll
 imm32.dll
+msctf.dll
 comctl32.dll
 comdlg32.dll
 shell32.dll
