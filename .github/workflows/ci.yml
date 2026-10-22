@@ -170,6 +170,10 @@ jobs:
       - name: Build Lua 5.4.7 (real guest program)
         shell: pwsh
         run: ./tools/ci/build_lua.ps1 -Out build/bin/machine/guest
+      # Real SDL2 (upstream 2.30.9, static, software renderer) for integration.real_sdl2.
+      - name: Build SDL2 2.30.9 + sdl_rects (real guest program)
+        shell: pwsh
+        run: ./tools/ci/build_sdl2.ps1 -Out build/bin/guest
       # The whole suite, end-to-end included. The guest's stdout IS captured on
       # real Windows: run 39818491081 (RelWithDebInfo, the one job of that run
       # that had the builtins) printed "hello from guest" and passed 11 of 13

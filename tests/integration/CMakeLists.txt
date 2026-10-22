@@ -185,6 +185,15 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   unset(_guest_args)
   unset(_guest_debug)
   unset(_guest_forbid_trace)
+  # Real SDL2 (tools/ci/build_sdl2.ps1, a named ci.yml step that leaves sdl_rects.exe in <bin>/guest): a borderless
+  # 320x240 window at (100,100), software renderer, blue clear + red rect (20,20,60,60) + green rect (120,40,50,50),
+  # 30 frames of SDL_PollEvent, exit 42. The screenshot is checked at screen = client + (100,100).
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  win10xbox_guest_test(real_sdl2 "C:\\guest\\sdl_rects.exe" 42
+    "sdl: init video=windows" "sdl: renderer=software" "sdl: pixels ff0050dc ffff0000 ff00ff00" "sdl: done")
+  set_tests_properties(integration.real_sdl2 PROPERTIES
+    ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/real_sdl2.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=105,105,ff0050dc|130,130,ffff0000|230,150,ff00ff00")
+  unset(_guest_machine)
 endif()
 
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
