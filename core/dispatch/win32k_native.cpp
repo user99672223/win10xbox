@@ -15,6 +15,7 @@
 // callbacks in native GUI mode").
 #include "internal.h"
 #include <array>
+#include <cstring>
 #include <utility>
 
 namespace win10xbox::dispatch::detail {
@@ -65,13 +66,95 @@ constexpr std::array<KernelCallbackFn, kCallbackSlots> kTrampolines =
 
 void* TrampolineTable() { return const_cast<KernelCallbackFn*>(kTrampolines.data()); }
 
+// ---- The ntdll side of the native user32 (patched over the guest ntdll's exports in native mode) ------
+// The native user32 registers its client window procedures with RtlInitializeNtUserPfn, and its DefWindowProcW /
+// DefDlgProcW are forwarders to ntdll!NtdllDefWindowProc_W / NtdllDialogWndProc_W, which jump through those
+// tables. Wine's ntdll has all of them, but sized for Wine's user32: its RtlInitializeNtUserPfn refuses the
+// larger tables of Windows' user32 with STATUS_INVALID_PARAMETER (17 procedures vs 23 on Windows 10/11). These
+// replacements keep whatever size user32 hands in. They run in the GUEST view (called by guest code, no stub in
+// between): plain code over namespace-scope arrays, no TLS, no logging, no host state.
+using ClientProc = LRESULT(WINAPI*)(HWND, UINT, WPARAM, LPARAM);
+constexpr std::size_t kMaxClientProcs = 64;
+ClientProc g_procs_a[kMaxClientProcs], g_procs_w[kMaxClientProcs], g_workers[kMaxClientProcs];
+volatile LONG g_procs_set = 0;
+bool g_procs_reported = false;
+std::uint32_t g_procs_bytes[3] = {};
+// Indices in Windows' PFNCLIENT (the same in Wine's ntuser.h): pfnDefWindowProc 4, pfnDialogWndProc 10.
+constexpr std::size_t kDefWindowProc = 4, kDialogWndProc = 10;
+
+NTSTATUS NTAPI Native_RtlInitializeNtUserPfn(const void* a, ULONG a_size, const void* w, ULONG w_size,
+                                             const void* workers, ULONG workers_size) {
+    if (a_size > sizeof g_procs_a || w_size > sizeof g_procs_w || workers_size > sizeof g_workers ||
+        (a_size | w_size | workers_size) % sizeof(void*))
+        return st::InvalidParameter;
+    if (InterlockedCompareExchange(&g_procs_set, 1, 0) != 0) return st::InvalidParameter;   // once, like Windows
+    std::memcpy(g_procs_a, a, a_size);
+    std::memcpy(g_procs_w, w, w_size);
+    std::memcpy(g_workers, workers, workers_size);
+    g_procs_bytes[0] = a_size; g_procs_bytes[1] = w_size; g_procs_bytes[2] = workers_size;
+    return st::Success;
+}
+NTSTATUS NTAPI Native_RtlRetrieveNtUserPfn(const void** a, const void** w, const void** workers) {
+    if (!g_procs_set) return st::InvalidParameter;
+    *a = g_procs_a; *w = g_procs_w; *workers = g_workers;
+    return st::Success;
+}
+NTSTATUS NTAPI Native_RtlResetNtUserPfn() {
+    if (!g_procs_set) return st::InvalidParameter;
+    std::memset(g_procs_a, 0, sizeof g_procs_a);
+    std::memset(g_procs_w, 0, sizeof g_procs_w);
+    std::memset(g_workers, 0, sizeof g_workers);
+    g_procs_set = 0;
+    return st::Success;
+}
+LRESULT WINAPI Native_NtdllDefWindowProc_A(HWND h, UINT m, WPARAM wp, LPARAM lp) { return g_procs_a[kDefWindowProc](h, m, wp, lp); }
+LRESULT WINAPI Native_NtdllDefWindowProc_W(HWND h, UINT m, WPARAM wp, LPARAM lp) { return g_procs_w[kDefWindowProc](h, m, wp, lp); }
+LRESULT WINAPI Native_NtdllDialogWndProc_A(HWND h, UINT m, WPARAM wp, LPARAM lp) { return g_procs_a[kDialogWndProc](h, m, wp, lp); }
+LRESULT WINAPI Native_NtdllDialogWndProc_W(HWND h, UINT m, WPARAM wp, LPARAM lp) { return g_procs_w[kDialogWndProc](h, m, wp, lp); }
+
+// CsrClientConnectToServer: the native user32's DllMain connects to csrss's user server; Wine's ntdll has only a
+// stub that raises. The host ntdll holds this process's real csrss connection. Called from guest code, so the
+// host call runs under HostModeScope (host view), which also makes the trace line safe.
+using PFN_CsrConnect = NTSTATUS(NTAPI*)(PCWSTR, ULONG, PVOID, PULONG, PBOOLEAN);
+PFN_CsrConnect g_host_csr_connect = nullptr;
+NTSTATUS NTAPI Native_CsrClientConnectToServer(PCWSTR dir, ULONG server, PVOID info, PULONG info_size,
+                                               PBOOLEAN server_to_server) {
+    HostModeScope scope;
+    const ULONG in_size = info_size ? *info_size : 0;
+    const NTSTATUS s = g_host_csr_connect ? g_host_csr_connect(dir, server, info, info_size, server_to_server)
+                                          : st::NotImplemented;
+    TRACE(dispatch, "CsrClientConnectToServer(%ls, server %lu, info %lu bytes) -> %08lx (host ntdll)%s",
+          dir ? dir : L"(null)", server, in_size, static_cast<unsigned long>(s),
+          server_to_server ? (*server_to_server ? ", server-to-server" : "") : "");
+    return s;
+}
+
 }  // namespace
+
+std::vector<NamedTarget> NativeUserOverrides() {
+    g_host_csr_connect = reinterpret_cast<PFN_CsrConnect>(HostExport("CsrClientConnectToServer"));
+#define P(name) {#name, reinterpret_cast<const void*>(&Native_##name)}
+    return {P(CsrClientConnectToServer), P(RtlInitializeNtUserPfn), P(RtlRetrieveNtUserPfn), P(RtlResetNtUserPfn),
+            P(NtdllDefWindowProc_A), P(NtdllDefWindowProc_W), P(NtdllDialogWndProc_A), P(NtdllDialogWndProc_W)};
+#undef P
+}
+
+void NoteNativeUserPfn() {
+    if (g_procs_set)
+        TRACE(dispatch, "RtlInitializeNtUserPfn: the guest's user32 registered %u/%u/%u bytes of client procedures "
+                        "(DefWindowProcW %p)", g_procs_bytes[0], g_procs_bytes[1], g_procs_bytes[2],
+              reinterpret_cast<void*>(g_procs_w[kDefWindowProc]));
+}
 
 std::uint64_t NativeCallbacksToGuest() { return static_cast<std::uint64_t>(g_to_guest); }
 std::uint64_t NativeCallbacksToHost() { return static_cast<std::uint64_t>(g_to_host); }
 const HostGui* HostGuiFunctions() { return g_host_gui_ok ? &g_host_gui : nullptr; }
 
 void NoteNativeWin32uCall() {
+    if (g_procs_set && !g_procs_reported) {
+        g_procs_reported = true;
+        NoteNativeUserPfn();
+    }
     auto& slot = PebField<KernelCallbackFn*>(peb::KernelCallbackTable);
     KernelCallbackFn* const cur = slot;
     if (!cur || cur == TrampolineTable() || cur == g_host_callbacks) return;

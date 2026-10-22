@@ -96,7 +96,10 @@ set_tests_properties(integration.guest_window PROPERTIES
 # overrides machine.json): the guest loads the NATIVE user32/gdi32/gdi32full/win32u from the machine folder, every
 # win32u syscall is passed through by name to the host's own win32u.dll, win32k's user-mode callbacks reach the
 # guest's user32 through the trampolines, and the screenshot is composed from the real window. Needs the native
-# DLLs, so it SKIPs on linux-cross (no Windows DLLs there) and runs on the Windows job, which stages them.
+# DLLs, so it is registered only for a native Windows build (the Windows CI job stages them from the runner's
+# System32); a cross build run under Wine has no Windows DLLs and does not register it at all (the CI skip gate
+# fails on skipped tests). Without the DLLs in the machine folder it still SKIPs rather than failing obscurely.
+if(NOT CMAKE_CROSSCOMPILING)
 add_test(NAME integration.guest_window_native
   COMMAND ${CMAKE_COMMAND}
     -DHOST=$<TARGET_FILE:win10xbox>
@@ -117,7 +120,9 @@ set_tests_properties(integration.guest_window_native PROPERTIES
   LABELS "guest_e2e"
   TIMEOUT 180
   # The screen pixels as 0xAARRGGBB from the BMP's B,G,R,A bytes: RGB(0,80,220) is ff0050dc, RGB(255,0,0) ffff0000.
-  ENVIRONMENT "WIN10XBOX_GUI=native;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_native.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=110,110,ff0050dc|130,130,ffff0000")
+  # WIN10XBOX_WINEDEBUG: Wine's own loader warnings ("No implementation for ntdll.dll.X", failed DllMains).
+  ENVIRONMENT "WIN10XBOX_GUI=native;WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_native.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=110,110,ff0050dc|130,130,ffff0000")
+endif()
 
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
 set_tests_properties(integration.guest_hello_appcontainer_sim PROPERTIES

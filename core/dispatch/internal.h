@@ -340,6 +340,13 @@ bool NativeGuiActive();
 // PEB->Ldr), connects the process to win32k, switches the win32u table over (UseHostWin32u) and resolves the
 // host GUI functions core/user's native composer uses. Called by process::Launch when config gui is Native.
 NTSTATUS ConfigureNativeGui();
+// The guest ntdll's user32-facing exports replaced in native mode (RtlInitializeNtUserPfn & co.,
+// NtdllDefWindowProc_*, NtdllDialogWndProc_*, CsrClientConnectToServer) and their replacements, which fit
+// the NATIVE user32 (win32k_native.cpp). ApplyRtlForwarding patches them.
+struct NamedTarget { const char* name; const void* fn; };
+std::vector<NamedTarget> NativeUserOverrides();
+// Traces what RtlInitializeNtUserPfn received, once registered (host view).
+void NoteNativeUserPfn();
 // Called by win10xbox_dispatch before every win32u pass-through: once the guest's user32 has written its own
 // table into PEB.KernelCallbackTable, replaces it with our per-index trampolines, which route each user-mode
 // callback by thread (guest thread: the guest's user32 in the guest TLS view; any other thread: the host's
