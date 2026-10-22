@@ -96,7 +96,7 @@ wrongly demoted here on the grounds that the CI log showed no `NtDelayExecution`
 of evidence in a log truncated by the crash itself. Two successive misattributions of the console fault followed. The
 corrective that worked was reproducing the failure locally under Wine rather than reasoning further from the report.
 
-### OPEN: the guest dies at its entry point on real Windows, before any syscall
+### Root cause: MSVC's thread-safe static guard reads TLS under the guest's TLS view (REPRODUCED)
 
 This is the live bug, and it is now reproducible on CI without the console. `host-win32-smoke` run #3 on `b97f7f0`
 (i.e. *with* the clock fix) still fails. From its `smoke-console.log` artifact, the trace ends:
@@ -124,10 +124,36 @@ NoteGuestEntry guest entry: TEB.TlsSlots[19] still holds our ThreadState
 and a load off a near-null base (`mov eax,[rdx+rax]`, `rdx=4`, `rax=0`). Treat the console report and the smoke failure
 as one bug until evidence separates them — which consolidates two unreproducible reports into one CI-reproducible one.
 
-Next step is diagnostic, not speculative: `host-win32` is being given the same crash capture, a **host** module table
-captured before the takeover (so a faulting RIP can finally be attributed), the bytes at RIP (to confirm against the
-console's `8b 04 02`), and a linker map to turn the attributed offset into a function name. Deliberately no further
-hypotheses here: the last three cost two withdrawn attributions, and the record is one CI run away.
+**The cause, reproduced** by building the real tree MSVC-ABI with clang-cl and running the smoke guest under Wine,
+which reproduces the CI trace exactly:
+
+* **Fault site:** `win10xbox::dispatch::detail::S()` — the function-local `static State s;` at
+  `core/dispatch/dispatcher.cpp:69` — reached via `Host()` (`dispatcher.cpp:218`) from `Xl_NtContinue`
+  (`core/dispatch/nt_process.cpp:289`).
+* **Faulting bytes:** `48 8b 0c ca` then `3b 81 04 00 00 00`, with `rcx=0`: `rcx = TlsArray[tls_index]` is NULL, then
+  `cmp eax,[rcx+4]`.
+* **Mechanism:** MSVC's thread-safe function-local-static guard reads `_Init_thread_epoch`, which lives at **offset 4
+  of the module's TLS block**, through `gs:[0x58]` (`TEB.ThreadLocalStoragePointer`). `Xl_NtContinue` calls
+  `LeaveToGuestView()` *first*, installing the **guest's** TLS array — which has no block for the host exe. The guard
+  read therefore hits `NULL+4`.
+* **Why Wine/mingw is green:** mingw uses `__cxa_guard`, which touches no TLS at all. That one difference accounts for
+  the entire real-Windows-only divergence, and for why our gating job could never see it.
+* **The console AV is the same bug:** `mov eax,[rdx+rax]` with `rdx=4`, `rax=0` is the same guard sequence in MSVC
+  codegen. Two unreproducible reports collapse into one CI-reproducible defect.
+* **Confirmed by construction:** the same tree rebuilt with only `/Zc:threadSafeInit-` runs the guest to exit 42.
+* The same ordering exists at `Xl_NtContinueEx`, `Xl_NtRaiseException` and `Xl_NtSetContextThread`, which also call
+  `Host()` right after `LeaveToGuestView()`.
+
+**The hazard is general, so the fix must close the class, not the instances.** Any host code reached while the guest's
+TLS view is installed that touches a function-local static — or any other TLS — faults under MSVC, with a near-null
+load that is very hard to attribute. Four call sites today; an unbounded number otherwise. The deeper problem is that
+mingw *cannot* reproduce it, so the gating linux-cross job is structurally blind to this class; an invariant check that
+fires under Wine (host state touched while the guest view is active is a bug by construction) is worth more than the
+fix itself.
+
+Caveat: the reproduction was clang-cl under Wine, not `cl` on Windows. `host-win32-smoke` now prints a full annotated
+crash record, a host module table captured before the takeover, the bytes at RIP, and ships a linker `.map` plus the
+`.pdb`, so the next run confirms it on the real toolchain.
 
 No `crash.dmp` was written. The dump path reported HRESULT `0x800736b2`, the form `crash.txt` uses when `dbghelp.dll`
 cannot be bound inside the AppContainer (to be confirmed against `crash.txt`). `dbghelp.dll` is delay-loaded, so the
