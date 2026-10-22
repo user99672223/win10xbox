@@ -39,6 +39,8 @@ struct SavedPeb {
     void* image_base; void* ldr; void* params; void* fast_peb_lock; void* tls_bitmap; void* tls_exp_bitmap;
     void* loader_lock; void* ansi; void* oem; void* ucase;
     void* actctx;   // PEB.ActivationContextData: the host EXE's manifest context, overwritten by Wine's actctx_init
+    void* kernel_callbacks;   // PEB.KernelCallbackTable: user32's DllMain installs the guest's (core/user reads it)
+    void* gdi_shared;         // PEB.GdiSharedHandleTable: core/user installs its own handle table for gdi32
     ULONG os_major, os_minor, platform;
     USHORT build, csd;
 };
@@ -97,6 +99,8 @@ void SavePebFields() {
     s.oem = PebField<void*>(peb::OemCodePageData);
     s.ucase = PebField<void*>(peb::UnicodeCaseTableData);
     s.actctx = PebField<void*>(peb::ActivationContextData);
+    s.kernel_callbacks = PebField<void*>(peb::KernelCallbackTable);
+    s.gdi_shared = PebField<void*>(peb::GdiSharedHandleTable);
     s.os_major = PebField<ULONG>(peb::OSMajorVersion);
     s.os_minor = PebField<ULONG>(peb::OSMinorVersion);
     s.build = PebField<USHORT>(peb::OSBuildNumber);
@@ -130,6 +134,8 @@ void RestorePebFields() {
     // be shown to see it. Latched in Launch: by now the PEB's environment block is the guest's.
     void* const guest_actctx = PebField<void*>(peb::ActivationContextData);
     if (!G().leak_actctx) PebField<void*>(peb::ActivationContextData) = s.actctx;
+    PebField<void*>(peb::KernelCallbackTable) = s.kernel_callbacks;
+    PebField<void*>(peb::GdiSharedHandleTable) = s.gdi_shared;
     PebField<ULONG>(peb::OSMajorVersion) = s.os_major;
     PebField<ULONG>(peb::OSMinorVersion) = s.os_minor;
     PebField<USHORT>(peb::OSBuildNumber) = s.build;
