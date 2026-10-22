@@ -40,7 +40,9 @@ if(NOT _vendor)
   set(_vendor "[A-Za-z]+")
 endif()
 
-# The machine folder is WIN10XBOX_MACHINE_DIR unless the caller sets _guest_machine.
+# The machine folder is WIN10XBOX_MACHINE_DIR unless the caller sets _guest_machine; the guest's command-line
+# arguments (a list, one element each) are _guest_args if the caller sets it, and _guest_debug / _guest_forbid_trace
+# (a WIN10XBOX_DEBUG spec and a regex the layer's trace must not match) if it wants to assert on the trace.
 function(win10xbox_guest_test name program exit_code)
   # On the builtin-only folder, also prove from the modules trace that no native system DLL was mapped.
   set(_require_builtin OFF)
@@ -55,6 +57,10 @@ function(win10xbox_guest_test name program exit_code)
       -DMACHINE=${_guest_machine}
       -DREQUIRE_BUILTIN_DLLS=${_require_builtin}
       -DPROGRAM=${program}
+      "-DPROGRAM_ARGS=${_guest_args}"
+      "-DDEBUG_SPEC=${_guest_debug}"
+      "-DFORBID_TRACE_REGEX=${_guest_forbid_trace}"
+      "-DEXPECT_TRACE_REGEX=${_guest_expect_trace}"
       -DEXPECT_EXIT=${exit_code}
       "-DEXPECT_REGEX=${ARGN}"
       -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
@@ -139,6 +145,35 @@ set_tests_properties(integration.guest_window_text PROPERTIES
   DISABLED TRUE
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_text.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=121,123,ff000000|123,123,ffffffff|131,123,ff000000")
 unset(_guest_machine)
+
+# ---- Real GUI programs (not ours), built from source on the Windows runner ------------------------------------------
+# tools/ci/build_realgui.ps1 (a named ci.yml step of the windows job) leaves realgui_hellowin.exe (Microsoft's LearnWin32
+# Hello World) and realgui_putty.exe (PuTTY 0.85, cmake + MSVC) in <machine>/guest before ctest runs. Registered only
+# where that step exists: MSVC builds, or -DWIN10XBOX_REAL_GUI_PROGRAMS=ON after putting the exes there. These programs
+# never exit by themselves, so the host's inject script (host-win32/main.cpp) drives the run: `waitwin` until the first
+# window is painted, `shot` (writes WIN10XBOX_SCREENSHOT and logs the distinct colour count of the frame), `quit 0`.
+# The gate: the screenshot was written and holds at least 3 distinct colours (desktop + frame + client; a blank
+# screen has 1), and the wait did not time out.
+option(WIN10XBOX_REAL_GUI_PROGRAMS "Register the real GUI program tests (realgui_*.exe must be in <machine>/guest)" OFF)
+if(MSVC OR WIN10XBOX_REAL_GUI_PROGRAMS)
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  set(_guest_expect_trace "shot: distinct=([3-9]|[1-9][0-9]+) written=1")
+  set(_guest_forbid_trace "TIMEOUT: nothing painted")
+  set(_realgui_script "waitwin 60000\\;sleep 2000\\;shot\\;quit 0")
+  win10xbox_guest_test(realgui_hellowin "C:\\guest\\realgui_hellowin.exe" 0)
+  set_tests_properties(integration.realgui_hellowin PROPERTIES
+    ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/realgui_hellowin.bmp;WIN10XBOX_TEST_INJECT_INPUT=${_realgui_script}")
+  # PuTTY: with a host and a protocol on the command line it skips the configuration dialog and creates the terminal.
+  set(_guest_args "-telnet;127.0.0.1;-P;9")
+  win10xbox_guest_test(realgui_putty "C:\\guest\\realgui_putty.exe" 0)
+  set_tests_properties(integration.realgui_putty PROPERTIES
+    ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/realgui_putty.bmp;WIN10XBOX_TEST_INJECT_INPUT=${_realgui_script}")
+  unset(_guest_args)
+  unset(_guest_expect_trace)
+  unset(_guest_forbid_trace)
+  unset(_realgui_script)
+  unset(_guest_machine)
+endif()
 
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
 set_tests_properties(integration.guest_hello_appcontainer_sim PROPERTIES

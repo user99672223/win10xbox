@@ -159,6 +159,17 @@ jobs:
       - name: Populate machine folder from the runner's System32 (never committed)
         shell: pwsh
         run: ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine -CI
+      # Real GUI programs that are not ours (tools/ci/build_realgui.ps1): Microsoft's LearnWin32 Hello World and PuTTY
+      # 0.85 (official tarball, cmake + cl /MT), pinned by SHA-256 and verified on every run. Left in
+      # build/bin/machine/guest for integration.realgui_* (docs/TESTING.md, "Real GUI programs").
+      - name: Cache the real GUI program sources
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/realgui-src
+          key: realgui-putty-0.85-hellowin-a9946444
+      - name: Build real GUI programs (PuTTY, Hello World)
+        shell: pwsh
+        run: ./tools/ci/build_realgui.ps1 -Out build/bin/machine/guest
       # The whole suite, end-to-end included. The guest's stdout IS captured on
       # real Windows: run 39818491081 (RelWithDebInfo, the one job of that run
       # that had the builtins) printed "hello from guest" and passed 11 of 13
