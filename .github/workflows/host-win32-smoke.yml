@@ -92,6 +92,17 @@ jobs:
           python -I tools/ci/fetch_wine_pe.py --repo "${{ github.repository }}" --branch "${{ github.ref_name }}"
           --sha "${{ github.sha }}" --artifact wine-pe-builtin=wine-pe/out/builtin
 
+      # The WDK's km headers (the image has none), as in ci.yml: the KMDF test
+      # driver and its client are among the bundled guests.
+      - name: Cache the WDK km headers
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/wdk
+          key: wdk-km-10.0.26100.6584
+      - name: Fetch the WDK km headers (required)
+        shell: pwsh
+        run: ./tools/ci/fetch_wdk_km.ps1
+
       # The top-level tree, configured like ci.yml's `windows` job (cl + Ninja +
       # sccache): tests ON (the prepare_machine target and the guests live there)
       # and the driver host ON (drv_host.exe, the test drivers and their guest
@@ -104,6 +115,7 @@ jobs:
           -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
           -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
           -DWIN10XBOX_BUILD_TESTS=ON -DWIN10XBOX_BUILD_DRIVERS=ON -DWIN10XBOX_BUILD_UWP=OFF
+          -DWIN10XBOX_DDK_INCLUDE="$env:WDK_KM"
       # Everything, so that every guest (bin/guest) and the driver host exist.
       - name: Build host-win32, the driver host and every guest
         env: { SCCACHE_GHA_ENABLED: "true" }

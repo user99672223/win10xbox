@@ -132,24 +132,24 @@ jobs:
         run: >
           python -I tools/ci/fetch_wine_pe.py --repo "${{ github.repository }}" --branch "${{ github.ref_name }}"
           --sha "${{ github.sha }}" --artifact wine-pe-builtin=wine-pe/out/builtin
-      # Where the WDK's kernel headers are on this image (tests/drivers builds
-      # OurKmdfDevice.sys and layout_check against them with MSVC).
-      - name: Runner facts - Windows Kits kernel headers
+      # The WDK's km headers (ntddk.h), which this image does not have, from the
+      # pinned NuGet package (tools/ci/fetch_wdk_km.ps1): tests/drivers builds the
+      # KMDF driver, its client and drivers.layout against them with MSVC.
+      - name: Cache the WDK km headers
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/wdk
+          key: wdk-km-10.0.26100.6584
+      - name: Fetch the WDK km headers (required)
         shell: pwsh
-        run: |
-          $kits = 'C:\Program Files (x86)\Windows Kits\10'
-          Get-ChildItem "$kits\Include" -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-            $km = Join-Path $_.FullName 'km'
-            Write-Host ("{0}: km {1}, ntddk.h {2}" -f $_.Name, (Test-Path $km), (Test-Path (Join-Path $km 'ntddk.h')))
-          }
-          Get-ChildItem "$kits\Include\wdf\kmdf" -Directory -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "wdf\kmdf\$($_.Name)" }
-          Write-Host "WindowsSDKVersion=$env:WindowsSDKVersion WindowsSdkDir=$env:WindowsSdkDir"
+        run: ./tools/ci/fetch_wdk_km.ps1
       - name: Configure
         env: { SCCACHE_GHA_ENABLED: "true" }
         run: >
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.config }}
           -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
           -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          -DWIN10XBOX_DDK_INCLUDE="$env:WDK_KM"
       - name: Build
         env: { SCCACHE_GHA_ENABLED: "true" }
         run: cmake --build build -- -k 0   # keep going so all compile errors surface in one run
