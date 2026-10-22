@@ -1,10 +1,36 @@
-# Wine's advapi32 conformance units through the layer, as one gated ctest entry
-# (docs/WINETEST.md). wine-pe/tests/advapi32.sh builds dlls/advapi32/tests from
-# wine-pe/wine-src into <build>/winetest/advapi32 and runs the units against the
-# baseline in wine-pe/tests/advapi32.baseline: a unit above its failure budget,
-# a recorded "completes" unit that no longer completes, or zero executed
-# assertions fail the test. With MSVC the guest cannot be built at all, so the
-# test is not registered (as tests/wine-tests does).
+# Wine's conformance units through the layer, as gated ctest entries (docs/TESTING.md).
+#
+# integration.winetest_advapi32: wine-pe/tests/advapi32.sh builds dlls/advapi32/tests from
+# wine-pe/wine-src into <build>/winetest/advapi32 and runs the units against the baseline in
+# wine-pe/tests/advapi32.baseline: a unit above its failure budget, a recorded "completes" unit that
+# no longer completes, or zero executed assertions fail the test. With MSVC the guest cannot be
+# built at all, so the test is not registered (as tests/wine-tests does).
+#
+# integration.winetest_ntdll: ntdll_test.exe (all of dlls/ntdll/tests as one guest) run by
+# run_ntdll.cmake against wine-pe/tests/ntdll.allowlist. The guest is built OUTSIDE cmake
+# (wine-pe/tests/ntdll.sh build --out <build>/winetest/ntdll: a ci.yml step of the Windows jobs, whose
+# MSVC cannot build it) and the test is registered where it exists, as the real programs are.
+set(_ntdll_exe ${CMAKE_BINARY_DIR}/winetest/ntdll/ntdll_test.exe)
+if(EXISTS ${_ntdll_exe})
+  set(_emu "")
+  if(CMAKE_CROSSCOMPILING_EMULATOR)
+    list(GET CMAKE_CROSSCOMPILING_EMULATOR 0 _emu)
+  endif()
+  add_test(NAME integration.winetest_ntdll
+    COMMAND ${CMAKE_COMMAND}
+      -DHOST=$<TARGET_FILE:win10xbox> -DMACHINE=${WIN10XBOX_MACHINE_DIR} -DEXE=${_ntdll_exe}
+      -DALLOWLIST=${CMAKE_SOURCE_DIR}/wine-pe/tests/ntdll.allowlist
+      -DRESULTS_DIR=${CMAKE_BINARY_DIR}/winetest/ntdll/results
+      "-DEMULATOR=${_emu}"
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/run_ntdll.cmake)
+  set_tests_properties(integration.winetest_ntdll PROPERTIES
+    FIXTURES_REQUIRED w10x_machine
+    SKIP_RETURN_CODE 77
+    SKIP_REGULAR_EXPRESSION "SKIP:"
+    LABELS "winetest_ntdll"
+    TIMEOUT 1500)
+endif()
+
 if(MSVC OR NOT CMAKE_HOST_UNIX)
   return()
 endif()
