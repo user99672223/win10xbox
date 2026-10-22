@@ -186,6 +186,19 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   unset(_guest_args)
   unset(_guest_debug)
   unset(_guest_forbid_trace)
+
+  # Sysinternals Coreinfo64.exe and PsInfo64.exe (tools/ci/fetch_sysinternals.ps1, pinned by SHA-256), both
+  # system-information programs: they read the CPU / OS / uptime through NtQuerySystemInformation and the registry.
+  # The anchors are lines every runner prints whatever its CPU vendor is (docs/slices/sysinfo.md).
+  set(_guest_args "-accepteula")
+  win10xbox_guest_test(coreinfo "C:\\guest\\Coreinfo64.exe" 0
+    "Logical to Physical Processor Map:"
+    "Logical Processor to Socket Map:")
+  win10xbox_guest_test(psinfo "C:\\guest\\PsInfo64.exe" 0
+    "System information for "
+    "Uptime:"
+    "Kernel version:")
+  unset(_guest_args)
 endif()
 
 # ---- Real GUI programs (not ours), built from source on the Windows runner ------------------------------------------

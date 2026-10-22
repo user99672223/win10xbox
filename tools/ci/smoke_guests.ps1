@@ -10,8 +10,8 @@
 # or is missing from the machine folder FAILS the run. A guest in the machine folder that is not in the table is
 # listed (it is still gated by its ctest entry, if it has one) but does not fail this step, so a new guest never
 # breaks CI before someone decides its expected exit code here.
-# Rows marked Real = $true are programs that are not ours (Lua, built by tools/ci/build_lua.ps1 into the machine
-# folder's guest directory); they run, and fail when missing, only with -RealPrograms, which the workflows that
+# Rows marked Real = $true are programs that are not ours (Lua, built by tools/ci/build_lua.ps1, and the Sysinternals
+# Coreinfo64/PsInfo64, fetched by tools/ci/fetch_sysinternals.ps1, into the machine folder's guest directory); they run, and fail when missing, only with -RealPrograms, which the workflows that
 # build them pass. Args = the guest's command-line arguments.
 param(
   [Parameter(Mandatory = $true)] [string] $Bin,
@@ -48,7 +48,11 @@ $table = @(
   @{ Name = 'lua_hello';       Host = $host_exe; Guest = 'lua.exe';             Driver = '';                  Exit = 42; Out = 'hello from lua\t42'; Real = $true
      Args = @('-e', "print('hello from lua', 6*7) os.exit(42)") },
   @{ Name = 'lua_smoke';       Host = $host_exe; Guest = 'lua.exe';             Driver = '';                  Exit = 42; Out = 'smoke: done fails=0'; Real = $true
-     Args = @('C:\guest\lua_smoke.lua', 'alpha', 'beta gamma') }
+     Args = @('C:\guest\lua_smoke.lua', 'alpha', 'beta gamma') },
+  @{ Name = 'coreinfo';        Host = $host_exe; Guest = 'Coreinfo64.exe';      Driver = '';                  Exit = 0;  Out = 'Logical to Physical Processor Map:'; Real = $true
+     Args = @('-accepteula') },
+  @{ Name = 'psinfo';          Host = $host_exe; Guest = 'PsInfo64.exe';        Driver = '';                  Exit = 0;  Out = 'Kernel version:'; Real = $true
+     Args = @('-accepteula') }
 )
 if (-not $RealPrograms) {
   Write-Host "real programs not run here (no -RealPrograms): $(($table | Where-Object { $_.Real } | ForEach-Object { $_.Name }) -join ', ')"
@@ -114,7 +118,7 @@ foreach ($t in $table) {
 foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
 
 $known = $table | ForEach-Object { $_.Guest }
-if (-not $RealPrograms) { $known += 'lua.exe' }   # not built here; not "unlisted" either
+if (-not $RealPrograms) { $known += 'lua.exe', 'Coreinfo64.exe', 'PsInfo64.exe' }   # not built here; not "unlisted" either
 $extra = @(Get-ChildItem (Join-Path $Machine 'guest') -Filter *.exe -ErrorAction SilentlyContinue |
            Where-Object { $known -notcontains $_.Name } | ForEach-Object { $_.Name })
 if ($extra.Count -gt 0) {
