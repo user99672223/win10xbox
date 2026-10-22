@@ -5,7 +5,7 @@ Windows 10 x64 / 22H2 NT syscall numbers) and the hand-maintained policy
 `core/dispatch/syscall_policy.inc`; win32u entries (ids 0x1000..) are Emulate when
 `core/user/user_syscalls.h` registers them. Do not edit by hand.
 
-1798 syscalls. passthrough 157, translate 30, emulate 298, todo 1313. Generated 2026-10-22.
+1798 syscalls. passthrough 156, translate 31, emulate 298, todo 1313. Generated 2026-10-22.
 
 Policy: **PassThrough** calls the host ntdll export by name; **Translate**
 rewrites arguments (paths, handles, timeouts) then passes through;
@@ -53,7 +53,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0024 | NtOpenThreadToken | 4 | Emulate | token |
 | 0x0025 | NtQueryInformationThread | 5 | Translate | ThreadAmILastThread counts guest threads only |
 | 0x0026 | NtOpenProcess | 4 | PassThrough |  |
-| 0x0027 | NtSetInformationFile | 5 | PassThrough |  |
+| 0x0027 | NtSetInformationFile | 5 | Translate | FileRenameInformation*/FileLinkInformation*: the target name goes through the VFS |
 | 0x0028 | NtMapViewOfSection | 10 | Translate | views of our image sections are mapped by core/loader |
 | 0x0029 | NtAccessCheckAndAuditAlarm | 11 | PassThrough |  |
 | 0x002a | NtUnmapViewOfSection | 2 | Translate | views of our image sections are mapped by core/loader |

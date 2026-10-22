@@ -2,6 +2,7 @@
 # code (cmake -P; ctest's PASS_REGULAR_EXPRESSION alone ignores exit codes).
 #   -DHOST=<win10xbox.exe> -DMACHINE=<machine dir> -DPROGRAM=<C:\guest\x.exe>
 #   -DEXPECT_EXIT=<n> -DEXPECT_REGEX=<regex;regex...> [-DEMULATOR=<wine>]
+#   [-DPROGRAM_ARGS=<arg;arg...>]   the guest's own command-line arguments, one list element each
 #   [-DFORBID_REGEX=<regex>] [-DDEBUG_SPEC=<WIN10XBOX_DEBUG spec>]
 # EXPECT_REGEX/FORBID_REGEX match the guest's stdout. The layer's own trace
 # output goes to stderr, so assertions about it use the TRACE variants:
@@ -36,7 +37,7 @@ if(EMULATOR AND _machine MATCHES "^/")
   set(_machine "Z:${_machine}")
 endif()
 string(REPLACE "/" "\\" _machine "${_machine}")
-set(_cmd ${EMULATOR} "${HOST}" --machine "${_machine}" "${_program}")
+set(_cmd ${EMULATOR} "${HOST}" --machine "${_machine}" "${_program}" ${PROGRAM_ARGS})
 if(DEBUG_SPEC)
   set(ENV{WIN10XBOX_DEBUG} "${DEBUG_SPEC}")
 endif()
