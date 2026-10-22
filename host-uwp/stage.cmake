@@ -63,6 +63,13 @@ foreach(_g IN LISTS _guests)
   math(EXPR _ng "${_ng} + 1")
 endforeach()
 message(STATUS "stage.cmake: bundled ${_ng} guest program(s)")
+# Manifest listing of the bundled guests (one file name per line), checked by host-uwp.yml.
+set(_list "")
+foreach(_g IN LISTS _guests)
+  get_filename_component(_n "${_g}" NAME)
+  string(APPEND _list "${_n}\n")
+endforeach()
+file(WRITE "${STAGE}/payload/guests.txt" "${_list}")
 
 if(NOT "${MACHINE_JSON}" STREQUAL "" AND EXISTS "${MACHINE_JSON}")
   file(COPY_FILE "${MACHINE_JSON}" "${STAGE}/payload/machine.json")

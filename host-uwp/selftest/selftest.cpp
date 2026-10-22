@@ -234,6 +234,18 @@ namespace
         CHECK(QuoteArg(std::wstring(L"C:\\my dir\\")) == L"\"C:\\my dir\\\\\"");
     }
 
+    void TestLauncherKeys()
+    {
+        LaunchConfig c;
+        std::string err;
+        CHECK(ParseLaunchConfig("{}", &c, &err) && !c.has_picker && c.autoselect.empty());
+        CHECK(ParseLaunchConfig("{\"picker\": true, \"autoselect\": \"hello_cui.exe\"}", &c, &err));
+        CHECK(c.has_picker && c.picker && c.autoselect == "hello_cui.exe");
+        CHECK(Contains(DescribeLaunchConfig(c), "autoselect=hello_cui.exe"));
+        EXPECT_ERROR("{\"picker\": \"yes\"}", "true or false");
+        EXPECT_ERROR("{\"autoselect\": \"C:\\\\x.exe\"}", "bare file name");
+    }
+
     // The files the package actually ships (payload\launch.json is what a fresh install runs):
     // a parse error there would only show up on the console.
     void TestPackagedPayload(const std::string& dir)
@@ -268,6 +280,7 @@ int main(int argc, char** argv)
     TestLimits();
     TestPathHelpers();
     TestQuoting();
+    TestLauncherKeys();
     if (argc > 1) TestPackagedPayload(argv[1]);   // ctest passes host-uwp/payload
     std::printf("host_uwp_selftest: %d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
