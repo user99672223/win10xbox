@@ -39,11 +39,23 @@ name: host-win32-appcontainer
 #   smoke-plain-console    control: the same, but with the console of the shell (the console situation of host-win32-smoke)
 #   smoke-ac               THE RUN: win10xbox.exe + smoke_cui.exe in the AppContainer, no test hooks -> measurement 3
 #   smoke-ac-hook          the same with WIN10XBOX_TEST_NO_HOST_PATHS=1: the simulation INSIDE the container
+#   gui-direct             control: ac_gui_probe started straight from the runner's shell (no ac_launch): what the runner
+#                          session allows at all (a GitHub runner session may have no interactive desktop either)
+#   gui-plain              control: ac_gui_probe through ac_launch --plain (no container, detached like a UWP app)
+#   gui-ac                 ac_gui_probe in the AppContainer, same capabilities and grants as probe-ac
+#   gui-lpac               ac_gui_probe in the LPAC
 # The three measurements (also in the job summary and ac-out/ac-measurements.txt):
 #   1. does GetFinalPathNameByHandleW(VOLUME_NAME_DOS) fail inside the container? Evidence: the probe, and the layer's own
 #      "host path of image file ... unavailable" warning (core/dispatch/nt_section.cpp) in the smoke-ac log WITHOUT the hook.
 #   2. does dbghelp bind? Evidence: the probe, and the host's "dbghelp.dll bound / could not be bound" startup line.
 #   3. does the guest reach exit code 42 (with 0 unresolved KERNEL32 imports, the assertions of host-win32-smoke)?
+#
+# THE GUI MEASUREMENT (tests/appcontainer/ac_gui_probe.c, "route B"): may a process in the container use the host's OWN
+# user32/gdi32/win32u: register a class, create/show/paint windows, pump WM_PAINT/WM_TIMER, draw text into a DIB, read the
+# window's pixels back (PrintWindow, BitBlt)? The container child is detached like a UWP app and inherits the launcher's
+# window station and desktop; whatever that desktop allows is the answer. The report prints every PROBE GUI.* line of the
+# four runs side by side ("GUI MEASUREMENT"). NON-gating: a FAIL in a GUI line never changes the verdict; only a gui-*.log
+# that does not exist at all (the run never executed) fails the report.
 #
 # GATING. The report step fails the job unless smoke-ac has genuine AppContainer provenance, 0 unresolved KERNEL32
 # imports and guest exit code 42. The individual run steps keep continue-on-error so that ALL of them execute and the
@@ -172,9 +184,14 @@ jobs:
           if errorlevel 1 exit /b 1
           cl /nologo /O2 /MT /std:c11 /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS /Fobuild\ac\ac_probe.obj /Febuild\ac\ac_probe.exe tests\appcontainer\ac_probe.c /link advapi32.lib
           if errorlevel 1 exit /b 1
+          rem user32/gdi32 delay-loaded: a container that cannot connect to win32k then answers with a LoadLibrary error code
+          rem (GUI.load.*) instead of dying in the loader before the first PROBE line (see the header of ac_gui_probe.c)
+          cl /nologo /O2 /MT /std:c11 /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS /Fobuild\ac\ac_gui_probe.obj /Febuild\ac\ac_gui_probe.exe tests\appcontainer\ac_gui_probe.c /link user32.lib gdi32.lib delayimp.lib /DELAYLOAD:user32.dll /DELAYLOAD:gdi32.dll
+          if errorlevel 1 exit /b 1
           rem informational: what a container has to be able to load to start the host
           dumpbin /dependents build\bin\win10xbox.exe > build\ac\win10xbox.dependents.txt || exit /b 0
           dumpbin /dependents build\ac\ac_probe.exe > build\ac\ac_probe.dependents.txt || exit /b 0
+          dumpbin /dependents build\ac\ac_gui_probe.exe > build\ac\ac_gui_probe.dependents.txt || exit /b 0
 
       # ---------------------------------------------------------------------------------------------------------------
       # The runs. continue-on-error: whatever happens, the report below prints the evidence.
@@ -200,6 +217,7 @@ jobs:
           ACDIR=$(cygpath -aw build/ac)
           HOST=$(cygpath -aw build/bin/win10xbox.exe)
           PROBE=$(cygpath -aw build/ac/ac_probe.exe)
+          GUIPROBE=$(cygpath -aw build/ac/ac_gui_probe.exe)
           README=$(cygpath -aw README.md)   # the negative control: a file of the workspace root that is NEVER granted
 
           # the token's capabilities = host-uwp's Package.appxmanifest
@@ -226,6 +244,7 @@ jobs:
             cat "$OUT/$label.launch.log"
           }
           probe() { XARGS=(); run "$1" "$2" 120 "$PROBE" "$OUTW" "$MACHINE" "$README"; }
+          gui() { XARGS=(); run "$1" "$2" 120 "$GUIPROBE"; if [ -f "$OUT/$1.log" ]; then tr -d '\r' < "$OUT/$1.log"; fi; }
           # smoke <label> <mode> [extra launcher args...]: the assertions of host-win32-smoke need the Wine warn channel
           smoke() {
             local label="$1" mode="$2"; shift 2
@@ -240,6 +259,14 @@ jobs:
           smoke smoke-plain-console plainc
           smoke smoke-ac ac
           smoke smoke-ac-hook ac --env WIN10XBOX_TEST_NO_HOST_PATHS=1
+          # The GUI measurement (non-gating). gui-direct: straight from this shell, outside ac_launch and any container.
+          echo
+          echo "################ gui-direct (the runner's shell, no ac_launch) ################"
+          (cd "$OUT" && timeout 150 ../build/ac/ac_gui_probe.exe > gui-direct.log 2>&1; echo "$?" > gui-direct.rc)
+          tr -d '\r' < "$OUT/gui-direct.log"; echo "exit status: $(cat "$OUT/gui-direct.rc")"
+          gui gui-plain plain
+          gui gui-ac ac
+          gui gui-lpac lpac
           echo
           echo "files in $OUT:"; ls -l "$OUT" | cut -c1-200
           exit 0
@@ -415,6 +442,59 @@ jobs:
           md ""
           md "Non-gating. Full evidence: the \`host-win32-appcontainer-logs\` artifact (ac-measurements.txt, every probe log, launch log, crash directory)."
 
+          # ---- GUI: the host's own user32/gdi32/win32u (route B). NON-gating: only a missing gui-*.log fails ----------
+          GUIRUNS="gui-direct gui-plain gui-ac gui-lpac"
+          gui_fail=0; gui_missing=""
+          gctx() { if [ "$1" = gui-direct ]; then echo "runner shell"; else prov "$1"; fi; }
+          say ""
+          say "=============================================================================="
+          say "GUI MEASUREMENT: the host's own user32/gdi32/win32u inside the AppContainer (tests/appcontainer/ac_gui_probe.c)"
+          say "  gui-direct = the runner's shell, no ac_launch (control: what the runner session allows at all; a GitHub runner"
+          say "  session may have no interactive desktop); gui-plain = ac_launch --plain (no container, detached like a UWP app);"
+          say "  gui-ac = AppContainer; gui-lpac = LPAC. NON-gating: only a gui-*.log that does not exist fails the job."
+          say "=============================================================================="
+          md ""
+          md "### GUI MEASUREMENT: the host's own user32/gdi32/win32u (route B)"
+          md ""
+          md "Non-gating. gui-direct = the runner's shell (control; a GitHub runner session may have no interactive desktop either), gui-plain = ac_launch --plain (detached like a UWP app), gui-ac = AppContainer, gui-lpac = LPAC."
+          md ""
+          md "| run | context | exit code | PROBE GUI.* lines | ok | fail |"
+          md "|---|---|---|---|---|---|"
+          for r in $GUIRUNS; do
+            if [ ! -f "$OUT/$r.log" ]; then gui_fail=1; gui_missing="$gui_missing $r.log"; fi
+            nl=$(cnt "$r" '^PROBE GUI\.'); nok=$(cnt "$r" '^PROBE GUI\.[^ ]* | OK |'); nfl=$(cnt "$r" '^PROBE GUI\.[^ ]* | FAIL |')
+            say "  $r: context=$(gctx $r)  exit code=$(rcx $r)  PROBE GUI.* lines=$nl (OK $nok, FAIL $nfl)$([ -f "$OUT/$r.log" ] || echo '  LOG MISSING')"
+            md "| $r | $(gctx $r) | $(rcx $r) | $nl | $nok | $nfl |"
+          done
+          if [ -f build/ac/ac_gui_probe.dependents.txt ]; then say "  ac_gui_probe imports (dumpbin /dependents): $(grep -ai '\.dll' build/ac/ac_gui_probe.dependents.txt | tr -d '\r' | tr -s ' ' | tr '\n' ' ')"; fi
+          gids=$(for r in $GUIRUNS; do if [ -f "$OUT/$r.log" ]; then grep -a -o '^PROBE GUI\.[^ ]*' "$OUT/$r.log" | tr -d '\r'; fi; done | awk '!seen[$0]++' | sed -e 's/^PROBE //')
+          md ""
+          md "| probe | gui-direct | gui-plain | gui-ac | gui-lpac |"
+          md "|---|---|---|---|---|"
+          for id in $gids; do
+            say ""
+            say "  $id"
+            row="| $id |"
+            for r in $GUIRUNS; do
+              st=$(pstat "$OUT/$r.log" "$id"); dt=$(pdetail "$OUT/$r.log" "$id")
+              say "      $(printf '%-10s' "$r") $st | $dt"
+              cell=$(printf '%s' "$dt" | clip 400 | sed -e 's/|/\\|/g')
+              row="$row **$st** $cell |"
+            done
+            md "$row"
+          done
+          for r in $GUIRUNS; do
+            md ""
+            md "<details><summary>$r: every PROBE GUI.* line (exit code $(rcx $r))</summary>"
+            md ""
+            md '```'
+            if [ -f "$OUT/$r.log" ]; then grep -a '^PROBE GUI\.' "$OUT/$r.log" | tr -d '\r' >> "$summary"; else md "(no log)"; fi
+            md '```'
+            md ""
+            md "</details>"
+          done
+          if [ "$gui_fail" -ne 0 ]; then echo "::error::host-win32-appcontainer: GUI run(s) did not execute, missing:$gui_missing"; fi
+
           # ---- everything the probes saw, for the record ----------------------------------------------------------
           for ctx in plain ac lpac; do
             say ""
@@ -443,6 +523,10 @@ jobs:
           say ""
           if [ "$fail" -ne 0 ]; then
             say "host-win32-appcontainer: FAIL (smoke-ac: $verdict) - non-gating"
+            exit 1
+          fi
+          if [ "$gui_fail" -ne 0 ]; then
+            say "host-win32-appcontainer: FAIL (the GUI run(s) did not execute, missing:$gui_missing)"
             exit 1
           fi
           say "host-win32-appcontainer: PASS (genuine AppContainer, zero unresolved KERNEL32 imports, guest exit code 42)"
