@@ -352,6 +352,7 @@ guest's code.
 | `ProcessParameters` (0x20) | new block from host `RtlCreateProcessParametersEx` (normalized), moved into its own `VirtualAlloc` region because Wine releases the old block with `NtFreeVirtualMemory`; guest image path, command line, current directory (default `C:\Users\User\`), `DllPath` NULL (Wine computes it), guest environment; console handle and std handles copied from the host block |
 | `OSMajorVersion`/`OSMinorVersion`/`OSBuildNumber`/`OSCSDVersion`/`OSPlatformId` | from machine.json (10.0.19045, 0, 2); Wine's `version_init` then sets its own (registry or its WIN10 default 10.0.19045) |
 | `Ldr`, `FastPebLock`, `TlsBitmap`, `TlsExpansionBitmap`, `LoaderLock`, `Ansi/OemCodePageData`, `UnicodeCaseTableData` | installed by Wine's `loader_init`/`locale_init`. The `TlsBitmap` *pointer* is saved and restored; its *bits* are `PEB.TlsBitmapBits` (0x80), which both allocators share on purpose — see "The TLS slot we hold" |
+| `ActivationContextData` (0x2F8) | Wine's `actctx_init` stores its own `process_actctx` (the static `system_actctx` in the guest ntdll when the EXE has no manifest) — a Wine `ACTIVATION_CONTEXT`, not Microsoft's `ACTIVATION_CONTEXT_DATA` blob. Saved and restored; left alone, the resumed host's ntdll would read a structure of the wrong format from the guest's image on every SxS lookup (`WIN10XBOX_TEST_LEAK_GUEST_ACTCTX=1` reinstates that, for tests) |
 | `ProcessHeap` | kept: the host's (wine-pe patch 0001) |
 
 ## Guest threads (E4)
@@ -396,6 +397,13 @@ path inside the machine folder (untranslated to `C:\...`), or another host
 file: its directory becomes drive `Z:` for the run when the build has no VFS
 module; with the VFS such files must be listed in machine.json `"drives"`
 (clear error otherwise). The exit code is the guest's.
+
+The host ends the process with `TerminateProcess(GetCurrentProcess(), exit code)` once the layer is shut down, not by
+returning from `wmain`. The normal way out (CRT `exit()` -> `ExitProcess` -> `DllMain(DLL_PROCESS_DETACH)` of every DLL)
+terminates every other thread first and then runs code in DLLs the host does not own — on the first real-Windows run that
+got that far, combase.dll (pulled in by dbghelp.dll, which the crash capture loads) raised an unhandled
+`STATUS_INVALID_PARAMETER` there and the guest's exit code was lost. `WIN10XBOX_NORMAL_EXIT=1` takes the normal way out
+for diagnosis; `tests/host_exit` gates that nothing a DLL does at detach can change the exit code.
 
 ## How to add a syscall implementation
 

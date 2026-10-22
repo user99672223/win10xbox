@@ -28,6 +28,14 @@ name: host-win32-smoke
 # The run steps are continue-on-error so the counts always print; the gate step
 # turns them into the job result.
 #
+# How the process ENDS is part of the proof. On 532a3bf the guest ran to completion and returned 42, the layer shut down
+# cleanly, and win10xbox.exe still did not exit 42 (Git Bash showed 127) after a 3 minute stall: its normal way out
+# (return from wmain -> exit() -> ExitProcess -> DllMain(DLL_PROCESS_DETACH) of every DLL) hit an unhandled 0xC000000D
+# raised from combase.dll, which only dbghelp.dll pulls in. host-win32 now ends with TerminateProcess(exit code) once the
+# layer is shut down, and restores the PEB field the guest's ntdll overwrote (ActivationContextData). The step "Exit-path
+# diagnostics" below is non-gating and exists to settle what is still open: the process's own exit status (not Git Bash's
+# rendering of it), whether the old way out is still fatal with that field restored, and whether it is fatal without it.
+#
 # Crash diagnostics (they only add output; the verdict above is unchanged). host-win32
 # installs the crash capture of host-uwp-lite (host-win32/crash.cpp: a copy that adds
 # attribution of the host's own modules, see its header comment), so a guest
@@ -178,9 +186,10 @@ jobs:
         run: |
           mkdir -p crash-console
           rc=0
+          t0=$SECONDS
           build/bin/win10xbox.exe --machine build/bin/machine 'C:\guest\smoke_cui.exe' > smoke-console.log 2>&1 || rc=$?
           echo "$rc" > smoke-console.rc
-          echo "win10xbox.exe exit code: $rc (the guest returns 42 when it ran to completion)"
+          echo "win10xbox.exe exit code: $rc after $((SECONDS - t0)) s (the guest returns 42 when it ran to completion)"
 
       # Sanity run: the host paths are available, as on any desktop Windows.
       # Not gating (the old code passed this one too).
@@ -195,9 +204,80 @@ jobs:
         run: |
           mkdir -p crash-desktop
           rc=0
+          t0=$SECONDS
           build/bin/win10xbox.exe --machine build/bin/machine 'C:\guest\smoke_cui.exe' > smoke-desktop.log 2>&1 || rc=$?
           echo "$rc" > smoke-desktop.rc
-          echo "win10xbox.exe exit code: $rc (the guest returns 42 when it ran to completion)"
+          echo "win10xbox.exe exit code: $rc after $((SECONDS - t0)) s (the guest returns 42 when it ran to completion)"
+
+      # Non-gating. Five runs of the same binary, started from PowerShell so that the exit status printed is the process's
+      # own value and not Git Bash's rendering of it (which is where "127" came from: nothing in the repo produces 127, and
+      # the access violation before 532a3bf showed up there as 139):
+      #   version-default     --version, no guest, the way out the host now takes. Expect 0x00000000.
+      #   version-normal-exit --version with WIN10XBOX_NORMAL_EXIT=1: the old way out (CRT -> ExitProcess -> DLL detach),
+      #                       with NO guest. The control for "is the fault the guest's doing?": if this one dies at exit
+      #                       the fault is the host's own (dbghelp's DLL chain / the crash thread), guest or not, and
+      #                       the Windows job's host_hello / host_version tests have been exiting abnormally unnoticed
+      #                       (they ignore the exit code, and a 3 minute stall fits inside ctest's 300 s timeout).
+      #   guest-default       the guest, the way out the host now takes. Expect 0x0000002A.
+      #   guest-normal-exit   the guest, the old way out, with PEB.ActivationContextData restored.
+      #   guest-normal-leak   the same, WIN10XBOX_TEST_LEAK_GUEST_ACTCTX=1: the field left as the guest's ntdll set it,
+      #                       i.e. the state 532a3bf ran in.
+      # Reading them: version-normal-exit clean, leak faults, normal-exit clean => the leftover activation context was the
+      # cause. Leak and normal-exit both fault => something else is, and their crash.txt now carries the process phase and
+      # the nearest export of the faulting ntdll address. version-normal-exit faults => not the guest at all. All clean => the
+      # 532a3bf fault was not reproduced (compare the timings). Each run has 120 s.
+      - name: Exit-path diagnostics (non-gating)
+        shell: pwsh
+        continue-on-error: true
+        timeout-minutes: 20
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $exe = (Resolve-Path build/bin/win10xbox.exe).Path
+          $machine = (Resolve-Path build/bin/machine).Path
+          $summary = $env:GITHUB_STEP_SUMMARY
+          $rows = @()
+          function Invoke-Host {
+            param([string]$Label, [string[]]$HostArgs, [hashtable]$Extra = @{})
+            $dir = "diag-$Label"
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            $vars = @{ WIN10XBOX_DEBUG = '+all'; WIN10XBOX_WINEDEBUG = '+loaddll,warn+module'; WIN10XBOX_TEST_NO_HOST_PATHS = '1'; WIN10XBOX_CRASH_DIR = (Join-Path $PWD $dir) }
+            foreach ($k in $Extra.Keys) { $vars[$k] = $Extra[$k] }
+            $saved = @{}
+            foreach ($k in $vars.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable($k); [Environment]::SetEnvironmentVariable($k, [string]$vars[$k]) }
+            $status = 'did not run'; $secs = 0.0; $note = ''
+            try {
+              $sw = [Diagnostics.Stopwatch]::StartNew()
+              $p = Start-Process -FilePath $exe -ArgumentList $HostArgs -RedirectStandardOutput "$dir/stdout.log" -RedirectStandardError "$dir/stderr.log" -PassThru -NoNewWindow
+              $null = $p.Handle
+              if (-not $p.WaitForExit(120000)) { $note = ' [KILLED: still running after 120 s]'; $p.Kill(); $p.WaitForExit() }
+              $sw.Stop(); $secs = $sw.Elapsed.TotalSeconds
+              $status = ('0x{0:X8} ({1})' -f [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$p.ExitCode), 0), $p.ExitCode)
+            } catch { $note = " [FAILED to run: $_]" }
+            foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
+            $line = ('{0,-19} exit status {1} after {2:N1} s{3}' -f $Label, $status, $secs, $note)
+            Write-Host $line
+            if (Test-Path "$dir/crash.txt") {
+              Write-Host "  crash.txt:"
+              Select-String -Path "$dir/crash.txt" -Pattern '^exception:|^  at 0x|^process phase|^process 0x|^minidump for|\(nearest export' | Select-Object -First 12 | ForEach-Object { Write-Host ('    ' + $_.Line.Substring(0, [Math]::Min(230, $_.Line.Length))) }
+            } else { Write-Host "  no crash.txt: no fatal-looking exception was recorded" }
+            if (Test-Path "$dir/stderr.log") {
+              Select-String -Path "$dir/stderr.log" -Pattern '^host-win32: guest exit code|GuestExit|ActivationContextData' | Select-Object -First 6 | ForEach-Object { Write-Host ('  log: ' + $_.Line.Substring(0, [Math]::Min(200, $_.Line.Length))) }
+            }
+            return $line   # the only pipeline output: everything above is Write-Host
+          }
+          $rows += Invoke-Host 'version-default'     @('--version')
+          $rows += Invoke-Host 'version-normal-exit' @('--version') @{ WIN10XBOX_NORMAL_EXIT = '1' }
+          $rows += Invoke-Host 'guest-default'     @('--machine', $machine, 'C:\guest\smoke_cui.exe')
+          $rows += Invoke-Host 'guest-normal-exit' @('--machine', $machine, 'C:\guest\smoke_cui.exe') @{ WIN10XBOX_NORMAL_EXIT = '1' }
+          $rows += Invoke-Host 'guest-normal-leak' @('--machine', $machine, 'C:\guest\smoke_cui.exe') @{ WIN10XBOX_NORMAL_EXIT = '1'; WIN10XBOX_TEST_LEAK_GUEST_ACTCTX = '1' }
+          $rows | Set-Content diag-exit-status.txt
+          if ($summary) {
+            Add-Content -Path $summary -Value "### host-win32-smoke: exit-path diagnostics (non-gating)"
+            Add-Content -Path $summary -Value '```'
+            Add-Content -Path $summary -Value $rows
+            Add-Content -Path $summary -Value '```'
+          }
+          exit 0
 
       # The proof. Wine logs one "No implementation for KERNEL32.dll.<name> imported
       # from ..." line per unresolved import (channel module, class warn; the run
@@ -358,6 +438,12 @@ jobs:
             build/smoke_cui.imports.txt
             crash-console
             crash-desktop
+            diag-exit-status.txt
+            diag-version-default
+            diag-version-normal-exit
+            diag-guest-default
+            diag-guest-normal-exit
+            diag-guest-normal-leak
             build/bin/win10xbox.map
             build/bin/win10xbox.exe
             build/bin/win10xbox.pdb

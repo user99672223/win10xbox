@@ -38,6 +38,7 @@ struct SavedPeb {
     bool saved = false;
     void* image_base; void* ldr; void* params; void* fast_peb_lock; void* tls_bitmap; void* tls_exp_bitmap;
     void* loader_lock; void* ansi; void* oem; void* ucase;
+    void* actctx;   // PEB.ActivationContextData: the host EXE's manifest context, overwritten by Wine's actctx_init
     ULONG os_major, os_minor, platform;
     USHORT build, csd;
 };
@@ -59,6 +60,7 @@ struct Globals {
     HANDLE thread_ready = nullptr;          // main guest thread finished host-side thread init
     HANDLE peb_ready = nullptr;             // PEB take-over done, enter the guest
     bool wine_host = false;                 // host ntdll is Wine's (development runs)
+    bool leak_actctx = false;               // WIN10XBOX_TEST_LEAK_GUEST_ACTCTX, latched in Launch (test hook)
 };
 Globals& G() {
     NoteHostStateUnderGuestView("process::G");
@@ -94,6 +96,7 @@ void SavePebFields() {
     s.ansi = PebField<void*>(peb::AnsiCodePageData);
     s.oem = PebField<void*>(peb::OemCodePageData);
     s.ucase = PebField<void*>(peb::UnicodeCaseTableData);
+    s.actctx = PebField<void*>(peb::ActivationContextData);
     s.os_major = PebField<ULONG>(peb::OSMajorVersion);
     s.os_minor = PebField<ULONG>(peb::OSMinorVersion);
     s.build = PebField<USHORT>(peb::OSBuildNumber);
@@ -115,12 +118,29 @@ void RestorePebFields() {
     PebField<void*>(peb::AnsiCodePageData) = s.ansi;
     PebField<void*>(peb::OemCodePageData) = s.oem;
     PebField<void*>(peb::UnicodeCaseTableData) = s.ucase;
+    // Wine's actctx_init() ran during the guest's loader_init and stored ITS process_actctx here: a pointer to a Wine
+    // ACTIVATION_CONTEXT (wine-src/dlls/ntdll/actctx.c: without a manifest it is the static `system_actctx` inside the
+    // guest ntdll's own data; 0x17009B048 in the Wine runs, i.e. inside the guest ntdll image at 0x170000000). That is not
+    // Microsoft's ACTIVATION_CONTEXT_DATA blob, and the host's ntdll reads this field for every SxS lookup made while no
+    // activation context is active (DLL name redirection in LoadLibrary / GetModuleHandle, COM class lookup). Leaving
+    // it behind hands the resumed host a structure of the wrong format that lives in the guest's image.
+    //
+    // WIN10XBOX_TEST_LEAK_GUEST_ACTCTX=1 skips exactly this restore, i.e. reinstates the behaviour from before it existed,
+    // so that the detector (host-win32's WIN10XBOX_TEST_HOST_ACTCTX) and the real-Windows A/B run in host-win32-smoke can
+    // be shown to see it. Latched in Launch: by now the PEB's environment block is the guest's.
+    void* const guest_actctx = PebField<void*>(peb::ActivationContextData);
+    if (!G().leak_actctx) PebField<void*>(peb::ActivationContextData) = s.actctx;
     PebField<ULONG>(peb::OSMajorVersion) = s.os_major;
     PebField<ULONG>(peb::OSMinorVersion) = s.os_minor;
     PebField<USHORT>(peb::OSBuildNumber) = s.build;
     PebField<USHORT>(peb::OSCSDVersion) = s.csd;
     PebField<ULONG>(peb::OSPlatformId) = s.platform;
     s.saved = false;
+    if (G().leak_actctx)
+        WARN(process, "WIN10XBOX_TEST_LEAK_GUEST_ACTCTX: PEB.ActivationContextData left at the guest's %p instead of the "
+                      "host's %p (test hook)", guest_actctx, s.actctx);
+    else if (guest_actctx != s.actctx)
+        TRACE(process, "PEB.ActivationContextData %p (the guest's) -> %p (the host's)", guest_actctx, s.actctx);
     TRACE(process, "host PEB fields restored");
 }
 
@@ -528,6 +548,12 @@ int Launch(const LaunchOptions& opts) {
 #endif
     g.wine_host = HostExport("wine_get_version") != nullptr;
     if (g.wine_host) TRACE(process, "host ntdll is Wine's: development run");
+    {
+        // Test hook, read here because the guest's environment block replaces the host's during the take-over.
+        wchar_t v[8];
+        const DWORD n = GetEnvironmentVariableW(L"WIN10XBOX_TEST_LEAK_GUEST_ACTCTX", v, 8);
+        g.leak_actctx = n != 0 && n < 8 && v[0] != L'0';
+    }
 #if WIN10XBOX_HAVE_VFS
     {
         CpuPolicy cp;

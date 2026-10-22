@@ -8,6 +8,16 @@
 // Without --machine the machine folder is <directory of win10xbox.exe>\machine.
 // The process exit code is the guest's.
 //
+// HOW THE PROCESS ENDS. Once the layer is shut down this host has nothing left to clean up, so it ends with
+// TerminateProcess(GetCurrentProcess(), exit code) (EndProcess below) instead of returning into the CRT. The normal
+// way out (return from wmain -> exit() -> ExitProcess -> ntdll's LdrShutdownProcess) first terminates every other thread
+// and then runs DllMain(DLL_PROCESS_DETACH) of every DLL in the process, and on the first real-Windows run that got
+// that far (host-win32-smoke on 532a3bf) that is where it died: combase.dll, which only dbghelp.dll pulls in, raised
+// STATUS_INVALID_PARAMETER from inside ntdll while detaching, the unhandled exception replaced the guest's exit code
+// (Git Bash showed 127 instead of 42), and the crash capture then waited 180 s for a crash thread that ExitProcess had
+// already killed. The guest's result is final the moment Launch returns; nothing the DLLs do at detach may change it.
+// WIN10XBOX_NORMAL_EXIT=1 restores the normal way out, for diagnosing exactly that (host-win32-smoke runs it once).
+//
 // MSVC builds also carry crash capture (crash.cpp, see CMakeLists.txt). It leaves crash.txt (annotated exception
 // records: stack words, registers, module tables), crash.dmp (a minidump) and entry-reached.txt in
 // %WIN10XBOX_CRASH_DIR% (default: the directory of win10xbox.exe, else %TEMP%). A guest run also starts with a few
@@ -19,6 +29,7 @@
 #include "win10xbox/dispatch.h"
 #include "win10xbox/trace.h"
 #include <windows.h>
+#include <intrin.h>
 #include <cstdint>
 #include <cstdio>
 #include <cwctype>
@@ -273,9 +284,83 @@ public:
 
 #endif  // WIN10XBOX_HOST_CRASH_CAPTURE
 
+// ---------------------------------------------------------------------------
+// How the process ends, and the test switches that exercise it (see the header comment).
+// ---------------------------------------------------------------------------
+
+bool EnvFlag(const wchar_t* name) {
+    wchar_t v[8];
+    const DWORD n = GetEnvironmentVariableW(name, v, 8);
+    return n != 0 && n < 8 && v[0] != L'0';
+}
+
+bool g_guest_ran = false;   // a guest was launched: EndProcess says how the process ends (stderr; stdout stays the guest's)
+
+// Leaves without running ExitProcess's DLL detach. TerminateProcess on the current process ends every thread at once and
+// does not return; the exit code is exactly `rc`, the same value the CRT would have handed to ExitProcess. C stdio is
+// flushed by hand first (the CRT's exit() would have done it): stdout may be a pipe or a file that a test harness reads.
+[[noreturn]] void EndProcess(int rc) {
+    std::fflush(nullptr);
+    if (g_guest_ran)
+        std::fprintf(stderr, "host-win32: guest exit code %d (0x%08x); ending the process with TerminateProcess, so the DLL "
+                             "detach of ExitProcess cannot change it\n", rc, static_cast<unsigned>(rc));
+    std::fflush(nullptr);
+    TerminateProcess(GetCurrentProcess(), static_cast<UINT>(rc));
+    ExitProcess(static_cast<UINT>(rc));   // not reached: TerminateProcess does not return for the current process
+}
+
+// WIN10XBOX_TEST_EXIT_PROBE_DLL=<path>: load a DLL whose DllMain(DLL_PROCESS_DETACH) ends the process with exit code 99
+// (tests/host_exit/exit_probe.c). It stands in for any system DLL whose detach misbehaves at exit: with EndProcess it
+// never runs and the exit code stays the guest's; with WIN10XBOX_NORMAL_EXIT=1 it does run and the code is 99.
+void LoadExitProbe() {
+    wchar_t path[MAX_PATH * 2];
+    const DWORD n = GetEnvironmentVariableW(L"WIN10XBOX_TEST_EXIT_PROBE_DLL", path, MAX_PATH * 2);
+    if (n == 0 || n >= MAX_PATH * 2) return;
+    HMODULE h = LoadLibraryW(path);
+    std::fprintf(stderr, "host-win32: test: exit probe %ls %s\n", path, h ? "loaded" : "NOT loaded");
+}
+
+// WIN10XBOX_TEST_HOST_ACTCTX=1 (Wine hosts only): plants a marker in the host's PEB.ActivationContextData before the guest
+// launches and checks it afterwards. Wine's loader_init overwrites that field in the guest, so this fails if the take-over
+// stops restoring it. Wine only because a Microsoft ntdll would try to interpret the marker as a context.
+class ActctxProbe {
+public:
+    ActctxProbe() {
+        if (!EnvFlag(L"WIN10XBOX_TEST_HOST_ACTCTX")) return;
+        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        if (!ntdll || !GetProcAddress(ntdll, "wine_get_version")) {
+            std::fputs("host-win32: test: PEB.ActivationContextData check skipped (not a Wine host)\n", stderr);
+            return;
+        }
+        field_ = reinterpret_cast<void**>(static_cast<std::uintptr_t>(__readgsqword(0x60)) + kPebActivationContextData);
+        original_ = *field_;
+        planted_ = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, 256);   // readable and zero: nobody's context magic
+        *field_ = planted_;
+        std::fprintf(stderr, "host-win32: test: PEB.ActivationContextData set to %p (was %p)\n", planted_, original_);
+    }
+    // After Launch has returned: the PEB is the host's again.
+    void Check() {
+        if (!field_) return;
+        if (*field_ == planted_)
+            std::fputs("host-win32: test: PEB.ActivationContextData intact after the guest\n", stderr);
+        else
+            std::fprintf(stderr, "host-win32: test: PEB.ActivationContextData CLOBBERED by the guest: %p, expected %p\n",
+                         *field_, planted_);
+        *field_ = original_;   // leave the host as it was found
+    }
+
+private:
+    static constexpr std::uintptr_t kPebActivationContextData = 0x2F8;   // x64, wine-src/include/winternl.h
+    void** field_ = nullptr;
+    void* planted_ = nullptr;
+    void* original_ = nullptr;
+};
+
 }  // namespace
 
-int wmain(int argc, wchar_t** argv) {
+// Everything the host does, up to and including the layer's shutdown. Returns the process exit code.
+static int HostMain(int argc, wchar_t** argv) {
+    LoadExitProbe();   // test switch; loaded first so that nothing below can end the process before it is in place
     // First thing: crash.txt / crash.dmp for everything below (a no-op without crash.cpp). Nothing is printed here, so
     // --version / --help / the hello run keep their exact output (integration.host_version anchors on it).
     HostCrash crash;
@@ -321,9 +406,20 @@ int wmain(int argc, wchar_t** argv) {
     opts.wait = true;
     std::fflush(stdout);
     crash.BeforeLaunch();   // the host's module table, while PEB->Ldr is still the host's
+    ActctxProbe actctx;     // test switch, off by default
+    g_guest_ran = true;
     int rc = win10xbox::process::Launch(opts);
+    actctx.Check();
     if (rc < 0) std::fprintf(stderr, "win10xbox: could not start %ls: status %08x\n", opts.image_path.c_str(), rc);
     win10xbox::dispatch::Shutdown();
     win10xbox::Shutdown();
     return rc;
+}
+
+int wmain(int argc, wchar_t** argv) {
+    // Read now: once a guest has launched, the PEB's environment block is the guest's.
+    const bool normal_exit = EnvFlag(L"WIN10XBOX_NORMAL_EXIT");
+    const int rc = HostMain(argc, argv);   // the crash capture's destructor has run by the time this returns
+    if (normal_exit) return rc;            // diagnostic: the CRT -> ExitProcess -> DLL detach path
+    EndProcess(rc);
 }

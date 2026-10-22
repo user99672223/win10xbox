@@ -89,6 +89,11 @@ constexpr std::uint32_t OSCSDVersion       = 0x122;   // USHORT
 constexpr std::uint32_t OSPlatformId       = 0x124;
 constexpr std::uint32_t TlsExpansionBitmap = 0x238;
 constexpr std::uint32_t CSDVersion         = 0x2E8;   // UNICODE_STRING
+// The process-default activation context (the EXE's manifest). Wine's loader_init -> actctx_init() stores its OWN
+// process_actctx here (wine-src/dlls/ntdll/actctx.c: `Peb->ActivationContextData = process_actctx`; the static
+// `system_actctx` inside Wine's ntdll when the EXE has no manifest), and a Wine ACTIVATION_CONTEXT is not Microsoft's
+// ACTIVATION_CONTEXT_DATA blob. Offset checked against wine-src/include/winternl.h (x64: 0x2f8).
+constexpr std::uint32_t ActivationContextData = 0x2F8;
 }
 inline std::uint8_t* CurrentPeb() { return reinterpret_cast<std::uint8_t*>(__readgsqword(teb::Peb)); }
 template <class T> T& PebField(std::uint32_t off) { return *reinterpret_cast<T*>(CurrentPeb() + off); }

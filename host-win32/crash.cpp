@@ -25,6 +25,19 @@
 //     for a module.
 //   * The records that carry the module tables print 256 stack words instead of 32 (runs of zero words collapsed
 //     to one line), and the record buffer is 64 KiB instead of 48 to make room for the host table.
+//
+// EXIT PHASE (second change, after host-win32-smoke on 532a3bf). ExitProcess terminates every other thread of the
+// process BEFORE it runs DllMain(DLL_PROCESS_DETACH) of the loaded DLLs. An exception raised inside a detach routine
+// (the 0xC000000D from combase.dll that run died of) therefore reaches the unhandled-exception filter with the crash
+// thread already dead. PostJob used to wait 180 s on a job event that nothing would ever set, which is the whole of the
+// "3 minute" stall, and the minidump never started (there was no crash.dmp, not even an empty one: WriteMiniDump's
+// first act is to create it). Now:
+//   * the crash thread's handle is kept (it used to be closed at once) and PostJob waits on it as well as on the job
+//     event: a dead crash thread ends the wait immediately, and the record says why there is no dump;
+//   * the record has a "process phase" line (ntdll's RtlDllShutdownInProgress, bound while the loader state is the
+//     host's), so an exit-time fault is recognisable at a glance;
+//   * an address inside the host's DLLs also gets the nearest preceding EXPORT of that DLL when it points into code
+//     (ntdll.dll+0x7e55f alone does not say which function it is, and the system DLLs have no linker map here).
 // ===========================================================================================================
 //
 // crash.cpp - crash.txt / crash.dmp / entry-reached.txt and the host module report.
@@ -106,6 +119,15 @@ HANDLE g_job_go = nullptr;               // crash thread: work available
 HANDLE g_job_done = nullptr;             // crash thread: work finished
 volatile DWORD g_crash_tid = 0;          // id of the crash thread (its own exceptions are ignored)
 CrashJob g_job;
+
+// [host-win32] The crash thread's handle (kept open: PostJob waits on it, see the EXIT PHASE note at the top), and whether
+// PostJob found the thread dead, in which case the job could never have run.
+HANDLE g_crash_thread = nullptr;
+volatile LONG g_crash_thread_gone = 0;
+// [host-win32] ntdll!RtlDllShutdownInProgress, bound at install time while the PEB's loader lists are still the host's.
+// It is TRUE once ExitProcess has started detaching the DLLs. Called from the crash path as a plain function pointer.
+using PfnDllShutdownInProgress = BOOLEAN(NTAPI*)();
+PfnDllShutdownInProgress g_dll_shutdown_in_progress = nullptr;
 
 constexpr LONG kMaxRecords = 40;         // crash.txt stops growing after this many records
 constexpr LONG kMaxForeignRecords = 8;   // exceptions on threads that never ran guest code
@@ -572,9 +594,80 @@ bool FindModule(std::uint64_t a, ModHit* hit)
     return false;
 }
 
+// [host-win32] The nearest exported symbol at or below `rva` in the mapped PE image at `base`, for an `rva` inside an
+// executable section. The host's system DLLs have no linker map here, so "ntdll.dll+0x7e55f" alone does not say which
+// function it is; the nearest preceding export of a DLL with a large export table (ntdll, KERNELBASE, combase) is a
+// neighbourhood, not a proof: internal functions are not exported, hence the offset is always printed with it.
+// Plain pointer reads under SEH (a loader-mapped image is committed, but a wild `base` must not take the handler
+// down); POD locals only, so __try is allowed. False when the image has no usable export table or the address is data.
+bool NearestExport(std::uint64_t base, std::uint32_t rva, char* name, std::size_t cap, std::uint32_t* delta)
+{
+    bool found = false;
+    __try
+    {
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew < 0x40 || dos->e_lfanew > 0x1000) __leave;
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + static_cast<std::uint32_t>(dos->e_lfanew));
+        if (nt->Signature != IMAGE_NT_SIGNATURE || nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) __leave;
+
+        // Only code gets a name: a data pointer's "nearest export" would be noise.
+        const IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
+        bool in_code = false;
+        for (unsigned i = 0; i < nt->FileHeader.NumberOfSections && i < 96; ++i)
+        {
+            const std::uint32_t lo = sec[i].VirtualAddress;
+            const std::uint32_t hi = lo + (sec[i].Misc.VirtualSize > sec[i].SizeOfRawData ? sec[i].Misc.VirtualSize : sec[i].SizeOfRawData);
+            if (rva >= lo && rva < hi) in_code = (sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) != 0;
+        }
+        if (!in_code) __leave;
+
+        const IMAGE_DATA_DIRECTORY dd = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+        if (dd.VirtualAddress == 0 || dd.Size < sizeof(IMAGE_EXPORT_DIRECTORY)) __leave;
+        const auto* ed = reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(base + dd.VirtualAddress);
+        const DWORD* funcs = reinterpret_cast<const DWORD*>(base + ed->AddressOfFunctions);
+        const DWORD* names = reinterpret_cast<const DWORD*>(base + ed->AddressOfNames);
+        const WORD* ords = reinterpret_cast<const WORD*>(base + ed->AddressOfNameOrdinals);
+        DWORD best_rva = 0, best_name = 0;
+        for (DWORD i = 0; i < ed->NumberOfNames && i < 20000; ++i)
+        {
+            const WORD ord = ords[i];
+            if (ord >= ed->NumberOfFunctions) continue;
+            const DWORD fn = funcs[ord];
+            if (fn == 0 || fn > rva) continue;
+            if (fn >= dd.VirtualAddress && fn < dd.VirtualAddress + dd.Size) continue;   // a forwarder string, not code
+            if (!found || fn > best_rva)
+            {
+                best_rva = fn;
+                best_name = names[i];
+                found = true;
+            }
+        }
+        if (found)
+        {
+            const char* s = reinterpret_cast<const char*>(base + best_name);
+            std::size_t k = 0;
+            for (; k + 1 < cap && s[k] != 0; ++k) name[k] = (s[k] >= 0x20 && s[k] < 0x7f) ? s[k] : '?';
+            name[k] = 0;
+            *delta = rva - best_rva;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        found = false;
+    }
+    return found;
+}
+
+// [host-win32] True once ExitProcess has started detaching the DLLs (see the EXIT PHASE note at the top).
+bool ProcessIsExiting()
+{
+    return g_dll_shutdown_in_progress != nullptr && g_dll_shutdown_in_progress() != 0;
+}
+
 // "guest module smoke.exe+0x1a2b", "host module win10xbox.exe+0x236c", or "<unattributed; ...>" for an address that
 // neither loader list names. [host-win32] The fallback says in so many words that what follows is a memory REGION
-// (VirtualQuery), not a module; for a mapped image it adds what the PE headers at the allocation base report.
+// (VirtualQuery), not a module; for a mapped image it adds what the PE headers at the allocation base report. A module
+// hit that points into code also carries the nearest exported symbol (NearestExport).
 void AnnotateAddress(Out& o, std::uint64_t a)
 {
     ModHit hit;
@@ -589,6 +682,16 @@ void AnnotateAddress(Out& o, std::uint64_t a)
         o.Ascii(name, 40);
         o.Ch('+');
         o.HexMin(a - hit.base);
+        char sym[96];
+        std::uint32_t delta = 0;
+        if (NearestExport(hit.base, static_cast<std::uint32_t>(a - hit.base), sym, sizeof sym, &delta))
+        {
+            o.Str("  (nearest export: ");
+            o.Ascii(sym, sizeof sym);
+            o.Ch('+');
+            o.HexMin(delta);   // prints its own 0x
+            o.Ch(')');
+        }
         return;
     }
     o.Str("<unattributed; ");
@@ -706,6 +809,13 @@ void BuildRecord(Out& o, EXCEPTION_POINTERS* ep, DWORD tid, const char* kind, bo
     o.Str(guest_thread ? "yes" : "no");
     o.Str("  tick ");
     o.Dec(GetTickCount64());
+    o.Nl();
+    // [host-win32] Where in the process's life this is. During ExitProcess's DLL detach every other thread is gone.
+    o.Str("process phase: ");
+    o.Str(ProcessIsExiting()
+              ? "EXITING - ntdll reports DLL shutdown in progress (RtlDllShutdownInProgress), i.e. ExitProcess is running "
+                "DllMain(DLL_PROCESS_DETACH); it ended every other thread first, the crash thread included"
+              : "running");
     o.Nl();
 
     if (with_modules)
@@ -1106,18 +1216,29 @@ DWORD WINAPI CrashThreadProc(void*)
 
 // Hands a job to the crash thread and waits for it. The dump suspends every other thread,
 // this one included, so waiting is all this thread has to do.
+// [host-win32] The wait also watches the crash thread itself. ExitProcess terminates every other thread before it detaches
+// the DLLs, so a fault raised in a detach routine finds the crash thread dead and the job event would never be set: the
+// 180 s timeout used to be paid in full (host-win32-smoke on 532a3bf: crash record 01:57:17.8, next run's 02:00:18.1).
 bool PostJob(const CrashJob& j)
 {
     if (g_job_go == nullptr || g_job_done == nullptr || g_crash_tid == 0) return false;
     g_job = j;
     ResetEvent(g_job_done);
     SetEvent(g_job_go);
-    if (WaitForSingleObject(g_job_done, 180000) != WAIT_OBJECT_0)
+    HANDLE waits[2] = {g_job_done, g_crash_thread};
+    const DWORD w = WaitForMultipleObjects(g_crash_thread != nullptr ? 2 : 1, waits, FALSE, 180000);
+    if (w == WAIT_OBJECT_0) return true;
+    if (w == WAIT_OBJECT_0 + 1)
     {
-        InterlockedExchange(&g_dump_error, static_cast<LONG>(WAIT_TIMEOUT));
+        // The thread ended. It never returns from CrashThreadProc, so it was killed; the job may still have completed
+        // in the instant before (both handles can be signalled): check the event first.
+        if (WaitForSingleObject(g_job_done, 0) == WAIT_OBJECT_0) return true;
+        InterlockedExchange(&g_crash_thread_gone, 1);
+        InterlockedExchange(&g_dump_error, static_cast<LONG>(ERROR_INVALID_THREAD_ID));
         return false;
     }
-    return true;
+    InterlockedExchange(&g_dump_error, w == WAIT_TIMEOUT ? static_cast<LONG>(WAIT_TIMEOUT) : static_cast<LONG>(GetLastError()));
+    return false;
 }
 
 // Is there too little stack left to format a record on this thread? (TEB.DeallocationStack
@@ -1189,6 +1310,12 @@ void RecordCore(EXCEPTION_POINTERS* ep, DWORD tid, bool unhandled, bool guest, b
         {
             d.Str("FAILED, error/code ");
             d.Hex32(static_cast<unsigned long>(g_dump_error));
+        }
+        else if (g_crash_thread_gone)
+        {
+            // [host-win32] Not a timeout: the thread that writes dumps no longer exists. No crash.dmp was started.
+            d.Str("not taken: the crash thread is gone (ExitProcess ends every other thread before it detaches the DLLs); "
+                  "this record is all there is");
         }
         else
         {
@@ -1283,6 +1410,12 @@ std::string InstallCrashCapture(const CrashConfig& cfg, HANDLE trace_log)
     // pulled in are loaded by now, so they are in it). See the comment at the top of this file.
     SnapshotHostModules();
 
+    // [host-win32] Bound now for the same reason as dbghelp: once the guest has run, GetModuleHandle answers for the
+    // guest's ntdll, and the crash path may not look anything up.
+    if (HMODULE host_ntdll = GetModuleHandleW(L"ntdll.dll"))
+        g_dll_shutdown_in_progress = reinterpret_cast<PfnDllShutdownInProgress>(
+            reinterpret_cast<void*>(GetProcAddress(host_ntdll, "RtlDllShutdownInProgress")));
+
     // The crash thread: stack of its own for the records of a stack overflow, and the one
     // that writes the minidump. Created even if dbghelp is unavailable.
     std::string thread_state;
@@ -1295,7 +1428,7 @@ std::string InstallCrashCapture(const CrashConfig& cfg, HANDLE trace_log)
         if (t != nullptr)
         {
             g_crash_tid = tid;
-            CloseHandle(t);
+            g_crash_thread = t;   // [host-win32] kept open for the life of the process: PostJob waits on it (EXIT PHASE note)
             thread_state = Fmt("crash thread 0x%04lx ready", static_cast<unsigned long>(tid));
         }
         else
