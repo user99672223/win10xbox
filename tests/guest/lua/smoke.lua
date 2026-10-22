@@ -81,6 +81,28 @@ end
 local missing, merr = io.open(home .. [[\no\such\dir\file.txt]], "rb")
 check("io.open.missing", missing == nil and type(merr) == "string" and merr:find("No such file", 1, true), merr)
 
+-- the temp directory, io.lines, dofile and require
+local tmp = os.tmpname()
+check("os.tmpname", type(tmp) == "string" and #tmp > 0, tmp)
+local tf = io.open(tmp, "w")
+check("tmpname.open", tf ~= nil, tmp)
+if tf then
+  tf:write("alpha\nbeta\ngamma\n")
+  tf:close()
+  local n, last = 0, nil
+  for line in io.lines(tmp) do n = n + 1; last = line end
+  check("io.lines", n == 3 and last == "gamma", n)
+  os.remove(tmp)
+end
+local modpath = home .. [[\lua_smoke_mod.lua]]
+local mf = io.open(modpath, "w")
+mf:write("return { answer = 42 }\n")
+mf:close()
+check("dofile", dofile(modpath).answer == 42)
+package.path = home .. [[\?.lua]]
+check("require", require("lua_smoke_mod").answer == 42)
+os.remove(modpath)
+
 -- pcall / error
 local ok, e = pcall(function() error("boom") end)
 check("pcall", ok == false and e:find("boom", 1, true))

@@ -138,7 +138,7 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   set(_guest_args "C:\\guest\\lua_smoke.lua;alpha;beta gamma")
   set(_lua_sections argv format format.g sort sort.words io.write os.time os.date os.date.t os.clock getenv getenv.none
     io.open.write file.close io.open.read file.line1 file.line2 file.rest file.size os.rename os.remove file.gone
-    io.open.missing pcall pcall.table pcall.runtime xpcall string.rep string.rep.sub string.rep.sep table.concat gc)
+    io.open.missing os.tmpname tmpname.open io.lines dofile require pcall pcall.table pcall.runtime xpcall string.rep string.rep.sub string.rep.sep table.concat gc)
   set(_lua_expect "")
   foreach(_s ${_lua_sections})
     string(REPLACE "." "\\." _re "${_s}")
