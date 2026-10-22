@@ -1,5 +1,6 @@
 # Status
 
+
 ## Current state of main (2026-10-22)
 
 **What works, measured.** On the Xbox Series S (build 26100) one unmodified MSVC x64 guest is mapped, bound,
@@ -65,6 +66,54 @@ Named for the next slices but **no remote branch found at this writing**: `-ncfr
 `-menu`, `-dialog`, `-clipboard`, `-hooks` (timers and hooks), `-guiapp` (a real GUI program), `-net` (ws2_32/AFD),
 `-audio`, `-uwpchild` (child processes in UWP), `-d3d` (ImGui on d3d11 via route B). Check `git ls-remote` before
 relying on them.
+
+## Real programs: the SQLite shell (2026-10-22)
+
+`sqlite3.exe` (SQLite 3.54.1, the official amalgamation, `cl /O2 /MT shell.c sqlite3.c`; `tools/ci/build_sqlite.ps1`,
+pinned by URL and SHA-256 and verified on every run) runs unmodified through the layer on both Windows configs:
+`integration.sqlite_memory` (`-batch :memory: "select 6*7;"` prints `42`), `integration.sqlite_script`
+(`tests/guest/sqlite/smoke.sql` on stdin against `C:\Users\User\smoke.db`: table, inserts with one rollback journal
+each, ordered and aggregate selects, an index, `.dump`, `date('now')`, `pragma integrity_check`, `.exit 42`; every
+output line gated, the `.db` file must exist in the machine folder) and the smoke rows. `ci.yml` run
+[39868114103](https://github.com/user99672223/win10xbox/actions/runs/39868114103) on `8d9e2b0` (later commits only change docs): windows (Debug) and windows (RelWithDebInfo) green, `43 tests, 0 failures, 0 skipped` in each
+job's `ctest-junit.xml`; `host-win32-smoke` (console conditions), `host-win32-appcontainer`, `uwp-lite`, `host-uwp`
+green on the same commit. The script's stdout (identical in both configs and under Wine):
+
+```
+plum|7        pear|5        apple|3       fig|2
+4|17|2.0      pear|3.75     plum|1.75     apple|1.5      indexed|1
+PRAGMA foreign_keys=OFF; BEGIN TRANSACTION; CREATE TABLE fruit(...); INSERT INTO fruit VALUES(1,'apple',3,0.5); ...
+CREATE INDEX fruit_name on fruit(name); COMMIT;
+date|10|1|1      ok
+```
+
+Three defects, all found by running it, none visible to our own test programs; each has a regression test that runs
+without SQLite:
+
+1. **The command line ran into the next string.** `RtlCreateProcessParametersEx` packs the block's strings by
+   `MaximumLength`, which was `Length`, so `GetCommandLineW()` returned `select 6*7;C:\guest\sqlite3.exeWinSta0\Default`
+   (a "near C: syntax error"). Fixed in `core/dispatch/process.cpp` (the Lua bring-up found the same defect on its
+   branch and made the same change; the merge keeps one). `integration.guest_args`.
+2. **Every file lock failed on real Windows.** Wine's kernelbase calls `NtLockFile` with `IoStatusBlock == NULL`; Windows
+   answers `STATUS_ACCESS_VIOLATION` (10 microseconds, in the trace), SQLite reported "database is locked" on its first
+   statement. `NtLockFile`/`NtUnlockFile` are now `Translate` (`core/dispatch/nt_file.cpp`, `docs/DISPATCHER.md`): a
+   Windows host gets a block of the layer's, a Wine host (which refuses any block in `NtLockFile`, and where `NtUnlockFile`
+   wants NULL on Wine 9 and a block on Wine 11) gets what it accepts. `integration.guest_lockfile`, which passes on
+   linux-cross, Debug and RelWithDebInfo.
+3. **The scanner patched a jump table.** MSVC without optimisation (the Debug configuration) puts a switch's jump table
+   inside `.text`; the sweep decoded its bytes, found a `syscall` in them and wrote an INT3 over the low byte of an entry
+   (`0x5c1c5` became `0x5c1cc`), so `printf("%lu")` jumped into the middle of a `call` and died with an access violation. Only
+   `guest_lockfile` in Debug showed it (sqlite3.exe is Release); the crash record's `rax = rip - 2`, `rcx` = image
+   base and the `7c fa` at the target gave it away, and the CI artifact carrying the guest's exe and pdb confirmed the table.
+   `core/loader/scanner.cpp` now finds such tables from the `mov eax,[base+idx*4+TABLE]` that reads them, keeps them out of
+   the sweep and takes their entries as branch targets. `unit.core` `loader_scan_leaves_jump_tables_in_code_alone`.
+
+Not defects of the layer, worth knowing: the Linux reproduction's host is Wine 9.0 while the guest's DLLs are Wine 11.9,
+which disagree about `NtUnlockFile` (handled above); `sqlite_*` are registered on MSVC builds only (the Linux job has no
+`sqlite3.exe`), so they cannot skip there. What `sqlite3.exe` did not need, and the next program might: memory-mapped
+files (`PRAGMA mmap_size`), `LockFileEx` with a pending wait on an overlapped handle (returns `STATUS_PENDING` into a
+block the layer keeps alive, never completed), WAL's shared memory (`CreateFileMapping` over the `-shm` file), the
+console (`.mode` with a terminal, `isatty`), and `GetFileAttributesEx` on directories other than the machine folder.
 
 ## Install the package on the console
 

@@ -119,10 +119,10 @@ runs the same two command lines (plus `guest_args`) through `win10xbox.exe` on b
 `run_guest.cmake` takes `-DPROGRAM_ARGS=a;b` (`@SEMI@` for a `;` inside an argument), `-DINPUT_FILE=` (stdin) and
 `-DGUEST_FILE=` (a machine-folder path deleted before the run and required afterwards).
 
-Local note: the Wine 9.0 that Ubuntu ships as the *host* answers `STATUS_NOT_IMPLEMENTED` to `NtUnlockFile` with a
-non-NULL `IoStatusBlock`, which Wine 11.9's `UnlockFileEx` (the guest side) always passes, so SQLite reports
-"database is locked" under it. That is a host-version mismatch of the Linux reproduction, not a defect of the layer on
-Windows, and is why these tests are not registered on linux-cross.
+`integration.guest_lockfile` (LockFileEx/UnlockFileEx/LockFile on two handles of one file) and `integration.guest_args`
+are not MSVC-only: they run on linux-cross too, where the Wine 9.0 host and Wine 11.9 guest disagree about
+`NtUnlockFile`'s `IoStatusBlock` (core/dispatch/nt_file.cpp handles both). A scanner regression for jump tables inside
+the code section is in `unit.core` (`loader_scan_leaves_jump_tables_in_code_alone`).
 
 ## Wine test subset (M3 fidelity baseline)
 
