@@ -82,7 +82,7 @@ TEST(dispatch_policies_from_inc) {
     CHECK(pol("NtOpenDirectoryObject") == Policy::Translate);
     CHECK(pol("NtCreateSection") == Policy::Translate);
     CHECK(pol("NtTerminateProcess") == Policy::Emulate);
-    CHECK(pol("NtCreateUserProcess") == Policy::Todo);
+    CHECK(pol("NtCreateUserProcess") == Policy::Translate);
     CHECK(pol("NtShutdownSystem") == Policy::Todo);
     const Entry* ck = LookupByName("NtCreateKey");
     CHECK(ck && (ck->policy == Policy::Emulate || ck->policy == Policy::PassThrough));

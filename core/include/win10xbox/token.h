@@ -58,6 +58,11 @@ NTSTATUS Tok_NtImpersonateAnonymousToken(HANDLE ThreadHandle);
 NTSTATUS Tok_NtPrivilegeCheck(HANDLE, PPRIVILEGE_SET, PBOOLEAN);
 NTSTATUS Tok_NtAccessCheck(PSECURITY_DESCRIPTOR, HANDLE, ACCESS_MASK, PGENERIC_MAPPING, PPRIVILEGE_SET, PULONG, PACCESS_MASK, NTSTATUS*);  // PNTSTATUS is not declared by MSVC winternl.h
 NTSTATUS Tok_NtCompareTokens(HANDLE, HANDLE, PBOOLEAN);
+// AppContainer (LowBox) tokens are not emulated: the guest is a medium-integrity desktop user, never an AppContainer
+// (docs/DECISIONS.md token note). Validates its arguments like NT, then answers STATUS_NOT_SUPPORTED with a FIXME.
+NTSTATUS Tok_NtCreateLowBoxToken(PHANDLE NewTokenHandle, HANDLE ExistingTokenHandle, ACCESS_MASK DesiredAccess,
+                                 POBJECT_ATTRIBUTES ObjectAttributes, PSID PackageSid, ULONG CapabilityCount,
+                                 PSID_AND_ATTRIBUTES Capabilities, ULONG HandleCount, HANDLE* Handles);
 NTSTATUS Tok_NtQuerySecurityObject(HANDLE, SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, ULONG, PULONG);  // for token handles only
 NTSTATUS Close(HANDLE TokenHandle);
 

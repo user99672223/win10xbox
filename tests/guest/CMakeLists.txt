@@ -24,6 +24,10 @@ win10xbox_add_guest(guest_cpuid)
 add_executable(guest_sleep sleep.c)
 win10xbox_add_guest(guest_sleep)
 
+# CreateProcess through the layer (NtCreateUserProcess): runs guest_hello.exe and itself as children.
+add_executable(guest_spawn spawn.c)
+win10xbox_add_guest(guest_spawn)
+
 add_library(guest_dll SHARED dll.c)
 win10xbox_add_guest(guest_dll)
 

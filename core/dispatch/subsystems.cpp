@@ -60,6 +60,7 @@ const ImplDef* SubsystemImpls() {
         W10X_IMPL(NtPrivilegeCheck, token::Tok_NtPrivilegeCheck),
         W10X_IMPL(NtAccessCheck, token::Tok_NtAccessCheck),
         W10X_IMPL(NtCompareTokens, token::Tok_NtCompareTokens),
+        W10X_IMPL(NtCreateLowBoxToken, token::Tok_NtCreateLowBoxToken),
 #endif
 #if WIN10XBOX_HAVE_CLOCK
         W10X_IMPL(NtQueryPerformanceCounter, clock::Clk_NtQueryPerformanceCounter),
