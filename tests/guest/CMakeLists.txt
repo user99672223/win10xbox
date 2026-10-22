@@ -27,6 +27,12 @@ win10xbox_add_guest(guest_sleep)
 add_library(guest_dll SHARED dll.c)
 win10xbox_add_guest(guest_dll)
 
+# The first GUI guest: user32/gdi32 -> win32u syscalls -> core/user (docs/GUI.md).
+# A console-subsystem program on purpose: its stdout is the test's evidence.
+add_executable(guest_window window.c)
+target_link_libraries(guest_window PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_window)
+
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
 add_test(NAME guest.hello COMMAND guest_hello)
 set_tests_properties(guest.hello PROPERTIES PASS_REGULAR_EXPRESSION "hello from guest")
@@ -47,4 +53,11 @@ if(MSVC)
   add_executable(guest_smoke WIN32 ${CMAKE_SOURCE_DIR}/host-uwp-lite/smoke_guest.c)
   target_compile_definitions(guest_smoke PRIVATE SMOKE_GUI=1)
   win10xbox_add_guest(guest_smoke)
+endif()
+
+# Native smoke of the GUI guest: meaningful on a Windows runner (real win32k); under Wine on a display-less
+# Linux box CreateWindowExW fails, so it is not registered for the emulator build.
+if(NOT CMAKE_CROSSCOMPILING_EMULATOR)
+  add_test(NAME guest.window COMMAND guest_window)
+  set_tests_properties(guest.window PROPERTIES PASS_REGULAR_EXPRESSION "window: done")
 endif()

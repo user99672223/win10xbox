@@ -22,7 +22,7 @@ set(_prepare_args
 add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
-  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep)
+  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_window)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -78,6 +78,19 @@ if(TARGET guest_smoke_cui)
   win10xbox_guest_test(guest_smoke_cui "C:\\guest\\guest_smoke_cui.exe" 42 "hello from guest" "guest: done, returning 42")
   win10xbox_guest_test(guest_smoke_gui "C:\\guest\\guest_smoke.exe" 42 "hello from guest" "guest: done, returning 42")
 endif()
+
+# The first pixels: a GUI guest (tests/guest/window.c) creates a window, paints it solid blue with a red square
+# through Wine's user32/gdi32 and the win32u syscalls emulated by core/user, reads its own pixels back with
+# GetPixel, and exits 42. The host writes the composed virtual screen to a .bmp (WIN10XBOX_SCREENSHOT), and
+# run_guest.cmake checks two pixels of that file too: the window at (100,100)-(500,400) must show the blue at
+# screen (110,110) and the red at (130,130). The screenshot is the artifact to look at when this fails.
+win10xbox_guest_test(guest_window "C:\\guest\\guest_window.exe" 42
+  "window: class registered" "window: created hwnd=" "window: painted"
+  "window: pixel\\(10,10\\)=00dc5000 pixel\\(30,30\\)=000000ff" "window: done")
+set_tests_properties(integration.guest_window PROPERTIES
+  # DISABLED until core/user answers the NtUser*/NtGdi* calls (docs/GUI.md); shown as "Not Run", never as a pass.
+  DISABLED TRUE
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=110,110,ffdc5000|130,130,ff0000ff")
 
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
 set_tests_properties(integration.guest_hello_appcontainer_sim PROPERTIES

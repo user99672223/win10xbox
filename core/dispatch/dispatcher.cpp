@@ -61,6 +61,7 @@ const char* const kNoReturn[] = {"NtContinue", "NtContinueEx", "NtRaiseException
                                  "NtTerminateThread"};
 
 constexpr std::uint32_t kMaxId = 0x2000;   // ntdll 0x0000.., win32u 0x1000..
+constexpr std::uint32_t kWin32uFirstId = 0x1000;
 
 struct State {
     SRWLOCK lock = SRWLOCK_INIT;
@@ -140,7 +141,7 @@ bool IEquals(const char* a, const char* b) {
 }
 
 void* FindImpl(const char* name) {
-    for (auto list : {FileImpls(), SectionImpls(), ProcessImpls(), NlsImpls(), SubsystemImpls()})
+    for (auto list : {FileImpls(), SectionImpls(), ProcessImpls(), NlsImpls(), SubsystemImpls(), UserImpls()})
         for (const ImplDef* d = list; d && d->name; ++d)
             if (!std::strcmp(d->name, name)) return d->fn;
     return nullptr;
@@ -578,6 +579,17 @@ NTSTATUS Initialize() {
         if (e.nargs > kMaxArgs) e.nargs = kMaxArgs;
         e.policy = Policy::Todo;
         e.note = "";
+        if (t.id >= kWin32uFirstId) {
+            // The win32k surface: no host export exists for an AppContainer (and the ids are Wine's own
+            // numbering anyway), so an entry is Emulate when core/user implements it and Todo otherwise.
+            // No per-syscall policy lines: 1540 of them would say the same thing.
+            e.impl = FindImpl(t.name);
+            e.policy = e.impl ? Policy::Emulate : Policy::Todo;
+            e.note = e.impl ? "win32u (core/user)" : "win32u";
+            ++counts[static_cast<int>(e.policy)];
+            s.entries.push_back(e);
+            continue;
+        }
         for (const PolicyDef& p : kPolicies)
             if (!std::strcmp(p.name, t.name)) { e.policy = p.policy; e.note = p.note; break; }
         e.host_fn = HostExport(t.name);

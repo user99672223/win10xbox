@@ -3,8 +3,9 @@
 // THIS FILE IS REPLACED by a fresh copy from the package each time win10xbox starts: it is
 // documentation. To change anything, copy it to launch.json in this folder (or write a new
 // launch.json) and edit THAT file; the package never overwrites it. Without a launch.json in
-// this folder the host uses the packaged default (payload\launch.json, which runs the sample
-// guest hello.exe and expects exit code 42), and without that the defaults shown below.
+// this folder the host uses the packaged default (payload\launch.json, which runs the GUI guest
+// window.exe, expects exit code 42 and keeps the app open afterwards), and without that the
+// defaults shown below.
 //
 // Format: JSON with // and /* */ comments and trailing commas. UNKNOWN KEYS ARE AN ERROR: a
 // typo must not silently run the default guest on a console that has no screen to tell you.
@@ -13,11 +14,23 @@
 //
 // The results are plain files in this folder: status.txt (verdict and facts: read it first),
 // trace.log, stdout.txt (the guest's stdout and stderr) and, if the host died, crash.txt and
-// crash.dmp. entry-reached.txt exists once control reached the guest. The guest's C:\ is the
+// crash.dmp. entry-reached.txt exists once control reached the guest. screen.bmp is what was on
+// screen (every 5 s while the guest runs, and when it has exited). The guest's C:\ is the
 // folder machine\ here.
 {
-  // The program to run: a bare file name, looked up in C:\guest (machine\guest here; the
-  // package puts hello.exe and hello_cui.exe there), or an absolute guest path.
+  // The program to run: a bare file name, looked up in C:\guest (machine\guest here), or an
+  // absolute guest path. The package puts these there:
+  //   window.exe       GUI: a solid blue window on the TV, exits 42 once painted and its timer
+  //                    quit the loop (the packaged default)
+  //   hello.exe        GUI subsystem, no window: facts to stdout.txt, exits 42
+  //   hello_cui.exe    the same as a console program, exits 42
+  //   smoke_cui.exe    host-uwp-lite's smoke guest (OS version, CPUID, clock facts), exits 42
+  //   guest_hello.exe  prints "hello from guest", exits 42
+  //   guest_cpuid.exe  prints CPUID leaf 1 ECX and the vendor, exits 0
+  //   guest_sleep.exe  sleeps 4 x 5 ms, exits 7
+  //   drv_client.exe   opens \\.\OurTestDevice: needs the driver host (drv_host), which
+  //                    host-uwp does not run, so here it exits 2 ("cannot open")
+  //   (guest_dll.dll is a library for loader tests, not a program)
   "guest": "hello.exe",
 
   // Command line arguments: an array of strings (each is quoted as needed) or one string that

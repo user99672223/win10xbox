@@ -1,7 +1,7 @@
 # host-win32: console host that runs core/ unsandboxed on Windows. This is the
 # CI test vehicle and the desktop development host.
 add_executable(win10xbox main.cpp)
-target_link_libraries(win10xbox PRIVATE win10xbox_core)
+target_link_libraries(win10xbox PRIVATE win10xbox_core winexbox)   # winexbox: the headless display for GUI guests
 if(MSVC)
   # Crash capture (crash.txt / crash.dmp / entry-reached.txt, see crash.h and the comment at the top of crash.cpp) and
   # a linker map. MSVC only: crash.cpp needs __try and delayimp.lib's __HrLoadAllImportsForDll, and the llvm-mingw

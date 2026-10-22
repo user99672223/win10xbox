@@ -1,10 +1,17 @@
 # winexbox
 
-Display and input backend for the Wine-derived `win32u` (docs/ARCHITECTURE.md,
+Display and input backend behind the win32k surface (docs/ARCHITECTURE.md,
 decision E5; backend choice D8). Milestone M3 lands the **interface** and a
-**headless backend**. The real Xbox backend (CoreWindow + D3D12) and the
-binding that plugs the interface into win32u are deliberately deferred until
-Xbox probe data exists (Probe I).
+**headless backend**.
+
+> **Status note (2026-10-22).** The caller of this interface is `core/user`
+> (docs/GUI.md), our own NtUser*/NtGdi* emulation, not a `winexbox.drv` adapter
+> for Wine's `user_driver_funcs`: Wine's `win32u.dll` PE is thunks only, the code
+> that would have called `user_driver_funcs` is in `win32u.so`, which is never
+> built. The diagram and the "win32u binding plan" below are the M3 design and
+> are kept as the record of what the interface was shaped against; the method
+> table is still the reference for what each entry means. Presentation is the
+> host's job via `user::ComposeFrame()`.
 
 ```
  guest user32/gdi32  ->  win32u (window manager, message queues, dibdrv GDI)

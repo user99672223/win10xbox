@@ -1,8 +1,8 @@
 # stage.cmake - assemble the AppX layout that package.cmd packs (cmake -P).
 # Run by the stage_appx target of host-uwp/CMakeLists.txt:
 #
-#   cmake -DSTAGE=<dir> -DEXE=<win10xbox-uwp.exe> -DGUEST_GUI=<hello.exe>
-#         -DGUEST_CUI=<hello_cui.exe> -DWINMD=<Win10XboxUwp.winmd or empty>
+#   cmake -DSTAGE=<dir> -DEXE=<win10xbox-uwp.exe> -DGUESTS=<guest1.exe,guest2.exe,...>
+#         -DWINMD=<Win10XboxUwp.winmd or empty>
 #         -DMANIFEST=<AppxManifest.xml> -DASSETS_DIR=<dir with *.png>
 #         -DPAYLOAD_DIR=<host-uwp/payload> -DBUILTIN_DIR=<wine-pe/out/builtin>
 #         -DMACHINE_JSON=<machine.default.json>
@@ -11,12 +11,13 @@
 # Layout (see the header of host-uwp/CMakeLists.txt):
 #   AppxManifest.xml  win10xbox-uwp.exe  Win10XboxUwp.winmd  Assets\*.png
 #   payload\machine.json  payload\launch.json  payload\launch.example.json
-#   payload\guest\*.exe  payload\builtin\*.dll (+ LICENSE.wine, MANIFEST.txt)
+#   payload\guest\* (every file of GUESTS: window.exe, hello.exe, ...)
+#   payload\builtin\*.dll (+ LICENSE.wine, MANIFEST.txt)
 # At run time host_stage.cpp (StageMachineFiles) copies payload\builtin and payload\guest into
 # LocalState\machine, StageMachineJson copies payload\machine.json (never over an existing one),
 # host.cpp reads payload\launch.json as the packaged default launch configuration and
 # host_shell.cpp (PublishExampleConfig) copies payload\launch.example.json to LocalState.
-foreach(_v STAGE EXE GUEST_GUI GUEST_CUI MANIFEST ASSETS_DIR)
+foreach(_v STAGE EXE GUESTS MANIFEST ASSETS_DIR)
   if("${${_v}}" STREQUAL "")
     message(FATAL_ERROR "stage.cmake: -D${_v}= is required")
   endif()
@@ -50,10 +51,18 @@ foreach(_f IN LISTS _pngs)
   file(COPY_FILE "${_f}" "${STAGE}/Assets/${_n}")
 endforeach()
 
-foreach(_g "${GUEST_GUI}" "${GUEST_CUI}")
+# GUESTS is comma-separated (CMakeLists.txt: a ";" list does not survive the command line).
+string(REPLACE "," ";" _guests "${GUESTS}")
+set(_ng 0)
+foreach(_g IN LISTS _guests)
   get_filename_component(_n "${_g}" NAME)
+  if(EXISTS "${STAGE}/payload/guest/${_n}")
+    message(FATAL_ERROR "stage.cmake: two guests are both named ${_n}")
+  endif()
   stage_copy("${_g}" "${STAGE}/payload/guest/${_n}")
+  math(EXPR _ng "${_ng} + 1")
 endforeach()
+message(STATUS "stage.cmake: bundled ${_ng} guest program(s)")
 
 if(NOT "${MACHINE_JSON}" STREQUAL "" AND EXISTS "${MACHINE_JSON}")
   file(COPY_FILE "${MACHINE_JSON}" "${STAGE}/payload/machine.json")

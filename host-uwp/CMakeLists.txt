@@ -29,10 +29,17 @@
 #                                         main.cpp + App.cpp are the only C++/WinRT sources,
 #                                         host*.cpp + launch_config.cpp the Host, crash.cpp the
 #                                         crash capture with dbghelp delay-loaded)
-#   hello_guest        hello.exe          sample guest, /SUBSYSTEM:WINDOWS (the default guest)
+#   window_guest       window.exe         GUI guest, the packaged default (tests/guest/window.c when it
+#                                         exists, else the placeholder guest/window.c)
+#   hello_guest        hello.exe          sample guest, /SUBSYSTEM:WINDOWS
 #   hello_guest_cui    hello_cui.exe      same source, /SUBSYSTEM:CONSOLE (A/B variant)
+#   guest_hello, guest_cpuid, guest_sleep, guest_dll   tests/guest/*.c (console; guest_dll.dll)
+#   smoke_guest_cui    smoke_cui.exe      host-uwp-lite/smoke_guest.c (console, exits 42)
+#   drv_client         drv_client.exe     tests/drivers/drv_client.c (console; needs the driver host)
 #   host_uwp_selftest  host_uwp_selftest.exe  console program, no layer / WinRT / package:
 #                                         off-device checks of the launch.json parser (ctest)
+#   host_uwp_blittest  host_uwp_blittest.exe  console program: the presenter's D3D11 upload + copy
+#                                         on a WARP device, read back and checked (ctest)
 #   uwp_winmd          Win10XboxUwp.winmd midl output of App.idl (the Xbox launcher wants it)
 #   stage_appx         <build>/AppX/      the package layout that package.cmd packs
 cmake_minimum_required(VERSION 3.25)
@@ -129,6 +136,8 @@ add_subdirectory(${WIN10XBOX_ROOT}/winexbox winexbox)
 #     launch_config.cpp launch.json parser (launch_config.h; portable, also in the selftest)
 #     host_shell.cpp    crash capture wired from the shell, first-run files (host_shell.h)
 #     crash.cpp         crash.txt / crash.dmp / entry-reached.txt: a copy of host-uwp-lite's
+#     presenter.cpp     D3D11 device thread + CoreWindow swap chain + screen.bmp (presenter.h)
+#     blit.cpp          the D3D11 upload + copy of the composed frame (blit.h; also in the blit test)
 # ---------------------------------------------------------------------------
 add_executable(host_uwp WIN32
   main.cpp
@@ -140,6 +149,8 @@ add_executable(host_uwp WIN32
   host_shell.cpp
   launch_config.cpp
   crash.cpp
+  presenter.cpp
+  blit.cpp
   App.h
   host.h
   host_diag.h
@@ -148,6 +159,8 @@ add_executable(host_uwp WIN32
   host_util.h
   launch_config.h
   crash.h
+  presenter.h
+  blit.h
   pch.h)
 set_target_properties(host_uwp PROPERTIES OUTPUT_NAME "win10xbox-uwp")
 target_include_directories(host_uwp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -157,6 +170,8 @@ target_link_libraries(host_uwp PRIVATE
   win10xbox_core
   WindowsApp        # umbrella import lib for the AppContainer-permitted exports (RoInitialize, ...)
   runtimeobject
+  d3d11             # D3D11CreateDevice (presenter.cpp, on its own thread)
+  dxgi
   dbghelp           # MiniDumpWriteDump for crash.dmp (crash.cpp) ...
   delayimp)         # ... delay-loaded, see the link options below
 # AppContainer PE flag + WINDOWS subsystem + the wide entry (the link flags the
@@ -186,6 +201,35 @@ set_target_properties(hello_guest PROPERTIES OUTPUT_NAME "hello")
 add_executable(hello_guest_cui guest/hello.c)
 set_target_properties(hello_guest_cui PROPERTIES OUTPUT_NAME "hello_cui")
 
+# The GUI guest the packaged launch.json runs: the core/user work's tests/guest/window.c (a
+# console program that prints what it checks) once it exists in the tree, until then the
+# placeholder guest/window.c (/SUBSYSTEM:WINDOWS). Both exit with 42 when they succeed.
+if(EXISTS "${WIN10XBOX_ROOT}/tests/guest/window.c")
+  add_executable(window_guest "${WIN10XBOX_ROOT}/tests/guest/window.c")
+else()
+  add_executable(window_guest WIN32 guest/window.c)
+endif()
+target_link_libraries(window_guest PRIVATE user32 gdi32)
+set_target_properties(window_guest PROPERTIES OUTPUT_NAME "window")
+
+# Every other guest of the repo, so the package carries them all to the console (HANDOFF.md
+# "Standing testing rule"). Console programs; output names as in the main tree.
+foreach(_g hello cpuid sleep)
+  add_executable(guest_${_g} "${WIN10XBOX_ROOT}/tests/guest/${_g}.c")
+endforeach()
+add_library(guest_dll SHARED "${WIN10XBOX_ROOT}/tests/guest/dll.c")
+set_target_properties(guest_dll PROPERTIES PREFIX "")
+add_executable(smoke_guest_cui "${WIN10XBOX_ROOT}/host-uwp-lite/smoke_guest.c")
+set_target_properties(smoke_guest_cui PROPERTIES OUTPUT_NAME "smoke_cui")
+# drv_client talks to \\.\OurTestDevice, which only exists when the driver host (tests/drivers
+# drv_host, not part of host-uwp) has loaded OurTestDevice.sys: under host-uwp it reports that
+# the device cannot be opened (exit 2). Bundled so it is on the console for that later step.
+add_executable(drv_client "${WIN10XBOX_ROOT}/tests/drivers/drv_client.c")
+target_include_directories(drv_client PRIVATE "${WIN10XBOX_ROOT}/tests/drivers")
+
+set(HOST_UWP_GUESTS window_guest hello_guest hello_guest_cui guest_hello guest_cpuid guest_sleep guest_dll
+    smoke_guest_cui drv_client)
+
 # ---------------------------------------------------------------------------
 # The selftest: the launch.json parser (launch_config.cpp has no Windows or layer
 # dependency) exercised by selftest/selftest.cpp, a console program. Built for the build
@@ -194,8 +238,13 @@ set_target_properties(hello_guest_cui PROPERTIES OUTPUT_NAME "hello_cui")
 # third-party projects are not registered here, only this one.
 # ---------------------------------------------------------------------------
 add_executable(host_uwp_selftest selftest/selftest.cpp launch_config.cpp launch_config.h)
+# The presenter's frame path (blit.cpp, the exact code the console runs) on a WARP device.
+add_executable(host_uwp_blittest selftest/blit_test.cpp blit.cpp blit.h)
+target_include_directories(host_uwp_blittest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(host_uwp_blittest PRIVATE d3d11)
 enable_testing()
-add_test(NAME host_uwp.selftest COMMAND host_uwp_selftest)
+add_test(NAME host_uwp.selftest COMMAND host_uwp_selftest "${CMAKE_CURRENT_SOURCE_DIR}/payload")
+add_test(NAME host_uwp.blit COMMAND host_uwp_blittest)
 
 # ---------------------------------------------------------------------------
 # Windows SDK tools and platform metadata (sdk.cmake)
@@ -263,12 +312,19 @@ endif()
 #   payload\machine.json            repo machine/machine.default.json (22H2 defaults)
 #   payload\launch.json             host-uwp/payload: the packaged default launch configuration
 #   payload\launch.example.json     host-uwp/payload: every key documented (published to LocalState)
-#   payload\guest\hello.exe, hello_cui.exe
+#   payload\guest\*                 every guest of HOST_UWP_GUESTS (window.exe is the default)
 #   payload\builtin\*.dll           Wine PE builtins (optional, see HOST_UWP_BUILTIN_DIR)
 # resources.pri is made by package.cmd (makepri).
 # ---------------------------------------------------------------------------
 set(HOST_UWP_STAGE_DIR "${CMAKE_BINARY_DIR}/AppX")
 configure_file(Package.appxmanifest "${CMAKE_BINARY_DIR}/AppxManifest.xml" @ONLY)
+
+set(_guest_files "")
+foreach(_g IN LISTS HOST_UWP_GUESTS)
+  list(APPEND _guest_files "$<TARGET_FILE:${_g}>")
+endforeach()
+# Passed as one -D argument, comma-separated (a ";" would not survive the command line).
+string(REPLACE ";" "," _guest_files "${_guest_files}")
 
 set(_winmd_for_stage "${HOST_UWP_WINMD}")
 if(HOST_UWP_SKIP_WINMD)
@@ -278,8 +334,7 @@ add_custom_target(stage_appx ALL
   COMMAND ${CMAKE_COMMAND}
           "-DSTAGE=${HOST_UWP_STAGE_DIR}"
           "-DEXE=$<TARGET_FILE:host_uwp>"
-          "-DGUEST_GUI=$<TARGET_FILE:hello_guest>"
-          "-DGUEST_CUI=$<TARGET_FILE:hello_guest_cui>"
+          "-DGUESTS=${_guest_files}"
           "-DWINMD=${_winmd_for_stage}"
           "-DMANIFEST=${CMAKE_BINARY_DIR}/AppxManifest.xml"
           "-DASSETS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/assets"
@@ -289,7 +344,7 @@ add_custom_target(stage_appx ALL
           -P "${CMAKE_CURRENT_SOURCE_DIR}/stage.cmake"
   COMMENT "Staging the AppX layout in ${HOST_UWP_STAGE_DIR}"
   VERBATIM)
-add_dependencies(stage_appx host_uwp hello_guest hello_guest_cui)
+add_dependencies(stage_appx host_uwp ${HOST_UWP_GUESTS})
 if(HOST_UWP_WINMD_TARGET)
   add_dependencies(stage_appx ${HOST_UWP_WINMD_TARGET})
 endif()
