@@ -23,11 +23,42 @@ module, the guest entry is reached, and the guest CRT runs through the full NLS/
 `c_1252`, `c_437`, `sortdefault`, `normnfc` all resolve) and writes its locale registry values.
 
 The run then stopped at a separate defect whose cause is not yet established: an `EXCEPTION_ACCESS_VIOLATION` reading
-address `0x4` at RIP `0x7ff6cb75a36c`. That is RVA `+0x236C` inside the host executable (`win10xbox-uwp-lite.exe`, which
-statically links `core/`), not inside any guest module. The faulting instruction is `mov eax,[rdx+rax]` with `rdx=4` and
-`rax=0`: a 32-bit table load off a null base. `crash.txt` does not name the image because, while the guest runs, its loader
-list holds only guest modules. The exact function at that RVA is not identified yet; a linker map file from CI is being
-added to resolve the RVA to a function name.
+address `0x4` at RIP `0x7ff6cb75a36c`. The faulting instruction is `mov eax,[rdx+rax]` with `rdx=4` and `rax=0`: a 32-bit
+load off a near-null base, the shape a corrupted thread-local-storage pointer produces. It is not in any guest module.
+
+**The faulting image is NOT identified, and two attributions have already been made and withdrawn.** The console report
+gave the surrounding image as "base ~`0x7ff6cb758000`, size ~`0x14b000`", but `crash.txt`'s `AnnotateAddress` falls back
+to `VirtualQuery` and prints a *protection region* rather than a module base whenever the address is not in the guest's
+loader list — and while the guest runs, that list holds only guest modules. So that pair is a region inside some image and
+any RVA derived from it is meaningless. Checked and ruled out: it is not a Wine builtin (none of the 23 in
+`wine-pe/out/builtin` carries the faulting bytes `8b 04 02` at the implied offset, and Wine's `ntdll.dll` is
+`SizeOfImage=0x302000`, far larger than `0x14b000`); and it is not the host exe at that offset either
+(`win10xbox-uwp-lite.exe` from the `.msix` that actually crashed has `SizeOfImage=0x24f000`, `.text` VirtualSize
+`0x1736c8`, and `cc cc cc` padding at that offset). The console and its crash files are no longer accessible, so this
+report cannot be resolved further; the real-Windows CI reproduction below is the route to an unambiguous answer. The
+lesson for the tooling: a crash record must print every loaded module's base **and** `SizeOfImage`, or an absolute RIP
+cannot be attributed at all.
+
+**Leading hypothesis (UNPROVEN at time of writing): a guest/host collision over `TEB.TlsSlots`.** `TEB.TlsSlots`
+(TEB+0x1480, `core/dispatch/internal.h:64`) is an *inline* 64-entry array in the TEB, so unlike
+`ThreadLocalStoragePointer` and `FlsData` — which `SwapIn`/`SwapOut` swap per universe
+(`core/dispatch/dispatcher.cpp:99-110`, and see `rtl_forward.inc:108-110` for FLS) — it cannot be given the guest and
+the host separate copies. Our `ThreadState*` lives in exactly that array, at the index `TlsAlloc()` returns in
+`dispatch::Initialize()` (`dispatcher.cpp:299-301`). Wine's `loader_init` then claims index
+`NTDLL_TLS_ERRNO` = 16 *by fiat* with `RtlSetBits`, and reserves index 0
+(`wine-pe/wine-src/dlls/ntdll/loader.c:4454-4455`; constant at `dlls/ntdll/ntdll_misc.h:36`) — it asserts those indices
+rather than allocating them. If our index is one of those, the guest's `_errno()` writes straight over our
+`ThreadState*`, and the entry trampoline trusts any non-NULL value it finds there
+(`core/asm/syscall_entry.asm:33-36`), after which `SwapIn` loads a bogus `host_tls`/`host_fls` out of guest data and
+writes them into the TEB — so the next host TLS access faults on a tiny address, which is the observed instruction shape.
+
+This predicts all three observations: real Windows with the Wine builtins dies; real Windows with the runner's genuine
+System32 DLLs runs to completion, because Wine's `loader_init` never runs and nothing claims index 16
+(`.github/workflows/ci.yml:141-143`, and the comment at `:151-153`); and Wine-on-Linux is green, because there the host
+ntdll *is* Wine's ntdll, so index 16 was already reserved before our `TlsAlloc` ran and it can never be handed to us.
+The decisive test is cheap and not yet done: log the allocated index. `dispatcher.cpp:300-303` currently logs only when
+the slot is *unusable*, so no CI log or console trace records which index we actually got. If it reports 16, this is
+confirmed; if it reports an index well away from 0 and 16, the hypothesis is wrong.
 
 No `crash.dmp` was written. The dump path reported HRESULT `0x800736b2`, the form `crash.txt` uses when `dbghelp.dll`
 cannot be bound inside the AppContainer (to be confirmed against `crash.txt`). `dbghelp.dll` is delay-loaded, so the
