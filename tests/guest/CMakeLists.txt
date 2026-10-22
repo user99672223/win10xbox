@@ -49,6 +49,12 @@ add_executable(guest_window_text window_text.c)
 target_link_libraries(guest_window_text PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window_text)
 
+# The networking guest (tests/guest/tcp_echo.c): Wine's ws2_32 -> \\Device\\Afd -> core/afd -> host Winsock. It needs an echo
+# server (tests/integration/tcp_echo_runner), so there is no native smoke test here.
+add_executable(guest_tcp_echo tcp_echo.c)
+target_link_libraries(guest_tcp_echo PRIVATE ws2_32)
+win10xbox_add_guest(guest_tcp_echo)
+
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
 add_test(NAME guest.hello COMMAND guest_hello)
 set_tests_properties(guest.hello PROPERTIES PASS_REGULAR_EXPRESSION "hello from guest")

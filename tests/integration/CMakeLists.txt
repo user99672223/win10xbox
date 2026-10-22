@@ -27,7 +27,7 @@ add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_window guest_window2 guest_window_input
-                   guest_window_text)
+                   guest_window_text guest_tcp_echo)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -139,6 +139,28 @@ set_tests_properties(integration.guest_window_text PROPERTIES
   DISABLED TRUE
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_text.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=121,123,ff000000|123,123,ffffffff|131,123,ff000000")
 unset(_guest_machine)
+
+# ---- Networking: Wine's ws2_32 over core/afd (host Winsock) -----------------------------------------------------
+# tcp_echo_runner is the host-side echo server (plain Win32 + Winsock, no Python needed); it starts the host with
+# the guest (tests/guest/tcp_echo.c), which connects to 127.0.0.1:<port>, sends a string and reads it back.
+# Builtin-only machine folder: a native ws2_32 would talk to the real AFD and bypass the code under test.
+add_executable(tcp_echo_runner tcp_echo_runner.c)
+target_link_libraries(tcp_echo_runner PRIVATE ws2_32)
+set_target_properties(tcp_echo_runner PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+add_test(NAME integration.guest_tcp_echo
+  COMMAND ${CMAKE_COMMAND}
+    -DRUNNER=$<TARGET_FILE:tcp_echo_runner>
+    -DHOST=$<TARGET_FILE:win10xbox>
+    -DMACHINE=${WIN10XBOX_BUILTIN_MACHINE_DIR}
+    -DEXPECT_EXIT=42
+    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_tcp_echo.cmake)
+set_tests_properties(integration.guest_tcp_echo PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "guest_e2e"
+  TIMEOUT 180)
 
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
 set_tests_properties(integration.guest_hello_appcontainer_sim PROPERTIES

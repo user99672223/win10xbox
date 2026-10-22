@@ -12,6 +12,9 @@
 #if WIN10XBOX_HAVE_CLOCK
 #include "win10xbox/clock.h"
 #endif
+#if WIN10XBOX_HAVE_AFD
+#include "win10xbox/afd.h"
+#endif
 #include <cstring>
 
 namespace win10xbox::dispatch::detail {
@@ -71,6 +74,9 @@ const ImplDef* SubsystemImpls() {
         W10X_IMPL(NtDelayExecution, clock::Clk_NtDelayExecution),
         W10X_IMPL(NtQueryTimerResolution, clock::Clk_NtQueryTimerResolution),
         W10X_IMPL(NtSetTimerResolution, clock::Clk_NtSetTimerResolution),
+#endif
+#if WIN10XBOX_HAVE_AFD
+        W10X_IMPL(NtDeviceIoControlFile, afd::Afd_NtDeviceIoControlFile),
 #endif
         {nullptr, nullptr},
     };
