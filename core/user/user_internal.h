@@ -261,6 +261,13 @@ struct QueuedMsg {
     MSG msg{};
     ULONG_PTR extra = 0;
     bool hardware = false;
+    // Hardware input (win_message.cpp). A raw mouse message is what the driver reported: the base WM_* message,
+    // the screen position in `msg.pt`, MK_* flags (+ wheel delta / X button in the high word) in wParam and the
+    // top-level window (or capture window) it was routed to in `msg.hwnd`. The thread that dequeues it finishes
+    // the job as Wine's process_mouse_message does (hit test, activation, WM_SETCURSOR). Key messages are final.
+    bool raw = false;
+    std::uint32_t seq = 0;        // identifies a raw message across the lock being dropped
+    BYTE vk = 0;                  // key messages: the physical key (VK_LSHIFT, ...) for the keyboard state
 };
 struct Timer {
     HWND hwnd = nullptr;
@@ -344,7 +351,9 @@ struct State {
     bool process_dpi_set = false;
     UINT_PTR next_timer_id = 0x7fff;
     POINT cursor{};
-    BYTE key_state[256] = {};                 // async key state: 0x80 down, 0x01 toggled
+    BYTE key_state[256] = {};                 // async key state (GetAsyncKeyState): 0x80 down, 0x01 toggled; follows the hardware
+    BYTE input_key_state[256] = {};           // the state as of the last input message an application took (GetKeyState, TranslateMessage)
+    std::uint32_t input_seq = 0;
     DWORD last_input_time = 0;
     // display
     int screen_w = 0, screen_h = 0;
@@ -457,6 +466,10 @@ RECT WindowRectScreen(const WindowObj* w);
 RECT ClientRectScreen(const WindowObj* w);
 bool IsWindowReallyVisible(const WindowObj* w); // window and every ancestor WS_VISIBLE
 HWND WindowFromScreenPoint(POINT pt);
+HWND ShallowWindowFromPoint(POINT pt);          // Wine's shallow_window_from_point: the top-level window at pt, else the desktop
+// Every window containing screen point `pt` below `scope`, deepest child first, then siblings in z-order, then
+// `scope` itself last (the order of Wine's get_window_children_from_point request).
+void WindowsFromPoint(HWND scope, POINT pt, std::vector<HWND>* out);
 BOOL SetWindowPosInternal(HWND hwnd, HWND after, int x, int y, int cx, int cy, UINT flags);
 BOOL ShowWindowInternal(HWND hwnd, int cmd);
 BOOL DestroyWindowInternal(HWND hwnd);

@@ -296,6 +296,43 @@ HWND WindowFromScreenPoint(POINT pt) {
     return found;
 }
 
+// server/window.c is_point_in_window: visible, not a disabled child, not layered+transparent, inside the window rectangle.
+static bool PointInWindow(const WindowObj* w, POINT pt) {
+    if (!(w->style & WS_VISIBLE)) return false;
+    if ((w->style & (WS_POPUP | WS_CHILD | WS_DISABLED)) == (WS_CHILD | WS_DISABLED)) return false;
+    if ((w->ex_style & (WS_EX_LAYERED | WS_EX_TRANSPARENT)) == (WS_EX_LAYERED | WS_EX_TRANSPARENT)) return false;
+    return PtInRectangle(WindowRectScreen(w), pt.x, pt.y);
+}
+
+static void AppendChildrenFromPoint(const WindowObj* parent, POINT pt, std::vector<HWND>* out) {
+    const std::vector<HWND> kids = parent->children;
+    for (HWND h : kids) {
+        const WindowObj* c = Win(h);
+        if (!c || !PointInWindow(c, pt)) continue;
+        if (!(c->style & (WS_MINIMIZE | WS_DISABLED)) && PtInRectangle(ClientRectScreen(c), pt.x, pt.y))
+            AppendChildrenFromPoint(c, pt, out);
+        out->push_back(h);
+    }
+}
+
+void WindowsFromPoint(HWND scope, POINT pt, std::vector<HWND>* out) {
+    const WindowObj* top = Win(scope ? scope : DesktopWindow());
+    if (!top) return;
+    const bool desktop = (top->flags & kWinIsDesktop) != 0;
+    if (!desktop && !PointInWindow(top, pt)) return;
+    if (!(top->style & (WS_MINIMIZE | WS_DISABLED)) && PtInRectangle(ClientRectScreen(top), pt.x, pt.y))
+        AppendChildrenFromPoint(top, pt, out);
+    out->push_back(top->handle);
+}
+
+HWND ShallowWindowFromPoint(POINT pt) {
+    const WindowObj* desk = Win(DesktopWindow());
+    if (!desk) return nullptr;
+    for (HWND h : desk->children)
+        if (const WindowObj* w = Win(h); w && PointInWindow(w, pt)) return h;
+    return desk->handle;
+}
+
 void AdjustRectForStyle(RECT* rect, DWORD style, bool menu, DWORD ex_style) {
     int adjust = 0;
     if ((ex_style & (WS_EX_STATICEDGE | WS_EX_DLGMODALFRAME)) == WS_EX_STATICEDGE) adjust = 1;
