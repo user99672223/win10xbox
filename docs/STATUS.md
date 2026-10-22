@@ -134,7 +134,7 @@ pinned by URL and SHA-256 and verified on every run) runs unmodified through the
 (`tests/guest/sqlite/smoke.sql` on stdin against `C:\Users\User\smoke.db`: table, inserts with one rollback journal
 each, ordered and aggregate selects, an index, `.dump`, `date('now')`, `pragma integrity_check`, `.exit 42`; every
 output line gated, the `.db` file must exist in the machine folder) and the smoke rows. `ci.yml` run
-[39868114103](https://github.com/user99672223/win10xbox/actions/runs/39868114103) on `8d9e2b0` (later commits only change docs): windows (Debug) and windows (RelWithDebInfo) green, `43 tests, 0 failures, 0 skipped` in each
+[39871612881](https://github.com/user99672223/win10xbox/actions/runs/39871612881) on `05953b0` (the merge of main with all three fixes; later commits only change docs). That run: linux-cross green; windows (RelWithDebInfo) green; windows (Debug) green after one re-run, the first attempt having hung in `integration.driver_kmdf_ioctl` (150 s, no guest output; it passed in the run before and in the re-run, so a flake of the driver host, not of this slice). The first attempt on the commit before the last merge had `integration.guest_window_input2` ("another thread's window: delivered on that thread") fail once on linux-cross; also not this slice: windows (Debug) and windows (RelWithDebInfo) green, `43 tests, 0 failures, 0 skipped` in each
 job's `ctest-junit.xml`; `host-win32-smoke` (console conditions), `host-win32-appcontainer`, `uwp-lite`, `host-uwp`
 green on the same commit. The script's stdout (identical in both configs and under Wine):
 
