@@ -27,6 +27,20 @@ name: host-win32-smoke
 #      guest exited with 42 in the console run.
 # The run steps are continue-on-error so the counts always print; the gate step
 # turns them into the job result.
+#
+# Crash diagnostics (they only add output; the verdict above is unchanged). host-win32
+# installs the crash capture of host-uwp-lite (host-win32/crash.cpp: a copy that adds
+# attribution of the host's own modules, see its header comment), so a guest
+# that dies leaves, per run, a directory (crash-console/, crash-desktop/ via
+# WIN10XBOX_CRASH_DIR) with crash.txt (exception record, annotated stack words, register
+# state, the host's and the guest's module tables), crash.dmp (a minidump: a desktop
+# runner has dbghelp, the console's AppContainer did not) and entry-reached.txt. The gate
+# step PRINTS crash.txt in the job log and looks the host-image addresses up in the
+# linker map. The map (build/bin/win10xbox.map), the exe and its pdb are written by the
+# same link that produced the binary this job runs, and are uploaded with the logs, so a
+# crash address (win10xbox.exe prints its own load base and size on its first stderr
+# lines) can be turned into a function name offline: RVA = address - load base, and
+# the map's Rva+Base column is preferred load address + RVA.
 
 on:
   push:
@@ -160,7 +174,9 @@ jobs:
           WIN10XBOX_DEBUG: "+all"
           WIN10XBOX_WINEDEBUG: "+loaddll,warn+module"
           WIN10XBOX_TEST_NO_HOST_PATHS: "1"
+          WIN10XBOX_CRASH_DIR: crash-console   # crash.txt / crash.dmp / entry-reached.txt of this run (host-win32/main.cpp)
         run: |
+          mkdir -p crash-console
           rc=0
           build/bin/win10xbox.exe --machine build/bin/machine 'C:\guest\smoke_cui.exe' > smoke-console.log 2>&1 || rc=$?
           echo "$rc" > smoke-console.rc
@@ -175,7 +191,9 @@ jobs:
         env:
           WIN10XBOX_DEBUG: "+all"
           WIN10XBOX_WINEDEBUG: "+loaddll,warn+module"
+          WIN10XBOX_CRASH_DIR: crash-desktop   # a directory of its own: each run's InstallCrashCapture erases the previous crash files
         run: |
+          mkdir -p crash-desktop
           rc=0
           build/bin/win10xbox.exe --machine build/bin/machine 'C:\guest\smoke_cui.exe' > smoke-desktop.log 2>&1 || rc=$?
           echo "$rc" > smoke-desktop.rc
@@ -249,8 +267,74 @@ jobs:
             echo "| $label | $n | $rc | $([ "$entry" -gt 0 ] && echo yes || echo no) | $([ "$kb" -gt 0 ] && echo yes || echo no) | $verdict |" >> "$summary"
           }
 
+          # ---- crash diagnostics: output only ------------------------------------------------------------
+          # Both functions are subshells with errexit off that always succeed, and neither touches `fail`:
+          # only check() decides the verdict, exactly as before. They print what is needed to attribute a
+          # guest-startup crash from this log alone: the host's own load base / SizeOfImage / module table
+          # (win10xbox.exe prints them on stderr before the guest starts: lines "host-win32: ..."), crash.txt in full
+          # (exception, bytes at RIP, annotated stack words, host AND guest module tables) and the host-image
+          # addresses looked up in the linker map.
+          # The crash headline for the job summary is collected here and appended after the table rows (check()
+          # appends the rows one by one; a block in between would break the table).
+          crash_md="${RUNNER_TEMP:-/tmp}/host-win32-crash-summary.md"
+          : > "$crash_md" || true
+          host_binary() (
+            set +e
+            echo
+            echo "=== host binary and linker map (what a crash address is looked up in) ==="
+            ls -l build/bin/win10xbox.exe build/bin/win10xbox.map build/bin/win10xbox.pdb 2>&1
+            sha256sum build/bin/win10xbox.exe 2>&1
+            if [ -s build/bin/win10xbox.map ]; then
+              echo "linker map header (the load address the map is relative to, and its timestamp):"
+              head -n 6 build/bin/win10xbox.map | tr -d '\r' | cut -c1-200
+            else
+              echo "::warning::build/bin/win10xbox.map is missing or empty: the linker map was not produced (/MAP in host-win32/CMakeLists.txt)"
+              find build -maxdepth 3 -name '*.map' 2>/dev/null | head -n 5
+            fi
+            exit 0
+          )
+
+          # show_crash <label> <log> <crash dir>
+          show_crash() (
+            set +e
+            label="$1"; log="$2"; dir="$3"
+            echo
+            echo "=== host report: $label ==="
+            if [ -s "$log" ]; then
+              echo "--- the host's own startup lines (crash directory, load base and size of win10xbox.exe, host module table):"
+              grep -a '^host-win32: ' "$log" | tr -d '\r' | cut -c1-400
+            fi
+            echo "--- files in $dir:"
+            ls -l "$dir" 2>&1
+            if [ -s "$dir/crash.txt" ]; then
+              echo "--- $dir/crash.txt, complete:"
+              cat "$dir/crash.txt"
+              echo "--- end of $dir/crash.txt"
+              py=""
+              for c in python3 python py; do
+                if "$c" -c 'import sys; sys.exit(0 if sys.version_info[0] >= 3 else 1)' >/dev/null 2>&1; then py="$c"; break; fi
+              done
+              if [ -z "$py" ]; then
+                echo "(no python 3 on this runner; by hand: RVA = address - load base from the host-image line, map address = preferred + RVA)"
+              elif [ ! -s build/bin/win10xbox.map ]; then
+                echo "(no linker map to look addresses up in)"
+              else
+                echo "--- symbolized against build/bin/win10xbox.map (host-win32/symbolize_crash.py, best effort):"
+                "$py" host-win32/symbolize_crash.py --map build/bin/win10xbox.map --exe build/bin/win10xbox.exe \
+                  --log "$log" --dump "$dir/crash.dmp" --summary "$crash_md" --label "$label" "$dir/crash.txt" 2>&1 | tr -d '\r' | cut -c1-400
+              fi
+            else
+              echo "--- no $dir/crash.txt: the host recorded no fatal-looking exception in this run"
+            fi
+            exit 0
+          )
+
+          host_binary || true
           check "console conditions (gating)" smoke-console.log smoke-console.rc yes
+          show_crash "console conditions" smoke-console.log crash-console || true
           check "desktop conditions (sanity)" smoke-desktop.log smoke-desktop.rc no
+          show_crash "desktop conditions" smoke-desktop.log crash-desktop || true
+          cat "$crash_md" >> "$summary" 2>/dev/null || true
 
           echo
           if [ "$fail" -ne 0 ]; then
@@ -263,11 +347,19 @@ jobs:
         if: always()
         with:
           name: host-win32-smoke-logs
+          # crash-console/ and crash-desktop/ hold crash.txt, crash.dmp and entry-reached.txt of each run. The map, exe and
+          # pdb are the very files the runs above executed (one link made all three): with them crash.dmp opens in a
+          # debugger with symbols, and any address in crash.txt becomes a function name.
           path: |
             smoke-console.log
             smoke-console.rc
             smoke-desktop.log
             smoke-desktop.rc
             build/smoke_cui.imports.txt
+            crash-console
+            crash-desktop
+            build/bin/win10xbox.map
+            build/bin/win10xbox.exe
+            build/bin/win10xbox.pdb
           if-no-files-found: warn
           retention-days: 7

@@ -23,6 +23,8 @@
 //   * An address that matches neither is printed as "<unattributed; ...>"; for a mapped image it also says what the
 //     PE headers at the allocation base report (SizeOfImage, timestamp, the RVA), so a region can no longer pass
 //     for a module.
+//   * The records that carry the module tables print 256 stack words instead of 32 (runs of zero words collapsed
+//     to one line), and the record buffer is 64 KiB instead of 48 to make room for the host table.
 // ===========================================================================================================
 //
 // crash.cpp - crash.txt / crash.dmp / entry-reached.txt and the host module report.
@@ -844,12 +846,35 @@ void BuildRecord(Out& o, EXCEPTION_POINTERS* ep, DWORD tid, const char* kind, bo
         }
         o.Nl();
 
-        o.Str("stack at rsp (return addresses and pointers into modules or code are annotated):\n");
-        std::uint64_t words[32];
-        const std::size_t have = SafeCopy(reinterpret_cast<const void*>(c->Rsp), words, sizeof words) / sizeof words[0];
+        // [host-win32] 256 words (2 KiB) in the records that carry the module tables (the first three and the
+        // unhandled one), 32 in the rest; a run of four or more zero words is printed as one line. These are raw
+        // stack words, not a verified backtrace: x64 code has no frame chain to follow, so stale values show up too.
+        o.Str("stack at rsp (return addresses and pointers into modules or code are annotated; ");
+        o.Str(with_modules ? "256 words, runs of zeros collapsed" : "32 words");
+        o.Str("):\n");
+        std::uint64_t words[256];
+        const std::size_t want = with_modules ? 256 : 32;
+        const std::size_t have = SafeCopy(reinterpret_cast<const void*>(c->Rsp), words, want * sizeof words[0]) / sizeof words[0];
         if (have == 0) o.Str("  <unreadable>\n");
         for (std::size_t i = 0; i < have; ++i)
         {
+            if (words[i] == 0)
+            {
+                std::size_t j = i;
+                while (j < have && words[j] == 0) ++j;
+                if (j - i >= 4)
+                {
+                    o.Str("  [rsp+0x");
+                    o.Hex(i * 8, 3);
+                    o.Str(" .. rsp+0x");
+                    o.Hex((j - 1) * 8, 3);
+                    o.Str("] ");
+                    o.Dec(j - i);
+                    o.Str(" zero words\n");
+                    i = j - 1;
+                    continue;
+                }
+            }
             o.Str("  [rsp+0x");
             o.Hex(i * 8, 3);
             o.Str("] ");
