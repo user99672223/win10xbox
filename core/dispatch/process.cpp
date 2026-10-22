@@ -27,8 +27,9 @@ using namespace win10xbox::dispatch::detail;
 // RTL_USER_PROCESS_PARAMETERS (x64) offsets; MSVC's winternl.h hides most fields.
 namespace pp {
 constexpr std::uint32_t ConsoleHandle = 0x10, ConsoleFlags = 0x18, StdInput = 0x20, StdOutput = 0x28,
-                        StdError = 0x30, DllPath = 0x50, Environment = 0x80, StartingX = 0x88, ShowWindowFlags = 0xA8,
-                        EnvironmentSize = 0x3F0;
+                        StdError = 0x30, CurrentDirectory = 0x38, DllPath = 0x50, ImagePathName = 0x60, CommandLine = 0x70,
+                        Environment = 0x80, StartingX = 0x88, ShowWindowFlags = 0xA8, WindowTitle = 0xB0, Desktop = 0xC0,
+                        ShellInfo = 0xD0, RuntimeInfo = 0xE0, EnvironmentSize = 0x3F0;
 }
 template <class T> T& At(void* base, std::uint32_t off) { return *reinterpret_cast<T*>(static_cast<std::uint8_t*>(base) + off); }
 
@@ -429,8 +430,10 @@ NTSTATUS BuildProcessParameters(const LaunchOptions& o, const std::wstring& imag
     if (block.size() == 1) block.push_back(0);
 
     std::wstring title = image, desktop = L"WinSta0\\Default", empty;
+    // MaximumLength includes the terminator: the block packs its strings back to back, and the guest reads
+    // CommandLine.Buffer and the others as NUL-terminated strings (GetCommandLineW returns the pointer as is).
     auto us = [](std::wstring& s) {
-        return UNICODE_STRING{static_cast<USHORT>(s.size() * 2), static_cast<USHORT>(s.size() * 2), s.data()};
+        return UNICODE_STRING{static_cast<USHORT>(s.size() * 2), static_cast<USHORT>(s.empty() ? 0 : s.size() * 2 + 2), s.data()};
     };
     std::wstring img = image;
     UNICODE_STRING u_image = us(img), u_dll = us(empty), u_cur = us(curdir), u_cmd = us(cmdline), u_title = us(title),
@@ -458,6 +461,12 @@ NTSTATUS BuildProcessParameters(const LaunchOptions& o, const std::wstring& imag
             if (q >= lo && q < hi) q = q - lo + reinterpret_cast<std::uintptr_t>(own);
         }
         params = own;   // the heap copy is leaked on purpose: its environment may live next to it
+        // Terminate every string that has room for it, whatever the host's RtlCreateProcessParametersEx left there.
+        for (std::uint32_t off : {pp::CurrentDirectory, pp::DllPath, pp::ImagePathName, pp::CommandLine, pp::WindowTitle,
+                                  pp::Desktop, pp::ShellInfo, pp::RuntimeInfo}) {
+            const auto& str = At<UNICODE_STRING>(params, off);
+            if (str.Buffer && str.MaximumLength >= str.Length + sizeof(wchar_t)) str.Buffer[str.Length / sizeof(wchar_t)] = 0;
+        }
     }
 
     void* old = PebField<void*>(peb::ProcessParameters);

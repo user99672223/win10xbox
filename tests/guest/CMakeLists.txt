@@ -68,3 +68,6 @@ if(NOT CMAKE_CROSSCOMPILING_EMULATOR)
   add_test(NAME guest.window2 COMMAND guest_window2)
   set_tests_properties(guest.window2 PROPERTIES PASS_REGULAR_EXPRESSION "window2: done")
 endif()
+
+# Guests from the SQLite shell bring-up (tests/guest/sqlite).
+add_subdirectory(sqlite)

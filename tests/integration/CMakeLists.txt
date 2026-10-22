@@ -56,6 +56,7 @@ function(win10xbox_guest_test name program exit_code)
       -DPROGRAM=${program}
       -DEXPECT_EXIT=${exit_code}
       "-DEXPECT_REGEX=${ARGN}"
+      "-DARGS=${_guest_args}" "-DINPUT_FILE=${_guest_input}" "-DGUEST_FILE=${_guest_file}"
       -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
   set_tests_properties(integration.${name} PROPERTIES
@@ -205,3 +206,6 @@ win10xbox_guest_tls_test(guest_view_violation_detected 42 "+dispatch,+modules"
   "WIN10XBOX_TEST_GUEST_VIEW_VIOLATION=1"
   "host state reached under the guest TLS view [0-9]+ times \\(last: dispatch::ExportCache\\), [1-9][0-9]* trace lines dropped"
   "")
+
+# The SQLite shell and the regression guests its bring-up needed (tests/guest/sqlite).
+include(${CMAKE_CURRENT_LIST_DIR}/sqlite_tests.cmake)
