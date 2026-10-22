@@ -207,4 +207,6 @@ jobs:
             build/bin/crash.dmp
             build/bin/entry-reached.txt
             build/bin/*.bmp
+            build/bin/guest/guest_lockfile.*
+            build/bin/guest/sqlite3.exe
           retention-days: 7
