@@ -87,6 +87,9 @@ enum class DllOverride { Native, Builtin, NativeThenBuiltin, BuiltinThenNative, 
 // Override for a module base name (case-insensitive, with or without ".dll").
 // ntdll, kernelbase, kernel32 always report Builtin (see DECISIONS.md E1).
 DllOverride OverrideFor(std::wstring_view module_name);
+// Route B: with the native GUI (config gui = Native) win32u/user32/gdi32/imm32 follow dll_overrides instead of
+// being always builtin. machine.json "gui": "native" implies it; process::Launch also sets it for WIN10XBOX_GUI.
+void SetNativeGuiStack(bool native);
 // Host Win32 path of the builtin (Wine) copy of a system DLL, or empty if
 // absent. `module_name` is a bare file name; ".dll" is appended if it has no
 // extension. Names containing separators or ':' give empty.

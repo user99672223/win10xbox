@@ -609,6 +609,9 @@ int Launch(const LaunchOptions& opts) {
         }
         if (cfg.gui == config::Gui::Native) {
             TRACE(process, "gui native: the guest's win32u syscalls go to the host's win32k");
+#if WIN10XBOX_HAVE_VFS
+            vfs::SetNativeGuiStack(true);   // the native user32/gdi32/win32u/imm32 may load (dll_overrides)
+#endif
             if ((s = ConfigureNativeGui())) {
                 ERR(process, "gui native could not be configured: %08lx", static_cast<unsigned long>(s));
                 return static_cast<int>(s);

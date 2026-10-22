@@ -123,14 +123,21 @@ std::wstring OverrideKey(std::wstring_view name) {
 // E1: Wine's ntdll/kernelbase/kernel32 always. And the GUI stack (E1 extended, docs/GUI.md): core/user
 // implements Wine's win32u contract (Wine's syscall numbering, ntuser.h's call codes), and native
 // user32/gdi32/win32u/imm32 are clients of a real win32k that an AppContainer guest does not have.
-bool IsAlwaysBuiltin(const std::wstring& key) {
-    return key == L"NTDLL" || key == L"KERNELBASE" || key == L"KERNEL32" || key == L"WIN32U" || key == L"USER32" ||
-           key == L"GDI32" || key == L"IMM32";
+// Route B (machine.json "gui": "native", or vfs::SetNativeGuiStack): the GUI stack follows dll_overrides like
+// any other DLL, because there the native user32/gdi32/win32u ARE the point (their win32u syscalls go to the
+// host's win32k). Namespace scope, trivially initialised; set before the guest starts.
+bool g_native_gui_stack = false;
+bool IsGuiStack(const std::wstring& key) {
+    return key == L"WIN32U" || key == L"USER32" || key == L"GDI32" || key == L"IMM32";
+}
+bool IsAlwaysBuiltin(const std::wstring& key, bool native_gui = false) {
+    return key == L"NTDLL" || key == L"KERNELBASE" || key == L"KERNEL32" ||
+           (!native_gui && !g_native_gui_stack && IsGuiStack(key));
 }
 
 DllOverride OverrideImpl(const State& st, std::wstring_view name) {
     std::wstring key = OverrideKey(name);
-    if (IsAlwaysBuiltin(key)) return DllOverride::Builtin;
+    if (IsAlwaysBuiltin(key, st.info.gui == L"native")) return DllOverride::Builtin;
     for (const auto& o : st.overrides)
         if (o.first == key) return o.second;
     return st.default_override;
@@ -399,7 +406,7 @@ void ApplyConfig(const json::Value& root, State* st) {
             }
             std::wstring key = OverrideKey(Widen(m.first));
             if (key == L"*") { st->default_override = ov; continue; }
-            if (IsAlwaysBuiltin(key)) {
+            if (IsAlwaysBuiltin(key, st->info.gui == L"native")) {
                 WARN(vfs, "machine.json: dll_overrides.%s ignored: ntdll/kernelbase/kernel32 and the GUI stack (win32u/user32/gdi32/imm32) are always builtin (E1)",
                      m.first.c_str());
                 continue;
@@ -574,6 +581,8 @@ MachineInfo GetMachineInfo() {
     auto st = Snap();
     return st ? st->info : MachineInfo();
 }
+
+void SetNativeGuiStack(bool native) { g_native_gui_stack = native; }
 
 DllOverride OverrideFor(std::wstring_view module_name) {
     auto st = Snap();
