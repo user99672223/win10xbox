@@ -1,0 +1,33 @@
+RESULT: PASS (the guest exited with the expected code 42)
+tool=win10xbox host-uwp (M5 shell, headless display backend)
+started_utc=2026-10-22T16:07:10.397Z
+build=Oct 22 2026 15:57:24
+core=0.0.1 (3ae7804)
+package=win10xbox.uwp_1.0.0.8_x64__eqad6j9zhtw80
+local_state=Q:\Users\UserMgr1\AppData\Local\Packages\win10xbox.uwp_eqad6j9zhtw80\LocalState
+display=headless backend, virtual monitor 1920x1080@60 (CoreWindow reported 1920x1080)
+phase=finished
+launch.source=the packaged default (payload\launch.json)
+launch.guest=C:\guest\hello.exe
+launch.args=
+launch.expect_exit_code=42
+initialize=0
+machine.user=C:\Users\User
+machine.c_root=Q:\Users\UserMgr1\AppData\Local\Packages\win10xbox.uwp_eqad6j9zhtw80\LocalState\machine
+stage.builtin=copied=0 kept=0 missing=0 failed=0 bytes=0
+stage.guest=copied=0 kept=2 missing=0 failed=0 bytes=0
+stage.nls=copied=0 kept=27 missing=0 failed=0 bytes=0
+stage.package_refreshed=no
+builtin.ntdll=present
+nls.required_missing=none
+guest.host_path=Q:\Users\UserMgr1\AppData\Local\Packages\win10xbox.uwp_eqad6j9zhtw80\LocalState\machine\guest\hello.exe
+guest.size=740352
+display.backend=headless
+display.gpu=winexbox Headless Adapter
+display.monitor=\\.\DISPLAY1 1920x1080@60
+guest.started_utc=2026-10-22T16:07:10.399Z
+guest.exit_code=42 (0x0000002a)
+guest.runtime_ms=78
+stdout_bytes=209
+input.events=key-down=0 key-up=0 mouse-move=0 mouse-button=0 mouse-wheel=0
+finished_utc=2026-10-22T16:07:10.628Z

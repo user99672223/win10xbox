@@ -1,0 +1,24 @@
+RESULT: FAIL (no Wine PE builtins in the machine folder (Windows\builtin\ntdll.dll is missing))
+tool=win10xbox host-uwp (M5 shell, headless display backend)
+started_utc=2026-10-22T16:04:34.783Z
+build=Oct 22 2026 15:57:24
+core=0.0.1 (3ae7804)
+package=win10xbox.uwp_1.0.0.8_x64__eqad6j9zhtw80
+local_state=Q:\Users\UserMgr1\AppData\Local\Packages\win10xbox.uwp_eqad6j9zhtw80\LocalState
+display=headless backend, virtual monitor 1920x1080@60 (CoreWindow reported 1920x1080)
+phase=failed
+launch.source=the packaged default (payload\launch.json)
+launch.guest=C:\guest\hello.exe
+launch.args=
+launch.expect_exit_code=42
+initialize=0
+machine.user=C:\Users\User
+machine.c_root=Q:\Users\UserMgr1\AppData\Local\Packages\win10xbox.uwp_eqad6j9zhtw80\LocalState\machine
+stage.builtin=copied=0 kept=0 missing=0 failed=0 bytes=0
+stage.guest=copied=2 kept=0 missing=0 failed=0 bytes=1480192
+stage.nls=copied=25 kept=0 missing=2 failed=0 bytes=6269910
+stage.nls.not_staged=l_intl.nls(missing),c_10000.nls(missing)
+stage.package_refreshed=yes
+builtin.ntdll=MISSING
+nls.required_missing=l_intl.nls
+hint=the package was built without the wine-pe-builtin artifact: copy wine-pe/out/builtin/*.dll into LocalState\machine\Windows\builtin (or install a package that bundles them) and relaunch

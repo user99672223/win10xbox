@@ -1,0 +1,5 @@
+hello from guest
+guest: command line: "C:\guest\hello.exe"C:\guest\hello.exeWinSta0\Default
+guest: current directory: C:\Users\User
+guest: OS version 10.0 build 19045 (RtlGetVersion)
+guest: done, returning 42

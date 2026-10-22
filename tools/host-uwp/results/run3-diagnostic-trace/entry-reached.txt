@@ -1,0 +1,11 @@
+guest entry reached
+written 2026-10-22 16:08:12.377 UTC by the trace sink, immediately before the core switches to guest code (NtContinue).
+If the process dies after this point the guest was running: see crash.txt / crash.dmp, and trace.log for the last syscalls.
+process 0x1678  thread 0x1918  tick 978593
+trace line: 1918:trace:modules:NoteGuestEntry guest entry reached (RtlUserThreadStart at 00000001700568B4)
+host module paths (taken when the harness started):
+  module kernel32.dll: C:\Windows\SYSTEM32\Forwarders\KERNEL32.dll (base 00007FFA840A0000)
+  module user32.dll: absent (not loaded in this process; GetModuleHandleW error 126)
+  module gdi32full.dll: absent (not loaded in this process; GetModuleHandleW error 126)
+  module shell32.dll: absent (not loaded in this process; GetModuleHandleW error 126)
+  module comctl32.dll: absent (not loaded in this process; GetModuleHandleW error 126)

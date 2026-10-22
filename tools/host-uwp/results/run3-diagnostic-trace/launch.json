@@ -1,0 +1,8 @@
+{
+  "$why": "diagnostic run 3: +dispatch for the startup TEB.TlsSlots line, warn+module for Wine's No implementation lines",
+  "guest": "hello.exe",
+  "trace": "+dispatch,+modules",
+  "winedebug": "warn+module",
+  "timeout_sec": 300,
+  "expect_exit_code": 42,
+}

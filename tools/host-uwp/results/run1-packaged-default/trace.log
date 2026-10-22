@@ -1,0 +1,64 @@
+16:04:34.783 host: host-uwp (built Oct 22 2026 15:57:24) on core 0.0.1 (3ae7804)
+16:04:34.783 host: package=win10xbox.uwp_1.0.0.8_x64__eqad6j9zhtw80 version=1.0.0.8
+16:04:34.783 host: local_state=Q:\Users\UserMgr1\AppData\Local\Packages\win10xbox.uwp_eqad6j9zhtw80\LocalState
+16:04:34.783 host: package_dir=S:\Program Files\WindowsApps\win10xbox.uwp_1.0.0.8_x64__eqad6j9zhtw80
+16:04:34.783 host: display: headless backend, virtual monitor 1920x1080@60 (CoreWindow reported 1920x1080)
+16:04:34.785 host: launch config from the packaged default (payload\launch.json):
+16:04:34.785 host:   guest=C:\guest\hello.exe
+16:04:34.785 host:   args=
+16:04:34.785 host:   cwd=(default)
+16:04:34.785 host:   trace=+modules
+16:04:34.785 host:   trace_log_max_mb=64
+16:04:34.785 host:   timeout_sec=300
+16:04:34.785 host:   exit_when_done=true
+16:04:34.785 host:   expect_exit_code=42
+16:04:34.785 host:   stage_native=(none)
+16:04:34.785 host:   input_pump=true
+16:04:34.785 host: WIN10XBOX_DEBUG=+modules (+modules is the last item already: the guest-entry marker rides on that channel)
+16:04:34.787 host: stage[config] machine.json: copied 648 bytes
+16:04:34.788 host: win10xbox::Initialize -> 0
+16:04:34.791 host: stage: C: = Q:\Users\UserMgr1\AppData\Local\Packages\win10xbox.uwp_eqad6j9zhtw80\LocalState\machine, payload = S:\Program Files\WindowsApps\win10xbox.uwp_1.0.0.8_x64__eqad6j9zhtw80\payload
+16:04:34.791 host: stage: reading genuine console files BY NAME from C:\Windows\system32 and C:\Windows
+16:04:34.796 host: stage: package stamp 'win10xbox.uwp_1.0.0.8_x64__eqad6j9zhtw80' -> changed, package files are refreshed
+16:04:34.799 host: stage[guest] hello.exe: copied 740352 bytes
+16:04:34.800 host: shell: crash capture installed (last-chance vectored handler added, unhandled-exception filter set); crash thread 0x0db8 ready; dbghelp.dll bound: crash.dmp enabled; its one-line crash summaries go to trace.log
+16:04:34.800 host: shell: unhandled-exception filter: host_diag's, chained to the filter installed before it (expected: the crash capture's, which writes the UNHANDLED record to crash.txt before host_diag rewrites status.txt)
+16:04:34.800 host: shell: host module kernel32.dll: C:\Windows\SYSTEM32\Forwarders\KERNEL32.dll (base 00007FFA840A0000)
+16:04:34.800 host: shell: host module user32.dll: absent (not loaded in this process; GetModuleHandleW error 126)
+16:04:34.800 host: shell: host module gdi32full.dll: absent (not loaded in this process; GetModuleHandleW error 126)
+16:04:34.800 host: shell: host module shell32.dll: absent (not loaded in this process; GetModuleHandleW error 126)
+16:04:34.800 host: shell: host module comctl32.dll: absent (not loaded in this process; GetModuleHandleW error 126)
+16:04:34.800 host: shell: activated: kind=0, previous state NotRunning
+16:04:34.800 host: shell: window activated (by code)
+16:04:34.800 host: shell: window visible
+16:04:34.802 host: stage[guest] hello_cui.exe: copied 739840 bytes
+16:04:34.805 host: stage[nls] c_1252.nls: copied 66082 bytes
+16:04:34.807 host: stage[nls] c_437.nls: copied 66594 bytes
+16:04:34.807 host: stage[nls] l_intl.nls: MISSING at source (error 2) <- C:\Windows\system32\l_intl.nls
+16:04:34.809 host: stage[nls] locale.nls: copied 862800 bytes
+16:04:34.811 host: stage[nls] normidna.nls: copied 81870 bytes
+16:04:34.813 host: stage[nls] normnfc.nls: copied 57136 bytes
+16:04:34.815 host: stage[nls] normnfd.nls: copied 50442 bytes
+16:04:34.817 host: stage[nls] normnfkc.nls: copied 79348 bytes
+16:04:34.818 host: stage[nls] normnfkd.nls: copied 73114 bytes
+16:04:34.821 host: stage[nls] c_850.nls: copied 66594 bytes
+16:04:34.823 host: stage[nls] c_874.nls: copied 66594 bytes
+16:04:34.825 host: stage[nls] c_932.nls: copied 162850 bytes
+16:04:34.828 host: stage[nls] c_936.nls: copied 196642 bytes
+16:04:34.830 host: stage[nls] c_949.nls: copied 196642 bytes
+16:04:34.832 host: stage[nls] c_950.nls: copied 196642 bytes
+16:04:34.834 host: stage[nls] c_1250.nls: copied 66082 bytes
+16:04:34.835 host: stage[nls] c_1251.nls: copied 66082 bytes
+16:04:34.837 host: stage[nls] c_1253.nls: copied 66082 bytes
+16:04:34.838 host: stage[nls] c_1254.nls: copied 66082 bytes
+16:04:34.840 host: stage[nls] c_1255.nls: copied 66082 bytes
+16:04:34.841 host: stage[nls] c_1256.nls: copied 66082 bytes
+16:04:34.842 host: stage[nls] c_1257.nls: copied 66082 bytes
+16:04:34.843 host: stage[nls] c_1258.nls: copied 66082 bytes
+16:04:34.843 host: stage[nls] c_10000.nls: MISSING at source (error 2) <- C:\Windows\system32\c_10000.nls
+16:04:34.846 host: stage[nls] c_20127.nls: copied 66082 bytes
+16:04:34.847 host: stage[nls] c_28591.nls: copied 66082 bytes
+16:04:34.858 host: stage[nls] sortdefault.nls: copied 3385740 bytes
+16:04:34.858 host: stage: done. builtin[copied=0 kept=0 missing=0 failed=0 bytes=0] guest[copied=2 kept=0 missing=0 failed=0 bytes=1480192] nls[copied=25 kept=0 missing=2 failed=0 bytes=6269910]
+16:04:34.858 host: FAILED: no Wine PE builtins in the machine folder (Windows\builtin\ntdll.dll is missing)
+16:04:34.870 host: shell: window deactivated

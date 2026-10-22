@@ -1,0 +1,105 @@
+16:08:12.164 host: host-uwp (built Oct 22 2026 15:57:24) on core 0.0.1 (3ae7804)
+16:08:12.164 host: package=win10xbox.uwp_1.0.0.8_x64__eqad6j9zhtw80 version=1.0.0.8
+16:08:12.164 host: local_state=Q:\Users\UserMgr1\AppData\Local\Packages\win10xbox.uwp_eqad6j9zhtw80\LocalState
+16:08:12.164 host: package_dir=S:\Program Files\WindowsApps\win10xbox.uwp_1.0.0.8_x64__eqad6j9zhtw80
+16:08:12.164 host: display: headless backend, virtual monitor 1920x1080@60 (CoreWindow reported 1920x1080)
+16:08:12.164 host: launch config from LocalState\launch.json:
+16:08:12.164 host:   guest=C:\guest\hello.exe
+16:08:12.164 host:   args=
+16:08:12.164 host:   cwd=(default)
+16:08:12.164 host:   trace=+dispatch,+modules
+16:08:12.164 host:   winedebug=warn+module
+16:08:12.164 host:   trace_log_max_mb=64
+16:08:12.164 host:   timeout_sec=300
+16:08:12.164 host:   exit_when_done=true
+16:08:12.164 host:   expect_exit_code=42
+16:08:12.164 host:   stage_native=(none)
+16:08:12.164 host:   input_pump=true
+16:08:12.164 host: WIN10XBOX_DEBUG=+dispatch,+modules (+modules is the last item already: the guest-entry marker rides on that channel)
+16:08:12.165 host: win10xbox::Initialize -> 0
+16:08:12.165 host: stage: C: = Q:\Users\UserMgr1\AppData\Local\Packages\win10xbox.uwp_eqad6j9zhtw80\LocalState\machine, payload = S:\Program Files\WindowsApps\win10xbox.uwp_1.0.0.8_x64__eqad6j9zhtw80\payload
+16:08:12.165 host: stage: reading genuine console files BY NAME from C:\Windows\system32 and C:\Windows
+16:08:12.165 host: stage: package stamp 'win10xbox.uwp_1.0.0.8_x64__eqad6j9zhtw80' -> unchanged
+16:08:12.165 host: stage[guest] hello.exe: kept (740352 bytes)
+16:08:12.165 host: stage[guest] hello_cui.exe: kept (739840 bytes)
+16:08:12.165 host: stage[nls] c_1252.nls: kept (66082 bytes)
+16:08:12.165 host: stage[nls] c_437.nls: kept (66594 bytes)
+16:08:12.165 host: stage[nls] l_intl.nls: kept (9926 bytes)
+16:08:12.165 host: stage[nls] locale.nls: kept (862800 bytes)
+16:08:12.165 host: stage[nls] normidna.nls: kept (81870 bytes)
+16:08:12.165 host: stage[nls] normnfc.nls: kept (57136 bytes)
+16:08:12.165 host: stage[nls] normnfd.nls: kept (50442 bytes)
+16:08:12.165 host: stage[nls] normnfkc.nls: kept (79348 bytes)
+16:08:12.165 host: stage[nls] normnfkd.nls: kept (73114 bytes)
+16:08:12.166 host: stage[nls] c_850.nls: kept (66594 bytes)
+16:08:12.166 host: stage[nls] c_874.nls: kept (66594 bytes)
+16:08:12.166 host: stage[nls] c_932.nls: kept (162850 bytes)
+16:08:12.166 host: stage[nls] c_936.nls: kept (196642 bytes)
+16:08:12.166 host: stage[nls] c_949.nls: kept (196642 bytes)
+16:08:12.166 host: stage[nls] c_950.nls: kept (196642 bytes)
+16:08:12.166 host: stage[nls] c_1250.nls: kept (66082 bytes)
+16:08:12.166 host: stage[nls] c_1251.nls: kept (66082 bytes)
+16:08:12.166 host: stage[nls] c_1253.nls: kept (66082 bytes)
+16:08:12.166 host: stage[nls] c_1254.nls: kept (66082 bytes)
+16:08:12.166 host: stage[nls] c_1255.nls: kept (66082 bytes)
+16:08:12.166 host: stage[nls] c_1256.nls: kept (66082 bytes)
+16:08:12.166 host: stage[nls] c_1257.nls: kept (66082 bytes)
+16:08:12.166 host: stage[nls] c_1258.nls: kept (66082 bytes)
+16:08:12.166 host: stage[nls] c_10000.nls: kept (66082 bytes)
+16:08:12.166 host: stage[nls] c_20127.nls: kept (66082 bytes)
+16:08:12.166 host: stage[nls] c_28591.nls: kept (66082 bytes)
+16:08:12.166 host: stage[nls] sortdefault.nls: kept (3385740 bytes)
+16:08:12.166 host: stage: done. builtin[copied=0 kept=0 missing=0 failed=0 bytes=0] guest[copied=0 kept=2 missing=0 failed=0 bytes=0] nls[copied=0 kept=27 missing=0 failed=0 bytes=0]
+16:08:12.166 host: display backend 'headless' (winexbox Headless Adapter), input pump on
+16:08:12.167 host: process::Launch(C:\guest\hello.exe) cmdline="C:\guest\hello.exe"
+01b8:trace:dispatch:Initialize ThreadState in TEB.TlsSlots[23] (TEB+0x1538); PEB.TlsBitmap=00007FFA8580F220
+01b8:trace:dispatch:Initialize 258 syscalls: 161 pass-through, 29 translate, 47 emulate, 21 todo
+16:08:12.181 host: shell: crash capture installed (last-chance vectored handler added, unhandled-exception filter set); crash thread 0x17d8 ready; dbghelp.dll bound: crash.dmp enabled; its one-line crash summaries go to trace.log
+16:08:12.181 host: shell: unhandled-exception filter: host_diag's, chained to the filter installed before it (expected: the crash capture's, which writes the UNHANDLED record to crash.txt before host_diag rewrites status.txt)
+16:08:12.181 host: shell: host module kernel32.dll: C:\Windows\SYSTEM32\Forwarders\KERNEL32.dll (base 00007FFA840A0000)
+16:08:12.181 host: shell: host module user32.dll: absent (not loaded in this process; GetModuleHandleW error 126)
+16:08:12.181 host: shell: host module gdi32full.dll: absent (not loaded in this process; GetModuleHandleW error 126)
+16:08:12.181 host: shell: host module shell32.dll: absent (not loaded in this process; GetModuleHandleW error 126)
+16:08:12.181 host: shell: host module comctl32.dll: absent (not loaded in this process; GetModuleHandleW error 126)
+16:08:12.181 host: shell: activated: kind=0, previous state Terminated
+16:08:12.181 host: shell: window activated (by code)
+16:08:12.181 host: shell: window visible
+01b8:trace:dispatch:RegisterUnixLib unix lib ntdll: handle 1, 8 functions
+01b8:warn:modules:CreateImageSectionFromFile host path of image file ntdll.dll unavailable (Win32 error 5): sections are told apart by contents
+01b8:trace:dispatch:MapImageView C:\Windows\System32\ntdll.dll: 258 syscall stubs rewritten, 1 unmatched
+01b8:warn:dispatch:MapImageView C:\Windows\System32\ntdll.dll: stub NtGetTickCount not rewritten
+01b8:trace:dispatch:MapImageView mapped C:\Windows\System32\ntdll.dll at 0000000170000000 (303000 bytes)
+01b8:trace:dispatch:ApplyRtlForwarding guest ntdll: 63 functions forwarded, 0 skipped
+01b8:warn:modules:CreateImageSectionFromFile host path of image file <exe> unavailable (Win32 error 5): sections are told apart by contents
+01b8:trace:dispatch:Xl_NtCreateSection image section 0000000000000570 for 
+01b8:trace:modules:Xl_NtCreateSection section 0000000000000570: <unnamed image> (740352 bytes, host path <unknown>)
+01b8:trace:dispatch:MapImageView C:\guest\hello.exe: 9 sites (8 inline, 1 trapped, 0 skipped)
+01b8:trace:dispatch:MapImageView mapped C:\guest\hello.exe at 0000000140000000 (bc000 bytes)
+01b8:trace:modules:MapOurs map C:\guest\hello.exe at 0000000140000000, 770048 bytes
+16:08:12.306 host: process::Launch -> 0 (0x00000000)
+1918:trace:dispatch:ReserveGuestTlsSlot guest TLS bitmap 000000017009D3E8 (bits 000000B0EB933080, PEB.TlsBitmapBits 000000B0EB933080, 64 slots): slot 23 already in use, allocators share the PEB bits (first guest syscall)
+1918:warn:modules:CreateImageSectionFromFile host path of image file KERNEL32.dll unavailable (Win32 error 5): sections are told apart by contents
+1918:trace:dispatch:Xl_NtCreateSection image section 0000000000000588 for 
+1918:trace:modules:Xl_NtCreateSection section 0000000000000588: KERNEL32.dll (1691648 bytes, host path <unknown>)
+16:08:12.307 host: watchdog: 300 s
+1918:trace:dispatch:MapImageView mapped  at 0000000178000000 (172000 bytes)
+1918:trace:modules:MapOurs map KERNEL32.dll at 0000000178000000, 1515520 bytes
+1918:trace:modules:Xl_NtAreMappedFilesTheSame same file? C:\Windows\System32\ntdll.dll at 0000000170000000 vs KERNEL32.dll at 0000000178000000 -> different (host path unknown, file sizes differ)
+1918:trace:dispatch:Xl_NtCreateSection image section 000000000000058C for 
+1918:trace:modules:Xl_NtCreateSection section 000000000000058C: kernelbase.dll (5656576 bytes, host path <unknown>)
+1918:trace:dispatch:MapImageView mapped  at 0000000174000000 (527000 bytes)
+1918:trace:modules:MapOurs map kernelbase.dll at 0000000174000000, 5402624 bytes
+1918:trace:modules:Xl_NtAreMappedFilesTheSame same file? C:\Windows\System32\ntdll.dll at 0000000170000000 vs kernelbase.dll at 0000000174000000 -> different (host path unknown, file sizes differ)
+1918:trace:modules:Xl_NtAreMappedFilesTheSame same file? KERNEL32.dll at 0000000178000000 vs kernelbase.dll at 0000000174000000 -> different (host path unknown, file sizes differ)
+1918:trace:modules:NoteGuestEntry guest entry reached (RtlUserThreadStart at 00000001700568B4)
+1918:trace:modules:DumpGuestModules   [0] 0000000140000000 C:\guest\hello.exe
+1918:trace:modules:DumpGuestModules   [1] 0000000170000000 C:\windows\system32\ntdll.dll
+1918:trace:modules:DumpGuestModules   [2] 0000000178000000 C:\windows\system32\kernel32.dll
+1918:trace:modules:DumpGuestModules   [3] 0000000174000000 C:\windows\system32\kernelbase.dll
+1918:trace:modules:DumpGuestModules guest module list (guest entry): 4 modules; ntdll=1 kernel32=1 kernelbase=1
+1918:trace:modules:NoteGuestEntry guest entry: TEB.TlsSlots[23] still holds our ThreadState
+1918:warn:wine:module:LdrGetProcedureAddress "FlsGetValue2" (ordinal 0) not found in L"C:\\windows\\system32\\kernelbase.dll"
+1918:warn:wine:module:load_dll Failed to load module L"api-ms-win-appmodel-runtime-l1-1-2.dll"; status=c0000135
+16:08:12.379 host: guest exited with code 42 (0x0000002a) after 78 ms
+16:08:12.380 host: verdict: PASS (the guest exited with the expected code 42)
+16:08:12.385 host: shell: window deactivated
