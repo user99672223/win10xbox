@@ -5,7 +5,7 @@ Windows 10 x64 / 22H2 NT syscall numbers) and the hand-maintained policy
 `core/dispatch/syscall_policy.inc`; win32u entries (ids 0x1000..) are Emulate when
 `core/user/user_syscalls.h` registers them. Do not edit by hand.
 
-1798 syscalls. passthrough 158, translate 32, emulate 294, todo 1314. Generated 2026-10-22.
+1798 syscalls. passthrough 157, translate 33, emulate 303, todo 1305. Generated 2026-10-22.
 
 Policy: **PassThrough** calls the host ntdll export by name; **Translate**
 rewrites arguments (paths, handles, timeouts) then passes through;
@@ -53,7 +53,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0024 | NtOpenThreadToken | 4 | Emulate | token |
 | 0x0025 | NtQueryInformationThread | 5 | Translate | ThreadAmILastThread counts guest threads only |
 | 0x0026 | NtOpenProcess | 4 | PassThrough |  |
-| 0x0027 | NtSetInformationFile | 5 | PassThrough |  |
+| 0x0027 | NtSetInformationFile | 5 | Translate | FileRenameInformation*/FileLinkInformation*: the target name goes through the VFS |
 | 0x0028 | NtMapViewOfSection | 10 | Translate | views of our image sections are mapped by core/loader |
 | 0x0029 | NtAccessCheckAndAuditAlarm | 11 | PassThrough |  |
 | 0x002a | NtUnmapViewOfSection | 2 | Translate | views of our image sections are mapped by core/loader |
@@ -142,14 +142,14 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x007d | NtCreateMailslotFile | 8 | PassThrough |  |
 | 0x007e | NtCreateMutant | 4 | PassThrough |  |
 | 0x007f | NtCreateNamedPipeFile | 14 | PassThrough |  |
-| 0x0080 | NtCreatePagingFile | 4 | Todo | never touches the host |
+| 0x0080 | NtCreatePagingFile | 4 | Emulate | privileged: refused like Windows does for an unprivileged caller |
 | 0x0081 | NtCreatePort | 5 | PassThrough |  |
 | 0x0082 | NtCreateSectionEx | 9 | Translate | SEC_IMAGE sections are ours (E3): emulated handle + manual map |
 | 0x0083 | NtCreateSemaphore | 5 | PassThrough |  |
 | 0x0084 | NtCreateSymbolicLinkObject | 4 | PassThrough |  |
 | 0x0085 | NtCreateThreadEx | 11 | Translate | guest thread start wrapper (E4): per-thread loader init through guest LdrInitializeThunk |
 | 0x0086 | NtCreateTimer | 4 | PassThrough |  |
-| 0x0087 | NtCreateToken | 13 | Todo | token emulation |
+| 0x0087 | NtCreateToken | 13 | Emulate | privileged: refused like Windows does for an unprivileged caller |
 | 0x0088 | NtCreateTransaction | 10 | PassThrough |  |
 | 0x0089 | NtCreateUserProcess | 11 | Translate | D1: spawns a host process running the host executable on the guest image (host-win32, config child_processes); STATUS_NOT_SUPPORTED elsewhere |
 | 0x008a | NtDebugActiveProcess | 2 | Emulate | STATUS_NOT_SUPPORTED: no debugger support (E6) |
@@ -173,9 +173,9 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x009c | NtGetWriteWatch | 7 | PassThrough |  |
 | 0x009d | NtImpersonateAnonymousToken | 1 | Emulate | token |
 | 0x009e | NtInitializeNlsFiles | 3 | Emulate | nls |
-| 0x009f | NtInitiatePowerAction | 4 | Todo | never touches the host |
+| 0x009f | NtInitiatePowerAction | 4 | Emulate | privileged: refused like Windows does for an unprivileged caller |
 | 0x00a0 | NtListenPort | 2 | PassThrough |  |
-| 0x00a1 | NtLoadDriver | 1 | Todo | driver host (M4) |
+| 0x00a1 | NtLoadDriver | 1 | Emulate | privileged: refused like Windows does for an unprivileged caller |
 | 0x00a2 | NtLoadKey | 2 | Emulate | registry |
 | 0x00a3 | NtLoadKey2 | 3 | Emulate | registry |
 | 0x00a4 | NtLoadKeyEx | 8 | Emulate | registry |
@@ -249,22 +249,22 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x00e8 | NtSetIntervalProfile | 2 | PassThrough |  |
 | 0x00e9 | NtSetIoCompletion | 5 | PassThrough |  |
 | 0x00ea | NtSetIoCompletionEx | 6 | PassThrough |  |
-| 0x00eb | NtSetLdtEntries | 6 | Todo | no LDT on x64 |
+| 0x00eb | NtSetLdtEntries | 6 | Emulate | privileged: refused like Windows does for an unprivileged caller |
 | 0x00ec | NtSetSecurityObject | 3 | PassThrough |  |
 | 0x00ed | NtSetSystemInformation | 3 | Translate | privileged classes answer STATUS_PRIVILEGE_NOT_HELD; SystemComPlusPackage reaches the host |
 | 0x00ee | NtSetSystemTime | 2 | Emulate | clock |
 | 0x00ef | NtSetThreadExecutionState | 2 | PassThrough |  |
 | 0x00f0 | NtSetTimerResolution | 3 | Emulate | clock |
 | 0x00f1 | NtSetVolumeInformationFile | 5 | PassThrough |  |
-| 0x00f2 | NtShutdownSystem | 1 | Todo | never touches the host |
+| 0x00f2 | NtShutdownSystem | 1 | Emulate | privileged: refused like Windows does for an unprivileged caller |
 | 0x00f3 | NtSignalAndWaitForSingleObject | 4 | PassThrough |  |
 | 0x00f4 | NtSuspendProcess | 1 | PassThrough |  |
 | 0x00f5 | NtSuspendThread | 2 | PassThrough |  |
-| 0x00f6 | NtSystemDebugControl | 6 | Todo | never touches the host |
+| 0x00f6 | NtSystemDebugControl | 6 | Emulate | privileged: refused like Windows does for an unprivileged caller |
 | 0x00f7 | NtTerminateJobObject | 2 | PassThrough |  |
 | 0x00f8 | NtTestAlert | 0 | PassThrough |  |
 | 0x00f9 | NtTraceControl | 6 | PassThrough |  |
-| 0x00fa | NtUnloadDriver | 1 | Todo | driver host (M4) |
+| 0x00fa | NtUnloadDriver | 1 | Emulate | privileged: refused like Windows does for an unprivileged caller |
 | 0x00fb | NtUnloadKey | 1 | Emulate | registry |
 | 0x00fc | NtUnlockFile | 5 | PassThrough |  |
 | 0x00fd | NtUnlockVirtualMemory | 4 | PassThrough |  |
@@ -760,7 +760,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x11e5 | NtGdiGetCertificateSizeByHandle | 0 | Todo |  |
 | 0x11e6 | NtGdiGetCharABCWidthsW | 6 | Emulate | core/user |
 | 0x11e7 | NtGdiGetCharSet | 0 | Todo |  |
-| 0x11e8 | NtGdiGetCharWidthInfo | 2 | Todo |  |
+| 0x11e8 | NtGdiGetCharWidthInfo | 2 | Emulate | core/user |
 | 0x11e9 | NtGdiGetCharWidthW | 6 | Emulate | core/user |
 | 0x11ea | NtGdiGetCharacterPlacementW | 0 | Todo |  |
 | 0x11eb | NtGdiGetColorAdjustment | 2 | Todo |  |
