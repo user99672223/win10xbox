@@ -154,7 +154,8 @@ bool IEquals(const char* a, const char* b) {
 }
 
 void* FindImpl(const char* name) {
-    for (auto list : {FileImpls(), SectionImpls(), ProcessImpls(), NlsImpls(), SubsystemImpls(), UserImpls()})
+    for (auto list : {FileImpls(), SectionImpls(), ProcessImpls(), NlsImpls(), SubsystemImpls(), UserImpls(),
+                      PrivilegedImpls()})
         for (const ImplDef* d = list; d && d->name; ++d)
             if (!std::strcmp(d->name, name)) return d->fn;
     return nullptr;

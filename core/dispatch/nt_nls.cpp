@@ -1,4 +1,5 @@
-// NLS data sections: NtGetNlsSectionPtr and NtInitializeNlsFiles.
+// NLS data sections: NtGetNlsSectionPtr and NtInitializeNlsFiles. Also the
+// default locale state (NtQueryDefaultLocale and friends, below the sections).
 //
 // Wine's ntdll implements both entirely on its unix side, with Wine's own
 // `type` numbering (dlls/ntdll/locale_private.h), so the real NT kernel rejects
@@ -204,12 +205,68 @@ NTSTATUS NTAPI Xl_NtInitializeNlsFiles(PVOID* ptr, PULONG lcid, PLARGE_INTEGER s
     return st::Success;
 }
 
+// ---- Default locale state -------------------------------------------------------
+// The values Wine keeps in ntdll's unix/env.c: user and system LCID and the UI
+// language. NtSetDefault* store them, NtQueryDefault* answer from them, and no
+// host setting is touched. They start at en-US, the machine.json default.
+// NtInitializeNlsFiles still reports kSystemLcid whatever is stored here.
+constexpr LANGID kSystemLangId = 0x0409;
+
+struct LocaleState {
+    LCID user_lcid = kSystemLcid;
+    LCID system_lcid = kSystemLcid;
+    LANGID ui_language = kSystemLangId;
+};
+SRWLOCK g_locale_lock = SRWLOCK_INIT;
+LocaleState g_locale;
+
+NTSTATUS NTAPI Xl_NtQueryDefaultLocale(BOOLEAN user_profile, PLCID lcid) {
+    if (!lcid) return st::InvalidParameter;
+    AcquireSRWLockShared(&g_locale_lock);
+    const LCID value = user_profile ? g_locale.user_lcid : g_locale.system_lcid;
+    ReleaseSRWLockShared(&g_locale_lock);
+    *lcid = value;
+    TRACE(nls, "NtQueryDefaultLocale(user=%d) -> %#lx", user_profile ? 1 : 0, static_cast<unsigned long>(value));
+    return st::Success;
+}
+
+NTSTATUS NTAPI Xl_NtSetDefaultLocale(BOOLEAN user_profile, LCID lcid) {
+    if (!lcid) return st::InvalidParameter;
+    AcquireSRWLockExclusive(&g_locale_lock);
+    if (user_profile) g_locale.user_lcid = lcid;
+    else g_locale.system_lcid = lcid;
+    ReleaseSRWLockExclusive(&g_locale_lock);
+    TRACE(nls, "NtSetDefaultLocale(user=%d) <- %#lx", user_profile ? 1 : 0, static_cast<unsigned long>(lcid));
+    return st::Success;
+}
+
+NTSTATUS NTAPI Xl_NtQueryDefaultUILanguage(LANGID* lang) {
+    if (!lang) return st::InvalidParameter;
+    AcquireSRWLockShared(&g_locale_lock);
+    *lang = g_locale.ui_language;
+    ReleaseSRWLockShared(&g_locale_lock);
+    return st::Success;
+}
+
+NTSTATUS NTAPI Xl_NtSetDefaultUILanguage(LANGID lang) {
+    if (!lang) return st::InvalidParameter;
+    AcquireSRWLockExclusive(&g_locale_lock);
+    g_locale.ui_language = lang;
+    ReleaseSRWLockExclusive(&g_locale_lock);
+    TRACE(nls, "NtSetDefaultUILanguage <- %#x", static_cast<unsigned>(lang));
+    return st::Success;
+}
+
 }  // namespace
 
 const ImplDef* NlsImpls() {
     static const ImplDef k[] = {
         {"NtGetNlsSectionPtr", reinterpret_cast<void*>(&Xl_NtGetNlsSectionPtr)},
         {"NtInitializeNlsFiles", reinterpret_cast<void*>(&Xl_NtInitializeNlsFiles)},
+        {"NtQueryDefaultLocale", reinterpret_cast<void*>(&Xl_NtQueryDefaultLocale)},
+        {"NtSetDefaultLocale", reinterpret_cast<void*>(&Xl_NtSetDefaultLocale)},
+        {"NtQueryDefaultUILanguage", reinterpret_cast<void*>(&Xl_NtQueryDefaultUILanguage)},
+        {"NtSetDefaultUILanguage", reinterpret_cast<void*>(&Xl_NtSetDefaultUILanguage)},
         {nullptr, nullptr},
     };
     return k;
