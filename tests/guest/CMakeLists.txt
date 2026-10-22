@@ -49,6 +49,12 @@ add_executable(guest_window_text window_text.c)
 target_link_libraries(guest_window_text PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window_text)
 
+# The scroll bar guest (tests/guest/window_scroll.c): SetScrollInfo/GetScrollInfo, non-client scroll bars, ScrollWindowEx,
+# ScrollDC, and a click injected by the host on the vertical bar's down arrow (WM_VSCROLL SB_LINEDOWN).
+add_executable(guest_window_scroll window_scroll.c)
+target_link_libraries(guest_window_scroll PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_window_scroll)
+
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
 add_test(NAME guest.hello COMMAND guest_hello)
 set_tests_properties(guest.hello PROPERTIES PASS_REGULAR_EXPRESSION "hello from guest")

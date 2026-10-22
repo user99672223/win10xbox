@@ -6,6 +6,7 @@
 // depend on; frameless windows first, captioned frames drawn in solid colours.
 #include "user_internal.h"
 #include "user_syscalls.h"
+#include "win_scroll.h"
 
 #include <algorithm>
 #include <cstring>
@@ -118,10 +119,14 @@ LRESULT DefWindowProcInternal(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, bool an
         else if (lp) ShrinkByInsets(reinterpret_cast<RECT*>(lp), in);
         return 0;
     }
-    case WM_NCHITTEST:
-        return HitTest(w, POINT{static_cast<short>(LOWORD(lp)), static_cast<short>(HIWORD(lp))});
+    case WM_NCHITTEST: {
+        const POINT pt{static_cast<short>(LOWORD(lp)), static_cast<short>(HIWORD(lp))};
+        if (const LRESULT sb = ScrollNcHitTest(w, pt)) return sb;   // win_scroll.cpp
+        return HitTest(w, pt);
+    }
     case WM_NCPAINT:
         PaintNonClient(hwnd);
+        ScrollDrawNc(hwnd);   // win_scroll.cpp
         return 0;
     case WM_NCACTIVATE:
         if (WindowObj* cur = Win(hwnd); cur && (cur->style & WS_CAPTION) == WS_CAPTION && IsWindowReallyVisible(cur))
@@ -244,6 +249,7 @@ LRESULT DefWindowProcInternal(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, bool an
         return 0;
     case WM_NCLBUTTONDOWN:
         if (IsTopLevel(w) && FindUserThread() && FindUserThread()->active != hwnd) SetActiveWindowInternal(hwnd, true);
+        ScrollNcLButtonDown(hwnd, lp);   // win_scroll.cpp: a click on a non-client scroll bar
         return 0;
     case WM_NCLBUTTONUP:
         if (wp == HTCLOSE) PostMessageInternal(hwnd, WM_SYSCOMMAND, SC_CLOSE, lp);
