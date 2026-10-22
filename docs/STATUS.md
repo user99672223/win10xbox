@@ -1,5 +1,28 @@
 # Status
 
+## Withdrawn claim: "GUI needs a second syscall table" (2026-10-22)
+
+`docs/HANDOFF.md` as first written (85769ba) stated that GUI work requires implementing a second,
+`NtUser*`/`NtGdi*` (win32k) syscall table "on the order of a thousand entries", and recommended
+budgeting for a second dispatch surface plus a window manager. **Withdrawn — it is wrong.**
+
+Counter-evidence: Wine's `win32u.dll` is an ordinary userspace PE. It *contains* the window
+manager, the message queues and the dibdrv software GDI engine; it does not transition to a
+win32k driver. `winexbox/README.md` (written at M3, before the claim) documents this and maps every
+`IWinexboxDriver` method to the `user_driver_funcs` slot and the win32u source file that calls it.
+`wine-pe/out/builtin/MANIFEST.txt` shows `win32u.dll`, `user32.dll`, `gdi32.dll`, `comctl32.dll`,
+`shell32.dll`, `ole32.dll` and `combase.dll` already built as Wine 11.9 PE builtins, and
+`host-uwp/stage.cmake:76` globs `*.dll` from that directory into the package — so they already ship
+in the `.msix`.
+
+What is actually missing is what M3 deliberately deferred and said so: (1) `winexbox.drv`, the C
+adapter filling `user_driver_funcs` and trampolining into `IWinexboxDriver`, and (2) a
+D3D12/CoreWindow backend behind that interface, replacing the headless one. The binding plan is
+the 6-step list at the end of `winexbox/README.md`. The claim was made without reading either
+`docs/ARCHITECTURE.md` (decision E5) or `winexbox/README.md` — the same failure mode as trap 4
+in `HANDOFF.md`, and the most expensive instance of it, because it mis-scoped the one deliverable
+the project exists for.
+
 ## Probe results folded in (2026-10-21)
 
 The capability probe ran on an Xbox Series S in Dev Mode (build 26100, Game
