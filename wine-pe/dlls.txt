@@ -44,3 +44,11 @@ combase
 programs/services
 wbemprox
 programs/wineboot
+
+# --- Wine programs run as guests (wine-pe/programs/*.sh, integration.wineprog_*)
+comdlg32
+shcore
+programs/regedit
+programs/taskmgr
+programs/oleview
+programs/view
