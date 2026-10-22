@@ -39,7 +39,8 @@ report cannot be resolved further; the real-Windows CI reproduction below is the
 lesson for the tooling: a crash record must print every loaded module's base **and** `SizeOfImage`, or an absolute RIP
 cannot be attributed at all.
 
-**Leading hypothesis (UNPROVEN at time of writing): a guest/host collision over `TEB.TlsSlots`.** `TEB.TlsSlots`
+**Leading cause: a guest/host collision over `TEB.TlsSlots`. The mechanism is confirmed in the Wine source; the one
+unproven link is whether our allocated index actually lands on Wine's.** `TEB.TlsSlots`
 (TEB+0x1480, `core/dispatch/internal.h:64`) is an *inline* 64-entry array in the TEB, so unlike
 `ThreadLocalStoragePointer` and `FlsData` — which `SwapIn`/`SwapOut` swap per universe
 (`core/dispatch/dispatcher.cpp:99-110`, and see `rtl_forward.inc:108-110` for FLS) — it cannot be given the guest and
@@ -47,10 +48,20 @@ the host separate copies. Our `ThreadState*` lives in exactly that array, at the
 `dispatch::Initialize()` (`dispatcher.cpp:299-301`). Wine's `loader_init` then claims index
 `NTDLL_TLS_ERRNO` = 16 *by fiat* with `RtlSetBits`, and reserves index 0
 (`wine-pe/wine-src/dlls/ntdll/loader.c:4454-4455`; constant at `dlls/ntdll/ntdll_misc.h:36`) — it asserts those indices
-rather than allocating them. If our index is one of those, the guest's `_errno()` writes straight over our
-`ThreadState*`, and the entry trampoline trusts any non-NULL value it finds there
-(`core/asm/syscall_entry.asm:33-36`), after which `SwapIn` loads a bogus `host_tls`/`host_fls` out of guest data and
-writes them into the TEB — so the next host TLS access faults on a tiny address, which is the observed instruction shape.
+rather than allocating them. Crucially Wine does not merely reserve slot 16, it **uses it as storage**: `_errno()`
+returns `(int *)&NtCurrentTeb()->TlsSlots[NTDLL_TLS_ERRNO]` (`dlls/ntdll/thread.c:445`) and callers write an `int`
+through it. Those three lines are the entire mechanism, and they are the only direct `TlsSlots[]` indexing anywhere in
+Wine's ntdll outside its own test suite.
+
+Note that errno is an `int`, so such a write corrupts **only the low 32 bits** of the 8-byte slot. If our `ThreadState*`
+is there, the survivor is neither NULL nor a clean sentinel but our real pointer with its low dword replaced — which is
+precisely why the entry trampoline's existing null check does not save us (`core/asm/syscall_entry.asm:33-36`). Both
+observed failure shapes follow: if the survivor is a wild non-NULL pointer, `inc dword ptr [rbx+20h]` writes to a wild
+address and `SwapIn` then installs a bogus `host_tls`/`host_fls` in the TEB; if it happens to be zero, the trampoline
+skips the swap entirely and host code runs on the *guest's* `ThreadLocalStoragePointer`. Either way the next host TLS
+access faults on a tiny address, which is the observed instruction shape. This also means a cookie stored *inside*
+`ThreadState` cannot be the validator — by the time it could be read, the corrupted pointer has already been
+dereferenced. The pointer itself must be validated before any dereference.
 
 This predicts all three observations: real Windows with the Wine builtins dies; real Windows with the runner's genuine
 System32 DLLs runs to completion, because Wine's `loader_init` never runs and nothing claims index 16
