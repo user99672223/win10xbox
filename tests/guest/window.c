@@ -8,9 +8,16 @@
  *   2. CreateWindowExW (WS_POPUP: no frame, 400x300 at 100,100), WS_VISIBLE
  *   3. WM_PAINT: FillRect(client, solid RGB(0,80,220)) ; a red 50x50 square at (20,20)
  *   4. after the first paint: GetDC + GetPixel at (10,10) -> must be the blue, at (30,30) -> the red
- *   5. PostQuitMessage, message loop ends, DestroyWindow, exit 42
+ *   5. PostQuitMessage, message loop ends, exit 42
  * A 5 s SetTimer is the watchdog: if WM_PAINT never arrives the program still
  * exits (with 3) instead of hanging the test.
+ *
+ * Optional argument: the number of seconds to stay on screen after the paint
+ * (default 0: quit right after the pixel check, the CI case). The console's
+ * launch.json passes e.g. 30 so the window can be seen on the TV. The window is
+ * never destroyed: the process exit takes it down, and a host that keeps
+ * presenting after the guest has exited (host-uwp, exit_when_done false)
+ * keeps showing it.
  *
  * Output lines (the integration test matches them):
  *   window: class registered
@@ -21,12 +28,17 @@
  */
 #include <windows.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #define BLUE RGB(0, 80, 220)
 #define RED  RGB(255, 0, 0)
 
 static int g_painted;
 static int g_result = 3;   /* 3 = watchdog fired before the paint */
+static int g_stay_seconds;  /* argv[1] */
+
+#define TIMER_WATCHDOG 1
+#define TIMER_STAY     2
 
 static void check_pixels(HWND hwnd) {
     HDC dc = GetDC(hwnd);
@@ -57,7 +69,9 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             printf("window: painted\n");
             fflush(stdout);
             check_pixels(hwnd);
-            PostMessageW(hwnd, WM_USER + 1, 0, 0);
+            KillTimer(hwnd, TIMER_WATCHDOG);
+            if (g_stay_seconds > 0) SetTimer(hwnd, TIMER_STAY, (UINT)g_stay_seconds * 1000, NULL);
+            else PostMessageW(hwnd, WM_USER + 1, 0, 0);
         }
         return 0;
     }
@@ -71,12 +85,13 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-int main(void) {
+int main(int argc, char** argv) {
     WNDCLASSW wc;
     HWND hwnd;
     MSG msg;
     RECT rc;
 
+    if (argc > 1) g_stay_seconds = atoi(argv[1]);
     memset(&wc, 0, sizeof wc);
     wc.lpfnWndProc = wndproc;
     wc.hInstance = GetModuleHandleW(NULL);
@@ -98,14 +113,13 @@ int main(void) {
     GetClientRect(hwnd, &rc);
     printf("window: created hwnd=%p client=%ldx%ld\n", (void*)hwnd, (long)(rc.right - rc.left), (long)(rc.bottom - rc.top));
     fflush(stdout);
-    SetTimer(hwnd, 1, 5000, NULL);
+    SetTimer(hwnd, TIMER_WATCHDOG, 5000, NULL);
     UpdateWindow(hwnd);
 
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
-    DestroyWindow(hwnd);
     printf("window: done\n");
     fflush(stdout);
     return g_result;

@@ -76,12 +76,13 @@ win10xbox_guest_test(guest_sleep "C:\\guest\\guest_sleep.exe" 7 "guest slept")
 # through Wine's user32/gdi32 and the win32u syscalls emulated by core/user, reads its own pixels back with
 # GetPixel, and exits 42. The host writes the composed virtual screen to a .bmp (WIN10XBOX_SCREENSHOT), and
 # run_guest.cmake checks two pixels of that file too: the window at (100,100)-(500,400) must show the blue at
-# screen (110,110) and the red at (130,130). The screenshot is the artifact to look at when this fails.
+# screen (110,110) and the red at (130,130), as 0xAARRGGBB read from the BMP's B,G,R,A bytes (RGB(0,80,220) is
+# ff0050dc, RGB(255,0,0) is ffff0000). The screenshot is the artifact to look at when this fails.
 win10xbox_guest_test(guest_window "C:\\guest\\guest_window.exe" 42
   "window: class registered" "window: created hwnd=" "window: painted"
   "window: pixel\\(10,10\\)=00dc5000 pixel\\(30,30\\)=000000ff" "window: done")
 set_tests_properties(integration.guest_window PROPERTIES
-  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=110,110,ffdc5000|130,130,ff0000ff")
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=110,110,ff0050dc|130,130,ffff0000")
 
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
 set_tests_properties(integration.guest_hello_appcontainer_sim PROPERTIES

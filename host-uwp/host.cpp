@@ -27,6 +27,7 @@
 #include "win10xbox/core.h"
 #include "win10xbox/dispatch.h"
 #include "win10xbox/trace.h"
+#include "win10xbox/user.h"
 #include "win10xbox/vfs.h"
 
 #include <windows.h>
@@ -291,7 +292,7 @@ void Host::Impl::RunImpl()
     diag::Line("package_dir=%s", Narrow(info.package_dir).c_str());
     diag::Line("display: %s", display_desc.c_str());
 
-    report.Set("tool", "win10xbox host-uwp (M5 shell, headless display backend)");
+    report.Set("tool", "win10xbox host-uwp (M5 shell, headless display backend, D3D11 presenter)");
     report.Set("started_utc", TimestampUtc());
     report.Set("build", Fmt("%s %s", __DATE__, __TIME__));
     report.Set("core", Fmt("%d.%d.%d (%s)", ver.major, ver.minor, ver.patch, ver.git ? ver.git : "?"));
@@ -576,6 +577,20 @@ void Host::Impl::RunImpl()
     guest_running.store(false);
     diag::Line("guest exited with code %d (%s) after %llu ms", exit_code, Hex32(exit_code).c_str(),
                static_cast<unsigned long long>(runtime_ms));
+    {
+        // What the guest did through the win32k surface (core/user): all zero for a console guest.
+        const win10xbox::user::Stats us = win10xbox::user::GetStats();
+        const std::string text =
+            Fmt("windows created=%llu destroyed=%llu, messages posted=%llu dispatched=%llu, callbacks=%llu, paints=%llu, "
+                "flushes=%llu, gdi objects=%llu, unimplemented win32u calls=%llu",
+                static_cast<unsigned long long>(us.windows_created), static_cast<unsigned long long>(us.windows_destroyed),
+                static_cast<unsigned long long>(us.messages_posted), static_cast<unsigned long long>(us.messages_dispatched),
+                static_cast<unsigned long long>(us.callbacks), static_cast<unsigned long long>(us.paints),
+                static_cast<unsigned long long>(us.flushes), static_cast<unsigned long long>(us.gdi_objects),
+                static_cast<unsigned long long>(us.unimplemented));
+        report.Set("user", text);
+        diag::Line("user: %s", text.c_str());
+    }
     win10xbox::dispatch::Shutdown();   // dumps the per-syscall relay statistics into trace.log
     win10xbox::Shutdown();             // also detaches the trace sink
     report.ReleaseHold();
@@ -628,6 +643,9 @@ Host::Host(const HostInfo& info) : impl_(new Impl(info))
     bc.refresh_hz = Clamp(info.display.refresh_hz, 24, 240);
     impl_->display = winexbox::SelectBackend(bc);
     impl_->display->SetEventSink(&impl_->sink);
+    // core/user allocates window surfaces from this backend and composes the frame the shell's
+    // presenter shows; it must be set before process::Launch (the worker does not exist yet).
+    win10xbox::user::SetDisplayDriver(impl_->display.get());
     impl_->display_desc = Fmt("%s backend, virtual monitor %ux%u@%u (CoreWindow reported %ux%u)", impl_->display->Name(),
                               bc.width, bc.height, bc.refresh_hz, info.display.width, info.display.height);
 }
@@ -637,6 +655,7 @@ Host::~Host()
     // The shell leaks its Host on purpose (the process owns it until it exits);
     // if one is ever destroyed, make sure a joinable thread cannot call std::terminate.
     if (impl_ && impl_->worker.joinable()) impl_->worker.detach();
+    win10xbox::user::SetDisplayDriver(nullptr);
 }
 
 bool Host::StartWorker()
@@ -710,6 +729,12 @@ void Host::PumpDisplay()
 void Host::NoteLifecycle(const char* what)
 {
     diag::Line("shell: %s", what);
+}
+
+void Host::NoteDisplay(const std::string& presenter_state)
+{
+    impl_->report.Set("display.presenter", presenter_state);
+    impl_->report.Flush();
 }
 
 void Host::NoteSuspending()

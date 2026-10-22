@@ -3,8 +3,14 @@
 //
 // Same shape as host-uwp-lite/main.cpp, which is the CI-proven template (itself modelled on
 // the capability probe's tools/probe/uwp-host/main.cpp, the known-good template on the console):
-//   * no renderer, no swap chain, no D3D (probe lesson: D3D11CreateDevice blocks the UI
-//     thread of a Game-bucket app); the display is the headless winexbox backend (D8);
+//   * the winexbox display backend stays the headless one (D8); what reaches the TV is the
+//     frame core/user composes from it (win10xbox::user::ComposeFrame), copied into a D3D11
+//     swap chain on the CoreWindow by the Presenter (presenter.h). Probe lesson, measured on the
+//     console: D3D11CreateDevice HANGS on the UI thread of a Game-bucket app, so the device is
+//     created on the presenter's own thread after activation has settled; the swap chain is
+//     created and Presented on the UI thread, from the pump below. All of it happens before the
+//     Host's worker starts (bounded by kDeviceWaitMs), so the D3D/DXGI DLLs are loaded before
+//     the guest owns the PEB. Any failure leaves the app headless with a "display:" line;
 //   * all heavy work (config, staging, Initialize, process::Launch, waiting for the guest)
 //     runs on the Host's WORKER thread; the CoreWindow thread only pumps events;
 //   * CoreWindow::Activate() is called, and the worker is started only after activation has
@@ -35,6 +41,9 @@
 #include "host_diag.h"
 #include "host_shell.h"
 #include "host_util.h"
+#include "presenter.h"
+
+#include "win10xbox/user.h"
 
 #include <atomic>
 #include <cstdint>
@@ -66,6 +75,10 @@ namespace
     // 250 ms poll) before the shell pulls the plug with Host::EmergencyExit.
     constexpr ULONGLONG kStopGraceMs = 10000;
 
+    // How long the shell waits for the presenter's device thread (D3D11CreateDevice) before it
+    // starts the Host anyway, headless; a device that turns up later is still used.
+    constexpr ULONGLONG kDeviceWaitMs = 5000;
+
     std::wstring ExeDirectory()
     {
         wchar_t buf[MAX_PATH * 2];
@@ -94,8 +107,18 @@ namespace
         }
     }
 
+    // The CoreWindow's size in physical pixels and the view-pixel -> pixel factor: what the
+    // swap chain, the virtual monitor (HostInfo.display) and ComposeFrame all use, and what the
+    // pointer positions are scaled by.
+    struct WindowPixels
+    {
+        int width = 0;
+        int height = 0;
+        float scale = 1.0f;
+    };
+
     // All WinRT calls the Host needs happen here, on the UI thread, before the worker exists.
-    HostInfo CollectHostInfo(wui::CoreWindow const& window)
+    HostInfo CollectHostInfo(wui::CoreWindow const& window, WindowPixels* px)
     {
         HostInfo info;
         info.package_dir = ExeDirectory();
@@ -114,15 +137,31 @@ namespace
         }
         try
         {
-            // The virtual monitor of the headless backend is as large as the CoreWindow
-            // (in view pixels, which are also the units of the pointer positions forwarded
-            // below). The refresh rate stays the HostInfo default: WinRT has no portable
-            // way to ask for it. A window that has no size yet keeps the default 1920x1080.
+            // Bounds() is in view pixels (DIPs); the Xbox scales UWP views, so the factor is
+            // read rather than assumed (RawPixelsPerViewPixel, else LogicalDpi / 96).
+            const winrt::Windows::Graphics::Display::DisplayInformation di =
+                winrt::Windows::Graphics::Display::DisplayInformation::GetForCurrentView();
+            double f = di.RawPixelsPerViewPixel();
+            if (!(f >= 0.25 && f <= 8.0)) f = di.LogicalDpi() / 96.0;
+            if (f >= 0.25 && f <= 8.0) px->scale = static_cast<float>(f);
+        }
+        catch (...)
+        {
+        }
+        try
+        {
+            // The virtual monitor of the headless backend is as large as the CoreWindow, in
+            // physical pixels (the swap chain is the same size, and the pointer positions
+            // forwarded below are scaled to match). The refresh rate stays the HostInfo default:
+            // WinRT has no portable way to ask for it. A window that has no size yet keeps the
+            // default 1920x1080.
             const wf::Rect b = window.Bounds();
             if (b.Width >= 1.0f && b.Height >= 1.0f)
             {
-                info.display.width = static_cast<std::uint32_t>(b.Width + 0.5f);
-                info.display.height = static_cast<std::uint32_t>(b.Height + 0.5f);
+                px->width = static_cast<int>(b.Width * px->scale + 0.5f);
+                px->height = static_cast<int>(b.Height * px->scale + 0.5f);
+                info.display.width = static_cast<std::uint32_t>(px->width);
+                info.display.height = static_cast<std::uint32_t>(px->height);
             }
         }
         catch (...)
@@ -280,24 +319,32 @@ namespace
                 Sleep(kSettleMs);
             }
 
-            if (StartHost(window)) PumpUntilDone(dispatcher);
+            if (StartHost(window, dispatcher)) PumpUntilDone(dispatcher);
         }
 
-        // Builds the HostInfo, creates the Host and starts its worker. host_ is set only on
-        // success; a failure leaves a verdict in status.txt.
-        bool StartHost(wui::CoreWindow const& window)
+        // Builds the HostInfo, creates the Host, brings the presenter up and starts the Host's
+        // worker. host_ is set only on success; a failure leaves a verdict in status.txt.
+        bool StartHost(wui::CoreWindow const& window, wui::CoreDispatcher const& dispatcher)
         {
-            const HostInfo info = CollectHostInfo(window);
+            WindowPixels px;
+            const HostInfo info = CollectHostInfo(window, &px);
+            pointer_scale_ = px.scale;
             try
             {
                 PublishExampleConfig(info.package_dir, info.local_state);
 
+                // Leaked on purpose: the process owns the Host until it exits (see ~Host). The
+                // constructor hands the display backend to core/user; the worker is not running yet.
+                Host* const host = new Host(info);
+
+                StartPresenter(window, dispatcher, info, px);
+                host->NoteDisplay(presenter_.Describe());
+
                 // Before the worker exists, hence before the guest can: from process::Launch on
                 // the PEB loader lists are the guest's and the report would describe its modules.
+                // After the presenter, so the D3D/DXGI modules are in the list.
                 diagnostics_.CaptureHostModules();
 
-                // Leaked on purpose: the process owns the Host until it exits (see ~Host).
-                Host* const host = new Host(info);
                 if (!host->StartWorker()) return false;   // Host::StartWorker has written the verdict
                 host_.store(host);
                 return true;
@@ -313,6 +360,57 @@ namespace
             return false;
         }
 
+        // The presenter (presenter.h), before the Host's worker exists: the device thread, a
+        // bounded wait for it (pumping CoreWindow events, never blocking the UI thread on D3D),
+        // then the swap chain and the first Present on this, the UI thread.
+        void StartPresenter(wui::CoreWindow const& window, wui::CoreDispatcher const& dispatcher, const HostInfo& info,
+                            const WindowPixels& px)
+        {
+            try
+            {
+                std::int32_t sw = 0, sh = 0;
+                win10xbox::user::ScreenSize(&sw, &sh);   // the backend's monitor: info.display after the Host's clamp
+                presenter_.Configure(static_cast<IUnknown*>(winrt::get_unknown(window)), px.width, px.height, sw, sh);
+                presenter_.OpenScreenshot(info.local_state + L"\\screen.bmp");
+                presenter_.StartDevice();
+                const ULONGLONG t0 = GetTickCount64();
+                while (presenter_.DeviceState() == Presenter::Device::Pending && GetTickCount64() - t0 < kDeviceWaitMs &&
+                       !closed_.load())
+                {
+                    try
+                    {
+                        dispatcher.ProcessEvents(wui::CoreProcessEventsOption::ProcessAllIfPresent);
+                    }
+                    catch (...)
+                    {
+                        closed_.store(true);
+                    }
+                    Sleep(kPumpMs);
+                }
+                if (presenter_.DeviceState() == Presenter::Device::Pending)
+                    Note(Fmt("display: D3D11CreateDevice has not returned after %llu ms on the device thread: starting the "
+                             "guest headless; the device is used if it turns up later",
+                             static_cast<unsigned long long>(GetTickCount64() - t0)));
+                presenter_.Tick(true);   // swap chain + first Present, while no guest runs
+                Note(Fmt("display: CoreWindow %dx%d px (scale %.2f), %s", px.width, px.height, static_cast<double>(px.scale),
+                         presenter_.Describe().c_str()));
+                ForwardPresenterNotes();
+            }
+            catch (...)
+            {
+                Note("display: exception while starting the presenter: headless");
+            }
+        }
+
+        // The presenter's notes become "display:" lines in trace.log, its state a key in status.txt.
+        void ForwardPresenterNotes()
+        {
+            const std::vector<std::string> notes = presenter_.TakeNotes();
+            if (notes.empty()) return;
+            for (const std::string& n : notes) Note("display: " + n);
+            if (Host* const host = host_.load()) host->NoteDisplay(presenter_.Describe());
+        }
+
         // Pumps until the worker has ended (and, with "exit_when_done": false, until the window
         // is closed). The pump never blocks, so the stop and watchdog logic of the Host and the
         // 250 ms polls of its worker keep their meaning.
@@ -320,6 +418,7 @@ namespace
         {
             Host& host = *host_.load();
             bool stop_issued = false;
+            bool final_shot = false;
             ULONGLONG stop_tick = 0;
             for (;;)
             {
@@ -333,6 +432,23 @@ namespace
                 }
                 host.PumpDisplay();
                 diagnostics_.ReplayInto(host);
+
+                // The frame: composed while the guest may change it, the last one kept on screen
+                // after it has exited (also while the app stays open with "exit_when_done": false).
+                const bool finished = host.Finished();
+                try
+                {
+                    presenter_.Tick(!finished);
+                    if (finished && !final_shot)
+                    {
+                        final_shot = true;
+                        presenter_.FinalScreenshot();
+                    }
+                    ForwardPresenterNotes();
+                }
+                catch (...)
+                {
+                }
 
                 if (closed_.load() && !stop_issued)
                 {
@@ -425,8 +541,8 @@ namespace
                 const wf::Point pos = args.CurrentPoint().Position();
                 winexbox::InputEvent ev;
                 ev.kind = winexbox::InputKind::MouseMove;
-                ev.x = static_cast<std::int32_t>(pos.X);
-                ev.y = static_cast<std::int32_t>(pos.Y);
+                ev.x = static_cast<std::int32_t>(pos.X * pointer_scale_);
+                ev.y = static_cast<std::int32_t>(pos.Y * pointer_scale_);
                 host->InjectInput(ev);
             }
             catch (...)
@@ -445,8 +561,8 @@ namespace
                 winexbox::InputEvent ev;
                 ev.kind = down ? winexbox::InputKind::MouseButtonDown : winexbox::InputKind::MouseButtonUp;
                 ev.button = ButtonOf(point.Properties().PointerUpdateKind());
-                ev.x = static_cast<std::int32_t>(pos.X);
-                ev.y = static_cast<std::int32_t>(pos.Y);
+                ev.x = static_cast<std::int32_t>(pos.X * pointer_scale_);
+                ev.y = static_cast<std::int32_t>(pos.Y * pointer_scale_);
                 host->InjectInput(ev);
             }
             catch (...)
@@ -468,8 +584,8 @@ namespace
                 ev.kind = winexbox::InputKind::MouseWheel;
                 ev.wheel_delta = props.MouseWheelDelta();
                 if (props.IsHorizontalMouseWheel()) ev.flags |= winexbox::kInputHorizontal;
-                ev.x = static_cast<std::int32_t>(pos.X);
-                ev.y = static_cast<std::int32_t>(pos.Y);
+                ev.x = static_cast<std::int32_t>(pos.X * pointer_scale_);
+                ev.y = static_cast<std::int32_t>(pos.Y * pointer_scale_);
                 host->InjectInput(ev);
             }
             catch (...)
@@ -478,6 +594,8 @@ namespace
         }
 
         ShellDiagnostics diagnostics_;
+        Presenter presenter_;          // UI thread only (its device thread is internal)
+        float pointer_scale_ = 1.0f;   // view pixels -> physical pixels (UI thread)
         std::atomic<Host*> host_{nullptr};
         std::atomic<bool> closed_{false};
     };

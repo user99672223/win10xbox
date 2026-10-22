@@ -35,13 +35,16 @@ namespace w10x_uwp
         std::wstring package_dir;        // folder of the running exe; payload\ lives below it
         std::string package_full_name;   // "win10xbox.host_1.0.0.5_x64__xhe8jecrsz3yr"; may be empty
         std::string package_version;     // "1.0.0.5"; may be empty
-        DisplayInfo display;             // size of the virtual monitor handed to the winexbox backend
+        DisplayInfo display;             // size of the virtual monitor handed to the winexbox backend, in
+                                         // physical pixels (the swap chain and ComposeFrame use the same)
     };
 
     class Host
     {
     public:
-        // Creates the winexbox display backend (D8: headless) sized from info.display.
+        // Creates the winexbox display backend (D8: headless) sized from info.display and hands
+        // it to core/user (win10xbox::user::SetDisplayDriver), whose composed frame the shell's
+        // presenter puts on the screen.
         explicit Host(const HostInfo& info);
         ~Host();
         Host(const Host&) = delete;
@@ -72,6 +75,9 @@ namespace w10x_uwp
         // ---- shell lifecycle notes (UI thread) -----------------------------
         void NoteLifecycle(const char* what);   // one line in trace.log
         void NoteSuspending();                  // trace line + flush: a suspended app may be terminated unannounced
+        // The presenter's state (presenter.h) as "display.presenter" in status.txt. Any thread
+        // (status.txt is rewritten through its held handle while the guest runs).
+        void NoteDisplay(const std::string& presenter_state);
 
     private:
         struct Impl;

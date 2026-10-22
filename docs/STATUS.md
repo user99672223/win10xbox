@@ -1,27 +1,69 @@
 # Status
 
-## Withdrawn claim: "GUI needs a second syscall table" (2026-10-22)
+## host-uwp presents the composed frame; every guest is bundled (2026-10-22)
 
-`docs/HANDOFF.md` as first written (85769ba) stated that GUI work requires implementing a second,
-`NtUser*`/`NtGdi*` (win32k) syscall table "on the order of a thousand entries", and recommended
-budgeting for a second dispatch surface plus a window manager. **Withdrawn — it is wrong.**
+`host-uwp` now has a presenter (`host-uwp/presenter.cpp`, `blit.cpp`). It copies
+`win10xbox::user::ComposeFrame` (core/user, `core/include/win10xbox/user.h`) into a D3D11 flip-sequential
+swap chain on the CoreWindow and presents it from the UI thread's 60 Hz pump. The D3D11 device is created on a
+thread of its own, because `D3D11CreateDevice` hangs on the UI thread of a Game-bucket app (DECISIONS.md). It tries
+hardware, then WARP, and falls back to headless with a `display:` line. All of this is brought up before the Host's
+worker starts. The Host hands its headless winexbox backend to core/user (`user::SetDisplayDriver`). The CoreWindow
+size is converted to physical pixels for the swap chain, the virtual monitor and the pointer positions.
+`LocalState\screen.bmp` is written every 5 s while the guest runs and when it has exited. The package bundles
+`window.exe` (a placeholder GUI guest until `tests/guest/window.c` lands; CMake switches to that file automatically),
+the `tests/guest` programs, `smoke_cui.exe` and `drv_client.exe`. The packaged `launch.json` runs `window.exe` and
+keeps the app open on the last frame.
 
-Counter-evidence: Wine's `win32u.dll` is an ordinary userspace PE. It *contains* the window
-manager, the message queues and the dibdrv software GDI engine; it does not transition to a
-win32k driver. `winexbox/README.md` (written at M3, before the claim) documents this and maps every
-`IWinexboxDriver` method to the `user_driver_funcs` slot and the win32u source file that calls it.
-`wine-pe/out/builtin/MANIFEST.txt` shows `win32u.dll`, `user32.dll`, `gdi32.dll`, `comctl32.dll`,
-`shell32.dll`, `ole32.dll` and `combase.dll` already built as Wine 11.9 PE builtins, and
-`host-uwp/stage.cmake:76` globs `*.dll` from that directory into the package — so they already ship
-in the `.msix`.
+What CI proves (`host-uwp` workflow): it builds and packages. The new `host_uwp.blit` test (gating) runs the
+presenter's upload + copy on a WARP device and checks the pixels it reads back. The package assertion checks every
+bundled guest. The non-gating `run` job (run `39822419428`) installed the package on windows-latest and launched it,
+and status.txt said `display.presenter=D3D11 hardware swap chain; screen 800x600, window 800x600 px; presents=2`, so
+`CreateSwapChainForCoreWindow` + `Present` worked on a real CoreWindow there.
 
-What is actually missing is what M3 deliberately deferred and said so: (1) `winexbox.drv`, the C
-adapter filling `user_driver_funcs` and trampolining into `IWinexboxDriver`, and (2) a
-D3D12/CoreWindow backend behind that interface, replacing the headless one. The binding plan is
-the 6-step list at the end of `winexbox/README.md`. The claim was made without reading either
-`docs/ARCHITECTURE.md` (decision E5) or `winexbox/README.md` — the same failure mode as trap 4
-in `HANDOFF.md`, and the most expensive instance of it, because it mis-scoped the one deliverable
-the project exists for.
+That run also exposed a **false PASS**, now fixed. Under the stub core/user, `CreateWindowExW` returned an NTSTATUS
+as the hwnd (`0xC0000002`), `GetMessageW` failed at once, and the first placeholder `window.exe` fell through to
+`return 42`. It now returns 42 only if it was painted and its own timer ended the loop (otherwise 3 or 4).
+
+**What only the console can prove:** the hardware device in the Game bucket and the UI-thread hang rule, the TV
+output, and, with core/user's `ComposeFrame` still a stub in this tree, that a window actually appears. Until then the
+TV shows the presenter's dark-grey background.
+
+## The GUI path, settled from the Wine source (2026-10-22)
+
+Two successive statements about `win32u` were made in `docs/HANDOFF.md` and both are now replaced
+by what `wine-pe/wine-src` (Wine 11.9, the pinned tree) actually contains:
+
+1. *"GUI needs a second syscall table of ~1000 entries, a second dispatch surface plus a window
+   manager"* (85769ba). The **dispatch surface** part was never true: the dispatcher already
+   owns ids `0x1000..0x1fff` (`kMaxId`, `WIN32U_SYSCALL`), the loader already rewrites every
+   `Nt*` thunk of every mapped builtin (`win32u.dll` included), and dispatch is by name. The
+   "window manager" part was right (see 2).
+2. *"win32u is a userspace PE that contains the window manager, message queues and dibdrv; there
+   is nothing to build but `winexbox.drv` and a presenter"* (88dc49d). **Wrong, withdrawn.**
+   Counter-evidence: `dlls/win32u/Makefile.in` declares `UNIXLIB = win32u.so` and lists
+   `window.c`, `message.c`, `class.c`, `dce.c`, `dibdrv/*.c`, `gdiobj.c` ... as the sources of that
+   **unix** library; `dlls/win32u/win32u.spec` has 1541 `@ stdcall -syscall` / `@ stub -syscall`
+   lines and nothing else, i.e. the PE `win32u.dll` we ship is syscall thunks only
+   (`core/loader/stubs.cpp` rewrites them; a run of `tests/guest/window.c` through the layer lists
+   `unimplemented syscall NtUserInitializeClientPfnArrays, NtUserRegisterClassExWOW,
+   NtUserCreateWindowEx, ...` — the thunks reach our dispatcher and nothing answers). The window
+   manager, the queues and the GDI engine live in `win32u.so` plus wineserver, neither of which
+   is built or shipped (`wine-pe/README.md`: "We never build or ship the unix side"). This is also
+   what `docs/ARCHITECTURE.md` decision **E5** has said since M3: "`win32u.dll` in Wine is thunks
+   only; the implementation lives in `win32u.so` + wineserver".
+
+What follows from it: the win32k surface is the **EMULATE** class of the dispatcher, exactly as
+ARCHITECTURE.md's dispatcher table lists it ("EMULATE -> user-mode implementation (processes,
+registry, win32k, ...)"), implemented in the new `core/user` module against Wine's own PE-side
+contract (`include/ntuser.h`, `include/ntgdi.h`). `winexbox.drv` is not needed: there is no Wine
+`user_driver_funcs` caller to adapt, `core/user` calls `IWinexboxDriver` directly. Design:
+`docs/GUI.md`. The syscall table now carries the 1540 win32u ids with argument counts
+(`tools/gen_syscalls.py`, from `dlls/win32u/win32syscalls.h`); an entry is Emulate when
+`core/user` registers it and Todo otherwise, never pass-through.
+
+The lesson is the one HANDOFF.md already records as trap 4, made expensive twice: both
+statements were written from plausibility, and the second one from the headers of our own
+`winexbox/README.md` rather than from `wine-pe/wine-src`, which was one `fetch-wine.sh` away.
 
 ## Probe results folded in (2026-10-21)
 

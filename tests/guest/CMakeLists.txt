@@ -40,5 +40,9 @@ add_test(NAME guest.cpuid COMMAND guest_cpuid)
 set_tests_properties(guest.cpuid PROPERTIES PASS_REGULAR_EXPRESSION "cpuid.1.ecx=[0-9a-f]+")
 add_test(NAME guest.sleep COMMAND guest_sleep)
 set_tests_properties(guest.sleep PROPERTIES PASS_REGULAR_EXPRESSION "guest slept")
-add_test(NAME guest.window COMMAND guest_window)
-set_tests_properties(guest.window PROPERTIES PASS_REGULAR_EXPRESSION "window: done")
+# Native smoke of the GUI guest: meaningful on a Windows runner (real win32k); under Wine on a display-less
+# Linux box CreateWindowExW fails, so it is not registered for the emulator build.
+if(NOT CMAKE_CROSSCOMPILING_EMULATOR)
+  add_test(NAME guest.window COMMAND guest_window)
+  set_tests_properties(guest.window PROPERTIES PASS_REGULAR_EXPRESSION "window: done")
+endif()

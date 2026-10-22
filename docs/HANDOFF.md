@@ -47,53 +47,45 @@ That is the next deliverable. Everything else in this file is context for it.
 
 ### What the GUI path actually is
 
-An earlier version of this file claimed GUI needs a second `NtUser*`/`NtGdi*` syscall table on
-the order of a thousand entries. **That was wrong and it is withdrawn.** Wine's `win32u` is a
-userspace PE: it contains the window manager, the message queues and the dibdrv software GDI
-engine. It does not call into a win32k driver. There is no second dispatch surface to build.
+`win32u.dll` in the package is **syscall thunks only** (`dlls/win32u/Makefile.in`: `UNIXLIB =
+win32u.so`; `win32u.spec`: 1541 `-syscall` lines, nothing else). The window manager, message
+queues and GDI engine are in Wine's unix library plus wineserver, which this project never builds.
+So the win32k surface is ours to emulate, as `docs/ARCHITECTURE.md` (E5, "EMULATE: win32k") has
+said since M3. It is NOT a second dispatch surface: the dispatcher already owns ids `0x1000..`,
+the loader already rewrites the win32u thunks, and dispatch is by name. STATUS.md records both
+earlier, wrong statements with the counter-evidence.
 
-The real path, from `winexbox/README.md` (read it — it is the design doc for this work):
+The real path (design in `docs/GUI.md`, which is the document for this work):
 
 ```
- guest user32/gdi32  ->  win32u (window manager, message queues, dibdrv GDI)   [HAVE, ships in the .msix]
-                              |  struct user_driver_funcs   (Wine C ABI)
-                        winexbox.drv                                           [MISSING - piece 1]
-                              |  winexbox::IWinexboxDriver                     [HAVE, winexbox/include]
-              +---------------+----------------+
-        headless backend [HAVE]       D3D12 / CoreWindow backend                [MISSING - piece 2]
+ guest user32/gdi32 (Wine PE)  ->  win32u.dll thunks (ids 0x1000..)
+                                        |  core/dispatch, Emulate
+                                  core/user: NtUser*/NtGdi* (window manager, queues, GDI objects,
+                                             software rasteriser, user-mode callbacks)      <- NEW
+                                        |  winexbox::IWinexboxDriver (surfaces, input, display)
+                                  headless backend [HAVE]
+                                        |  user::ComposeFrame()
+                 host-win32: WIN10XBOX_SCREENSHOT=x.bmp        host-uwp: D3D11 swap chain on the CoreWindow
 ```
 
-Two pieces are missing, and they were scoped as two deliverables from the start (M3 landed the
-interface and the headless backend deliberately, pending console probe data). The interface is
-already designed against the real Wine call sites — `winexbox/README.md` has a method-by-method
-table mapping every `IWinexboxDriver` entry to the `user_driver_funcs` slot and the win32u source
-file that calls it, plus a 6-step binding plan. Follow that table; do not redesign it.
+The PE-side contract is two Wine headers, `include/ntuser.h` and `include/ntgdi.h` ("not
+compatible with Windows" by Wine's own comment: we implement Wine's contract because the DLLs are
+Wine's). user32 initialisation is one syscall (`NtUserInitializeClientPfnArrays`); window
+procedures run through `PEB.KernelCallbackTable[NtUserCallWinProc]` and end with
+`NtCallbackReturn`, both emulated in-process.
 
 ### Shortest path to something visible
 
-Ship the smallest thing that puts light on the TV, then iterate. A solid-colour window with a
-title bar **is** success for this step.
-
-1. **`winexbox.drv`** — the C adapter. Copy `null_user_driver`, override the M3-REQUIRED slots,
-   each one a trampoline into the global `IWinexboxDriver`. `WINE_GDI_DRIVER_VERSION` is **108**
-   in the vendored tree and must match exactly or win32u rejects the driver. win32u selects it in
-   `driver.c` (`load_desktop_driver` reads the `GraphicsDriver` registry value, then the
-   `NtUserLoadDriver` callback), so register `winexbox` under that value.
-2. **Prove it headless, in CI, before touching the console.** Target: a guest that calls
-   `CreateWindowExW`, pumps `GetMessage`, does a `GetDC`/`FillRect`, and the test reads the pixel
-   back through `IWinexboxDriver::WindowSurface`. That is step 6 of the README's binding plan and
-   it runs on both Linux-Wine and real-Windows CI with no hardware.
-3. **The presenter.** `CreateWindowSurface` keeps returning system-memory BGRA32 (dibdrv
-   rasterises on the CPU — the driver never rasterises). `ISurface::Flush`/`Present` copies dirty
-   rects into a texture and composites onto the swap chain of the app's single `CoreWindow`. A UWP
-   app has exactly one top-level surface, so guest top-level windows composite into it by z-order
-   from `WindowPosChanged`.
-4. **Input, after pixels.** CoreWindow + `Windows.Gaming.Input` feed `InjectInput`; gamepad maps
-   to synthesized keys or XInput. Do not block the first screen on this.
-
-Known console unknowns to settle while building piece 3: D3D12 feature level (11_0 vs 12_1 on
-Series S in Dev Mode), swap chain on `CoreWindow`, and whether `d3d11on12`/GLOn12 are present.
-Probe them from inside the running package rather than assuming.
+1. **`tests/guest/window.c` green under Wine locally** (`integration.guest_window`): class,
+   `CreateWindowExW`, `WM_PAINT` with two `FillRect`s, `GetPixel` read-back, exit 42, plus two
+   pixels of the host's screenshot. Frameless window, solid colours, no font engine.
+2. **The same test green on both Windows configs in `ci.yml`.**
+3. **The presenter**: host-uwp copies `user::ComposeFrame()` into a D3D11 swap chain on the
+   CoreWindow (device on a worker thread: `D3D11CreateDevice` hangs the UI thread of a Game-bucket
+   app; swap chain and `Present` on the UI thread's 60 Hz pump). `LocalState\screen.bmp` is the
+   same frame for Device Portal.
+4. **Input, after pixels.** The driver's `InjectInput` is already fed from the CoreWindow;
+   `core/user` turns it into `WM_MOUSEMOVE`/`WM_KEYDOWN`.
 
 ## Traps that have already cost real time — do not rediscover these
 

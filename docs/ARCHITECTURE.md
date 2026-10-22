@@ -25,9 +25,9 @@ donor fits, and the commit that adds it says why.
 |   - "builtin": Wine's LGPL PE builds (llvm-mingw), per-DLL fallback    |
 |     chosen in machine config, exactly like Wine's native/builtin       |
 +-----------------------------------------------------------------------+
-|  Wine-derived win32u (NtUser*/NtGdi*)  +  winexbox.drv display/input   |
-|  backend on CoreWindow / Direct3D (interface + headless stub now;      |
-|  real backend deferred until console probe data exists)                |
+|  core/user: the win32k surface (NtUser*/NtGdi*) behind Wine's PE      |
+|  user32/gdi32/win32u thunks  +  winexbox display/input backend          |
+|  (headless surfaces; host-uwp presents via D3D11 on the CoreWindow)    |
 +-----------------------------------------------------------------------+
 |  OUR LOADER  (core/loader)                                             |
 |   manual PE mapping of the EXE and its whole DLL tree; import          |
@@ -136,7 +136,7 @@ drivers/      driver host: user-mode ntoskrnl, object manager + IRP engine,
               KMDF shim (the VEH trap-and-emulate for privileged instructions
               is a separate module); test drivers live in tests/drivers
 wine-pe/      scripts/patches to build Wine's PE DLLs with llvm-mingw
-winexbox/     display/input backend interface for Wine's win32u + stubs
+winexbox/     display/input backend interface used by core/user (+ headless backend)
 machine/      machine-folder layout, hive handling, config schema, DLL import
 tests/        unit, integration (real EXEs through host-win32), Wine test
               subset runner, kmtest runner

@@ -4,19 +4,25 @@
 // package); only when there is none does it fall back to this file, and without this file to
 // its built-in defaults. LocalState\launch.example.json documents every key.
 //
-// This default runs the bundled sample guest and checks its exit code, so a first run on the
-// console ends in "RESULT: PASS" or "RESULT: FAIL" at the top of LocalState\status.txt.
+// This default runs the bundled GUI guest window.exe: a window filled with solid blue that the
+// presenter puts on the TV. It checks the exit code, so the run ends in "RESULT: PASS" or
+// "RESULT: FAIL" at the top of LocalState\status.txt, and LocalState\screen.bmp holds what was
+// on screen. The app stays open afterwards (showing the last frame) until you close it.
 {
-  // hello.exe is looked up in C:\guest (LocalState\machine\guest, filled from the package).
-  "guest": "hello.exe",
+  // window.exe is looked up in C:\guest (LocalState\machine\guest, filled from the package).
+  "guest": "window.exe",
+  // Seconds the window stays on the TV after it has painted (window.exe's only argument); it then
+  // exits 42 and the app keeps presenting the last frame.
+  "args": ["30"],
   "expect_exit_code": 42,
 
-  // Quiet (err + fixme) plus the module-load diagnostics. "modules" is also the channel of the
-  // "guest entry reached" line that writes LocalState\entry-reached.txt. The host appends
-  // +modules to whatever you set here, so that marker file is written either way.
-  "trace": "+modules",
+  // The window manager and GDI channels of core/user. The host appends +modules (the channel
+  // of the "guest entry reached" line that writes LocalState\entry-reached.txt).
+  "trace": "+user,+gdi",
 
-  // Safety net for a first run: end the run (and the app) if the guest has not exited after
-  // 5 minutes. 0 would wait forever.
-  "timeout_sec": 300,
+  // Keep the window (the last frame) on the TV after the guest has exited; close the app to end.
+  "exit_when_done": false,
+
+  // Safety net: end the run (and the app) if the guest has not exited after 10 minutes.
+  "timeout_sec": 600,
 }
