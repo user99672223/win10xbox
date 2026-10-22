@@ -27,6 +27,12 @@ win10xbox_add_guest(guest_sleep)
 add_library(guest_dll SHARED dll.c)
 win10xbox_add_guest(guest_dll)
 
+# The first GUI guest: user32/gdi32 -> win32u syscalls -> core/user (docs/GUI.md).
+# A console-subsystem program on purpose: its stdout is the test's evidence.
+add_executable(guest_window window.c)
+target_link_libraries(guest_window PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_window)
+
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
 add_test(NAME guest.hello COMMAND guest_hello)
 set_tests_properties(guest.hello PROPERTIES PASS_REGULAR_EXPRESSION "hello from guest")
@@ -34,3 +40,5 @@ add_test(NAME guest.cpuid COMMAND guest_cpuid)
 set_tests_properties(guest.cpuid PROPERTIES PASS_REGULAR_EXPRESSION "cpuid.1.ecx=[0-9a-f]+")
 add_test(NAME guest.sleep COMMAND guest_sleep)
 set_tests_properties(guest.sleep PROPERTIES PASS_REGULAR_EXPRESSION "guest slept")
+add_test(NAME guest.window COMMAND guest_window)
+set_tests_properties(guest.window PROPERTIES PASS_REGULAR_EXPRESSION "window: done")

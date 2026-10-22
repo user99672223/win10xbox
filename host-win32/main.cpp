@@ -28,6 +28,8 @@
 #include "win10xbox/core.h"
 #include "win10xbox/dispatch.h"
 #include "win10xbox/trace.h"
+#include "win10xbox/user.h"
+#include "winexbox/driver.h"
 #include <windows.h>
 #include <intrin.h>
 #include <cstdint>
@@ -405,12 +407,24 @@ static int HostMain(int argc, wchar_t** argv) {
     opts.run_on_new_thread = true;
     opts.wait = true;
     std::fflush(stdout);
+    // The display: the headless winexbox backend (a virtual 1920x1080 monitor, system-memory window surfaces).
+    // core/user allocates window surfaces from it and composes the desktop; WIN10XBOX_SCREENSHOT=<file.bmp> writes
+    // what was on that virtual screen when the guest exited (the only way to see a GUI guest on a CI runner).
+    // Leaked on purpose like everything else the guest may still reference at EndProcess.
+    winexbox::IWinexboxDriver* const display = winexbox::SelectBackend(winexbox::BackendConfig{}).release();
+    win10xbox::user::SetDisplayDriver(display);
+    wchar_t screenshot[MAX_PATH * 2] = {};
+    const DWORD screenshot_len = GetEnvironmentVariableW(L"WIN10XBOX_SCREENSHOT", screenshot, MAX_PATH * 2);
     crash.BeforeLaunch();   // the host's module table, while PEB->Ldr is still the host's
     ActctxProbe actctx;     // test switch, off by default
     g_guest_ran = true;
     int rc = win10xbox::process::Launch(opts);
     actctx.Check();
     if (rc < 0) std::fprintf(stderr, "win10xbox: could not start %ls: status %08x\n", opts.image_path.c_str(), rc);
+    if (screenshot_len && screenshot_len < MAX_PATH * 2) {
+        const bool ok = win10xbox::user::WriteScreenshot(screenshot);
+        std::fprintf(stderr, "host-win32: screenshot %ls: %s\n", screenshot, ok ? "written" : "NOT written (nothing on screen)");
+    }
     win10xbox::dispatch::Shutdown();
     win10xbox::Shutdown();
     return rc;
