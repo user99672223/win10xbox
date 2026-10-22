@@ -72,4 +72,13 @@
   // Forward CoreWindow keyboard and pointer (and gamepad-as-keys) input to the winexbox
   // display backend.
   "input_pump": true,
+
+  // The on-console launcher: a list of the bundled guests (and any .exe in LocalState\\guests)
+  // drawn on the TV, chosen with the gamepad (D-pad / A / B) or keyboard (arrows / Enter / Esc).
+  // After the guest exits the exit code and the last 20 lines of its output are shown; B
+  // returns to the list. Default: on only when there is no launch.json at all.
+  // "picker": true,
+  // Test hook: launch this entry without waiting for input (implies "picker"); the result is
+  // written to LocalState\\launcher_result.txt.
+  // "autoselect": "hello_cui.exe",
 }

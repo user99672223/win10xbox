@@ -28,8 +28,8 @@ using namespace win10xbox::dispatch::detail;
 namespace pp {
 constexpr std::uint32_t ConsoleHandle = 0x10, ConsoleFlags = 0x18, StdInput = 0x20, StdOutput = 0x28,
                         StdError = 0x30, CurrentDirectory = 0x38, DllPath = 0x50, ImagePathName = 0x60, CommandLine = 0x70,
-                        Environment = 0x80, StartingX = 0x88, ShowWindowFlags = 0xA8, WindowTitle = 0xB0, Desktop = 0xC0,
-                        ShellInfo = 0xD0, RuntimeInfo = 0xE0, EnvironmentSize = 0x3F0;
+                        Environment = 0x80, StartingX = 0x88, WindowFlags = 0xA4, ShowWindowFlags = 0xA8, WindowTitle = 0xB0,
+                        Desktop = 0xC0, ShellInfo = 0xD0, RuntimeInfo = 0xE0, EnvironmentSize = 0x3F0;
 }
 template <class T> T& At(void* base, std::uint32_t off) { return *reinterpret_cast<T*>(static_cast<std::uint8_t*>(base) + off); }
 
@@ -498,6 +498,10 @@ NTSTATUS BuildProcessParameters(const LaunchOptions& o, const std::wstring& imag
         // StartingX .. ShowWindowFlags: window placement and STARTF_* flags
         std::memcpy(static_cast<std::uint8_t*>(params) + pp::StartingX, static_cast<std::uint8_t*>(old) + pp::StartingX,
                     pp::ShowWindowFlags + 4 - pp::StartingX);
+        // The guest is not told how the HOST was started: a host launched hidden (CI runner, STARTF_USESHOWWINDOW +
+        // SW_HIDE) made every real GUI program's first ShowWindow(nCmdShow) a SW_HIDE and nothing was ever painted.
+        // Without STARTF_USESHOWWINDOW the CRT's WinMain gets SW_SHOWDEFAULT, as from an ordinary launch.
+        At<ULONG>(params, pp::WindowFlags) &= ~0x1u;   // STARTF_USESHOWWINDOW
     }
     G().params = params;
     PebField<void*>(peb::ProcessParameters) = params;
