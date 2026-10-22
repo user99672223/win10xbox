@@ -22,7 +22,7 @@
 #include <cstdint>
 #include <string>
 
-namespace winexbox { class IWinexboxDriver; }
+namespace winexbox { class IWinexboxDriver; class IEventSink; }
 
 namespace win10xbox::user {
 
@@ -31,11 +31,26 @@ namespace win10xbox::user {
 void SetDisplayDriver(winexbox::IWinexboxDriver* driver);
 winexbox::IWinexboxDriver* DisplayDriver();
 
+// The module's input sink: turns driver input events (IEventSink::OnInput) into
+// WM_MOUSEMOVE / WM_LBUTTONDOWN / WM_KEYDOWN ... posted to the window under the
+// cursor (or with the capture) and to the focus window of the foreground thread.
+// Hosts set it on their driver (SetEventSink) or forward their own sink's calls
+// to it. It only posts, so it may run on any thread; GUI threads also drain the
+// driver queue themselves (ProcessEvents) while they wait for messages.
+winexbox::IEventSink* InputSink();
+
 // Composes the desktop (background colour + every visible top-level window,
 // bottom to top in z-order) into a BGRA8888 top-down buffer of width x height
 // pixels with `stride_bytes` per row. Returns false when there is nothing to
 // compose (no driver, module never initialised). Any thread.
 bool ComposeFrame(std::uint32_t* bgra, std::int32_t width, std::int32_t height, std::int32_t stride_bytes);
+
+// The same composition for the frame as it was at the guest's most recent
+// paint (the last surface flush), even if the windows have been hidden or
+// destroyed since: what was last drawn on the virtual screen. This is what
+// WriteScreenshot writes, so a program that tears its window down before it
+// exits still leaves its last picture behind. Any thread.
+bool ComposeLastPaintedFrame(std::uint32_t* bgra, std::int32_t width, std::int32_t height, std::int32_t stride_bytes);
 
 // Monotonic counter of "something on screen changed" (a window surface was
 // flushed, a window was shown/moved/destroyed). A presenter may skip frames
@@ -46,7 +61,7 @@ std::uint64_t FrameSerial();
 // monitor). Zero before the first NtUser call.
 void ScreenSize(std::int32_t* width, std::int32_t* height);
 
-// Writes ComposeFrame() as a 32-bit BMP. Used by host-win32 (WIN10XBOX_SCREENSHOT=
+// Writes ComposeLastPaintedFrame() as a 32-bit BMP. Used by host-win32 (WIN10XBOX_SCREENSHOT=
 // <path>, written when the guest has exited) and by host-uwp (LocalState\screen.bmp).
 bool WriteScreenshot(const std::wstring& path);
 

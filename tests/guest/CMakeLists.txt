@@ -33,6 +33,11 @@ add_executable(guest_window window.c)
 target_link_libraries(guest_window PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window)
 
+# The second GUI guest: an overlapped window, double-buffered painting, timers, PeekMessage, DestroyWindow.
+add_executable(guest_window2 window2.c)
+target_link_libraries(guest_window2 PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_window2)
+
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
 add_test(NAME guest.hello COMMAND guest_hello)
 set_tests_properties(guest.hello PROPERTIES PASS_REGULAR_EXPRESSION "hello from guest")
@@ -60,4 +65,6 @@ endif()
 if(NOT CMAKE_CROSSCOMPILING_EMULATOR)
   add_test(NAME guest.window COMMAND guest_window)
   set_tests_properties(guest.window PROPERTIES PASS_REGULAR_EXPRESSION "window: done")
+  add_test(NAME guest.window2 COMMAND guest_window2)
+  set_tests_properties(guest.window2 PROPERTIES PASS_REGULAR_EXPRESSION "window2: done")
 endif()

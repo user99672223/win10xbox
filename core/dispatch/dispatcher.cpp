@@ -478,6 +478,29 @@ void ForgetGuestThread(DWORD tid) {
     ReleaseSRWLockExclusive(&g_threads_lock);
 }
 
+void SetSyscallLastError(std::uint32_t error) {
+    if (ThreadState* st = CurrentThreadState()) {
+        st->syscall_error = error;
+        st->syscall_error_set = 1;
+    }
+}
+
+// win32u syscalls whose return type is NTSTATUS (include/ntuser.h, include/ntgdi.h,
+// include/ddk/d3dkmthk.h). Every other win32u syscall returns a BOOL, a count, a
+// handle or an LRESULT, for which STATUS_NOT_IMPLEMENTED (0xC0000002) would read
+// as TRUE / a valid-looking handle: those report 0 when unimplemented.
+bool Win32uReturnsNtStatus(const char* name) {
+    static const char* const kNames[] = {
+        "NtUserBuildHimcList", "NtUserBuildHwndList", "NtUserBuildNameList", "NtUserBuildPropList",
+        "NtUserDisplayConfigGetDeviceInfo", "NtUserEnumDisplayDevices", "NtUserInitializeClientPfnArrays",
+        "NtUserSetClipboardData",
+    };
+    if (!std::strncmp(name, "NtGdiDdDDI", 10)) return true;
+    for (const char* n : kNames)
+        if (!std::strcmp(n, name)) return true;
+    return false;
+}
+
 std::vector<ThreadState*> GuestThreads() {
     AcquireSRWLockShared(&g_threads_lock);
     std::vector<ThreadState*> out;
@@ -748,6 +771,15 @@ NTSTATUS CallWithArgs(void* fn, const std::uint64_t* a, std::uint32_t nargs) {
                                     v[12], v[13], v[14], v[15], v[16], v[17], v[18], v[19]);
 }
 
+std::uint64_t CallWithArgs64(void* fn, const std::uint64_t* a, std::uint32_t nargs) {
+    using U = std::uint64_t;
+    using Fn = U(NTAPI*)(U, U, U, U, U, U, U, U, U, U, U, U, U, U, U, U, U, U, U, U);
+    U v[kMaxArgs] = {};
+    for (std::uint32_t i = 0; i < nargs && i < kMaxArgs; ++i) v[i] = a[i];
+    return reinterpret_cast<Fn>(fn)(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11],
+                                    v[12], v[13], v[14], v[15], v[16], v[17], v[18], v[19]);
+}
+
 std::string FormatRelay(const Entry& e, const std::uint64_t* args, NTSTATUS status, double elapsed_us) {
     std::string out = e.name;
     out += '(';
@@ -806,8 +838,14 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
                 s.tls_index, static_cast<unsigned long long>(win10xbox_thread_slot_clobbered),
                 fixed ? "restored it" : "could not restore it, TEB view switching is off on this thread");
     }
+    // Nested syscalls (a window procedure called back from inside one) keep their own override.
+    ThreadState* const self = CurrentThreadState();
+    const std::uint32_t outer_error = self ? self->syscall_error : 0;
+    const std::uint32_t outer_error_set = self ? self->syscall_error_set : 0;
+    if (self) self->syscall_error_set = 0;
     Entry* e = f->id < kMaxId ? s.by_id[f->id] : nullptr;
     if (!e) {
+        if (self) { self->syscall_error = outer_error; self->syscall_error_set = outer_error_set; }
         FIXME(dispatch, "unknown syscall id %#x (ret=%p)", f->id, reinterpret_cast<void*>(f->return_address));
         __writegsdword(teb::LastErrorValue, last_error);
         __writegsdword(teb::LastStatusValue, last_status);
@@ -825,6 +863,9 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
     if (timing) QueryPerformanceCounter(&t0);
 
     NTSTATUS status;
+    // The win32u surface returns whole 64-bit values (HWND, LRESULT, LONG_PTR, pointers).
+    const bool win32u = e->id >= kWin32uFirstId;
+    std::uint64_t result64 = 0;
     switch (e->policy) {
     case Policy::PassThrough:
         status = e->host_fn ? CallWithArgs(e->host_fn, f->args, e->nargs) : st::NotImplemented;
@@ -832,7 +873,11 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
         break;
     case Policy::Translate:
     case Policy::Emulate:
-        if (e->impl) status = CallWithArgs(e->impl, f->args, e->nargs);
+        if (e->impl && win32u) {
+            result64 = CallWithArgs64(e->impl, f->args, e->nargs);
+            status = static_cast<NTSTATUS>(result64);
+        }
+        else if (e->impl) status = CallWithArgs(e->impl, f->args, e->nargs);
         else if (e->host_fn) status = CallWithArgs(e->host_fn, f->args, e->nargs);
         else status = st::NotImplemented;
         break;
@@ -840,6 +885,13 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
     default:
         FIXME(dispatch, "unimplemented syscall %s", e->name);
         status = st::NotImplemented;
+        if (win32u) {
+            // Not a silent success: 0 is the failure value of every non-NTSTATUS win32u call, and the
+            // guest's GetLastError says why.
+            if (!Win32uReturnsNtStatus(e->name)) status = 0;
+            result64 = static_cast<std::uint32_t>(status);
+            if (self) { self->syscall_error = ERROR_CALL_NOT_IMPLEMENTED; self->syscall_error_set = 1; }
+        }
         break;
     }
 
@@ -850,10 +902,17 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
             us = double(t1.QuadPart - t0.QuadPart) * 1e6 / double(s.qpf.QuadPart ? s.qpf.QuadPart : 1);
         }
         std::string line = FormatRelay(*e, f->args, status, us);
+        if (win32u && (result64 >> 32)) {
+            char hi[32];
+            std::snprintf(hi, sizeof hi, " (ret64=%016llx)", static_cast<unsigned long long>(result64));
+            line += hi;
+        }
         trace::Log(&__win10xbox_dbch_relay, trace::Class::Trace, "", "%s", line.c_str());
     }
-    __writegsdword(teb::LastErrorValue, last_error);
+    __writegsdword(teb::LastErrorValue, self && self->syscall_error_set ? self->syscall_error : last_error);
     __writegsdword(teb::LastStatusValue, last_status);
+    if (self) { self->syscall_error = outer_error; self->syscall_error_set = outer_error_set; }
+    if (win32u) return static_cast<std::int64_t>(result64);
     return status;
 }
 

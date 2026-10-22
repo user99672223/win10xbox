@@ -129,6 +129,13 @@ struct ThreadState {
     char          dbg_prefix[96];
     char          dbg_strings[1024];
     std::uint32_t dbg_str_pos;
+    // The guest-visible last error a syscall wants to report. win10xbox_dispatch
+    // restores TEB.LastErrorValue around every syscall (host calls clobber it);
+    // an emulation that has an error to report (core/user: the win32u surface,
+    // where user32 reads GetLastError after a failed NtUser call) sets these
+    // through SetSyscallLastError and the dispatcher writes that value instead.
+    std::uint32_t syscall_error;
+    std::uint32_t syscall_error_set;
 };
 static_assert(offsetof(ThreadState, host_tls) == 0x00);
 static_assert(offsetof(ThreadState, host_fls) == 0x08);
@@ -157,6 +164,8 @@ void DetachThreadState();
 std::uint32_t LeaveToGuestView();
 void ReenterHostView(std::uint32_t depth);
 std::vector<ThreadState*> GuestThreads();   // snapshot
+// See ThreadState::syscall_error. Host view only (from inside a syscall).
+void SetSyscallLastError(std::uint32_t error);
 
 // ---- The guest-view window --------------------------------------------------
 // Between LeaveToGuestView() and ReenterHostView() the TEB shows the GUEST's

@@ -1,5 +1,55 @@
 # Status
 
+## core/user: the first pixels, under Wine and on real Windows (2026-10-22)
+
+`core/user` emulates Wine 11.9's win32u contract (234 `NtUser*`/`NtGdi*` syscalls registered, listed as Emulate in
+docs/SYSCALLS.md, plus `NtCallbackReturn`; design and the not-implemented list in docs/GUI.md).
+`integration.guest_window` (tests/guest/window.c) and `integration.guest_window2` (tests/guest/window2.c) pass, gated:
+
+* Local (llvm-mingw + Wine): `100% tests passed, 0 tests failed out of 28` (`ctest --test-dir build-mingw
+  --label-exclude wine_conformance`; no skips); `unit.core`: `121 tests, 0 failures` (the `user_*` cases included).
+* `ci.yml` run [39834605986](https://github.com/user99672223/win10xbox/actions/runs/39834605986) on `bc82f9a`:
+  windows (Debug) and windows (RelWithDebInfo) green with the full suite gated (`100% tests passed out of 32`,
+  `ctest gate: PASS (nothing skipped, nothing missing)`). The guest's stdout in both configs (from the jobs'
+  `ctest-junit.xml`):
+  ```
+  window: class registered
+  window: created hwnd=0000000000010021 client=400x300
+  window: painted
+  window: pixel(10,10)=00dc5000 pixel(30,30)=000000ff
+  window: done
+  window2: client=320x200
+  window2: window=(50,60)-(386,299) created=1
+  window2: text=win10xbox two
+  window2: pixel(5,5)=0000ff00 pixel(20,20)=0000ffff
+  window2: screen=1920x1080 window colour=ffffff
+  window2: timer=2 destroy=1 ncdestroy=1 iswindow=0 paints=2
+  window2: done
+  ```
+  The same programs run natively on the runner (`guest.window`, `guest.window2`, real win32k) print the same
+  lines except the HWND and `screen=1024x768` (the runner's desktop; ours is the headless 1920x1080 monitor).
+  Screenshots (`guest_window.bmp`, `guest_window2.bmp` in `windows-<config>-logs`, 1920x1080): window (110,110)
+  `ff0050dc`, (130,130) `ffff0000`; window2 (63,96) `ff00ff00`, (78,111) `ffffff00`, caption (100,75) `ff99b4d1`,
+  identical in both configs and under Wine.
+
+Two Windows-only failures were found on the way, neither in core/user:
+
+1. **0xC0000374 (heap corruption) in the host.** The guest thread entered `LdrInitializeThunk` with the host's TLS
+   vector in `TEB.ThreadLocalStoragePointer`. While resolving static imports Wine's loader runs `alloc_tls_slot`
+   for each DLL with a TLS directory (msvcrt, reached through user32 -> advapi32) *before* `alloc_thread_tls`, and
+   frees and replaces slot *i* of whatever vector the TEB holds: the host's own TLS blocks. Fixed in
+   `EnterGuest` (`core/dispatch/process.cpp`): the guest starts with no vector (the host's is already in
+   `ThreadState::host_tls`); `NtGetNextThread` also enumerates guest threads only (docs/DISPATCHER.md).
+2. **0x80000100 (`EXCEPTION_WINE_STUB`).** The shared machine folder of the Windows jobs holds the runner's
+   build-26100 DLLs with `native,builtin`, so Wine's builtin user32/gdi32 pulled in native advapi32, sechost and
+   rpcrt4. Those import ntdll exports Wine 11.9 lacks (`RtlCreateBoundaryDescriptor`,
+   `TpSetDefaultPoolStackInformation`, ...), and the host's apiset schema (the guest shares the host's PEB, so
+   `PEB.ApiSetMap` is the host's) resolves their `api-ms-win-core-crt-l2-1-0` to `kernelbase.dll`, which in the
+   guest is always Wine's (traced: `found L"kernelbase.dll" for L"api-ms-win-core-crt-l2-1-0.dll"`); sechost's
+   DllMain called the `_initterm_e` stub. The GUI tests now run on `bin/machine-builtin`, the console's DLL set
+   (Wine builtins + NLS, `"*": "builtin,native"`), and `run_guest.cmake` (`REQUIRE_BUILTIN_DLLS`) fails them if
+   the `+modules` trace shows any system DLL mapped from outside `Windows\builtin` (docs/TESTING.md).
+
 ## CI: the whole suite gates on real Windows; task #12 closed (2026-10-22)
 
 **Measured first.** `ci.yml` run 39818491081 (`88dc49d`) was green, but its windows (Debug) job had found no wine-pe

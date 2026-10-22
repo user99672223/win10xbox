@@ -75,6 +75,9 @@ constexpr std::uint32_t kMaxArgs = 20;
 // Calls `fn` (an NT-style function) with args[0..nargs) and returns its NTSTATUS.
 // Missing trailing args are passed as 0 (x64: the callee ignores extras).
 NTSTATUS CallWithArgs(void* fn, const std::uint64_t* args, std::uint32_t nargs);
+// Same call, keeping the whole of RAX: the win32u surface returns HWNDs, LRESULTs,
+// LONG_PTRs and pointers, not NTSTATUS (NtUserMessageCall, NtUserCallOneParam...).
+std::uint64_t CallWithArgs64(void* fn, const std::uint64_t* args, std::uint32_t nargs);
 
 // Relay line body as traced on the `relay` channel:
 //   NtCreateFile(0000000000abcd00,00100080,...) ret=00000000
