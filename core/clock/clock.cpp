@@ -240,8 +240,20 @@ Vals Snapshot() {
 using NtDelayExecutionFn = NTSTATUS(NTAPI*)(BOOLEAN, PLARGE_INTEGER);
 using NtSetTimerResolutionFn = NTSTATUS(NTAPI*)(ULONG, BOOLEAN, PULONG);
 
+// The HOST ntdll, latched before the guest take-over. GetModuleHandleW resolves
+// through PEB->Ldr, and Wine's loader_init replaces that with the GUEST loader
+// list, so after the take-over "ntdll.dll" is the guest's ntdll -- whose
+// NtDelayExecution is a stub we rewrote to jump into the dispatcher. Resolving
+// lazily from a guest call therefore made Clk_NtDelayExecution call itself until
+// the stack ran out. Initialize() primes this while the host PEB is still in
+// place; the lazy path only survives for direct unit-test use.
+HMODULE HostNtdll() {
+    static HMODULE const m = GetModuleHandleW(L"ntdll.dll");
+    return m;
+}
+
 FARPROC HostNtdllExport(const char* name) {
-    HMODULE m = GetModuleHandleW(L"ntdll.dll");
+    HMODULE m = HostNtdll();
     return m ? GetProcAddress(m, name) : nullptr;
 }
 
@@ -315,6 +327,10 @@ DWORD WINAPI SharedDataThread(LPVOID) {
 // =============================================================================
 
 NTSTATUS Initialize(const Settings& s) {
+    // Latch the host ntdll while the host PEB is still installed: process::Launch
+    // calls us before it maps the guest ntdll and takes the PEB over, and after
+    // that GetModuleHandleW(L"ntdll.dll") answers with the guest's.
+    HostNtdll();
     const std::uint64_t tf = HostTscFrequency();
     {
         WriteLock w;

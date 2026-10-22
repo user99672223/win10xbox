@@ -21,6 +21,9 @@ win10xbox_add_guest(guest_hello)
 add_executable(guest_cpuid cpuid.c)
 win10xbox_add_guest(guest_cpuid)
 
+add_executable(guest_sleep sleep.c)
+win10xbox_add_guest(guest_sleep)
+
 add_library(guest_dll SHARED dll.c)
 win10xbox_add_guest(guest_dll)
 
@@ -29,3 +32,5 @@ add_test(NAME guest.hello COMMAND guest_hello)
 set_tests_properties(guest.hello PROPERTIES PASS_REGULAR_EXPRESSION "hello from guest")
 add_test(NAME guest.cpuid COMMAND guest_cpuid)
 set_tests_properties(guest.cpuid PROPERTIES PASS_REGULAR_EXPRESSION "cpuid.1.ecx=[0-9a-f]+")
+add_test(NAME guest.sleep COMMAND guest_sleep)
+set_tests_properties(guest.sleep PROPERTIES PASS_REGULAR_EXPRESSION "guest slept")

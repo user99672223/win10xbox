@@ -39,37 +39,64 @@ report cannot be resolved further; the real-Windows CI reproduction below is the
 lesson for the tooling: a crash record must print every loaded module's base **and** `SizeOfImage`, or an absolute RIP
 cannot be attributed at all.
 
-**Leading cause: a guest/host collision over `TEB.TlsSlots`. The mechanism is confirmed in the Wine source; the one
-unproven link is whether our allocated index actually lands on Wine's.** `TEB.TlsSlots`
-(TEB+0x1480, `core/dispatch/internal.h:64`) is an *inline* 64-entry array in the TEB, so unlike
-`ThreadLocalStoragePointer` and `FlsData` — which `SwapIn`/`SwapOut` swap per universe
-(`core/dispatch/dispatcher.cpp:99-110`, and see `rtl_forward.inc:108-110` for FLS) — it cannot be given the guest and
-the host separate copies. Our `ThreadState*` lives in exactly that array, at the index `TlsAlloc()` returns in
-`dispatch::Initialize()` (`dispatcher.cpp:299-301`). Wine's `loader_init` then claims index
-`NTDLL_TLS_ERRNO` = 16 *by fiat* with `RtlSetBits`, and reserves index 0
-(`wine-pe/wine-src/dlls/ntdll/loader.c:4454-4455`; constant at `dlls/ntdll/ntdll_misc.h:36`) — it asserts those indices
-rather than allocating them. Crucially Wine does not merely reserve slot 16, it **uses it as storage**: `_errno()`
-returns `(int *)&NtCurrentTeb()->TlsSlots[NTDLL_TLS_ERRNO]` (`dlls/ntdll/thread.c:445`) and callers write an `int`
-through it. Those three lines are the entire mechanism, and they are the only direct `TlsSlots[]` indexing anywhere in
-Wine's ntdll outside its own test suite.
+### Root cause of the real-Windows exit-139 failure: recursion in `core/clock/clock.cpp` (REPRODUCED)
 
-Note that errno is an `int`, so such a write corrupts **only the low 32 bits** of the 8-byte slot. If our `ThreadState*`
-is there, the survivor is neither NULL nor a clean sentinel but our real pointer with its low dword replaced — which is
-precisely why the entry trampoline's existing null check does not save us (`core/asm/syscall_entry.asm:33-36`). Both
-observed failure shapes follow: if the survivor is a wild non-NULL pointer, `inc dword ptr [rbx+20h]` writes to a wild
-address and `SwapIn` then installs a bogus `host_tls`/`host_fls` in the TEB; if it happens to be zero, the trampoline
-skips the swap entirely and host code runs on the *guest's* `ThreadLocalStoragePointer`. Either way the next host TLS
-access faults on a tiny address, which is the observed instruction shape. This also means a cookie stored *inside*
-`ThreadState` cannot be the validator — by the time it could be read, the corrupted pointer has already been
-dereferenced. The pointer itself must be validated before any dereference.
+`Clk_NtDelayExecution` resolved its "host" `NtDelayExecution` through a **lazy** `GetModuleHandleW(L"ntdll.dll")` inside
+a function-local static (`clock.cpp:243-245`, called from `:502`). The first call therefore happened on the guest's
+first `Sleep` — i.e. *after* the PEB takeover, when `PEB->Ldr` is Wine's — so it resolved the **guest** ntdll's
+`NtDelayExecution`, which is a stub we rewrote to jump into the dispatcher. `Clk_NtDelayExecution` then called itself
+until the stack ran out. Reproduced under Wine with the fix reverted: exit **139** plus
+`err:virtual:virtual_setup_exception stack overflow 1792 bytes`.
 
-This predicts all three observations: real Windows with the Wine builtins dies; real Windows with the runner's genuine
-System32 DLLs runs to completion, because Wine's `loader_init` never runs and nothing claims index 16
-(`.github/workflows/ci.yml:141-143`, and the comment at `:151-153`); and Wine-on-Linux is green, because there the host
-ntdll *is* Wine's ntdll, so index 16 was already reserved before our `TlsAlloc` ran and it can never be handed to us.
-The decisive test is cheap and not yet done: log the allocated index. `dispatcher.cpp:300-303` currently logs only when
-the slot is *unusable*, so no CI log or console trace records which index we actually got. If it reports 16, this is
-confirmed; if it reports an index well away from 0 and 16, the hypothesis is wrong.
+**The real differential is which guest program runs, not which DLL set is staged.** `host-uwp-lite/smoke_guest.c:233`
+calls `Sleep(20)`; no `guest_e2e` guest sleeps at all. So `host-win32-smoke` (which runs `smoke_cui.exe`) dies, while
+linux-cross and the `ci.yml` Windows end-to-end step (which run `guest_hello`/`guest_cpuid`) pass. `integration.guest_sleep`
+plus `tests/guest/sleep.c` now cover this as a **gating** linux-cross test, and it fails with exit 139 if the fix is
+reverted. Fixed by latching the host ntdll in `clock::Initialize`, before the takeover; the same hazard in
+`core/loader/internal.cpp` was latched too, and `dispatcher.cpp`'s `HostNtdll()` now errors if first resolved after
+`Initialize`.
+
+### Three claims about `TEB.TlsSlots` made here earlier, now WITHDRAWN
+
+They were investigated because they are a genuine hazard class, but none of them caused this crash:
+
+1. *"Wine's `loader_init` re-initialises the TLS bitmap, destroying the record that our index is in use."* **False.**
+   `RtlInitializeBitMap` sets only `SizeOfBitMap` and `Buffer` and does not clear the buffer
+   (`wine-src/dlls/ntdll/rtlbitmap.c:73-78`), and the buffer it is given is `peb->TlsBitmapBits` — storage *inside* the
+   PEB that Microsoft's ntdll backs `PEB.TlsBitmap` with too (`loader.c:4450`). The allocators therefore share the bits.
+   Proven on the real takeover path, not argued: `guest TLS bitmap 0x17009D3E8 (bits 0x7FFD0080, PEB.TlsBitmapBits
+   0x7FFD0080, 64 slots): slot 19 already in use, allocators share the PEB bits`. This is already recorded as
+   intentional in `docs/DECISIONS.md:97` (E2).
+2. *"Wine claims and writes `TlsSlots[NTDLL_TLS_ERRNO]` = 16, so it clobbers our `ThreadState*`."* The three source
+   lines are real (`loader.c:4455`, `ntdll_misc.h:36`, `thread.c:445` returning
+   `(int *)&NtCurrentTeb()->TlsSlots[16]`), **but nothing in our configuration reaches that write**: no shipped builtin
+   imports `ntdll._errno` (all 23 import tables scanned — `msvcrt`/`ucrtbase` export their own), and Wine's ntdll has no
+   internal caller. Forcing index 16 under Wine (`WIN10XBOX_TEST_TLS_INDEX=!16`) runs to completion, exit 42, slot intact.
+3. *"With the runner's genuine System32 DLLs, Wine's `loader_init` never runs."* **False.**
+   `core/dispatch/process.cpp:288-299` always loads the guest ntdll from `<machine>\Windows\builtin` and fails if it is
+   absent, while `import_windows_dlls.ps1` stages into `Windows\System32`, which the guest ntdll is never taken from.
+   `loader_init` runs identically in both configurations.
+
+The `TEB.TlsSlots` work was nevertheless kept, as **hardening and diagnostics rather than a fix**: `TlsSlots` really is
+an inline TEB array that cannot be swapped per universe the way `ThreadLocalStoragePointer` and `FlsData` are
+(`dispatcher.cpp:99-110`), so the slot is now taken at an index ≥ 19 (never 0 or 16), reserved in the guest's bitmap,
+stored **tagged** so the pointer is validated arithmetically with no memory access before any dereference, backed by a
+`ThreadState::magic` cookie, and repaired-and-reported if ever clobbered. The chosen index is now always traced on the
+`dispatch` channel. `integration.guest_tls_slot_clobber` simulates the 4-byte store through `&TEB.TlsSlots[i]` and fails
+if the tag check is disabled, confirming the clobber leaves a **non-NULL** survivor
+(`FE7D7FFFFE7DF380` → `FE7D7FFF00000000`) that the old null check would have waved through.
+
+**Process note, worth keeping.** The `clock.cpp` recursion had already been reported by an earlier subagent, and was
+wrongly demoted here on the grounds that the CI log showed no `NtDelayExecution` relay lines after guest entry — absence
+of evidence in a log truncated by the crash itself. Two successive misattributions of the console fault followed. The
+corrective that worked was reproducing the failure locally under Wine rather than reasoning further from the report.
+
+### Is the console access violation the same bug?
+
+**Not established, and probably not.** A stack overflow faults on a guard page, not on address `0x4`, so the Xbox
+`EXCEPTION_ACCESS_VIOLATION` reading `0x4` may be a *third*, separate defect. The exit-139 smoke failure is fixed and
+has a gating regression test; the console fault needs a fresh on-hardware run with the improved crash record (which now
+prints host module bases and sizes) before anything can be concluded about it.
 
 No `crash.dmp` was written. The dump path reported HRESULT `0x800736b2`, the form `crash.txt` uses when `dbghelp.dll`
 cannot be bound inside the AppContainer (to be confirmed against `crash.txt`). `dbghelp.dll` is delay-loaded, so the

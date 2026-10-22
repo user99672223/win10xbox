@@ -8,7 +8,13 @@
 namespace win10xbox::loader::detail {
 
 void* HostNtdllProc(const char* name) {
-    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    // Latched on first use, which is the mapping of the GUEST ntdll itself and
+    // therefore before the PEB take-over (process::Launch maps it, then takes
+    // over). That ordering matters: GetModuleHandleW resolves through PEB->Ldr,
+    // which Wine's loader_init replaces with the guest loader list, so a lookup
+    // made afterwards would hand back the GUEST ntdll's exports. Resolving it
+    // once also drops a GetModuleHandleW + GetProcAddress from every call.
+    static HMODULE const ntdll = GetModuleHandleW(L"ntdll.dll");
     if (!ntdll) return nullptr;
     return reinterpret_cast<void*>(GetProcAddress(ntdll, name));
 }

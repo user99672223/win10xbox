@@ -22,7 +22,7 @@ set(_prepare_args
 add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
-  add_dependencies(prepare_machine guest_hello guest_cpuid)
+  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -65,6 +65,76 @@ win10xbox_guest_test(guest_cpuid "C:\\guest\\guest_cpuid.exe" 0
 # every Wine builtin to ntdll, kernelbase never really loaded, and the guest died
 # with 92 unresolved KERNEL32 imports; this proves kernelbase still loads and the
 # guest runs. Reproduces the on-console failure condition under Wine, so it gates here.
+# Regression guard for the lazily-resolved host export. After the PEB take-over
+# GetModuleHandleW(L"ntdll.dll") answers with the GUEST ntdll, so the clock
+# module's "host" NtDelayExecution used to resolve to the guest's own rewritten
+# syscall stub and Clk_NtDelayExecution recursed until the stack ran out. No
+# other guest sleeps, so nothing exercised it.
+win10xbox_guest_test(guest_sleep "C:\\guest\\guest_sleep.exe" 7 "guest slept")
+
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
 set_tests_properties(integration.guest_hello_appcontainer_sim PROPERTIES
   ENVIRONMENT "WIN10XBOX_TEST_NO_HOST_PATHS=1")
+
+# ---- TEB.TlsSlots: our ThreadState slot vs the guest's TLS allocator --------
+# TEB.TlsSlots is an inline array in the TEB, so unlike ThreadLocalStoragePointer
+# and FlsData it cannot be given separate host and guest copies: our ThreadState
+# pointer and the guest's TlsAlloc share it. These tests assert through the real
+# takeover path (process::Launch -> loader_init -> guest entry) rather than
+# unit-testing a helper. See "The TLS slot we hold" in docs/DISPATCHER.md.
+#   name / program / exit code / WIN10XBOX_DEBUG spec / extra env /
+#   trace regexes to require (list) / trace regex to forbid
+function(win10xbox_guest_tls_test name exit_code debug_spec env expect_trace forbid_trace)
+  add_test(NAME integration.${name}
+    COMMAND ${CMAKE_COMMAND}
+      -DHOST=$<TARGET_FILE:win10xbox>
+      -DMACHINE=${WIN10XBOX_MACHINE_DIR}
+      -DPROGRAM=C:\\guest\\guest_hello.exe
+      -DEXPECT_EXIT=${exit_code}
+      "-DEXPECT_REGEX=hello from guest"
+      "-DEXPECT_TRACE_REGEX=${expect_trace}"
+      "-DFORBID_TRACE_REGEX=${forbid_trace}"
+      -DDEBUG_SPEC=${debug_spec}
+      -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
+  set_tests_properties(integration.${name} PROPERTIES
+    FIXTURES_REQUIRED w10x_machine
+    SKIP_RETURN_CODE 77
+    SKIP_REGULAR_EXPRESSION "SKIP:"
+    LABELS "guest_e2e"
+    TIMEOUT 180)
+  if(env)
+    set_tests_properties(integration.${name} PROPERTIES ENVIRONMENT "${env}")
+  endif()
+endfunction()
+
+# 1. The slot survives the whole bootstrap. Requires that the index is logged at
+# all (it was not before: a collision was undiagnosable from any host log), that
+# the index is a safe one, that the reservation against the guest's allocator
+# ran, and that the slot still holds our ThreadState once Wine's loader_init is
+# done and the guest is about to start.
+win10xbox_guest_tls_test(guest_tls_slot_intact 42 "+dispatch,+modules" ""
+  "ThreadState in TEB\\.TlsSlots\\[[0-9]+\\];guest TLS bitmap .* slot [0-9]+ already in use;guest entry: TEB\\.TlsSlots\\[[0-9]+\\] still holds our ThreadState"
+  "UNSAFE|no longer holds our ThreadState|was overwritten")
+
+# 2. A guest that takes our slot is detected, not trusted. WIN10XBOX_TEST_TLS_CLOBBER
+# writes a 4-byte 0 through &TEB.TlsSlots[index] at guest entry, byte for byte
+# what `errno = 0` through Wine's _errno() does (wine-src/dlls/ntdll/thread.c:445).
+# That leaves our pointer NON-NULL with its low dword gone, which the old
+# `test rbx,rbx` in core/asm passed straight through: without the slot-tag check
+# this run segfaults (exit 139, the signature reported from real Windows) with no
+# trace output after the guest-entry line. With it, the clobber is counted,
+# reported and repaired, and the guest still runs to completion.
+win10xbox_guest_tls_test(guest_tls_slot_clobber 42 "+dispatch,+modules" "WIN10XBOX_TEST_TLS_CLOBBER=1"
+  "simulating a guest errno store;was overwritten \\([0-9]+ times\\): the guest is using our slot; restored it"
+  "")
+
+# 3. The index guard. WIN10XBOX_TEST_TLS_INDEX asks for NTDLL_TLS_ERRNO (16),
+# which Wine's loader_init claims by fiat rather than through the shared PEB
+# bitmap (wine-src/dlls/ntdll/loader.c:4455); Initialize must refuse it and stay
+# on a safe slot. Under Wine the host ntdll IS Wine's, so its own loader_init
+# reserved 16 before our TlsAlloc ran and TlsAlloc can never return it -- the
+# hook is the only way to exercise the case a real-Windows host can reach.
+win10xbox_guest_tls_test(guest_tls_reserved_index 42 "+dispatch,+modules" "WIN10XBOX_TEST_TLS_INDEX=16"
+  "WIN10XBOX_TEST_TLS_INDEX=16 rejected.*staying on slot [0-9]+"
+  "ThreadState in TEB\\.TlsSlots\\[16\\]")

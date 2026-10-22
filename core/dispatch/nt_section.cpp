@@ -288,6 +288,16 @@ void NoteGuestEntry(const CONTEXT* ctx) {
     if (InterlockedExchange(&done, 1)) return;                            // once per process
     TRACE(modules, "guest entry reached (RtlUserThreadStart at %p)", thunk);
     DumpGuestModules("guest entry");
+    // Wine's loader_init has finished here and the guest's own code has not run
+    // yet: the last moment at which our TEB.TlsSlots entry is still provably
+    // untouched. Both facts are asserted by integration.guest_hello_tls_slot.
+    ReserveGuestTlsSlot("guest entry");
+    TestClobberThreadSlot("guest entry");   // no-op unless WIN10XBOX_TEST_TLS_CLOBBER is set
+    if (ThreadSlotIntact())
+        TRACE(modules, "guest entry: TEB.TlsSlots[%lu] still holds our ThreadState", ThreadSlotIndex());
+    else
+        ERR(modules, "guest entry: TEB.TlsSlots[%lu] no longer holds our ThreadState (%llu clobbers)",
+            ThreadSlotIndex(), static_cast<unsigned long long>(ThreadSlotClobbers()));
 }
 
 NTSTATUS MapImageView(const std::shared_ptr<ImageSection>& sec, const MapOptions& opts, ImageView** out) {

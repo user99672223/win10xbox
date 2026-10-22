@@ -3,6 +3,9 @@
 #   -DHOST=<win10xbox.exe> -DMACHINE=<machine dir> -DPROGRAM=<C:\guest\x.exe>
 #   -DEXPECT_EXIT=<n> -DEXPECT_REGEX=<regex;regex...> [-DEMULATOR=<wine>]
 #   [-DFORBID_REGEX=<regex>] [-DDEBUG_SPEC=<WIN10XBOX_DEBUG spec>]
+# EXPECT_REGEX/FORBID_REGEX match the guest's stdout. The layer's own trace
+# output goes to stderr, so assertions about it use the TRACE variants:
+#   [-DEXPECT_TRACE_REGEX=<regex;regex...>] [-DFORBID_TRACE_REGEX=<regex>]
 # Prints "SKIP: ..." and exits 77 (cmake >= 3.29) when the machine folder has
 # no Wine builtins or no Windows NLS data (c_1252.nls, staged by
 # machine/import_windows_dlls.ps1); the test sets both SKIP_RETURN_CODE 77 and
@@ -50,6 +53,14 @@ foreach(re ${EXPECT_REGEX})
 endforeach()
 if(FORBID_REGEX AND out MATCHES "${FORBID_REGEX}")
   string(APPEND _fail "stdout matches forbidden '${FORBID_REGEX}'\n")
+endif()
+foreach(re ${EXPECT_TRACE_REGEX})
+  if(NOT err MATCHES "${re}")
+    string(APPEND _fail "trace output does not match '${re}'\n")
+  endif()
+endforeach()
+if(FORBID_TRACE_REGEX AND err MATCHES "${FORBID_TRACE_REGEX}")
+  string(APPEND _fail "trace output matches forbidden '${FORBID_TRACE_REGEX}'\n")
 endif()
 if(_fail)
   message(FATAL_ERROR "${PROGRAM}:\n${_fail}")

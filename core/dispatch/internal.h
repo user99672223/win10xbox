@@ -170,6 +170,11 @@ void ReserveGuestTlsSlot(const char* why);
 bool ThreadSlotIntact();
 // How often core/asm or CurrentThreadState() found a foreign value in the slot.
 std::uint64_t ThreadSlotClobbers();
+// Puts this thread's tagged ThreadState pointer back into the slot.
+bool RepairThreadSlot();
+// Test hook (WIN10XBOX_TEST_TLS_CLOBBER): simulates a guest errno store into
+// our slot. No-op unless the variable is set.
+void TestClobberThreadSlot(const char* why);
 
 // ---- Typed host ntdll entry points used by translators -------------------------
 using PFN_NtClose = NTSTATUS(NTAPI*)(HANDLE);

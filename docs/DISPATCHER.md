@@ -75,6 +75,65 @@ without returning (`NtContinue`, `NtContinueEx`, `NtRaiseException`,
 Guest and host therefore keep separate FLS universes; `RtlFls*` is *not*
 forwarded.
 
+### The TLS slot we hold
+
+`ThreadLocalStoragePointer` and `FlsData` are *pointers*, so swapping them gives
+guest and host an array each and an index collision between the two allocators
+is harmless. `TEB.TlsSlots` (TEB+0x1480) is different in kind: it is an **inline
+64-entry array inside the TEB**, not reachable through a swappable pointer, so it
+cannot be given per-view copies. Our `ThreadState` pointer lives in it, which
+makes it the one per-thread surface the guest's `TlsAlloc` and we share. Three
+things keep that safe:
+
+1. **The two allocators coordinate through the PEB.** `PEB.TlsBitmap` (0x78)
+   points at an `RTL_BITMAP` whose *bit storage* is `PEB.TlsBitmapBits` (0x80),
+   inside the PEB itself — both for Microsoft's ntdll and for Wine's, which
+   re-points `PEB.TlsBitmap` at its own `RTL_BITMAP` but passes
+   `peb->TlsBitmapBits` as the buffer (`wine-src/dlls/ntdll/loader.c:4450`).
+   `RtlInitializeBitMap` only stores `Buffer`/`SizeOfBitMap`, it does **not**
+   clear the bits (`rtlbitmap.c:73`), so a bit our host `TlsAlloc` set before the
+   take-over is still set afterwards and the guest's allocator skips it.
+   `ReserveGuestTlsSlot` verifies exactly that once the guest has installed its
+   bitmap, sets the bit if it was clear, and says which it found — the "already
+   in use" trace line is the evidence that the two really do share the storage on
+   that host.
+2. **We never hold an index Wine claims by fiat.** `loader_init` does not
+   *allocate* indices 0 and `NTDLL_TLS_ERRNO` (16), it asserts them with
+   `RtlSetBits` after the fact (`loader.c:4454`), and `_errno()` then hands out
+   `&TEB.TlsSlots[16]` as the storage for an `int`
+   (`wine-src/dlls/ntdll/thread.c:445`). A bitmap cannot protect us there, so
+   `Initialize` takes indices until it gets one at or above 19
+   (`WOW64_TLS_MAX_NUMBER`), keeps the highest usable one and frees the rest. The
+   index it settled on is always traced on the `dispatch` channel. The WoW64
+   block only matters when `TEB.WowTebOffset != 0`, which never happens for our
+   x64-only guests, but preferring an index above it is free.
+   `PEB.TlsExpansionBitmap` needs no such care: expansion indices address
+   `TEB.TlsExpansionSlots`, a separately allocated array, never `TEB.TlsSlots`
+   (`wine-src/dlls/kernelbase/thread.c:788`), and our index must be < 64 anyway.
+3. **The slot is stored tagged, and validated before it is dereferenced.** What
+   goes into the slot is `pointer | ((0x8000 | bits 16..30 of pointer) << 48)`,
+   using the always-zero top 16 bits of an x64 user address. An errno-style
+   collision is a **4-byte** write into an 8-byte slot, so it leaves a non-NULL
+   value with the low dword gone — which the old bare `test rbx,rbx` passed
+   straight through, after which `SwapIn` read `host_tls`/`host_fls` out of a
+   wild pointer and installed them in the TEB. Comparing the tag against the
+   pointer's own bits catches that arithmetically, with no memory access, so
+   nothing bogus is ever dereferenced. Both asm twins do it identically and
+   count failures in `win10xbox_thread_slot_clobbered`; `win10xbox_dispatch`
+   reports the first one and puts our pointer back. `CurrentThreadState()`
+   additionally checks `ThreadState::magic`, which rejects a stale pointer to an
+   already-detached state.
+
+Test hooks (both no-ops unless the variable is set, and both read before the PEB
+take-over, since the guest's environment block replaces the host's):
+`WIN10XBOX_TEST_TLS_INDEX=<n>` asks for a specific index (`!<n>` forces one past
+the guard) and `WIN10XBOX_TEST_TLS_CLOBBER=1` performs the 4-byte store at guest
+entry. They exist because none of this is reachable by accident under Wine: there
+the host ntdll *is* Wine's, so index 16 was reserved before our `TlsAlloc` ran.
+`integration.guest_tls_slot_intact`, `guest_tls_slot_clobber` and
+`guest_tls_reserved_index` use them to gate all three properties above on the
+linux-cross job.
+
 ## Policies
 
 `syscall_policy.inc`, one line per syscall, read by the dispatcher and by the
@@ -228,7 +287,7 @@ guest's code.
 | `ImageBaseAddress` (0x10) | guest EXE base |
 | `ProcessParameters` (0x20) | new block from host `RtlCreateProcessParametersEx` (normalized), moved into its own `VirtualAlloc` region because Wine releases the old block with `NtFreeVirtualMemory`; guest image path, command line, current directory (default `C:\Users\User\`), `DllPath` NULL (Wine computes it), guest environment; console handle and std handles copied from the host block |
 | `OSMajorVersion`/`OSMinorVersion`/`OSBuildNumber`/`OSCSDVersion`/`OSPlatformId` | from machine.json (10.0.19045, 0, 2); Wine's `version_init` then sets its own (registry or its WIN10 default 10.0.19045) |
-| `Ldr`, `FastPebLock`, `TlsBitmap`, `TlsExpansionBitmap`, `LoaderLock`, `Ansi/OemCodePageData`, `UnicodeCaseTableData` | installed by Wine's `loader_init`/`locale_init` |
+| `Ldr`, `FastPebLock`, `TlsBitmap`, `TlsExpansionBitmap`, `LoaderLock`, `Ansi/OemCodePageData`, `UnicodeCaseTableData` | installed by Wine's `loader_init`/`locale_init`. The `TlsBitmap` *pointer* is saved and restored; its *bits* are `PEB.TlsBitmapBits` (0x80), which both allocators share on purpose — see "The TLS slot we hold" |
 | `ProcessHeap` | kept: the host's (wine-pe patch 0001) |
 
 ## Guest threads (E4)

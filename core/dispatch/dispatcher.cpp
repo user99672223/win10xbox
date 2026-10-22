@@ -63,6 +63,7 @@ struct State {
     DWORD tls_index = TLS_OUT_OF_INDEXES;
     void* host_tls_bitmap = nullptr;   // PEB.TlsBitmap before the takeover (host ntdll's)
     LONG guest_tls_reserved = 0;       // ReserveGuestTlsSlot has run
+    bool test_clobber_slot = false;    // WIN10XBOX_TEST_TLS_CLOBBER, latched in Initialize
     LARGE_INTEGER qpf{};
 };
 State& S() { static State s; return s; }
@@ -247,6 +248,36 @@ ThreadState* CurrentThreadState() {
 DWORD ThreadSlotIndex() { return S().tls_index; }
 std::uint64_t ThreadSlotClobbers() { return win10xbox_thread_slot_clobbered; }
 
+bool RepairThreadSlot() {
+    if (!win10xbox_thread_slot_offset) return false;
+    const DWORD tid = GetCurrentThreadId();
+    ThreadState* mine = nullptr;
+    AcquireSRWLockShared(&g_threads_lock);
+    for (auto* t : Threads())
+        if (t->tid == tid) { mine = t; break; }
+    ReleaseSRWLockShared(&g_threads_lock);
+    if (!mine) return false;
+    TlsSetValue(S().tls_index, reinterpret_cast<void*>(TagSlot(mine)));
+    return true;
+}
+
+// WIN10XBOX_TEST_TLS_CLOBBER=1 writes a 4-byte 0 through &TEB.TlsSlots[index]
+// at guest entry -- byte for byte what a guest doing `errno = 0` through Wine's
+// _errno() (wine-src/dlls/ntdll/thread.c:445) does to a slot it shares with us.
+// It leaves our pointer non-NULL with its low dword gone, which is the exact
+// shape the old `test rbx,rbx` in core/asm let through. Test hook; the variable
+// is latched in Initialize because by guest entry the PEB's environment block
+// is the guest's and no longer has the host's variables in it.
+void TestClobberThreadSlot(const char* why) {
+    if (!S().test_clobber_slot || !win10xbox_thread_slot_offset) return;
+    auto* slot = reinterpret_cast<std::uint64_t*>(static_cast<std::uintptr_t>(__readgsqword(0x30)) +
+                                                  win10xbox_thread_slot_offset);
+    const std::uint64_t before = *slot;
+    *reinterpret_cast<volatile int*>(slot) = 0;   // sizeof(int), like errno
+    WARN(dispatch, "WIN10XBOX_TEST_TLS_CLOBBER: TEB.TlsSlots[%lu] %p -> %p, simulating a guest errno store (%s)",
+         S().tls_index, reinterpret_cast<void*>(before), reinterpret_cast<void*>(*slot), why);
+}
+
 bool ThreadSlotIntact() {
     const std::uint64_t off = win10xbox_thread_slot_offset;
     return off && ValidateSlot(__readgsqword(static_cast<unsigned long>(off))) != nullptr;
@@ -378,9 +409,19 @@ HostModeScope::~HostModeScope() {
 
 // ---- Host ntdll ---------------------------------------------------------------
 
+// Must be primed before the PEB take-over: GetModuleHandleW resolves through
+// PEB->Ldr, which Wine's loader_init replaces with the guest loader list, so a
+// first call made afterwards would latch the GUEST ntdll and every "host"
+// export would be a rewritten syscall stub. Initialize() primes it (and fails
+// if it cannot), which is well before process::Launch takes the PEB over.
 HMODULE HostNtdll() {
-    if (!S().host_ntdll) S().host_ntdll = GetModuleHandleW(L"ntdll.dll");
-    return S().host_ntdll;
+    State& s = S();
+    if (!s.host_ntdll) {
+        s.host_ntdll = GetModuleHandleW(L"ntdll.dll");
+        if (s.initialized)
+            ERR(dispatch, "host ntdll resolved after Initialize: it may be the guest's (PEB->Ldr is Wine's)");
+    }
+    return s.host_ntdll;
 }
 
 void* HostExport(const char* name) {
@@ -458,6 +499,11 @@ NTSTATUS Initialize() {
     // allocator used so ReserveGuestTlsSlot can tell when the guest installs its
     // own (this runs before the PEB take-over).
     s.host_tls_bitmap = PebField<void*>(peb::TlsBitmap);
+    {
+        wchar_t v[8];
+        const DWORD n = GetEnvironmentVariableW(L"WIN10XBOX_TEST_TLS_CLOBBER", v, 8);
+        s.test_clobber_slot = n != 0 && n < 8 && v[0] != L'0';
+    }
     s.tls_index = AllocThreadSlot();
     DWORD want = 0;
     bool force = false;
@@ -603,12 +649,16 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
     // DLL_PROCESS_ATTACH, which is the first thing that could call TlsAlloc.
     // One relaxed load per syscall until it latches.
     if (!s.guest_tls_reserved) ReserveGuestTlsSlot("first guest syscall");
-    if (win10xbox_thread_slot_clobbered) {
+    if (win10xbox_thread_slot_clobbered && !ThreadSlotIntact()) {
+        // Detected, so not silent TEB corruption any more. Put our tagged
+        // pointer back: whoever wrote over it is sharing the slot with us, and
+        // losing the view switch breaks host code far more than it breaks them.
+        const bool fixed = RepairThreadSlot();
         static volatile LONG reported = 0;
         if (!InterlockedExchange(&reported, 1))
-            ERR(dispatch, "TEB.TlsSlots[%lu] was overwritten by the guest (%llu times): TEB view switching is off, "
-                          "host code is running on the guest's TLS pointer", s.tls_index,
-                static_cast<unsigned long long>(win10xbox_thread_slot_clobbered));
+            ERR(dispatch, "TEB.TlsSlots[%lu] was overwritten (%llu times): the guest is using our slot; %s",
+                s.tls_index, static_cast<unsigned long long>(win10xbox_thread_slot_clobbered),
+                fixed ? "restored it" : "could not restore it, TEB view switching is off on this thread");
     }
     Entry* e = f->id < kMaxId ? s.by_id[f->id] : nullptr;
     if (!e) {

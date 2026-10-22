@@ -20,7 +20,14 @@
  * ThreadLocalStoragePointer (gs:0x58) and FlsData (gs:0x17c8) are swapped to
  * the host's values for the duration of the call (nesting counted in
  * ThreadState.depth). ThreadState layout: host_tls 0x00, host_fls 0x08,
- * guest_tls 0x10, guest_fls 0x18, depth 0x20 (u32).
+ * guest_tls 0x10, guest_fls 0x18, depth 0x20 (u32), flags 0x24 (u32),
+ * tid 0x28 (u32), magic 0x2c (u32, checked on the C++ side only).
+ *
+ * TEB.TlsSlots is an inline array shared with the guest's own TLS allocator, so
+ * the slot is stored TAGGED: pointer | ((0x8000 | bits 16..30 of pointer) <<
+ * 48), using the always-zero top 16 bits of an x64 user address. The entry path
+ * rejects any value whose tag does not match and counts it in
+ * win10xbox_thread_slot_clobbered instead of dereferencing it.
  */
     .text
     .globl win10xbox_syscall_entry
@@ -50,6 +57,28 @@ win10xbox_syscall_entry:
     testq %r11, %r11
     jz 1f
     movq %gs:(%r11), %rbx
+    testq %rbx, %rbx
+    jz 1f
+    /* The slot holds the ThreadState pointer tagged in bits 48..63 with
+       0x8000 | bits 16..30 of itself. Checking that the two still agree costs
+       no memory access and catches the 4-byte clobber a colliding guest TLS
+       user leaves behind (Wine's _errno writes an int through
+       &TEB.TlsSlots[16]). Mirrors ValidateSlot in
+       core/dispatch/dispatcher.cpp. MASM twin: syscall_entry.asm. */
+    movq %rbx, %rax
+    shrq $16, %rax
+    andl $0x7fff, %eax
+    orl $0x8000, %eax
+    movq %rbx, %rcx
+    shrq $48, %rcx
+    cmpl %ecx, %eax
+    je 4f
+    lock incq win10xbox_thread_slot_clobbered(%rip)
+    xorl %ebx, %ebx
+    jmp 1f
+4:
+    shlq $16, %rbx
+    shrq $16, %rbx
     testq %rbx, %rbx
     jz 1f
     incl 0x20(%rbx)
