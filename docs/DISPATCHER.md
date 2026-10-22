@@ -15,6 +15,7 @@ interface: `core/include/win10xbox/dispatch.h`.
 | `core/dispatch/nt_section.cpp` | `SEC_IMAGE` sections and image views (E3) |
 | `core/dispatch/nt_privileged.cpp` | privileged syscalls (driver load, shutdown, power, paging file, LDT, system debug, token creation) answered as Windows answers an unprivileged caller; never forwarded to the host |
 | `core/dispatch/nt_process.cpp` | handle routing, memory/process/thread queries, exit, context switches |
+| `core/dispatch/nt_spawn.cpp` | child processes (`NtCreateUserProcess`) and the refusals around process creation, debugging and `NtSetSystemInformation` |
 | `core/dispatch/subsystems.cpp` | registry / token / clock entry points wired as `Emulate` |
 | `core/dispatch/unix_calls.cpp` | Wine unix-call providers, Wine debug-channel replacements |
 | `core/dispatch/rtl_forward.inc` / `.cpp` | function-level forwarding of guest ntdll exports (E2) |
@@ -280,6 +281,12 @@ objects, DCs, drawing).
 | `NtTerminateProcess` | `NULL`: terminate the other guest threads. Current process: `process::GuestExit`. |
 | `NtTerminateThread` | current guest thread: bookkeeping, last one -> `GuestExit`. |
 | `NtCreateThreadEx` (current process) | guest thread start wrapper (E4), see below. |
+| `NtCreateUserProcess` | a real child: a new host process running the host executable on the guest image (host-win32 only), see "Child processes" |
+| `NtCreateProcessEx`, `NtCreateThread` | `STATUS_NOT_SUPPORTED` + FIXME |
+| `NtCreateDebugObject`, `NtDebugActiveProcess` | `STATUS_NOT_SUPPORTED` + FIXME (DECISIONS.md E6) |
+| `NtCreateLowBoxToken` | `token::Tok_NtCreateLowBoxToken`: arguments validated, then `STATUS_NOT_SUPPORTED` + FIXME (E8) |
+| `NtSetSystemInformation` | `STATUS_PRIVILEGE_NOT_HELD` for every class but `SystemComPlusPackage`, which passes (E8) |
+| `NtMakePermanentObject` | pass-through |
 | `NtRaiseHardError` | `err:process: hard error ...` with the string parameters, answers `ResponseOk`. |
 | `NtContinue(Ex)`, `NtRaiseException`, `NtSetContextThread` (self) | switch to the guest TEB view, then pass. |
 | registry `Nt*Key*` | `registry::Reg_Nt*` |
@@ -288,6 +295,63 @@ objects, DCs, drawing).
 | `NtQueryDefaultLocale`, `NtSetDefaultLocale`, `NtQueryDefaultUILanguage`, `NtSetDefaultUILanguage` | `nt_nls.cpp` locale state: set stores, query answers, nothing on the host changes. Starts at en-US (0x0409). Zero LCID or LANGID is `STATUS_INVALID_PARAMETER`. |
 | token `Nt*Token*`, `NtAccessCheck`, `NtPrivilegeCheck`, `NtQuerySecurityObject` (token handles) | `token::Tok_Nt*` |
 | `NtQueryPerformanceCounter`, `NtQuerySystemTime`, `NtSetSystemTime`, `NtDelayExecution`, `Nt{Query,Set}TimerResolution` | `clock::Clk_Nt*` |
+
+## Child processes (`NtCreateUserProcess`, D1/E7)
+
+Wine's kernelbase `CreateProcessInternalW` builds an `RTL_USER_PROCESS_PARAMETERS`, calls `NtCreateUserProcess` with the
+thread suspended (`THREAD_CREATE_FLAGS_CREATE_SUSPENDED`, always) and `NtResumeThread`s it itself unless the caller said
+`CREATE_SUSPENDED`. Wine's own unix side asks wineserver to build the process; there is no wineserver here, so
+`nt_spawn.cpp` builds the child out of **a new host process running the host executable again**:
+
+```
+"<win10xbox.exe>" --machine <machine root> [--cwd <guest dir>] [--guest-env] [--cmdline <raw guest command line>] <guest image>
+```
+
+`<win10xbox.exe>` is `GetModuleFileNameW(NULL)`, read in `dispatch::Initialize` (afterwards the PEB's loader list is the
+guest's and the call would name the guest EXE); the kernel32 process-creation entry points are resolved there too, for
+the same reason and because the UWP host's import library does not carry them. host-win32's `main` turns the command line
+back into `process::LaunchOptions` (`--cmdline`, `--guest-env`; the rest is its ordinary command line), boots a second,
+independent layer in the child and returns the guest's exit code as the host process's, which `NtWaitForSingleObject` /
+`NtQueryInformationProcess(ProcessBasicInformation)` on the handle then report (host handles pass through).
+
+What the caller's arguments become:
+
+| Guest argument | Host child |
+|---|---|
+| `PS_ATTRIBUTE_IMAGE_NAME` (`\??\C:\x.exe`) | the guest Win32 path after `--machine`; read through the VFS first: missing file `STATUS_OBJECT_NAME_NOT_FOUND`, no `MZ` `STATUS_INVALID_IMAGE_NOT_MZ` (so kernelbase falls back to `cmd.exe /c` for `.bat`), a DLL or a non-x64 machine `STATUS_INVALID_IMAGE_FORMAT` (D6), and `PS_CREATE_INFO.State` says which stage failed |
+| `params->CommandLine` | `--cmdline`, quoted so the host's argv parse returns it unchanged; the child sees the bytes the parent wrote, not a rebuilt argv |
+| `params->CurrentDirectory` | `--cwd` (guest path) and, through the VFS, the host child's own working directory |
+| `params->Environment` | the child's host **environment block**: the guest's entries, then the host-owned variables (`WIN10XBOX_*`, `WINE*`, copied from the parent host's original block) so the host process itself stays configured (`WIN10XBOX_DEBUG`, `WINEDEBUG`); `--guest-env` tells the child to take everything else as its guest environment (`process::InheritedGuestEnvironment`). A guest variable with a host-owned name is dropped |
+| `params->hStdInput/Output/Error` | the host child's `STARTUPINFO` standard handles. A handle that is not inheritable is duplicated as one for the duration of the call (Windows would hand the child a dead value); an invalid one is dropped with a warning |
+| `PROCESS_CREATE_FLAGS_INHERIT_HANDLES`, `PS_ATTRIBUTE_HANDLE_LIST` | `bInheritHandles` and `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` (the standard handles are always added to a list); without INHERIT_HANDLES only the standard handles are inherited |
+| `PS_ATTRIBUTE_PARENT_PROCESS`, `PS_ATTRIBUTE_JOB_LIST` | the same host attributes; a parent that is this process is ignored |
+| `THREAD_CREATE_FLAGS_CREATE_SUSPENDED`, `PROCESS_CREATE_FLAGS_SUSPENDED` | `CREATE_SUSPENDED`; `NtResumeThread` is a pass-through on the host thread |
+| `PROCESS_CREATE_FLAGS_BREAKAWAY`, `ConsoleFlags & 1` (new process group), `CONSOLE_HANDLE_ALLOC_NO_WINDOW`, no console (`DETACHED_PROCESS`) | `CREATE_BREAKAWAY_FROM_JOB`, `CREATE_NEW_PROCESS_GROUP`, `CREATE_NO_WINDOW`, `DETACHED_PROCESS`. `CONSOLE_HANDLE_ALLOC` (new console, or none in the parent) leaves the host's console alone: the layer has no consoles of its own and a console window opened for it would be wrong |
+| `dwX..dwFillAttribute`, `dwFlags & 0xFF`, `wShowWindow` | `STARTUPINFO` window placement and feedback bits |
+| outputs | process and thread handles (the host child's, full access; `OBJ_INHERIT` honoured), `PS_ATTRIBUTE_CLIENT_ID` (host pid/tid), `PS_ATTRIBUTE_IMAGE_INFO` (`SECTION_IMAGE_INFORMATION` read from the file: entry point, stack sizes, subsystem, machine, `ImageFileSize`), `PS_CREATE_INFO` (`Size`, `State = PsCreateSuccess`). `PS_ATTRIBUTE_TEB_ADDRESS` is left alone |
+
+Refused, with a warning that names the reason: `PS_ATTRIBUTE_TOKEN` (the guest's tokens are emulated; a host child cannot
+run under one) and a non-null `PS_ATTRIBUTE_DEBUG_PORT` (`STATUS_NOT_SUPPORTED`), a machine type other than x64, an image
+path that is not a drive-letter path (`STATUS_OBJECT_PATH_NOT_FOUND`), `THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER`
+(`STATUS_INVALID_PARAMETER`, as in Windows and Wine). Other process/thread flags and unknown input attributes are logged
+as FIXMEs and ignored, as Wine does.
+
+`config::Config::child_processes` selects it. host-win32 turns it on; the UWP host cannot create processes and leaves it
+off, where `NtCreateUserProcess` traces a warning and returns `STATUS_NOT_SUPPORTED`. Limits worth knowing: the child
+knows the machine folder and `machine.json` but not drives mapped at run time by `process::MapHostDirectory` (a host path
+outside the machine folder given to the first `win10xbox.exe`); every child boots its own Wine ntdll, so a child costs a
+full start (a second or so under Wine); there is no process tree or session sharing, so Wine-only mechanisms that need
+wineserver (`CreateProcess` of a Unix binary, `winevdm`) do not apply; the machine folder must provide the program: the
+builtin set built by `wine-pe` does not contain `cmd.exe`, so `CreateProcess("cmd.exe ...")` and `system()` find
+nothing until a `cmd.exe` is staged. `NtCreateProcessEx` (an empty process to be filled in with `NtWriteVirtualMemory` and
+a later thread) and the legacy `NtCreateThread` (caller-allocated stack and arbitrary `CONTEXT`; guest threads enter
+Wine's per-thread loader init, E4) answer `STATUS_NOT_SUPPORTED` with a FIXME; nothing in Windows 10 user mode calls them.
+
+`NtSetSystemInformation` (E8): the classes in `kPrivilegedClasses` (`nt_spawn.cpp`: 44 of them, each with the privilege
+Windows asks for) answer `STATUS_PRIVILEGE_NOT_HELD` and so does every class not listed as safe; `SystemComPlusPackage`
+(59, settable without a privilege, changes a counter) reaches the host. `kernelbase!SetSystemTimeAdjustment` and the time
+zone setters therefore fail with `ERROR_PRIVILEGE_NOT_HELD`, as they do for an unprivileged Windows user, and the virtual
+clock and the machine identity stay the layer's.
 
 ## Wine "unix side"
 
@@ -411,6 +475,8 @@ skipped.
 ```
 win10xbox [--machine <dir>] [--debug <spec>] [--cwd <guestdir>] <program> [args...]
 ```
+
+(`--cmdline <raw>` and `--guest-env` are added by the layer itself when a guest starts a child, see "Child processes".)
 
 `--machine` defaults to `<dir of win10xbox.exe>\machine`. `<program>` may be a
 guest path (`C:\guest\app.exe`, existing under the machine folder), a host

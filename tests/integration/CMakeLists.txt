@@ -26,8 +26,8 @@ set(_prepare_args
 add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
-  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_window guest_window2 guest_window_input
-                   guest_window_input2 guest_window_text)
+  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
+                   guest_window_input guest_window_input2 guest_window_text)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -91,6 +91,16 @@ win10xbox_guest_test(guest_cpuid "C:\\guest\\guest_cpuid.exe" 0
 # syscall stub and Clk_NtDelayExecution recursed until the stack ran out. No
 # other guest sleeps, so nothing exercised it.
 win10xbox_guest_test(guest_sleep "C:\\guest\\guest_sleep.exe" 7 "guest slept")
+
+# CreateProcess (docs/DISPATCHER.md "Child processes"): NtCreateUserProcess starts a new host process running the
+# host executable on the child's guest image. The parent (tests/guest/spawn.c) runs guest_hello.exe and waits for
+# its exit code 42 through the host handle, then runs itself with a quoted command line, a working directory and
+# an extra environment variable and checks the exit code 7; the children's stdout is the inherited pipe.
+win10xbox_guest_test(guest_spawn "C:\\guest\\guest_spawn.exe" 42
+  "hello from guest" "spawn: child exit 42"
+  "spawn-child: argc=5" "spawn-child: argv\\[1\\]=\\[child\\]" "spawn-child: argv\\[2\\]=\\[a b\\]"
+  "spawn-child: argv\\[3\\]=\\[c.d\\]" "spawn-child: argv\\[4\\]=\\[e\\]"
+  "spawn-child: cwd=C:\\\\Windows" "spawn-child: mark=mark42" "spawn: child2 exit 7" "spawn: done")
 
 # The host-uwp-lite smoke guest (built in tests/guest, MSVC only): the program
 # that ran on the console, in both subsystems. It prints facts and returns 42.

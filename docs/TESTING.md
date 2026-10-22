@@ -17,7 +17,7 @@ push to every branch; nothing is `continue-on-error` except the diagnostics step
 
 * **`ci.yml` linux-cross** (llvm-mingw, guests under Wine): `wine-pe/fetch-wine.sh` (shallow clone of the pinned Wine
   tag, a few seconds), the Wine PE builtins **and** the widl-generated headers (`wine-pe-include`, for
-  `advapi32/registry`), then the full `ctest` with nothing excluded (56 registered after merging core/user: 15 `guest_e2e`, 2
+  `advapi32/registry`), then the full `ctest` with nothing excluded (57 registered with `integration.guest_spawn`: 16 `guest_e2e`, 2
   `driver_e2e`, 2 `drivers`, 28 `wine_conformance`, ...; about 4 minutes of tests).
 * **`ci.yml` windows** (MSVC, Debug and RelWithDebInfo, machine folder with the runner's System32 DLLs and NLS
   data): the full `ctest` (the guest's stdout is captured on real Windows; see `docs/STATUS.md`), then every bundled

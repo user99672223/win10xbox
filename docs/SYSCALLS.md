@@ -5,7 +5,7 @@ Windows 10 x64 / 22H2 NT syscall numbers) and the hand-maintained policy
 `core/dispatch/syscall_policy.inc`; win32u entries (ids 0x1000..) are Emulate when
 `core/user/user_syscalls.h` registers them. Do not edit by hand.
 
-1798 syscalls. passthrough 156, translate 31, emulate 298, todo 1313. Generated 2026-10-22.
+1798 syscalls. passthrough 157, translate 33, emulate 303, todo 1305. Generated 2026-10-22.
 
 Policy: **PassThrough** calls the host ntdll export by name; **Translate**
 rewrites arguments (paths, handles, timeouts) then passes through;
@@ -91,8 +91,8 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x004a | NtCreateSection | 7 | Translate | SEC_IMAGE sections are ours (E3): emulated handle + manual map |
 | 0x004b | NtFlushBuffersFile | 2 | PassThrough |  |
 | 0x004c | NtApphelpCacheControl | 0 | PassThrough |  |
-| 0x004d | NtCreateProcessEx | 0 | Todo | D1 |
-| 0x004e | NtCreateThread | 8 | Todo | legacy; NtCreateThreadEx is the supported path |
+| 0x004d | NtCreateProcessEx | 0 | Emulate | STATUS_NOT_SUPPORTED: a child is created whole by NtCreateUserProcess, not as an empty process |
+| 0x004e | NtCreateThread | 8 | Emulate | STATUS_NOT_SUPPORTED: legacy CONTEXT/INITIAL_TEB creator; NtCreateThreadEx is the supported path |
 | 0x004f | NtIsProcessInJob | 2 | PassThrough |  |
 | 0x0050 | NtProtectVirtualMemory | 5 | PassThrough |  |
 | 0x0051 | NtQuerySection | 5 | Translate | SectionImageInformation/SectionBasicInformation for our image sections |
@@ -138,7 +138,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0079 | NtCreateJobObject | 3 | PassThrough |  |
 | 0x007a | NtCreateKeyTransacted | 8 | Emulate | registry |
 | 0x007b | NtCreateKeyedEvent | 4 | PassThrough |  |
-| 0x007c | NtCreateLowBoxToken | 9 | Todo | token emulation |
+| 0x007c | NtCreateLowBoxToken | 9 | Emulate | token: AppContainer tokens are not emulated, STATUS_NOT_SUPPORTED |
 | 0x007d | NtCreateMailslotFile | 8 | PassThrough |  |
 | 0x007e | NtCreateMutant | 4 | PassThrough |  |
 | 0x007f | NtCreateNamedPipeFile | 14 | PassThrough |  |
@@ -151,8 +151,8 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0086 | NtCreateTimer | 4 | PassThrough |  |
 | 0x0087 | NtCreateToken | 13 | Emulate | privileged: refused like Windows does for an unprivileged caller |
 | 0x0088 | NtCreateTransaction | 10 | PassThrough |  |
-| 0x0089 | NtCreateUserProcess | 11 | Todo | D1 in-process child processes not implemented yet |
-| 0x008a | NtDebugActiveProcess | 2 | Todo | debugging the guest is not supported |
+| 0x0089 | NtCreateUserProcess | 11 | Translate | D1: spawns a host process running the host executable on the guest image (host-win32, config child_processes); STATUS_NOT_SUPPORTED elsewhere |
+| 0x008a | NtDebugActiveProcess | 2 | Emulate | STATUS_NOT_SUPPORTED: no debugger support (E6) |
 | 0x008b | NtDebugContinue | 3 | PassThrough |  |
 | 0x008c | NtDeleteAtom | 1 | PassThrough |  |
 | 0x008d | NtDeleteFile | 1 | Translate | VFS path rewrite |
@@ -180,9 +180,9 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x00a3 | NtLoadKey2 | 3 | Emulate | registry |
 | 0x00a4 | NtLoadKeyEx | 8 | Emulate | registry |
 | 0x00a5 | NtLockFile | 10 | PassThrough |  |
-| 0x00a6 | NtCreateDebugObject | 4 | Todo | debugging the guest is not supported |
+| 0x00a6 | NtCreateDebugObject | 4 | Emulate | STATUS_NOT_SUPPORTED: no debugger support (E6) |
 | 0x00a7 | NtLockVirtualMemory | 4 | PassThrough |  |
-| 0x00a8 | NtMakePermanentObject | 1 | Todo | never touches the host |
+| 0x00a8 | NtMakePermanentObject | 1 | PassThrough |  |
 | 0x00a9 | NtMakeTemporaryObject | 1 | PassThrough |  |
 | 0x00aa | NtMapViewOfSectionEx | 9 | Translate | views of our image sections are mapped by core/loader |
 | 0x00ab | NtNotifyChangeDirectoryFile | 9 | PassThrough |  |
@@ -251,7 +251,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x00ea | NtSetIoCompletionEx | 6 | PassThrough |  |
 | 0x00eb | NtSetLdtEntries | 6 | Emulate | privileged: refused like Windows does for an unprivileged caller |
 | 0x00ec | NtSetSecurityObject | 3 | PassThrough |  |
-| 0x00ed | NtSetSystemInformation | 3 | Todo | never touches the host |
+| 0x00ed | NtSetSystemInformation | 3 | Translate | privileged classes answer STATUS_PRIVILEGE_NOT_HELD; SystemComPlusPackage reaches the host |
 | 0x00ee | NtSetSystemTime | 2 | Emulate | clock |
 | 0x00ef | NtSetThreadExecutionState | 2 | PassThrough |  |
 | 0x00f0 | NtSetTimerResolution | 3 | Emulate | clock |

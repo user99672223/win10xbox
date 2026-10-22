@@ -1,6 +1,7 @@
 // Process bootstrap (process::Launch), guest threads and guest exit.
 // Sequence and PEB take-over are documented in docs/DISPATCHER.md.
 #include "internal.h"
+#include "nt_spawn.h"
 #include "win10xbox/config.h"
 #if WIN10XBOX_HAVE_VFS
 #include "win10xbox/vfs.h"
@@ -745,6 +746,19 @@ void* GuestEntryThunk() { return process::G().user_thread_start; }
     if (self && (self->flags & kThreadGuest) && guests <= 1) process::GuestExit(static_cast<std::uint32_t>(code));
     DetachThreadState();
     for (;;) Host().NtTerminateThread(reinterpret_cast<HANDLE>(-2), code);
+}
+
+std::vector<std::wstring> HostEnvironmentEntries() {
+    // The host's own parameter block: the one the PEB held before the take-over (saved), or the PEB's current one
+    // when no guest has launched in this process.
+    const process::SavedPeb& saved = process::G().peb;
+    const auto* params = static_cast<const std::uint8_t*>(saved.saved ? saved.params : PebField<void*>(peb::ProcessParameters));
+    std::vector<std::wstring> out;
+    if (!params) return out;
+    const auto* env = *reinterpret_cast<const wchar_t* const*>(params + process::pp::Environment);
+    if (!env) return out;
+    for (const wchar_t* p = env; *p; p += std::wcslen(p) + 1) out.emplace_back(p);
+    return out;
 }
 
 void TerminateOtherGuestThreads(NTSTATUS code) {

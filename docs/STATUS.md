@@ -59,6 +59,35 @@ process (`io.popen` / `os.execute`: `NtCreateUserProcess` is Todo), one that sle
 (`NtCreateThreadEx`, waits are pass-through but untested with real programs), and anything that loads a native DLL
 beyond the Wine builtins. SQLite (`tools/ci/build_sqlite.ps1`, another branch) adds locking and `FlushFileBuffers`.
 
+## CreateProcess works: NtCreateUserProcess starts a real host child (2026-10-22)
+
+`NtCreateUserProcess` is implemented (`core/dispatch/nt_spawn.cpp`, design and the argument mapping in docs/DISPATCHER.md
+"Child processes", decisions E6-E8 in docs/DECISIONS.md): a new host process running the host executable on the child's
+guest image, with command line, current directory, environment and standard handles carried over, and the host child's
+process/thread handles, client id and image information returned. Waiting on the handle and `GetExitCodeProcess` work
+through the pass-through because the host child's exit code is the guest's. host-win32 turns it on
+(`config::Config::child_processes`); the UWP host leaves it off and gets `STATUS_NOT_SUPPORTED` with a warning, so the
+console-side "can a Game-bucket app resume its child" question (probe-v2 item 1) is still open. Also in this change:
+`NtCreateProcessEx`, `NtCreateThread`, `NtCreateDebugObject`, `NtDebugActiveProcess`, `NtCreateLowBoxToken` ->
+`STATUS_NOT_SUPPORTED` + FIXME; `NtSetSystemInformation` -> `STATUS_PRIVILEGE_NOT_HELD` except `SystemComPlusPackage`;
+`NtMakePermanentObject` -> pass-through.
+
+* Tests: `integration.guest_spawn` (tests/guest/spawn.c: `CreateProcessW("C:\\guest\\guest_hello.exe")`, wait, exit code
+  42, prints `spawn: child exit 42`; then itself with a quoted command line, a working directory and an environment
+  variable, exit 7) and 12 unit tests in `tests/unit/test_syscalls_process.cpp` (policies, refusals, privilege split,
+  quoting/command line/environment helpers, and a real suspended spawn -> resume -> wait -> exit 42 through the asm
+  entry with a non-inheritable stdout pipe). Local: `100% tests passed, 0 tests failed out of 32`.
+* `ci.yml` run [39869487010](https://github.com/user99672223/win10xbox/actions/runs/39869487010) on `503d3a0`: linux-cross
+  (61/61, `ctest gate: PASS`), windows (Debug) and windows (RelWithDebInfo) (41/41 each, gate PASS), `integration.guest_spawn`
+  passed on both Windows configs (real `CreateProcessW` of the host). linux-cross failed once on
+  `integration.guest_window_input2` ("another thread's window: delivered on that thread", core/user input, not this
+  change) and passed on the re-run of the same commit (the run before, 39867793207 on `a9bcd14`; on `503d3a0` linux-cross's first attempt died in an apt mirror timeout and passed on re-run); run [39847437801](https://github.com/user99672223/win10xbox/actions/runs/39847437801)
+  (`ae63311`) was green on all three jobs as well (its linux-cross first attempt died in an apt mirror timeout).
+* Found by the test and fixed on the way: a command line passed through `process::Launch` was not NUL-terminated in the
+  parameter block (also fixed independently on main; the merged version is main's). First Windows run failed to build
+  because MSVC's `winternl.h` has no `PCLIENT_ID`.
+* Not available: `cmd.exe` is not in the wine-pe builtin set, so `CreateProcess("cmd.exe ...")` and `system()` find no
+  program until one is staged; a child does not know drives mapped at run time by `process::MapHostDirectory`.
 
 ## Current state of main (2026-10-22)
 
