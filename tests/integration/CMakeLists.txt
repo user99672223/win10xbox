@@ -72,6 +72,13 @@ win10xbox_guest_test(guest_cpuid "C:\\guest\\guest_cpuid.exe" 0
 # other guest sleeps, so nothing exercised it.
 win10xbox_guest_test(guest_sleep "C:\\guest\\guest_sleep.exe" 7 "guest slept")
 
+# The host-uwp-lite smoke guest (built in tests/guest, MSVC only): the program
+# that ran on the console, in both subsystems. It prints facts and returns 42.
+if(TARGET guest_smoke_cui)
+  win10xbox_guest_test(guest_smoke_cui "C:\\guest\\guest_smoke_cui.exe" 42 "hello from guest" "guest: done, returning 42")
+  win10xbox_guest_test(guest_smoke_gui "C:\\guest\\guest_smoke.exe" 42 "hello from guest" "guest: done, returning 42")
+endif()
+
 # The first pixels: a GUI guest (tests/guest/window.c) creates a window, paints it solid blue with a red square
 # through Wine's user32/gdi32 and the win32u syscalls emulated by core/user, reads its own pixels back with
 # GetPixel, and exits 42. The host writes the composed virtual screen to a .bmp (WIN10XBOX_SCREENSHOT), and

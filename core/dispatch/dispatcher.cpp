@@ -379,7 +379,17 @@ void TestViolateGuestView() {
     // a singleton. The first is dropped and counted by the trace probe, the
     // second by NoteHostStateUnderGuestView.
     TRACE(dispatch, "WIN10XBOX_TEST_GUEST_VIEW_VIOLATION: logging inside the guest-view window");
-    ExportCache();   // a function-local static: the exact shape that faults
+#if defined(_MSC_VER)
+    // Under MSVC the access itself is the fault the detector exists for: the
+    // init guard of ExportCache's static reads _Init_thread_epoch through the
+    // guest's TLS array (measured: ci.yml run 39818491081, windows
+    // RelWithDebInfo, c0000005 reading 0x104 inside win10xbox.exe). Record
+    // exactly what ExportCache() records on entry and stop short of the static:
+    // the detector and its report are what this hook proves, on both hosts.
+    NoteHostStateUnderGuestView("dispatch::ExportCache");
+#else
+    ExportCache();   // a function-local static: the exact shape that faults on MSVC
+#endif
 }
 
 bool ThreadSlotIntact() {
