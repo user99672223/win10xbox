@@ -44,3 +44,23 @@ combase
 programs/services
 wbemprox
 programs/wineboot
+
+# --- console programs (wine-pe/programs/*.sh, ctest integration.wineprog_*) --
+programs/xcopy
+programs/findstr
+programs/sort
+programs/where
+programs/attrib
+programs/reg
+programs/hostname
+programs/whoami
+programs/chcp
+programs/more
+programs/fc
+programs/timeout
+programs/choice
+programs/expand
+programs/icacls
+programs/cacls
+programs/explorer         # wine-pe/programs/explorer.sh: explorer /desktop=shell,WxH
+programs/conhost          # wine-pe/programs/conhost.sh: console host (DECISIONS.md)

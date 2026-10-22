@@ -62,15 +62,15 @@ towards its skip floor.
 
 | Program | Build | ctest (label `guest_e2e`) | Smoke row (`tools/ci/smoke_guests.ps1 -RealPrograms`) | Also under console conditions |
 |---|---|---|---|---|
-| Lua 5.4.7 (`lua.exe`) | `tools/ci/build_lua.ps1`: tarball pinned by SHA-256 `9fbf5e28...1e30` and verified on every run (cached with `actions/cache`, key carries the hash); `cl /O2 /MT`, every `.c` except `luac.c`; output `build/bin/machine/guest/lua.exe` | `integration.lua_hello` (`-e "print('hello from lua', 6*7) os.exit(42)"`, exit 42), `integration.lua_smoke` (`tests/guest/lua/smoke.lua` with arguments `alpha "beta gamma"`: argv, string.format, sort, io.write, os.time/date/clock, USERPROFILE, file write/read/rename/remove under the guest home, tmpname, io.lines, dofile, require, pcall/error, 1 MB `string.rep`, exit 42; every section line is gated), `integration.lua_unwind_tables` (the host-side unwind tables of every mapped image are registered) | `lua_hello`, `lua_smoke` | `host-win32-smoke.yml` |
+| Lua 5.4.7 (`lua.exe`) | `tools/ci/build_lua.ps1`: tarball pinned by SHA-256 `9fbf5e28...1e30` and verified on every run (cached with `actions/cache`, key carries the hash); `cl /O2 /MT`, every `.c` except `luac.c`; output `build/bin/machine/guest/lua.exe` | `integration.lua_hello` (`-e "print('hello from lua', 6*7) os.exit(42)"`, exit 42), `integration.lua_smoke` (`tests/guest/lua/smoke.lua` with arguments `alpha "beta gamma"`: argv, string.format, sort, io.write, os.time/date/clock, USERPROFILE, file write/read/rename/remove under the guest home, tmpname, io.lines, dofile, require, pcall/error, 1 MB `string.rep`, exit 42; every section line is gated), `integration.lua_unwind_tables` (no `RtlAddFunctionTable failed` in the `+loader` trace; guards the Wine host, a no-op on Windows) | `lua_hello`, `lua_smoke` | `host-win32-smoke.yml` |
 | CPython 3.12.10 embeddable (`python.exe` + `python312.dll`, `.pyd`s, libcrypto/libffi/sqlite3, as shipped) | `tools/ci/fetch_python.ps1`: `python-3.12.10-embed-amd64.zip` pinned by SHA-256 `4acbed6d...a3c3`, verified on every run (cached), unpacked to `build/bin/machine/guest/python` | `integration.real_python_c` (`-c` running `print(1+1)`, exit 42), `integration.real_python` (`tests/guest/python/smoke.py alpha "beta gamma"`: argv, json, hashlib (builtin and `_hashlib`/OpenSSL), zlib, sqlite3, ctypes (call + libffi callback), file write/read/rename/remove, listdir, threading (lock, queue/event), time; one assertion per `py: <check> ok` line) | - | - |
 
 Local reproduction under Wine (the interpreter cross-built, no MSVC): compile the tarball's `src/*.c` except `luac.c`
 with `x86_64-w64-mingw32-clang -O2 -static` into `build-mingw/bin/machine/guest/lua.exe`, configure with
 `-DWIN10XBOX_REAL_PROGRAMS=ON`, and run `ctest -R integration.lua`. Under the system Wine 9 as host the first Lua
-error (`pcall`, which is `longjmp` through `RtlUnwindEx`) ends the guest ("stack overflow" from the host ntdll): that is
-the host's own unwinder looking guest images up through the guest's loader list, it does not happen on real Windows
-(the gate there is green), so the argv/file/os sections are what Wine can check.
+error (`pcall`, which is `longjmp` through `RtlUnwindEx`) ends the guest ("stack overflow" from the host ntdll; see
+`docs/STATUS.md`, "Real programs"). It does not happen on real Windows (the gate there is green), so the argv/file/os
+sections are what Wine can check.
 
 ## GUI guests (core/user)
 

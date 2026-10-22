@@ -41,6 +41,7 @@
 #include "host_diag.h"
 #include "host_shell.h"
 #include "host_util.h"
+#include "launcher.h"
 #include "presenter.h"
 
 #include "win10xbox/user.h"
@@ -336,6 +337,8 @@ namespace
                 // Leaked on purpose: the process owns the Host until it exits (see ~Host). The
                 // constructor hands the display backend to core/user; the worker is not running yet.
                 Host* const host = new Host(info);
+                host->AttachLauncher(&launcher_);          // launcher.h: picker / autoselect in launch.json
+                presenter_.SetFrameSource(&launcher_);
 
                 StartPresenter(window, dispatcher, info, px);
                 host->NoteDisplay(presenter_.Describe());
@@ -431,6 +434,7 @@ namespace
                     closed_.store(true);   // the window is gone: nothing is left to pump
                 }
                 host.PumpDisplay();
+                launcher_.PollGamepad();   // Windows.Gaming.Input, for the launcher's screens
                 diagnostics_.ReplayInto(host);
 
                 // The frame: composed while the guest may change it, the last one kept on screen
@@ -515,6 +519,18 @@ namespace
         // VK_GAMEPAD_* range), the scan code and the extended flag come from the key status.
         void OnKey(bool down, wui::KeyEventArgs const& args)
         {
+            // The launcher's list / result screen is up: the keys are for it, not for a guest.
+            try
+            {
+                if (launcher_.Consumes())
+                {
+                    if (down) launcher_.OnKey(static_cast<unsigned>(static_cast<std::int32_t>(args.VirtualKey())));
+                    return;
+                }
+            }
+            catch (...)
+            {
+            }
             Host* const host = host_.load();
             if (host == nullptr || !host->InputPumpEnabled()) return;
             try
@@ -595,6 +611,7 @@ namespace
 
         ShellDiagnostics diagnostics_;
         Presenter presenter_;          // UI thread only (its device thread is internal)
+        Launcher launcher_;            // launcher.h: screens drawn by presenter_, input from the pump and OnKey
         float pointer_scale_ = 1.0f;   // view pixels -> physical pixels (UI thread)
         std::atomic<Host*> host_{nullptr};
         std::atomic<bool> closed_{false};
