@@ -14,8 +14,15 @@ ctest --test-dir build --output-on-failure
 
 `win10xbox.exe --machine <dir> [--debug +relay,+loader] program.exe args...`
 
-The UWP host (`-DWIN10XBOX_BUILD_UWP=ON`) additionally needs the Windows 10
-SDK with C++/WinRT; see `host-uwp/README.md`.
+The UWP host is not built by this tree: `-DWIN10XBOX_BUILD_UWP=ON` is refused by design
+(`host-uwp/CMakeLists.txt` stops with a `FATAL_ERROR`). Configure it on its own, from an
+x64 Native Tools prompt. It needs the Windows SDK, `midl.exe` and the C++/WinRT headers:
+
+```bat
+cmake -S host-uwp -B build-uwp -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
+```
+
+See `host-uwp/README.md` for the build, the packaging and the console run.
 
 ## Linux (fast iteration only)
 

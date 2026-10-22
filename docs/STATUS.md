@@ -14,6 +14,31 @@ guest ceiling, the D18 single CPU-identity story). Full report:
 (child-process resume, feature-level 11_0 vs 12_1, GLOn12/Dozen/Vulkan
 bundling, WoW64 far jump).
 
+## Console run of host-uwp-lite v1.0.0.4 (source `e7f25de`)
+
+The throwaway validator `host-uwp-lite` ran on an Xbox Series S in SystemOS Dev Mode, OS build 26100.9445. Its build
+`v1.0.0.4` is `uwp-lite` run #4 on `e7f25de`. The kernel32/kernelbase forwarder fix (`eb52c50`) is confirmed on hardware:
+0 of 92 `KERNEL32.dll` imports are unresolved (the first run had all 92 dangling), `kernelbase.dll` loads as its own
+module, the guest entry is reached, and the guest CRT runs through the full NLS/codepage initialisation (`l_intl`,
+`c_1252`, `c_437`, `sortdefault`, `normnfc` all resolve) and writes its locale registry values.
+
+The run then stopped at a separate defect whose cause is not yet established: an `EXCEPTION_ACCESS_VIOLATION` reading
+address `0x4` at RIP `0x7ff6cb75a36c`. That is RVA `+0x236C` inside the host executable (`win10xbox-uwp-lite.exe`, which
+statically links `core/`), not inside any guest module. The faulting instruction is `mov eax,[rdx+rax]` with `rdx=4` and
+`rax=0`: a 32-bit table load off a null base. `crash.txt` does not name the image because, while the guest runs, its loader
+list holds only guest modules. The exact function at that RVA is not identified yet; a linker map file from CI is being
+added to resolve the RVA to a function name.
+
+No `crash.dmp` was written. The dump path reported HRESULT `0x800736b2`, the form `crash.txt` uses when `dbghelp.dll`
+cannot be bound inside the AppContainer (to be confirmed against `crash.txt`). `dbghelp.dll` is delay-loaded, so the
+package still ran, and `crash.txt` and `entry-reached.txt` were produced: the first on-console run to leave crash
+evidence (crash capture was added in `e7f25de`, see `host-uwp-lite/README.md`).
+
+A similar failure shows up on real Windows. `host-win32-smoke` run `39667248899` on `e7f25de` fails its gate: its
+console-conditions run and its desktop sanity run both report `KERNEL32 unresolved: 0` and exit `139` (128+11, a SIGSEGV
+as Git Bash reports it; the gate expects 42). It is believed to be the same defect, but the fault address on real Windows
+is not recorded, so that link is not confirmed.
+
 ## Milestone commits
 
 Annotated tags `m0`/`m1`/`m2` are created in the repo; if a tag is not visible
@@ -27,8 +52,33 @@ Milestone commits, so they stay pinpointable regardless:
 | m1  | `fc18910` | loader (PE map, stub rewrite, scanner) — green CI |
 | m2  | `fc18910` | dispatcher + subsystems (VFS/registry/clock/token/NLS) — green CI |
 | m3  | `9e22180` | Wine PE set, winexbox interface + headless backend, Wine conformance baseline — green CI |
-| m4  | `692037b` | driver host (user-mode ntoskrnl, object/IRP engine, KMDF shim) + privileged-instruction trap-and-emulate — green CI on both toolchains |
+| m4  | `692037b` | driver host (user-mode ntoskrnl, object/IRP engine, KMDF shim) + privileged-instruction trap-and-emulate — green CI on both toolchains. The M4 content landed in `a8c4074`, whose `ci` run #19 was red; `692037b` is the first commit where CI went green with it, so that is the milestone point. |
+| m5  | `7aac27a` | real UWP host (`host-uwp/`): app shell, Host, standalone build, signed `.msix` built by CI — green CI, not yet run on hardware |
 
+
+## M5 - real UWP host (`host-uwp/`)
+
+`host-uwp/` is the real win10xbox UWP host: a headless C++/WinRT `CoreApplication` shell (`main.cpp`, `App.cpp`, `App.idl`)
+around the Host of `host.h`. The Host reads `LocalState\launch.json`, stages the machine folder in `LocalState\machine`,
+calls `Initialize`, runs the configured guest through `process::Launch` on a worker thread, and writes its verdict to
+`LocalState\status.txt`. Its evidence trail is plain files in `LocalState` (`trace.log`, `stdout.txt`, `crash.txt`,
+`crash.dmp`, `entry-reached.txt`). It is a standalone CMake project: it `add_subdirectory()`s `third_party/`, `core/` and
+`winexbox/` itself, and the top-level tree refuses it (`host-uwp/CMakeLists.txt:41` raises `FATAL_ERROR` if it is added
+there), so `-DWIN10XBOX_BUILD_UWP=ON` is not a way to build it.
+
+Commit `4db0789` added the app shell and build scaffolding as a WIP checkpoint marked unverified: `App.idl`, `App.cpp`,
+`App.h`, `main.cpp`, `host_shell.cpp`/`.h`, `CMakeLists.txt`, `Package.appxmanifest`, `pch.h`, `sdk.cmake`, `stage.cmake`,
+`package.cmd`, `crash.cpp`/`.h` (carried over from host-uwp-lite), `guest/hello.c`, `payload/launch.json`,
+`payload/launch.example.json` and `.gitattributes`. The Host sources (`host.cpp`, `host_diag.cpp`, `host_stage.cpp`,
+`host_util.cpp`, `launch_config.cpp` and `selftest/`, with their headers) came in the earlier WIP checkpoints `d223773` and
+`295fae4`. Commit `7aac27a` added `.github/workflows/host-uwp.yml`. The package identity is `win10xbox.uwp` (exe
+`win10xbox-uwp.exe`, WinRT namespace `Win10XboxUwp`), so it installs side by side with host-uwp-lite. See
+`host-uwp/README.md`.
+
+CI: workflow `host-uwp` run #1 (run `39681539555`) on `7aac27a` completed `success` on its first attempt. Configure, build,
+package, the portable launch.json selftest and the artifact upload all passed. Artifact `host-uwp-msix` (21,794,185 bytes,
+about 20.8 MiB) holds the signed `.msix` and the public `.cer` needed to trust it for side-loading. It is not yet run on
+hardware. No tag is made for m5 here (tags cannot be pushed from this session); the SHA in the table is the record.
 
 ## M4 - driver host (`drivers/`)
 

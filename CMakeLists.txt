@@ -22,7 +22,7 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
 option(WIN10XBOX_BUILD_TESTS   "Build unit + integration tests" ON)
-option(WIN10XBOX_BUILD_UWP     "Build the UWP host (needs MSVC + Windows SDK)" OFF)
+option(WIN10XBOX_BUILD_UWP     "Unsupported: host-uwp is a standalone project and refuses this tree; see host-uwp/README.md" OFF)
 option(WIN10XBOX_BUILD_DRIVERS "Build the driver host (fake ntoskrnl, test drivers)" ON)
 option(WIN10XBOX_TRACE_DEFAULT_ON "Tracing on by default (always on in Debug)" OFF)
 
