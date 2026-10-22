@@ -42,12 +42,25 @@ jobs:
             | sudo tar -xJ -C /opt/llvm-mingw --strip-components=1
       # apt on the runner can stall for hours on a dead mirror (run 39811598598 sat on this
       # step for 3 h 40 min): bound the step and retry the download phase.
+      # The .deb downloads (libwine alone is 105 MB) are cached between runs: run 39869849063
+      # spent its whole 12 minutes on that one file from a throttled mirror. A cache hit
+      # makes the step install from local files; a miss downloads as before and saves.
+      - name: Cache apt downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-cache
+          key: apt-debs-${{ runner.os }}-noble-wine9-v1
       - name: Install Wine + ninja
         timeout-minutes: 12
         run: |
+          mkdir -p "$HOME/apt-cache"
           sudo dpkg --add-architecture i386
           for i in 1 2 3; do sudo apt-get update -q && break; sleep 15; done
-          sudo apt-get install -y -q --no-install-recommends -o Acquire::Retries=3 -o Acquire::http::Timeout=60 wine wine64 ninja-build
+          sudo apt-get install -y -q --no-install-recommends -o Acquire::Retries=3 -o Acquire::http::Timeout=60 \
+            -o Dir::Cache::archives="$HOME/apt-cache" wine wine64 ninja-build
+          # Leave only the .deb files for the cache (lock and partial/ are root-owned).
+          sudo rm -rf "$HOME/apt-cache/lock" "$HOME/apt-cache/partial"
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-cache"
       # The Wine sources, for the wine_conformance subset (Wine's own tests built
       # as guests, tests/wine-tests): a shallow clone of the pinned tag plus
       # wine-pe/patches, about a minute. Before Configure: CMake decides there
