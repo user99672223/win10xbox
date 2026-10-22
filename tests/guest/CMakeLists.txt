@@ -43,6 +43,11 @@ win10xbox_add_guest(guest_window2)
 add_executable(guest_window_input window_input.c)
 target_link_libraries(guest_window_input PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window_input)
+# The non-client guest (tests/guest/window_nc.c): frame geometry, hit testing, caption drag and the close button,
+# driven by the host's injected input.
+add_executable(guest_window_nc window_nc.c)
+target_link_libraries(guest_window_nc PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_window_nc)
 # The text guest: TextOutW/DrawTextW with the stock system font, glyph pixels read back with GetPixel
 # (tests/guest/window_text.c). Its integration test is DISABLED until the text rendering slice lands.
 add_executable(guest_window_text window_text.c)
