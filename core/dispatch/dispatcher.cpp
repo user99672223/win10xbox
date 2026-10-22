@@ -22,12 +22,22 @@ std::uint64_t win10xbox_thread_slot_offset = 0;
 // value that is not one of our ThreadStates. Never expected to be non-zero;
 // win10xbox_dispatch reports the first one on the dispatch channel.
 std::uint64_t win10xbox_thread_slot_clobbered = 0;
+// Times host state was reached while the guest TLS view was installed. Any
+// non-zero value is a bug of the class that crashed Xl_NtContinue on MSVC; see
+// "The guest-view window" in core/dispatch/internal.h.
+std::uint64_t win10xbox_guest_view_violations = 0;
 void win10xbox_syscall_entry();
 }
 
 namespace win10xbox::dispatch {
 namespace detail {
 const ImplDef* NlsImpls();   // nt_nls.cpp (registered like the lists in internal.h)
+
+// What last reached host state inside the guest-view window (a literal). At
+// namespace scope and trivially initialised: it is written from inside the
+// window, where nothing may be lazily initialised.
+const char* volatile g_guest_view_culprit = nullptr;
+
 namespace {
 
 struct PolicyDef { const char* name; Policy policy; const char* note; };
@@ -66,16 +76,41 @@ struct State {
     bool test_clobber_slot = false;    // WIN10XBOX_TEST_TLS_CLOBBER, latched in Initialize
     LARGE_INTEGER qpf{};
 };
-State& S() { static State s; return s; }
+// NAMESPACE SCOPE ON PURPOSE. As a function-local `static` this emitted an
+// MSVC thread-safe-init guard, and the guard reads _Init_thread_epoch through
+// TEB.ThreadLocalStoragePointer -- so Host(), called from Xl_NtContinue after
+// LeaveToGuestView(), faulted on the guest's TLS array. At namespace scope the
+// access is a plain address with no guard and no TLS of any kind. `constinit`
+// makes the compiler reject any future member that would reintroduce dynamic
+// initialisation (and with it a static-initialisation-order dependency).
+constinit State g_state;
+State& S() { return g_state; }
 
+// The remaining singletons keep their function-local `static` (their types
+// cannot be constant-initialised) and so keep the MSVC init guard. None is
+// reachable from the guest-view window today; the check is what tells us if
+// that ever changes, on Wine as well as MSVC, instead of a null+4 fault only a
+// Windows host can produce.
 SRWLOCK g_export_lock = SRWLOCK_INIT;
-std::unordered_map<std::string, void*>& ExportCache() { static std::unordered_map<std::string, void*> m; return m; }
+std::unordered_map<std::string, void*>& ExportCache() {
+    NoteHostStateUnderGuestView("dispatch::ExportCache");
+    static std::unordered_map<std::string, void*> m;
+    return m;
+}
 
 SRWLOCK g_obj_lock = SRWLOCK_INIT;
-std::map<std::uintptr_t, EmulatedObject>& Objects() { static std::map<std::uintptr_t, EmulatedObject> m; return m; }
+std::map<std::uintptr_t, EmulatedObject>& Objects() {
+    NoteHostStateUnderGuestView("dispatch::Objects");
+    static std::map<std::uintptr_t, EmulatedObject> m;
+    return m;
+}
 
 SRWLOCK g_threads_lock = SRWLOCK_INIT;
-std::vector<ThreadState*>& Threads() { static std::vector<ThreadState*> v; return v; }
+std::vector<ThreadState*>& Threads() {
+    NoteHostStateUnderGuestView("dispatch::Threads");
+    static std::vector<ThreadState*> v;
+    return v;
+}
 
 bool IEquals(const char* a, const char* b) {
     for (; *a && *b; ++a, ++b)
@@ -237,12 +272,26 @@ ThreadState* CurrentThreadState() {
     if (!st && raw) {
         // Someone else owns TEB.TlsSlots[tls_index] now. Running on a foreign
         // pointer would write its contents into the TEB, so treat the thread as
-        // having no state and make the breakage visible instead.
+        // having no state and make the breakage visible instead. Only a counter
+        // here: this function runs inside the guest-view window (from
+        // ReenterHostView), so it must touch no TLS and must not log --
+        // win10xbox_dispatch reports it from the host view instead.
         InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(&win10xbox_thread_slot_clobbered));
-        ERR(dispatch, "TEB.TlsSlots[%lu] holds %p, not our ThreadState: TEB view switching off on thread %04lx",
-            S().tls_index, reinterpret_cast<void*>(raw), GetCurrentThreadId());
     }
     return st;
+}
+
+bool GuestViewActive() {
+    const ThreadState* st = CurrentThreadState();
+    return st && (st->flags & kThreadGuestView) != 0;
+}
+
+std::uint64_t GuestViewViolations() { return win10xbox_guest_view_violations; }
+
+void NoteHostStateUnderGuestView(const char* what) {
+    if (!GuestViewActive()) return;
+    g_guest_view_culprit = what;   // literal; last one wins
+    InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(&win10xbox_guest_view_violations));
 }
 
 DWORD ThreadSlotIndex() { return S().tls_index; }
@@ -373,18 +422,22 @@ std::vector<ThreadState*> GuestThreads() {
     return out;
 }
 
+// TLS-free, and must stay so: both run with the guest TLS array installed for
+// part of their body. See "The guest-view window" in internal.h.
 std::uint32_t LeaveToGuestView() {
     ThreadState* st = CurrentThreadState();
     if (!st || !st->depth) return 0;
     std::uint32_t d = st->depth;
     SwapOut(st);
     st->depth = 0;
+    st->flags |= kThreadGuestView;   // opens the window
     return d;
 }
 
 void ReenterHostView(std::uint32_t depth) {
     ThreadState* st = CurrentThreadState();
     if (!st || !depth) return;
+    st->flags &= ~kThreadGuestView;   // closes it, before anything can log
     SwapIn(st);
     st->depth = depth;
 }
@@ -649,6 +702,16 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
     // DLL_PROCESS_ATTACH, which is the first thing that could call TlsAlloc.
     // One relaxed load per syscall until it latches.
     if (!s.guest_tls_reserved) ReserveGuestTlsSlot("first guest syscall");
+    if (win10xbox_guest_view_violations) {
+        static volatile LONG view_reported = 0;
+        if (!InterlockedExchange(&view_reported, 1)) {
+            const char* who = g_guest_view_culprit;
+            ERR(dispatch, "host state reached under the guest TLS view %llu times (last: %s): any thread-local "
+                          "access there faults on MSVC (function-local statics included) -- resolve it before "
+                          "LeaveToGuestView, e.g. via CallInGuestView",
+                static_cast<unsigned long long>(win10xbox_guest_view_violations), who ? who : "?");
+        }
+    }
     if (win10xbox_thread_slot_clobbered && !ThreadSlotIntact()) {
         // Detected, so not silent TEB corruption any more. Put our tagged
         // pointer back: whoever wrote over it is sharing the slot with us, and

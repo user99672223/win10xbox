@@ -60,7 +60,11 @@ struct Globals {
     HANDLE peb_ready = nullptr;             // PEB take-over done, enter the guest
     bool wine_host = false;                 // host ntdll is Wine's (development runs)
 };
-Globals& G() { static Globals g; return g; }
+Globals& G() {
+    NoteHostStateUnderGuestView("process::G");
+    static Globals g;
+    return g;
+}
 
 struct GuestStart {
     void* start;

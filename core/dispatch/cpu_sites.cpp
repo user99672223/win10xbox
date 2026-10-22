@@ -12,7 +12,11 @@ namespace win10xbox::dispatch {
 namespace {
 
 SRWLOCK g_cpu_lock = SRWLOCK_INIT;
-CpuPolicy& Policy_() { static CpuPolicy p; return p; }
+CpuPolicy& Policy_() {
+    NoteHostStateUnderGuestView("dispatch::CpuPolicy");
+    static CpuPolicy p;
+    return p;
+}
 
 bool AmdStyleVendor(const std::string& v) { return v == "AuthenticAMD" || v == "HygonGenuine"; }
 

@@ -20,7 +20,11 @@ constexpr std::size_t kMaxImageFile = 1ull << 30;
 constexpr DWORD kComImage32BitRequired = 0x2, kComImage32BitPreferred = 0x20000, kComImageIlOnly = 0x1;
 
 SRWLOCK g_view_lock = SRWLOCK_INIT;
-std::vector<std::unique_ptr<ImageView>>& Views() { static std::vector<std::unique_ptr<ImageView>> v; return v; }
+std::vector<std::unique_ptr<ImageView>>& Views() {
+    NoteHostStateUnderGuestView("dispatch::Views");
+    static std::vector<std::unique_ptr<ImageView>> v;
+    return v;
+}
 std::shared_ptr<ImageSection> g_main_image;
 volatile LONG64 g_section_ids = 0;
 

@@ -131,6 +131,7 @@ constexpr std::uint32_t kThreadStateMagic = 0x57310B01;   // "W10XB01"
 constexpr std::uint32_t kThreadGuest       = 1u << 0;   // runs guest code
 constexpr std::uint32_t kThreadMain        = 1u << 1;   // guest main thread (bootstrap)
 constexpr std::uint32_t kThreadCallerOwned = 1u << 2;   // bootstrap ran on the Launch caller's thread
+constexpr std::uint32_t kThreadGuestView   = 1u << 3;   // between LeaveToGuestView and ReenterHostView
 
 ThreadState* CurrentThreadState();
 // Creates (or returns) the calling thread's state, capturing the host TLS/FLS
@@ -143,6 +144,42 @@ void DetachThreadState();
 std::uint32_t LeaveToGuestView();
 void ReenterHostView(std::uint32_t depth);
 std::vector<ThreadState*> GuestThreads();   // snapshot
+
+// ---- The guest-view window --------------------------------------------------
+// Between LeaveToGuestView() and ReenterHostView() the TEB shows the GUEST's
+// ThreadLocalStoragePointer, which has no block for the host image. Host code
+// that touches ANY thread-local storage in that window therefore reads through
+// the guest's TLS array and faults -- and under MSVC that includes code with no
+// thread_local in sight, because a function-local `static` emits a thread-safe
+// init guard that reads `_Init_thread_epoch` at offset 4 of the host module's
+// TLS block. That is a null+4 load, which is how `static State s;` in
+// dispatcher.cpp crashed Xl_NtContinue on real Windows while mingw (libc++abi
+// __cxa_guard, no TLS at all) stayed green.
+//
+// The rule: nothing but the functions listed as TLS-free below may run in that
+// window. Everything a transfer needs is resolved BEFORE the swap, which
+// CallInGuestView makes the compiler guarantee rather than the author remember.
+// TLS-free, and required to stay so: CurrentThreadState, SwapIn/SwapOut,
+// LeaveToGuestView, ReenterHostView, GuestViewActive, core/asm.
+bool GuestViewActive();
+// Records that host state was reached inside the window; `what` must be a
+// literal. Cannot log (logging is itself unsafe there): it counts, and the next
+// syscall reports it from the host view. Zero violations is an invariant the
+// Wine job gates on, which is what makes this class visible without MSVC.
+void NoteHostStateUnderGuestView(const char* what);
+std::uint64_t GuestViewViolations();
+
+// Resumes the guest with `fn(args...)`, a host entry point that does not return
+// on success. Every argument -- including the function pointer, so write it as
+// Host().NtX -- is evaluated before this call, hence before the view switch:
+// that ordering is what keeps the window free of host code.
+template <class Fn, class... Args>
+NTSTATUS CallInGuestView(Fn fn, Args... args) {
+    const std::uint32_t depth = LeaveToGuestView();
+    const NTSTATUS s = fn(args...);
+    ReenterHostView(depth);
+    return s;
+}
 
 // ---- The TLS slot we hold in TEB.TlsSlots (dispatcher.cpp) -------------------
 // TEB.TlsSlots has two independent allocators in one process: our host ntdll's

@@ -288,33 +288,21 @@ static NTSTATUS NTAPI Xl_NtRaiseHardError(NTSTATUS error, ULONG nparams, ULONG s
 
 static NTSTATUS NTAPI Xl_NtContinue(PCONTEXT ctx, BOOLEAN alert) {
     NoteGuestEntry(ctx);   // dumps the guest module list once, at the launch continuation
-    std::uint32_t d = LeaveToGuestView();
-    NTSTATUS s = Host().NtContinue(ctx, alert);
-    ReenterHostView(d);
-    return s;
+    return CallInGuestView(Host().NtContinue, ctx, alert);
 }
 
 static NTSTATUS NTAPI Xl_NtContinueEx(PCONTEXT ctx, PVOID arg) {
     NoteGuestEntry(ctx);
-    std::uint32_t d = LeaveToGuestView();
-    NTSTATUS s = Host().NtContinueEx(ctx, arg);
-    ReenterHostView(d);
-    return s;
+    return CallInGuestView(Host().NtContinueEx, ctx, arg);
 }
 
 static NTSTATUS NTAPI Xl_NtRaiseException(PEXCEPTION_RECORD rec, PCONTEXT ctx, BOOLEAN first) {
-    std::uint32_t d = LeaveToGuestView();
-    NTSTATUS s = Host().NtRaiseException(rec, ctx, first);
-    ReenterHostView(d);
-    return s;
+    return CallInGuestView(Host().NtRaiseException, rec, ctx, first);
 }
 
 static NTSTATUS NTAPI Xl_NtSetContextThread(HANDLE thread, PCONTEXT ctx) {
     if (!IsCurrentThreadHandle(thread)) return Host().NtSetContextThread(thread, ctx);
-    std::uint32_t d = LeaveToGuestView();
-    NTSTATUS s = Host().NtSetContextThread(thread, ctx);
-    ReenterHostView(d);
-    return s;
+    return CallInGuestView(Host().NtSetContextThread, thread, ctx);
 }
 
 static NTSTATUS NTAPI Xl_NtCreateThreadEx(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr, HANDLE process,
