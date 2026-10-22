@@ -422,6 +422,10 @@ struct DrawTarget {
     HWND top = nullptr;                        // window DC: the top-level window that owns the surface
 };
 bool ResolveDrawTarget(DcObj* dc, DrawTarget* out);
+// The text cell of the DC's selected font: the built-in 8x16 face, scaled by a whole factor for
+// LOGFONT heights of 32 and up (font8x16.h).
+struct TextCell { int scale, width, height, ascent, descent; };
+TextCell TextCellOf(const DcObj* dc);
 POINT LogicalToDevice(const DcObj* dc, int x, int y);
 int LogicalToDeviceDx(const DcObj* dc, int dx);
 int LogicalToDeviceDy(const DcObj* dc, int dy);

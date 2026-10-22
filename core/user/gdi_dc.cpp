@@ -1,9 +1,10 @@
 // core/user device contexts: DC objects and their DC_ATTR (shared with gdi32,
 // which reads and writes it directly), memory / window / screen DCs, object
 // selection, SaveDC/RestoreDC, clipping, coordinate mapping, device caps and
-// the synthesized font metrics (no font engine yet: docs/GUI.md).
+// the text metrics of the built-in 8x16 face (docs/GUI.md).
 #include "user_internal.h"
 #include "user_syscalls.h"
+#include "font8x16.h"
 
 #include <algorithm>
 #include <cmath>
@@ -238,36 +239,28 @@ void NoteDrawn(DcObj* dc, const DrawTarget& t, RECT device_rect) {
     if (WindowObj* top = Win(t.top)) top->dirty = RectUnion(top->dirty, RectOffset(clipped, t.origin.x, t.origin.y));
 }
 
-// ---- Font metrics (synthesized: no font engine yet) ----------------------------------
+// ---- Font metrics (the built-in 8x16 face) ------------------------------------------------
+
+TextCell TextCellOf(const DcObj* dc) {
+    const LOGFONTW* lf = nullptr;
+    if (auto* f = GdiGetT<FontObj>(dc->font, abi::kObjFont)) lf = &f->lf;
+    // LOGFONT heights below 32 pixels get the plain cell; from 32 up the glyphs are scaled by whole factors.
+    long h = lf ? lf->lfHeight : 0;
+    if (h < 0) h = -h;
+    TextCell c;
+    c.scale = h >= 2 * font8x16::kCellHeight ? static_cast<int>(std::min<long>(h / font8x16::kCellHeight, 64)) : 1;
+    c.width = font8x16::kCellWidth * c.scale;
+    c.height = font8x16::kCellHeight * c.scale;
+    c.ascent = font8x16::kAscent * c.scale;
+    c.descent = font8x16::kDescent * c.scale;
+    return c;
+}
 
 namespace {
 
-struct Metrics { int height, ascent, descent, ave_width, max_width, weight; bool italic; BYTE pitch, charset; };
-
-Metrics FontMetrics(const DcObj* dc) {
-    const LOGFONTW* lf = nullptr;
-    if (auto* f = GdiGetT<FontObj>(dc->font, abi::kObjFont)) lf = &f->lf;
-    Metrics m{};
-    int h = lf ? lf->lfHeight : 16;
-    if (h < 0) h = (-h * 6 + 2) / 5;   // character height -> cell height (internal leading ~20%)
-    if (h == 0) h = 16;
-    m.height = h;
-    m.ascent = (h * 4 + 2) / 5;
-    m.descent = h - m.ascent;
-    m.ave_width = lf && lf->lfWidth > 0 ? lf->lfWidth : (h * 7 + 8) / 16;
-    if (m.ave_width < 1) m.ave_width = 1;
-    m.max_width = m.ave_width * 2;
-    m.weight = lf ? (lf->lfWeight ? lf->lfWeight : FW_NORMAL) : FW_NORMAL;
-    m.italic = lf && lf->lfItalic;
-    m.pitch = lf ? lf->lfPitchAndFamily : static_cast<BYTE>(VARIABLE_PITCH | FF_SWISS);
-    m.charset = lf ? lf->lfCharSet : static_cast<BYTE>(ANSI_CHARSET);
-    return m;
-}
-
-void NoteSynthesizedFonts() {
-    static volatile LONG reported = 0;   // plain flag
-    if (!InterlockedExchange(&reported, 1))
-        FIXME(gdi, "no font engine: text metrics are synthesized from the LOGFONT and text is not drawn");
+const LOGFONTW* LogFontOf(const DcObj* dc) {
+    auto* f = GdiGetT<FontObj>(dc->font, abi::kObjFont);
+    return f ? &f->lf : nullptr;
 }
 
 }  // namespace
@@ -891,26 +884,25 @@ BOOL WINAPI NtGdiGetTextMetricsW(HDC hdc, TEXTMETRICW* tm, ULONG flags) {
     (void)flags;
     DcObj* dc = DcGet(hdc);
     if (!dc || !tm) return FALSE;
-    NoteSynthesizedFonts();
-    const Metrics m = FontMetrics(dc);
+    const TextCell c = TextCellOf(dc);
+    const LOGFONTW* lf = LogFontOf(dc);
     std::memset(tm, 0, sizeof *tm);
-    tm->tmHeight = m.height;
-    tm->tmAscent = m.ascent;
-    tm->tmDescent = m.descent;
-    tm->tmInternalLeading = m.height / 6;
-    tm->tmExternalLeading = 0;
-    tm->tmAveCharWidth = m.ave_width;
-    tm->tmMaxCharWidth = m.max_width;
-    tm->tmWeight = m.weight;
-    tm->tmItalic = m.italic;
-    tm->tmFirstChar = 0x1e;
-    tm->tmLastChar = 0xfffc;
-    tm->tmDefaultChar = 0x1f;
+    tm->tmHeight = c.height;
+    tm->tmAscent = c.ascent;
+    tm->tmDescent = c.descent;
+    tm->tmAveCharWidth = c.width;
+    tm->tmMaxCharWidth = c.width;
+    tm->tmWeight = lf && lf->lfWeight ? lf->lfWeight : FW_NORMAL;
+    tm->tmItalic = lf ? lf->lfItalic : 0;
+    tm->tmUnderlined = lf ? lf->lfUnderline : 0;
+    tm->tmStruckOut = lf ? lf->lfStrikeOut : 0;
+    tm->tmFirstChar = 0x20;
+    tm->tmLastChar = 0xff;
+    tm->tmDefaultChar = 0x7f;
     tm->tmBreakChar = 0x20;
-    // TMPF_FIXED_PITCH means *variable* pitch (the GDI naming is inverted)
-    tm->tmPitchAndFamily = static_cast<BYTE>(((m.pitch & 3) == FIXED_PITCH ? 0 : TMPF_FIXED_PITCH) | TMPF_VECTOR |
-                                             TMPF_TRUETYPE | (m.pitch & 0xf0));
-    tm->tmCharSet = m.charset;
+    // A fixed-pitch raster face: TMPF_FIXED_PITCH (GDI's inverted name for "variable") stays clear.
+    tm->tmPitchAndFamily = static_cast<BYTE>(lf ? lf->lfPitchAndFamily & 0xf0 : 0);
+    tm->tmCharSet = lf ? lf->lfCharSet : static_cast<BYTE>(ANSI_CHARSET);
     tm->tmDigitizedAspectX = tm->tmDigitizedAspectY = 96;
     return TRUE;
 }
@@ -921,17 +913,18 @@ BOOL WINAPI NtGdiGetTextExtentExW(HDC hdc, const WCHAR* str, INT count, INT max_
     (void)str; (void)flags;
     DcObj* dc = DcGet(hdc);
     if (!dc || count < 0) return FALSE;
-    NoteSynthesizedFonts();
-    const Metrics m = FontMetrics(dc);
-    const int extra = dc->attr->char_extra;
+    const TextCell c = TextCellOf(dc);
+    const int advance = c.width + dc->attr->char_extra;
     int fit = 0;
+    bool fits = true;
     for (INT i = 0; i < count; ++i) {
-        const int ext = (i + 1) * (m.ave_width + extra);
+        const int ext = (i + 1) * advance;
         if (dxs) dxs[i] = ext;
-        if (max_ext < 0 || ext <= max_ext) fit = i + 1;
+        if (fits && (max_ext < 0 || ext <= max_ext)) fit = i + 1;
+        else fits = false;
     }
     if (nfit) *nfit = fit;
-    if (size) *size = SIZE{count * (m.ave_width + extra), m.height};
+    if (size) *size = SIZE{count * advance, c.height};
     return TRUE;
 }
 
@@ -955,12 +948,19 @@ BOOL WINAPI NtGdiGetCharWidthW(HDC hdc, UINT first_char, UINT last_char, WCHAR* 
     LockGuard lock;
     DcObj* dc = DcGet(hdc);
     if (!dc || !buffer) return FALSE;
-    const Metrics m = FontMetrics(dc);
+    const int w = TextCellOf(dc).width;
     const UINT n = chars ? last_char : last_char - first_char + 1;
     for (UINT i = 0; i < n; ++i) {
-        if (flags & 0x02 /* NTGDI_GETCHARWIDTH_INT */) static_cast<INT*>(buffer)[i] = m.ave_width;
-        else static_cast<FLOAT*>(buffer)[i] = static_cast<FLOAT>(m.ave_width);
+        if (flags & 0x02 /* NTGDI_GETCHARWIDTH_INT */) static_cast<INT*>(buffer)[i] = w;
+        else static_cast<FLOAT*>(buffer)[i] = static_cast<FLOAT>(w);
     }
+    return TRUE;
+}
+
+BOOL WINAPI NtGdiGetCharWidthInfo(HDC hdc, abi::CharWidthInfo* info) {
+    LockGuard lock;
+    if (!DcGet(hdc) || !info) return FALSE;
+    *info = abi::CharWidthInfo{};   // the glyphs fill their cells: no bearings
     return TRUE;
 }
 
@@ -968,11 +968,11 @@ BOOL WINAPI NtGdiGetCharABCWidthsW(HDC hdc, UINT first, UINT last, WCHAR* chars,
     LockGuard lock;
     DcObj* dc = DcGet(hdc);
     if (!dc || !buffer) return FALSE;
-    const Metrics m = FontMetrics(dc);
+    const int w = TextCellOf(dc).width;
     const UINT n = chars ? last : last - first + 1;
     for (UINT i = 0; i < n; ++i) {
-        if (flags & 0x01 /* NTGDI_GETCHARABCWIDTHS_INT */) static_cast<ABC*>(buffer)[i] = ABC{0, static_cast<UINT>(m.ave_width), 0};
-        else static_cast<ABCFLOAT*>(buffer)[i] = ABCFLOAT{0.0f, static_cast<FLOAT>(m.ave_width), 0.0f};
+        if (flags & 0x01 /* NTGDI_GETCHARABCWIDTHS_INT */) static_cast<ABC*>(buffer)[i] = ABC{0, static_cast<UINT>(w), 0};
+        else static_cast<ABCFLOAT*>(buffer)[i] = ABCFLOAT{0.0f, static_cast<FLOAT>(w), 0.0f};
     }
     return TRUE;
 }
@@ -986,17 +986,18 @@ UINT WINAPI NtGdiGetTextCharsetInfo(HDC hdc, FONTSIGNATURE* fs, DWORD flags) {
         std::memset(fs, 0, sizeof *fs);
         fs->fsCsb[0] = 1;   // FS_LATIN1
     }
-    return FontMetrics(dc).charset;
+    const LOGFONTW* lf = LogFontOf(dc);
+    return lf ? lf->lfCharSet : static_cast<UINT>(ANSI_CHARSET);
 }
 
 DWORD WINAPI NtGdiGetFontData(HDC hdc, DWORD table, DWORD offset, void* buffer, DWORD length) {
     (void)hdc; (void)table; (void)offset; (void)buffer; (void)length;
-    return GDI_ERROR;   // no font files behind the synthesized fonts
+    return GDI_ERROR;   // no font files behind the built-in face
 }
 
 UINT WINAPI NtGdiGetOutlineTextMetricsInternalW(HDC hdc, UINT cbData, OUTLINETEXTMETRICW* otm, ULONG opts) {
     (void)hdc; (void)cbData; (void)otm; (void)opts;
-    NoteUnimplemented("NtGdiGetOutlineTextMetricsInternalW (no font engine)");
+    NoteUnimplemented("NtGdiGetOutlineTextMetricsInternalW (no outline fonts)");
     return 0;
 }
 
@@ -1026,7 +1027,7 @@ BOOL WINAPI NtGdiFontIsLinked(HDC hdc) {
 
 DWORD WINAPI NtGdiGetKerningPairs(HDC hdc, DWORD count, KERNINGPAIR* kern_pair) {
     (void)hdc; (void)count; (void)kern_pair;
-    return 0;   // synthesized fonts have no kerning
+    return 0;   // the built-in face has no kerning
 }
 
 BOOL WINAPI NtGdiSetTextJustification(HDC hdc, INT extra, INT breaks) {

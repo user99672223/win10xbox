@@ -1,8 +1,23 @@
 # Status
 
+## core/user: text rendering (2026-10-22)
+
+`TextOutW` / `ExtTextOutW` / `DrawTextW` now put glyphs on the screen: `core/user/font8x16.h` is a public-domain
+8x16 VGA-style bitmap table (ASCII 0x20-0x7E, box glyph for everything else; cell 8x16, baseline at row 12) and
+`NtGdiExtTextOutW` draws it with ETO_OPAQUE / ETO_CLIPPED / ETO_PDY, the `dx` array, OPAQUE or TRANSPARENT
+background, text colour, every `TA_*` alignment (including `TA_UPDATECP`) and the DC clip, alpha 0xFF. The metrics
+syscalls (`GetTextMetricsW`, `GetTextExtentExW`, `GetCharWidthW`, `GetCharABCWidthsW`, the new `GetCharWidthInfo`)
+report the same cell for every font, so user32's `DrawText` layout (centring, `DT_VCENTER`, multi-line) comes out
+right; LOGFONT heights >= 32 scale the glyphs by whole factors. Design and limits: docs/GUI.md ("Text").
+Local (llvm-mingw + Wine): `ctest --test-dir build-mingw --label-exclude wine_conformance` 100% green with nothing
+skipped; new `user_font8x16_contract`, `user_ext_text_out_*` and `user_text_metrics_and_extents` unit cases. A
+scratch guest through the real gdi32 / user32 showed `TextOutW(10,10,"HI")` with 'H' pixels (1,3) set and (3,3)
+clear, `DrawTextW("Centered", DT_CENTER|DT_VCENTER|DT_SINGLELINE)` in a 400x50 rectangle starting at x=168 (centred
+64 px of text) and three `DrawTextW` lines 16 px apart.
+
 ## core/user: the first pixels, under Wine and on real Windows (2026-10-22)
 
-`core/user` emulates Wine 11.9's win32u contract (234 `NtUser*`/`NtGdi*` syscalls registered, listed as Emulate in
+`core/user` emulates Wine 11.9's win32u contract (235 `NtUser*`/`NtGdi*` syscalls registered, listed as Emulate in
 docs/SYSCALLS.md, plus `NtCallbackReturn`; design and the not-implemented list in docs/GUI.md).
 `integration.guest_window` (tests/guest/window.c) and `integration.guest_window2` (tests/guest/window2.c) pass, gated:
 
