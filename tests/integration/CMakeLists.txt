@@ -234,3 +234,36 @@ win10xbox_guest_tls_test(guest_view_violation_detected 42 "+dispatch,+modules"
   "WIN10XBOX_TEST_GUEST_VIEW_VIOLATION=1"
   "host state reached under the guest TLS view [0-9]+ times \\(last: dispatch::ExportCache\\), [1-9][0-9]* trace lines dropped"
   "")
+
+# ---- Real program: curl's curl.exe (docs/TESTING.md, "Real programs") ---------------------------------------------
+# Built from the release tarball by tools/ci/build_curl.ps1 (CMake + MSVC, no TLS; a named step of ci.yml's windows
+# job, which leaves it at <machine>/guest/curl.exe before ctest runs). Registered only where that step exists (MSVC) or
+# with -DWIN10XBOX_REAL_CURL=ON after putting a curl.exe into the machine folder; never on linux-cross's skip floor.
+# integration.real_curl: --version and the file:// handler (tests/integration/realcurl.cmake).
+# integration.real_curl_http: HTTP against a host-side server (tests/integration/realcurl_http.py); needs the guest's
+# ws2_32 -> AFD path, so it is registered only with -DWIN10XBOX_REAL_CURL_HTTP=ON until that lands.
+option(WIN10XBOX_REAL_CURL "Register integration.real_curl (curl.exe must be in <machine>/guest)" OFF)
+option(WIN10XBOX_REAL_CURL_HTTP "Register integration.real_curl_http (guest sockets through the layer)" OFF)
+if(MSVC OR WIN10XBOX_REAL_CURL)
+  add_test(NAME integration.real_curl
+    COMMAND ${CMAKE_COMMAND} -DHOST=$<TARGET_FILE:win10xbox> -DMACHINE=${WIN10XBOX_MACHINE_DIR}
+      -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR} -P ${CMAKE_CURRENT_SOURCE_DIR}/realcurl.cmake)
+  set_tests_properties(integration.real_curl PROPERTIES
+    FIXTURES_REQUIRED w10x_machine
+    LABELS "guest_e2e;realcurl"
+    TIMEOUT 900)
+  if(WIN10XBOX_REAL_CURL_HTTP)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    set(_curl_emu "")
+    if(CMAKE_CROSSCOMPILING_EMULATOR)
+      set(_curl_emu --emulator ${CMAKE_CROSSCOMPILING_EMULATOR})
+    endif()
+    add_test(NAME integration.real_curl_http
+      COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/realcurl_http.py
+        --host $<TARGET_FILE:win10xbox> --machine ${WIN10XBOX_MACHINE_DIR} ${_curl_emu})
+    set_tests_properties(integration.real_curl_http PROPERTIES
+      FIXTURES_REQUIRED w10x_machine
+      LABELS "guest_e2e;realcurl"
+      TIMEOUT 1500)
+  endif()
+endif()

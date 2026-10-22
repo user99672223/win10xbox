@@ -159,6 +159,17 @@ jobs:
       - name: Populate machine folder from the runner's System32 (never committed)
         shell: pwsh
         run: ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine -CI
+      # A real network client that is not ours: curl 8.11.1's curl.exe from the release tarball (pinned SHA-256, the
+      # cache key carries it), CMake + MSVC, no TLS -> build/bin/machine/guest/curl.exe; run by integration.real_curl
+      # (tests/integration/realcurl.cmake).
+      - name: Cache the curl source tarball
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/curl-src
+          key: curl-8.11.1-a889ac9dbba3644271bd9d1302b5c22a088893719b72be3487bc3d401e5c4e80
+      - name: Build curl.exe (real guest program, no TLS)
+        shell: pwsh
+        run: ./tools/ci/build_curl.ps1 -Out build/bin/machine/guest
       # The whole suite, end-to-end included. The guest's stdout IS captured on
       # real Windows: run 39818491081 (RelWithDebInfo, the one job of that run
       # that had the builtins) printed "hello from guest" and passed 11 of 13
@@ -181,6 +192,14 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: ./tools/ci/smoke_guests.ps1 -Bin build/bin -Machine build/bin/machine -LogDir build/guest-smoke
+      # integration.real_curl_http's script run directly: curl.exe through the layer against a host-side HTTP server.
+      # Informational until the guest ws2_32 -> AFD path lands; then the test is registered with ctest
+      # (-DWIN10XBOX_REAL_CURL_HTTP=ON) and this step goes away.
+      - name: Probe - curl over HTTP through the layer (informational)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: pwsh
+        run: python -I tests/integration/realcurl_http.py --host build/bin/win10xbox.exe --machine (Join-Path $PWD 'build\bin\machine') --timeout 90
       # crash.txt / crash.dmp / entry-reached.txt: what host-win32/crash.cpp writes into build/bin when a guest run
       # (ctest or the smoke step) dies; *.bmp: the GUI tests' screenshots (WIN10XBOX_SCREENSHOT).
       - uses: actions/upload-artifact@v4

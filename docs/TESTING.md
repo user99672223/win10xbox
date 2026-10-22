@@ -223,3 +223,19 @@ km headers: CMake finds them next to the Windows SDK (`Windows Kits\10\Include\<
 showed: `KMUTANT.Abandoned` is a bit field of `MutantFlags` (`OB()` in `layout_list.inc`), and `DEVICE_OBJECT` is
 `DECLSPEC_ALIGN(16)`, size 0x150 (mingw-w64 omits the alignment: 0x148; `SA()`).
 
+
+## Real program: curl
+
+`tools/ci/build_curl.ps1` builds curl 8.11.1's `curl.exe` from the release tarball (SHA-256 pinned, cached by
+ci.yml) with CMake + MSVC: libcurl and the CRT linked statically, no TLS (`-DCURL_ENABLE_SSL=OFF
+-DCURL_USE_SCHANNEL=OFF`), no optional dependency. ci.yml's windows job leaves it at `<machine>/guest/curl.exe`.
+
+| ctest | label | what |
+|-------|-------|------|
+| `integration.real_curl` | `guest_e2e;realcurl` | `curl --version` (banner, `Protocols:` has http and file, no https); `file://` of a guest file to stdout; a 512 KiB `file://` copy with `-o` compared by SHA-256; a missing file -> exit 37 (`tests/integration/realcurl.cmake`) |
+| `integration.real_curl_http` | `guest_e2e;realcurl` | `tests/integration/realcurl_http.py`: a host-side HTTP/1.1 server on 127.0.0.1 (ephemeral port) and GET, 1 MiB GET `-o` (SHA-256), POST `-d`, `-L` redirect, `-f` 404 -> 22, `-I`, refused port -> 7 |
+
+`integration.real_curl` is registered with MSVC or `-DWIN10XBOX_REAL_CURL=ON`. `integration.real_curl_http` needs the
+guest's ws2_32 -> AFD path through the layer and is registered only with `-DWIN10XBOX_REAL_CURL_HTTP=ON`; until that
+path lands ci.yml runs the same script as an informational step ("Probe - curl over HTTP"). Locally:
+`python -I tests/integration/realcurl_http.py --host build/bin/win10xbox.exe --machine <abs machine dir>`.
