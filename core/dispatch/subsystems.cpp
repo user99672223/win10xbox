@@ -23,6 +23,8 @@ const ImplDef* SubsystemImpls() {
 #if WIN10XBOX_HAVE_REGISTRY
         W10X_IMPL(NtOpenKey, registry::Reg_NtOpenKey),
         W10X_IMPL(NtOpenKeyEx, registry::Reg_NtOpenKeyEx),
+        W10X_IMPL(NtOpenKeyTransacted, registry::Reg_NtOpenKeyTransacted),
+        W10X_IMPL(NtOpenKeyTransactedEx, registry::Reg_NtOpenKeyTransactedEx),
         W10X_IMPL(NtCreateKey, registry::Reg_NtCreateKey),
         W10X_IMPL(NtCreateKeyTransacted, registry::Reg_NtCreateKeyTransacted),
         W10X_IMPL(NtDeleteKey, registry::Reg_NtDeleteKey),
@@ -40,6 +42,7 @@ const ImplDef* SubsystemImpls() {
         W10X_IMPL(NtSetInformationKey, registry::Reg_NtSetInformationKey),
         W10X_IMPL(NtLoadKey, registry::Reg_NtLoadKey),
         W10X_IMPL(NtLoadKeyEx, registry::Reg_NtLoadKeyEx),
+        W10X_IMPL(NtLoadKey2, registry::Reg_NtLoadKey2),
         W10X_IMPL(NtUnloadKey, registry::Reg_NtUnloadKey),
         W10X_IMPL(NtSaveKey, registry::Reg_NtSaveKey),
         W10X_IMPL(NtRestoreKey, registry::Reg_NtRestoreKey),

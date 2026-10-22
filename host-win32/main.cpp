@@ -34,6 +34,7 @@
 #include <intrin.h>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cwctype>
 #include <string>
 #include <vector>
@@ -359,6 +360,140 @@ private:
     void* original_ = nullptr;
 };
 
+// WIN10XBOX_TEST_INJECT_INPUT=<script>: a scripted user for the GUI tests (tests/guest/window_input.c). Commands are
+// separated by ';': sleep N (ms), move X,Y (screen coordinates), ldown / lup / rdown / rup (at the last moved position),
+// wheel D (WHEEL_DELTA units), key 0xVK (key down, then up; the scan code is set 1 for 'A'..'Z', else 0). Each command
+// logs one "host-win32: inject" line on stderr. The thread touches no guest state: the loader initialisation it runs
+// on creation completes before Launch takes over the PEB, and after that it only calls the driver, whose InjectInput
+// is thread-safe. It is detached and no exception leaves it.
+struct InjectJob {
+    winexbox::IWinexboxDriver* display = nullptr;
+    std::string script;
+    HANDLE loaded = nullptr;   // set by the thread once its own loader initialisation is done
+    HANDLE go = nullptr;       // set by the host once Launch has started the guest
+};
+
+std::string Trim(const std::string& s) {
+    const size_t b = s.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) return {};
+    return s.substr(b, s.find_last_not_of(" \t\r\n") - b + 1);
+}
+
+// Decimal, or hex with 0x (strtol base 0); the whole string must be a number.
+bool ParseInt(const std::string& s, long& out) {
+    if (s.empty()) return false;
+    char* end = nullptr;
+    out = std::strtol(s.c_str(), &end, 0);
+    return end != nullptr && *end == '\0';
+}
+
+std::uint16_t ScanOfVk(long vk) {
+    static const std::uint16_t kLetters[26] = {0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32,
+                                               0x31, 0x18, 0x19, 0x10, 0x13, 0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C};
+    return (vk >= 'A' && vk <= 'Z') ? kLetters[vk - 'A'] : 0;
+}
+
+// Runs one command; false (nothing sent) when it is not understood.
+bool RunInjectCommand(winexbox::IWinexboxDriver* display, const std::string& cmd, long& x, long& y) {
+    const size_t sp = cmd.find(' ');
+    const std::string verb = cmd.substr(0, sp);
+    const std::string arg = sp == std::string::npos ? std::string() : Trim(cmd.substr(sp + 1));
+    long a = 0, b = 0;
+    bool ok = true;
+    DWORD sleep_ms = 0;
+    std::vector<winexbox::InputEvent> events;
+    winexbox::InputEvent ev;
+    if (verb == "sleep") {
+        ok = ParseInt(arg, a) && a >= 0;
+        sleep_ms = static_cast<DWORD>(a);
+    } else if (verb == "move") {
+        const size_t comma = arg.find(',');
+        ok = comma != std::string::npos && ParseInt(arg.substr(0, comma), a) && ParseInt(arg.substr(comma + 1), b);
+        if (ok) {
+            x = a;
+            y = b;
+            ev.kind = winexbox::InputKind::MouseMove;
+            ev.x = static_cast<std::int32_t>(x);
+            ev.y = static_cast<std::int32_t>(y);
+            events.push_back(ev);
+        }
+    } else if (verb == "ldown" || verb == "lup" || verb == "rdown" || verb == "rup") {
+        ev.kind = verb.find("down") != std::string::npos ? winexbox::InputKind::MouseButtonDown
+                                                         : winexbox::InputKind::MouseButtonUp;
+        ev.button = verb[0] == 'l' ? winexbox::MouseButton::Left : winexbox::MouseButton::Right;
+        ev.x = static_cast<std::int32_t>(x);
+        ev.y = static_cast<std::int32_t>(y);
+        events.push_back(ev);
+    } else if (verb == "wheel") {
+        ok = ParseInt(arg, a);
+        ev.kind = winexbox::InputKind::MouseWheel;
+        ev.wheel_delta = static_cast<std::int32_t>(a);
+        events.push_back(ev);
+    } else if (verb == "key") {
+        ok = ParseInt(arg, a) && a >= 0 && a <= 0xFF;
+        ev.vk = static_cast<std::uint16_t>(a);
+        ev.scan = ScanOfVk(a);
+        ev.kind = winexbox::InputKind::KeyDown;
+        events.push_back(ev);
+        ev.kind = winexbox::InputKind::KeyUp;
+        events.push_back(ev);
+    } else {
+        ok = false;
+    }
+    if (!ok) {
+        std::fprintf(stderr, "host-win32: inject %s: not understood, skipped\n", cmd.c_str());
+        return false;
+    }
+    std::fprintf(stderr, "host-win32: inject %s\n", cmd.c_str());
+    if (verb == "sleep") Sleep(sleep_ms);
+    for (const winexbox::InputEvent& e : events) display->InjectInput(e);
+    return true;
+}
+
+void RunInjectScript(winexbox::IWinexboxDriver* display, const std::string& script) {
+    long x = 0, y = 0;   // the last moved position: the buttons act there
+    size_t pos = 0;
+    while (pos <= script.size()) {
+        size_t semi = script.find(';', pos);
+        if (semi == std::string::npos) semi = script.size();
+        const std::string cmd = Trim(script.substr(pos, semi - pos));
+        pos = semi + 1;
+        if (!cmd.empty()) RunInjectCommand(display, cmd, x, y);
+    }
+}
+
+DWORD WINAPI InjectThreadProc(LPVOID arg) {
+    InjectJob* job = static_cast<InjectJob*>(arg);
+    SetEvent(job->loaded);                    // loader initialisation of this thread is done: the take-over may go ahead
+    WaitForSingleObject(job->go, INFINITE);   // Launch has started the guest
+    try {
+        RunInjectScript(job->display, job->script);
+    } catch (...) {
+        std::fputs("host-win32: inject: aborted\n", stderr);
+    }
+    // Never returns: a thread that exits while the guest runs makes ntdll send DLL_THREAD_DETACH to the modules on
+    // PEB->Ldr, which by then is the guest's list. The process ends by TerminateProcess (EndProcess), which takes it along.
+    for (;;) Sleep(INFINITE);
+}
+
+// Starts the thread (detached) and returns once it has passed its own loader initialisation, which must not overlap
+// the PEB take-over that Launch does next. Returns nullptr when no thread could be started.
+InjectJob* StartInjectThread(winexbox::IWinexboxDriver* display, const std::string& script) {
+    InjectJob* job = new InjectJob;
+    job->display = display;
+    job->script = script;
+    job->loaded = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    job->go = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    HANDLE t = (job->loaded && job->go) ? CreateThread(nullptr, 0, InjectThreadProc, job, 0, nullptr) : nullptr;
+    if (!t) {
+        std::fputs("host-win32: inject: no thread, the script is not run\n", stderr);
+        return nullptr;
+    }
+    CloseHandle(t);   // detached
+    WaitForSingleObject(job->loaded, INFINITE);
+    return job;
+}
+
 }  // namespace
 
 // Everything the host does, up to and including the layer's shutdown. Returns the process exit code.
@@ -411,7 +546,7 @@ static int HostMain(int argc, wchar_t** argv) {
     if (guest_env) opts.environment = win10xbox::process::InheritedGuestEnvironment();
     opts.current_directory = cwd;
     opts.run_on_new_thread = true;
-    opts.wait = true;
+    opts.wait = false;   // Launch returns once the guest runs; HostMain waits for it itself (below)
     std::fflush(stdout);
     // The display: the headless winexbox backend (a virtual 1920x1080 monitor, system-memory window surfaces).
     // core/user allocates window surfaces from it and composes the desktop; WIN10XBOX_SCREENSHOT=<file.bmp> writes
@@ -422,10 +557,25 @@ static int HostMain(int argc, wchar_t** argv) {
     display->SetEventSink(win10xbox::user::InputSink());   // driver input -> the guest's message queues
     wchar_t screenshot[MAX_PATH * 2] = {};
     const DWORD screenshot_len = GetEnvironmentVariableW(L"WIN10XBOX_SCREENSHOT", screenshot, MAX_PATH * 2);
+    // WIN10XBOX_TEST_INJECT_INPUT=<script>: scripted input on a host thread (see InjectThreadProc). Read and started
+    // before Launch, like the screenshot switch: the thread runs its loader initialisation on the host's PEB, and the
+    // script waits for `go`, which is set once Launch has started the guest.
+    wchar_t inject_env[4096];
+    const DWORD inject_len = GetEnvironmentVariableW(L"WIN10XBOX_TEST_INJECT_INPUT", inject_env, 4096);
+    InjectJob* inject = nullptr;
+    if (inject_len && inject_len < 4096) {
+        std::string script(inject_len, '\0');
+        for (DWORD i = 0; i < inject_len; ++i) script[i] = static_cast<char>(inject_env[i]);
+        inject = StartInjectThread(display, script);
+    }
     crash.BeforeLaunch();   // the host's module table, while PEB->Ldr is still the host's
     ActctxProbe actctx;     // test switch, off by default
     g_guest_ran = true;
-    int rc = win10xbox::process::Launch(opts);
+    int rc = win10xbox::process::Launch(opts);   // returns once the guest runs (opts.wait is false)
+    if (rc == 0) {
+        if (inject) SetEvent(inject->go);
+        rc = win10xbox::process::WaitForGuest(INFINITE);   // the second half of Launch(wait = true)
+    }
     actctx.Check();
     if (rc < 0) std::fprintf(stderr, "win10xbox: could not start %ls: status %08x\n", opts.image_path.c_str(), rc);
     if (screenshot_len && screenshot_len < MAX_PATH * 2) {
