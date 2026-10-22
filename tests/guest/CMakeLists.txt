@@ -38,6 +38,12 @@ add_executable(guest_window2 window2.c)
 target_link_libraries(guest_window2 PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window2)
 
+# The input guest (tests/guest/window_input.c): logs the input messages the host injects with
+# WIN10XBOX_TEST_INJECT_INPUT. It cannot do anything useful without that injection, so there is no native smoke test.
+add_executable(guest_window_input window_input.c)
+target_link_libraries(guest_window_input PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_window_input)
+
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
 add_test(NAME guest.hello COMMAND guest_hello)
 set_tests_properties(guest.hello PROPERTIES PASS_REGULAR_EXPRESSION "hello from guest")

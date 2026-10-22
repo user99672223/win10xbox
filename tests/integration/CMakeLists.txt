@@ -26,7 +26,7 @@ set(_prepare_args
 add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
-  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_window guest_window2)
+  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_window guest_window2 guest_window_input)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -116,6 +116,15 @@ win10xbox_guest_test(guest_window2 "C:\\guest\\guest_window2.exe" 42
   "window2: timer=2 destroy=1 ncdestroy=1 iswindow=0" "window2: done")
 set_tests_properties(integration.guest_window2 PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window2.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=63,96,ff00ff00|78,111,ffffff00|100,75,ff99b4d1")
+
+# The input path (tests/guest/window_input.c): the host injects a scripted mouse and keyboard (WIN10XBOX_TEST_INJECT_INPUT,
+# host-win32/main.cpp), and the guest logs each message it receives and exits 42 once the whole sequence has arrived in
+# order. DISABLED until the input delivery slice (claude/youthful-cerf-l7xxsb-input) lands.
+win10xbox_guest_test(guest_window_input "C:\\guest\\guest_window_input.exe" 42
+  "input: WM_LBUTTONDOWN x=50 y=50" "input: WM_CHAR ch=a" "input: WM_MOUSEWHEEL delta=120")
+set_tests_properties(integration.guest_window_input PROPERTIES
+  ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=sleep 1500\\;move 150,150\\;ldown\\;lup\\;key 0x41\\;wheel 120"
+  DISABLED TRUE)
 unset(_guest_machine)
 
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
