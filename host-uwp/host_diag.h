@@ -6,10 +6,9 @@
 //
 // This module and the crash capture of crash.h (crash.txt, crash.dmp, entry-reached.txt and
 // the one-line crash summaries) work side by side; host_shell.h says how the shell wires the
-// capture in. They meet in three places, all implemented here:
+// capture in. They meet in two places, both implemented here:
 //   * trace.log: the capture borrows the log's handle (LogHandle) for its summaries;
-//   * the unhandled-exception filter: InstallCrashFilter chains to the capture's;
-//   * status.txt: Report::Flush() also hands the text to the capture (SetCrashSnapshot).
+//   * the unhandled-exception filter: InstallCrashFilter chains to the capture's.
 //
 // PEB note: process::Launch lets the guest take over PEB fields (loader lists,
 // process parameters, loader lock) while it runs, and shell-side threads are
@@ -70,8 +69,7 @@ namespace diag
 
         void Set(const std::string& key, const std::string& value);
         void SetVerdict(const std::string& verdict);
-        // Rewrites the file and refreshes the crash recorder's snapshot (this module's own, and
-        // the crash capture's, which crash.txt quotes).
+        // Rewrites the file and refreshes the crash recorder's snapshot.
         void Flush();
 
         // Keeps status.txt open so that Flush() rewrites it in place through the
@@ -98,7 +96,8 @@ namespace diag
     // Call it after the capture was installed, or there is nothing to chain to.
     void InstallCrashFilter(const std::wstring& status_path);
 
-    // True once InstallCrashFilter found a filter installed before it and chains to it.
-    bool CrashFilterChained();
+    // One line for trace.log on what InstallCrashFilter did: not installed (yet), installed alone,
+    // or chained to the filter that was installed before it. A string literal.
+    const char* CrashFilterState();
 }  // namespace diag
 }  // namespace w10x_uwp

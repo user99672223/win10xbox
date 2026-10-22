@@ -1,9 +1,9 @@
 // host_diag.cpp - see host_diag.h. The trace sink, the line logger, the report
 // and the crash filter are lifted from host-uwp-lite/smoke.cpp; the additions are
 // the log size cap, a lock that makes closing the log safe against late
-// writers, a thread-safe Report, and the points where this module meets the crash
-// capture of crash.h: the log handle it borrows, the status text it quotes and
-// the unhandled-exception filter this module's one is chained to.
+// writers, a thread-safe Report, and the two points where this module meets the crash
+// capture of crash.h: the log handle it borrows and the unhandled-exception filter
+// this module's one is chained to.
 #include "host_diag.h"
 
 #include "crash.h"
@@ -190,7 +190,6 @@ void Report::Flush()
     for (const auto& kv : kv_) text += kv.first + "=" + kv.second + "\n";
     g_snapshot_len = text.size() < sizeof g_snapshot ? text.size() : sizeof g_snapshot;
     std::memcpy(g_snapshot, text.data(), g_snapshot_len);
-    uwp_lite::SetCrashSnapshot(text.data(), text.size());   // crash.txt quotes the latest text as well (crash.h)
 
     if (held_ != INVALID_HANDLE_VALUE)
     {
@@ -249,46 +248,20 @@ namespace
         return p;
     }
 
-    // The unhandled-exception filter that was installed before ours: the crash capture's
-    // (crash.cpp), which the shell installs first thing, or nullptr. SetUnhandledExceptionFilter
+    // The unhandled-exception filter that was installed before ours, or nullptr: the crash
+    // capture's (crash.cpp), which the shell installs first thing. SetUnhandledExceptionFilter
     // keeps ONE filter, so installing ours without remembering it turns the capture's off: no
     // UNHANDLED record in crash.txt, no dump for the exception that ends the process, no line
-    // in trace.log.
-    std::atomic<LPTOP_LEVEL_EXCEPTION_FILTER> g_capture_filter{nullptr};
+    // in trace.log. (Without the capture it is whatever the process had: a /MT exe starts with
+    // the static CRT's own filter there, which records nothing; see `captured` below.)
+    std::atomic<LPTOP_LEVEL_EXCEPTION_FILTER> g_chained_filter{nullptr};
+    std::atomic<bool> g_filter_installed{false};
 
-    // The host's top-level filter. It runs the crash capture's filter FIRST and its own report
-    // SECOND. Both always run, and the order is deliberate:
-    //
-    //  * The capture is the hardened one. With little stack left (a stack overflow) it hands its
-    //    whole report to a thread of its own, and on a guest thread it first puts the host's
-    //    TLS/FLS back. Anything that ran before it could use up the few KiB of stack that are
-    //    left, or hang, and then crash.txt would not be written at all. Whatever happens in the
-    //    best-effort part below, the capture has already done its work.
-    //  * The capture writes its crash.txt record and its trace.log line BEFORE its slow step, the
-    //    minidump (it suspends every other thread and can take seconds). So only the report below
-    //    waits for the dump. That report is the rewrite of status.txt, and it is the one the capture
-    //    cannot do while the guest runs: Report::HoldOpen() keeps status.txt open for writing and
-    //    the capture reopens it with FILE_SHARE_READ only (a sharing violation). Only this module
-    //    also has the text for it (the Report's snapshot). It runs last, so its status.txt is the
-    //    one that stays.
-    //  * Nothing is written twice. crash.txt, the dump and the trace.log line come from the capture
-    //    alone, so this filter writes the trace.log line itself only when it has no capture to
-    //    chain to. status.txt is replaced by each writer, never appended to.
-    //  * The guard makes the body run once per process and never nested. A fault inside the capture
-    //    (or in the code below) re-enters this filter on the same thread; chaining again would make
-    //    the capture's retry loop (200 x 10 ms for its g_busy lock) wait for a lock that very thread
-    //    still holds. A second thread dying while the first one reports is skipped too: the first
-    //    report is the one that matters, and the capture's vectored handler has recorded the rest.
-    //  * The result is the capture's (EXCEPTION_CONTINUE_SEARCH: the OS goes on and ends the
-    //    process), as it was before this filter chained to it.
-    LONG WINAPI CrashFilter(EXCEPTION_POINTERS* ep)
+    // This module's own report: the CRASH line, and the rewrite of status.txt. A function of its own
+    // and never inlined, so that its 768-byte line buffer is not on the stack while the capture's
+    // filter runs (CrashFilter calls it afterwards). `captured`: the capture recorded the exception.
+    __declspec(noinline) void ReportCrash(const EXCEPTION_POINTERS* ep, bool captured)
     {
-        if (InterlockedExchange(&g_in_crash, 1) != 0) return EXCEPTION_CONTINUE_SEARCH;
-
-        const LPTOP_LEVEL_EXCEPTION_FILTER capture = g_capture_filter.load();
-        const LONG verdict = capture != nullptr ? capture(ep) : EXCEPTION_CONTINUE_SEARCH;
-
-        if (ep == nullptr || ep->ExceptionRecord == nullptr) return verdict;
         char line[768];
         char* p = line;
         const EXCEPTION_RECORD* er = ep->ExceptionRecord;
@@ -321,10 +294,10 @@ namespace
             p = PutHex(p, c->Rdx, 16);
         }
         *p++ = '\n';
-        // trace.log: a chained capture has written the same line itself (it borrows the log handle,
-        // see LogHandle), so this one is for the case without a capture. The log handle is read
-        // without the lock on purpose: this may run on a thread that holds it.
-        if (capture == nullptr && g_log != INVALID_HANDLE_VALUE) WriteAll(g_log, line, static_cast<std::size_t>(p - line));
+        // trace.log: the capture has written the same line itself (it borrows the log handle, see
+        // LogHandle), so this one is for when it did not. The log handle is read without the lock
+        // on purpose: this may run on a thread that holds it.
+        if (!captured && g_log != INVALID_HANDLE_VALUE) WriteAll(g_log, line, static_cast<std::size_t>(p - line));
         if (g_crash_status_path[0] != 0)
         {
             HANDLE h = CreateFileW(g_crash_status_path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
@@ -334,7 +307,7 @@ namespace
                 static const char kHead[] = "RESULT: FAIL (the host process crashed)\n";
                 WriteAll(h, kHead, sizeof kHead - 1);
                 WriteAll(h, line, static_cast<std::size_t>(p - line));
-                if (capture != nullptr)
+                if (captured)
                 {
                     // The capture is done by now, the dump included.
                     static const char kFiles[] =
@@ -347,6 +320,49 @@ namespace
                 CloseHandle(h);
             }
         }
+    }
+
+    // The host's top-level filter. It runs the crash capture's filter FIRST and its own report
+    // (ReportCrash) SECOND. Both always run, and the order is deliberate:
+    //
+    //  * The capture is the hardened one. With little stack left (a stack overflow) it hands its
+    //    whole report to a thread of its own, and on a guest thread it first puts the host's
+    //    TLS/FLS back. Anything that ran before it could use up the few KiB of stack that are
+    //    left, or hang, and then crash.txt would not be written at all. That is also why this
+    //    function is kept small (no buffer of its own: that is in ReportCrash, which runs after
+    //    the capture), and why whatever happens in the best-effort part below, the capture has
+    //    already done its work.
+    //  * The capture writes its crash.txt record and its trace.log line BEFORE its slow step, the
+    //    minidump (it suspends every other thread and can take seconds). So only the report below
+    //    waits for the dump. That report is the rewrite of status.txt, and it is the one the capture
+    //    cannot do while the guest runs: Report::HoldOpen() keeps status.txt open for writing and
+    //    the capture reopens it with FILE_SHARE_READ only (a sharing violation). Only this module
+    //    also has the text for it (the Report's snapshot). It runs last, so its status.txt is the
+    //    one that stays.
+    //  * Nothing is written twice. crash.txt, the dump and the trace.log line come from the capture
+    //    alone, so this filter writes the trace.log line itself only when the capture did not
+    //    record the exception (nothing to chain to, or the filter before this one is not the
+    //    capture, or the capture skipped it). status.txt is replaced by each writer, never
+    //    appended to.
+    //  * The guard makes the body run once per process and never nested. A fault inside the capture
+    //    (or in the code below) re-enters this filter on the same thread; chaining again would make
+    //    the capture's retry loop (200 x 10 ms for its g_busy lock) wait for a lock that very thread
+    //    still holds. A second thread dying while the first one reports is skipped too: the first
+    //    report is the one that matters, and the capture's vectored handler has recorded the rest.
+    //  * The result is the chained filter's, the capture's EXCEPTION_CONTINUE_SEARCH (the OS goes on
+    //    and ends the process), as it was before this filter chained to it.
+    LONG WINAPI CrashFilter(EXCEPTION_POINTERS* ep)
+    {
+        if (InterlockedExchange(&g_in_crash, 1) != 0) return EXCEPTION_CONTINUE_SEARCH;
+
+        const LPTOP_LEVEL_EXCEPTION_FILTER chained = g_chained_filter.load();
+        const long records_before = uwp_lite::GetCrashStats().fatal_records;
+        const LONG verdict = chained != nullptr ? chained(ep) : EXCEPTION_CONTINUE_SEARCH;
+        // The capture counts its UNHANDLED record before it writes anything (crash.cpp RecordCore);
+        // a different filter, or the capture skipping this exception, leaves the counter alone.
+        const bool captured = uwp_lite::GetCrashStats().fatal_records != records_before;
+
+        if (ep != nullptr && ep->ExceptionRecord != nullptr) ReportCrash(ep, captured);
         return verdict;
     }
 }  // namespace
@@ -360,12 +376,18 @@ void InstallCrashFilter(const std::wstring& status_path)
     // that is a few instructions at the start of the worker, and the capture's vectored handler
     // is not affected.)
     const LPTOP_LEVEL_EXCEPTION_FILTER previous = SetUnhandledExceptionFilter(&CrashFilter);
-    if (previous != &CrashFilter) g_capture_filter.store(previous);
+    if (previous != &CrashFilter) g_chained_filter.store(previous);
+    g_filter_installed.store(true);
 }
 
-bool CrashFilterChained()
+const char* CrashFilterState()
 {
-    return g_capture_filter.load() != nullptr;
+    if (!g_filter_installed.load()) return "unhandled-exception filter: host_diag's is not installed (yet)";
+    if (g_chained_filter.load() == nullptr)
+        return "unhandled-exception filter: host_diag's, with NO filter installed before it to chain to "
+               "(crash.txt gets no UNHANDLED record)";
+    return "unhandled-exception filter: host_diag's, chained to the filter installed before it (expected: the crash "
+           "capture's, which writes the UNHANDLED record to crash.txt before host_diag rewrites status.txt)";
 }
 
 }  // namespace diag

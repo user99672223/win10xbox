@@ -9,11 +9,12 @@
 // The process exit code is the guest's.
 //
 // MSVC builds also carry crash capture (crash.cpp, see CMakeLists.txt). It leaves crash.txt (annotated exception
-// records: stack words, registers, the guest's module list), crash.dmp (a minidump) and entry-reached.txt in
+// records: stack words, registers, module tables), crash.dmp (a minidump) and entry-reached.txt in
 // %WIN10XBOX_CRASH_DIR% (default: the directory of win10xbox.exe, else %TEMP%). A guest run also starts with a few
-// "host-win32:" lines on stderr: that directory, and the load base and size of the host executable and of every
-// other module of this process. crash.txt's own module list is the GUEST's (Wine's ntdll replaces PEB->Ldr), so an
-// address in the host image is attributed with those lines and win10xbox.map (the linker map), not with crash.txt.
+// "host-win32:" lines on stderr: that directory, the host image's load base / size / preferred base / timestamp (the
+// last two tie an address to win10xbox.map, the linker map) and the base and size of every host module. The module
+// list of a crash record is the GUEST's (Wine's ntdll replaces PEB->Ldr), so crash.cpp also saves the host's own
+// list before that happens and attributes addresses against both.
 #include "win10xbox/core.h"
 #include "win10xbox/dispatch.h"
 #include "win10xbox/trace.h"
@@ -24,7 +25,6 @@
 #include <string>
 #include <vector>
 #if defined(WIN10XBOX_HOST_CRASH_CAPTURE)
-#include <tlhelp32.h>
 #include "crash.h"
 #endif
 
@@ -219,34 +219,6 @@ std::string DescribeHostImage() {
     return buf;
 }
 
-// Every module of THIS process with its base and size. Once the guest's ntdll has run, the PEB's loader lists
-// describe the guest (that is the module list crash.txt prints), so an address inside the host executable or one of
-// the host's DLLs shows up in crash.txt only as a bare memory region. This table is taken before the guest launches
-// and is what attributes such an address.
-std::vector<std::string> DescribeAllHostModules() {
-    std::vector<std::string> lines;
-    HANDLE snap = INVALID_HANDLE_VALUE;
-    for (int attempt = 0; attempt < 5; ++attempt) {   // ERROR_BAD_LENGTH: the module list changed under the snapshot
-        snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
-        if (snap != INVALID_HANDLE_VALUE || GetLastError() != ERROR_BAD_LENGTH) break;
-    }
-    if (snap == INVALID_HANDLE_VALUE) {
-        lines.push_back("host-module snapshot failed, error " + std::to_string(GetLastError()));
-        return lines;
-    }
-    MODULEENTRY32W e;
-    e.dwSize = sizeof e;
-    for (BOOL ok = Module32FirstW(snap, &e); ok; ok = Module32NextW(snap, &e)) {
-        char buf[1536];
-        std::snprintf(buf, sizeof buf, "host-module base=0x%016llx size=0x%08lx path=%s",
-                      static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(e.modBaseAddr)),
-                      static_cast<unsigned long>(e.modBaseSize), Narrow(e.szExePath).c_str());
-        lines.push_back(buf);
-    }
-    CloseHandle(snap);
-    return lines;
-}
-
 // Installed first thing in wmain, so everything after it (Initialize, Launch, the guest) is covered.
 class HostCrash {
 public:
@@ -276,12 +248,13 @@ public:
         HostLog("crash.txt, crash.dmp and entry-reached.txt go to " + Narrow(dir_));
         HostLog(state_);
         HostLog(spec);
-        for (const std::string& line : uwp_lite::DescribeHostModules()) HostLog(line);
         HostLog(DescribeHostImage());
     }
-    // Right before process::Launch: from then on the PEB's loader lists belong to the guest.
+    // Right before process::Launch: from then on the PEB's loader lists belong to the guest. DescribeHostModules()
+    // records the host's module paths for crash.txt, refreshes crash.cpp's table of the host's modules (base, size,
+    // path: the table every crash record carries) and returns it as lines, which are logged here as well.
     void BeforeLaunch() {
-        for (const std::string& line : DescribeAllHostModules()) HostLog(line);
+        for (const std::string& line : uwp_lite::DescribeHostModules()) HostLog(line);
     }
 
 private:
@@ -303,6 +276,9 @@ public:
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+    // First thing: crash.txt / crash.dmp for everything below (a no-op without crash.cpp). Nothing is printed here, so
+    // --version / --help / the hello run keep their exact output (integration.host_version anchors on it).
+    HostCrash crash;
     win10xbox::config::Config cfg;
     std::vector<std::wstring> rest;
     std::wstring cwd;
@@ -325,6 +301,9 @@ int wmain(int argc, wchar_t** argv) {
         cfg.machine_root = exe.substr(0, exe.find_last_of(L"\\/")) + L"\\machine";
     }
     cfg.machine_root = FullPath(cfg.machine_root);
+    // A guest will run: trace sink for the entry marker, +modules, the startup lines on stderr (before Initialize,
+    // which reads WIN10XBOX_DEBUG; not for --version / --help / hello).
+    if (!rest.empty()) crash.BeforeInitialize();
     if (int rc = win10xbox::Initialize(cfg)) { std::fprintf(stderr, "initialise failed: %d\n", rc); return 2; }
     if (rest.empty()) {
         std::printf("win10xbox %d.%d.%d (%s): hello from host-win32\n", v.major, v.minor, v.patch, v.git);
@@ -341,6 +320,7 @@ int wmain(int argc, wchar_t** argv) {
     opts.run_on_new_thread = true;
     opts.wait = true;
     std::fflush(stdout);
+    crash.BeforeLaunch();   // the host's module table, while PEB->Ldr is still the host's
     int rc = win10xbox::process::Launch(opts);
     if (rc < 0) std::fprintf(stderr, "win10xbox: could not start %ls: status %08x\n", opts.image_path.c_str(), rc);
     win10xbox::dispatch::Shutdown();

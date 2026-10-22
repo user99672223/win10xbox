@@ -1,3 +1,30 @@
+// ===========================================================================================================
+// host-win32's copy: NOT byte-identical to host-uwp-lite/crash.cpp or host-uwp/crash.cpp any more.
+//
+// Until this change the three copies were the same file (verified by sha256). This one adds HOST MODULE
+// ATTRIBUTION; crash.h is unchanged and still byte-identical. Every changed or added region below is tagged
+// "[host-win32]" so the delta is easy to review, and to carry over to the other copies if that is ever wanted
+// (that is a separate decision: the other two copies were NOT touched).
+//
+// WHY. Once the guest's ntdll has run, PEB->Ldr is the GUEST's loader list (Wine's loader_init replaces the
+// pointer), so the module list of a crash record names only guest modules. An address inside the host executable
+// (core/ is linked into it) or inside one of the host's DLLs matched nothing and was printed as a bare
+// VirtualQuery region ("image r-x region 0x...+0x..."), which reads like a module but is not one. That was mistaken
+// for a module twice while a guest-startup crash was being attributed.
+//
+// WHAT.
+//   * InstallCrashCapture saves the host's own loader list (base, SizeOfImage, timestamp, full path) while PEB->Ldr
+//     is still the host's, into static arrays (g_host_mods), and remembers that PEB_LDR_DATA's address.
+//     DescribeHostModules() refreshes the snapshot if PEB->Ldr is still the host's, and also returns the table as
+//     extra lines for the harness's log. The crash path itself only reads the arrays: no heap, no new API.
+//   * Every record that carries the module list also carries the host table, near the top (base, size, path).
+//   * Addresses are matched against both lists and labelled "guest module" or "host module" (the live PEB->Ldr list
+//     is labelled by which one it is at that moment: it is the host's list before the guest takes over).
+//   * An address that matches neither is printed as "<unattributed; ...>"; for a mapped image it also says what the
+//     PE headers at the allocation base report (SizeOfImage, timestamp, the RVA), so a region can no longer pass
+//     for a module.
+// ===========================================================================================================
+//
 // crash.cpp - crash.txt / crash.dmp / entry-reached.txt and the host module report.
 // See crash.h for what each file is and why it exists.
 //
@@ -86,7 +113,7 @@ volatile std::uint64_t g_last_addr = 0;
 volatile DWORD g_last_code = 0;
 volatile LONG g_last_repeat = 0;
 
-char g_out_buf[48 * 1024];               // the record under construction (under g_busy)
+char g_out_buf[64 * 1024];               // the record under construction (under g_busy) [host-win32: was 48 KiB; the host table needs room]
 char g_res_buf[2048];                    // the FAIL text for result.txt (under g_busy)
 
 struct ModEntry
@@ -98,6 +125,20 @@ struct ModEntry
 constexpr unsigned kMaxMods = 48;
 ModEntry g_mods[kMaxMods];
 unsigned g_nmods = 0;
+
+// [host-win32] The host's own modules, saved while PEB->Ldr was still the host's (SnapshotHostModules).
+struct HostMod
+{
+    std::uint64_t base;
+    std::uint32_t size;                  // SizeOfImage
+    std::uint32_t stamp;                 // PE TimeDateStamp (the linker map's "Timestamp is" for the executable)
+    char path[260];                      // full path, printable ASCII
+};
+constexpr unsigned kMaxHostMods = 128;
+HostMod g_host_mods[kMaxHostMods];
+unsigned g_nhost_mods = 0;
+std::uint64_t g_host_ldr = 0;            // PEB->Ldr as the snapshot found it: the host's own PEB_LDR_DATA
+std::uint64_t g_live_ldr = 0;            // PEB->Ldr when the current record's g_mods were read
 
 // ---------------------------------------------------------------------------
 // Tiny formatter: appends to a fixed buffer, never overflows, never allocates.
@@ -389,9 +430,11 @@ bool FatalLooking(DWORD code)
 void SnapshotModules()
 {
     g_nmods = 0;
+    g_live_ldr = 0;   // [host-win32]
     const unsigned char* peb = reinterpret_cast<const unsigned char*>(__readgsqword(0x60));
     std::uint64_t ldr = 0;
     if (peb == nullptr || SafeCopy(peb + 0x18, &ldr, 8) != 8 || ldr == 0) return;
+    g_live_ldr = ldr;   // [host-win32] LiveKind() compares it with g_host_ldr: is this list the host's or the guest's?
     const std::uint64_t head = ldr + 0x10;
     std::uint64_t cur = 0;
     if (SafeCopy(reinterpret_cast<const void*>(head), &cur, 8) != 8) return;
@@ -424,35 +467,152 @@ void SnapshotModules()
     }
 }
 
-// "smoke.exe+0x1a2b", or the memory region the address is in.
-void AnnotateAddress(Out& o, std::uint64_t a)
+// [host-win32] SizeOfImage and TimeDateStamp from the PE headers at `base` (read through SafeCopy: a wild base cannot
+// make the handler fault). False when there is no valid 64-bit PE image header there.
+bool ReadPeHeaders(std::uint64_t base, std::uint32_t* size_of_image, std::uint32_t* stamp)
+{
+    IMAGE_DOS_HEADER dos;
+    if (SafeCopy(reinterpret_cast<const void*>(base), &dos, sizeof dos) != sizeof dos || dos.e_magic != IMAGE_DOS_SIGNATURE)
+        return false;
+    if (dos.e_lfanew < 0x40 || dos.e_lfanew > 0x1000) return false;
+    IMAGE_NT_HEADERS64 nt;
+    if (SafeCopy(reinterpret_cast<const unsigned char*>(base) + dos.e_lfanew, &nt, sizeof nt) != sizeof nt) return false;
+    if (nt.Signature != IMAGE_NT_SIGNATURE || nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) return false;
+    *size_of_image = nt.OptionalHeader.SizeOfImage;
+    *stamp = nt.FileHeader.TimeDateStamp;
+    return true;
+}
+
+// [host-win32] The host's own modules (base, SizeOfImage, timestamp, full path) from its loader list, into
+// g_host_mods. Only meaningful while PEB->Ldr is still the host's: InstallCrashCapture takes the first snapshot,
+// DescribeHostModules() refreshes it. Once the guest has replaced PEB->Ldr the saved snapshot is kept as it is (the
+// address of the host's PEB_LDR_DATA is remembered in g_host_ldr, so that case is recognised). Not for the crash
+// path (it runs before the guest, outside any handler), but it reads only through SafeCopy and never allocates.
+// Callers: either nothing else can be writing a record yet (install), or they hold g_busy.
+void SnapshotHostModules()
+{
+    const unsigned char* peb = reinterpret_cast<const unsigned char*>(__readgsqword(0x60));
+    std::uint64_t ldr = 0;
+    if (peb == nullptr || SafeCopy(peb + 0x18, &ldr, 8) != 8 || ldr == 0) return;
+    if (g_host_ldr != 0 && ldr != g_host_ldr) return;   // the guest owns PEB->Ldr now: keep what we have
+    const std::uint64_t head = ldr + 0x10;
+    std::uint64_t cur = 0;
+    if (SafeCopy(reinterpret_cast<const void*>(head), &cur, 8) != 8) return;
+    unsigned n = 0;
+    for (unsigned guard = 0; cur != 0 && cur != head && guard < 512 && n < kMaxHostMods; ++guard)
+    {
+        unsigned char e[0x58];
+        if (SafeCopy(reinterpret_cast<const void*>(cur), e, sizeof e) != sizeof e) break;
+        HostMod& m = g_host_mods[n];
+        std::memset(&m, 0, sizeof m);
+        std::memcpy(&m.base, e + 0x30, 8);
+        std::memcpy(&m.size, e + 0x40, 4);
+        USHORT len = 0;
+        std::uint64_t buf = 0;
+        std::memcpy(&len, e + 0x48, 2);
+        std::memcpy(&buf, e + 0x50, 8);
+        wchar_t w[sizeof m.path];
+        std::size_t chars = len / sizeof(wchar_t);
+        if (chars > sizeof m.path - 1) chars = sizeof m.path - 1;
+        const std::size_t got =
+            buf != 0 ? SafeCopy(reinterpret_cast<const void*>(buf), w, chars * sizeof(wchar_t)) / sizeof(wchar_t) : 0;
+        for (std::size_t i = 0; i < got; ++i) m.path[i] = (w[i] >= 0x20 && w[i] < 0x7f) ? static_cast<char>(w[i]) : '?';
+        if (m.base != 0)
+        {
+            std::uint32_t pe_size = 0;
+            if (!ReadPeHeaders(m.base, &pe_size, &m.stamp)) m.stamp = 0;
+            ++n;
+        }
+        std::memcpy(&cur, e, 8);   // Flink
+    }
+    if (n == 0) return;
+    g_nhost_mods = n;
+    g_host_ldr = ldr;
+}
+
+// [host-win32] Which module an address belongs to, and under which label: the live PEB->Ldr list first (g_mods, read by
+// SnapshotModules for this record), then the host snapshot. The live list is the host's own before the guest takes
+// PEB->Ldr over and the guest's afterwards; comparing its address with the one saved at install time says which.
+struct ModHit
+{
+    const char* kind;                    // "guest module" / "host module" / "module (PEB->Ldr)"
+    const char* path;                    // full path, or its tail for the live list; printable ASCII
+    std::uint64_t base;
+    std::uint32_t size;
+};
+
+const char* LiveKind()
+{
+    if (g_host_ldr == 0 || g_live_ldr == 0) return "module (PEB->Ldr)";
+    return g_live_ldr == g_host_ldr ? "host module" : "guest module";
+}
+
+bool FindModule(std::uint64_t a, ModHit* hit)
 {
     for (unsigned i = 0; i < g_nmods; ++i)
     {
         const ModEntry& m = g_mods[i];
         if (m.base != 0 && a >= m.base && a < m.base + m.size)
         {
-            // basename only
-            const char* name = m.name;
-            for (const char* p = m.name; *p; ++p)
-                if (*p == '\\' || *p == '/') name = p + 1;
-            o.Ascii(name, 40);
-            o.Ch('+');
-            o.HexMin(a - m.base);
-            return;
+            *hit = ModHit{LiveKind(), m.name, m.base, m.size};
+            return true;
         }
     }
-    MEMORY_BASIC_INFORMATION mbi;
-    if (a == 0 || VirtualQuery(reinterpret_cast<const void*>(a), &mbi, sizeof mbi) == 0)
+    for (unsigned i = 0; i < g_nhost_mods; ++i)
     {
-        o.Str(a == 0 ? "null" : "unmapped");
+        const HostMod& m = g_host_mods[i];
+        if (m.base != 0 && a >= m.base && a < m.base + m.size)
+        {
+            *hit = ModHit{"host module", m.path, m.base, m.size};
+            return true;
+        }
+    }
+    return false;
+}
+
+// "guest module smoke.exe+0x1a2b", "host module win10xbox.exe+0x236c", or "<unattributed; ...>" for an address that
+// neither loader list names. [host-win32] The fallback says in so many words that what follows is a memory REGION
+// (VirtualQuery), not a module; for a mapped image it adds what the PE headers at the allocation base report.
+void AnnotateAddress(Out& o, std::uint64_t a)
+{
+    ModHit hit;
+    if (FindModule(a, &hit))
+    {
+        // basename only
+        const char* name = hit.path;
+        for (const char* p = hit.path; *p; ++p)
+            if (*p == '\\' || *p == '/') name = p + 1;
+        o.Str(hit.kind);
+        o.Ch(' ');
+        o.Ascii(name, 40);
+        o.Ch('+');
+        o.HexMin(a - hit.base);
+        return;
+    }
+    o.Str("<unattributed; ");
+    MEMORY_BASIC_INFORMATION mbi;
+    if (a < 0x10000)
+    {
+        if (a == 0) o.Str("null");
+        else
+        {
+            o.Str("null pointer + ");
+            o.HexMin(a);
+        }
+        o.Ch('>');
+        return;
+    }
+    if (VirtualQuery(reinterpret_cast<const void*>(a), &mbi, sizeof mbi) == 0)
+    {
+        o.Str("unmapped (VirtualQuery failed)>");
         return;
     }
     if (mbi.State == MEM_FREE)
     {
-        o.Str("free address space");
+        o.Str("free address space>");
         return;
     }
+    o.Str("memory REGION, not a module: ");
     o.Str(mbi.Type == MEM_IMAGE ? "image" : mbi.Type == MEM_MAPPED ? "mapped" : "private");
     if (mbi.State == MEM_RESERVE)
     {
@@ -474,6 +634,23 @@ void AnnotateAddress(Out& o, std::uint64_t a)
     o.Addr(reinterpret_cast<std::uintptr_t>(mbi.BaseAddress));
     o.Ch('+');
     o.HexMin(mbi.RegionSize);
+    if (mbi.Type == MEM_IMAGE && mbi.AllocationBase != nullptr)
+    {
+        const std::uint64_t alloc = reinterpret_cast<std::uintptr_t>(mbi.AllocationBase);
+        o.Str(", allocation base ");
+        o.Addr(alloc);
+        std::uint32_t pe_size = 0, pe_stamp = 0;
+        if (ReadPeHeaders(alloc, &pe_size, &pe_stamp))
+        {
+            o.Str(", PE headers there: SizeOfImage 0x");
+            o.Hex(pe_size, 8);
+            o.Str(" timestamp 0x");
+            o.Hex(pe_stamp, 8);
+            o.Str(" => RVA ");
+            o.HexMin(a - alloc);
+        }
+    }
+    o.Ch('>');
 }
 
 void ReadCString(Out& o, std::uint64_t p)
@@ -528,6 +705,27 @@ void BuildRecord(Out& o, EXCEPTION_POINTERS* ep, DWORD tid, const char* kind, bo
     o.Str("  tick ");
     o.Dec(GetTickCount64());
     o.Nl();
+
+    if (with_modules)
+    {
+        // [host-win32] Near the top, so an address further down can be attributed by hand: base, SizeOfImage, PE
+        // timestamp and path of every module of the HOST process, as saved before the guest took PEB->Ldr over.
+        o.Str("host modules (the host process's own modules, saved by InstallCrashCapture before the guest took PEB->Ldr over; "
+              "an address inside [base, base+size) is in that module, RVA = address - base):\n");
+        if (g_nhost_mods == 0) o.Str("  <none recorded>\n");
+        for (unsigned i = 0; i < g_nhost_mods; ++i)
+        {
+            o.Str("  ");
+            o.Addr(g_host_mods[i].base);
+            o.Str("  size 0x");
+            o.Hex(g_host_mods[i].size, 8);
+            o.Str("  stamp 0x");
+            o.Hex(g_host_mods[i].stamp, 8);
+            o.Str("  ");
+            o.Ascii(g_host_mods[i].path, sizeof g_host_mods[i].path);
+            o.Nl();
+        }
+    }
 
     o.Str("exception: ");
     o.Hex32(er->ExceptionCode);
@@ -657,9 +855,8 @@ void BuildRecord(Out& o, EXCEPTION_POINTERS* ep, DWORD tid, const char* kind, bo
             o.Str("] ");
             o.Addr(words[i]);
             MEMORY_BASIC_INFORMATION mbi;
-            bool annotate = false;
-            for (unsigned m = 0; m < g_nmods && !annotate; ++m)
-                annotate = g_mods[m].base != 0 && words[i] >= g_mods[m].base && words[i] < g_mods[m].base + g_mods[m].size;
+            ModHit stack_hit;   // [host-win32] both lists, not only the live one
+            bool annotate = FindModule(words[i], &stack_hit);
             if (!annotate && words[i] > 0x10000 && VirtualQuery(reinterpret_cast<const void*>(words[i]), &mbi, sizeof mbi) != 0)
                 annotate = mbi.State == MEM_COMMIT && ExecutableProtect(mbi.Protect);
             if (annotate)
@@ -673,7 +870,12 @@ void BuildRecord(Out& o, EXCEPTION_POINTERS* ep, DWORD tid, const char* kind, bo
 
     if (with_modules)
     {
-        o.Str("modules in the loader lists of this process (PEB->Ldr, in load order; while the guest runs this is the guest's list):\n");
+        // [host-win32] says which list this is (see LiveKind): it is the guest's once the guest's ntdll has run.
+        o.Str("modules in PEB->Ldr right now (in load order; ");
+        o.Str(g_host_ldr == 0 || g_live_ldr == 0 ? "owner unknown"
+              : g_live_ldr == g_host_ldr         ? "this is still the HOST's own list: the guest has not taken PEB->Ldr over"
+                                                 : "this is the GUEST's list; the host's modules are in the 'host modules' table at the top");
+        o.Str("):\n");
         if (g_nmods == 0) o.Str("  <none readable>\n");
         for (unsigned i = 0; i < g_nmods; ++i)
         {
@@ -1052,6 +1254,10 @@ std::string InstallCrashCapture(const CrashConfig& cfg, HANDLE trace_log)
     // path never has to load a DLL.
     g_dbghelp_hr = BindDbghelp();
 
+    // [host-win32] The host's own loader list, saved now while PEB->Ldr is still the host's (dbghelp.dll and what it
+    // pulled in are loaded by now, so they are in it). See the comment at the top of this file.
+    SnapshotHostModules();
+
     // The crash thread: stack of its own for the records of a stack overflow, and the one
     // that writes the minidump. Created even if dbghelp is unavailable.
     std::string thread_state;
@@ -1085,7 +1291,8 @@ std::string InstallCrashCapture(const CrashConfig& cfg, HANDLE trace_log)
     PVOID veh = AddVectoredExceptionHandler(0, &LastChanceVeh);
     SetUnhandledExceptionFilter(&CrashFilter);
     return std::string("crash capture installed (last-chance vectored handler ") + (veh != nullptr ? "added" : "NOT added") +
-           ", unhandled-exception filter set); " + thread_state + "; " + dump_state;
+           ", unhandled-exception filter set); " + thread_state + "; " + dump_state + "; " +
+           Fmt("%u host modules saved for attribution", g_nhost_mods);   // [host-win32]
 }
 
 void DetachCrashTraceLog()
@@ -1172,6 +1379,21 @@ std::vector<std::string> DescribeHostModules()
         std::memcpy(g_host_modules + pos, row.data(), row.size());
         pos += row.size();
         g_host_modules[pos] = 0;
+    }
+
+    // [host-win32] Refresh the host table now (this is called before the guest launches, so PEB->Ldr is still the
+    // host's; SnapshotHostModules checks) and hand the table to the caller's log as extra lines, after the five above.
+    // crash.txt carries the table itself, so g_host_modules above stays the five lines.
+    if (Enter())
+    {
+        SnapshotHostModules();
+        Leave();
+    }
+    for (unsigned i = 0; i < g_nhost_mods; ++i)
+    {
+        const HostMod& m = g_host_mods[i];
+        lines.push_back(Fmt("host module 0x%016llx  size 0x%08lx  stamp 0x%08lx  %s", static_cast<unsigned long long>(m.base),
+                            static_cast<unsigned long>(m.size), static_cast<unsigned long>(m.stamp), m.path));
     }
     return lines;
 }
