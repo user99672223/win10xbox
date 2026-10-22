@@ -42,7 +42,7 @@ endif()
 
 set(_guests 0)
 if(GUEST_DIR AND IS_DIRECTORY "${GUEST_DIR}")
-  file(GLOB _files "${GUEST_DIR}/*.exe" "${GUEST_DIR}/*.dll")
+  file(GLOB _files "${GUEST_DIR}/*.exe" "${GUEST_DIR}/*.dll" "${GUEST_DIR}/*.lua")
   foreach(f ${_files})
     get_filename_component(n "${f}" NAME)
     file(COPY_FILE "${f}" "${MACHINE}/guest/${n}" ONLY_IF_DIFFERENT)

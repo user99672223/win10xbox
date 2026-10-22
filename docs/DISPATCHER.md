@@ -13,6 +13,7 @@ interface: `core/include/win10xbox/dispatch.h`.
 | `core/dispatch/syscall_policy.inc` | hand-maintained policy per syscall |
 | `core/dispatch/nt_file.cpp` | path translators (VFS, or a C:-only fallback without it) |
 | `core/dispatch/nt_section.cpp` | `SEC_IMAGE` sections and image views (E3) |
+| `core/dispatch/nt_privileged.cpp` | privileged syscalls (driver load, shutdown, power, paging file, LDT, system debug, token creation) answered as Windows answers an unprivileged caller; never forwarded to the host |
 | `core/dispatch/nt_process.cpp` | handle routing, memory/process/thread queries, exit, context switches |
 | `core/dispatch/subsystems.cpp` | registry / token / clock entry points wired as `Emulate` |
 | `core/dispatch/unix_calls.cpp` | Wine unix-call providers, Wine debug-channel replacements |
@@ -317,12 +318,18 @@ objects, DCs, drawing).
 | `NtGetNextThread` (current process) | guest threads only: Wine's loader (`alloc_tls_slot`) replaces the TLS block of every thread it enumerates when a DLL with a TLS directory loads late, which must never reach a host thread. |
 | `NtCallbackReturn` and the win32u ids `0x1000..` | `core/user` (docs/GUI.md): Emulate when it registers the name, else Todo returning 0 (or `STATUS_NOT_IMPLEMENTED` for the NTSTATUS-returning ones) with `ERROR_CALL_NOT_IMPLEMENTED`. Their whole 64-bit RAX goes back to the guest (HWND, LRESULT, LONG_PTR). |
 | `NtQuerySystemInformation` | `SystemTimeOfDayInformation` from the clock; Wine's `SystemWineVersionInformation`. |
+| `NtLoadDriver`, `NtUnloadDriver`, `NtShutdownSystem`, `NtInitiatePowerAction`, `NtCreatePagingFile`, `NtCreateToken` | Emulate (`nt_privileged.cpp`): `STATUS_PRIVILEGE_NOT_HELD`, what Windows returns to a caller without the privilege. Never forwarded to the host. |
+| `NtSystemDebugControl` | Emulate (`nt_privileged.cpp`): `STATUS_ACCESS_DENIED` (SeDebugPrivilege). The host kernel is not asked. |
+| `NtSetLdtEntries` | Emulate (`nt_privileged.cpp`): `STATUS_NOT_IMPLEMENTED`, the x64 answer (no LDT). Deliberate, not a Todo. |
 | `NtTerminateProcess` | `NULL`: terminate the other guest threads. Current process: `process::GuestExit`. |
 | `NtTerminateThread` | current guest thread: bookkeeping, last one -> `GuestExit`. |
 | `NtCreateThreadEx` (current process) | guest thread start wrapper (E4), see below. |
 | `NtRaiseHardError` | `err:process: hard error ...` with the string parameters, answers `ResponseOk`. |
 | `NtContinue(Ex)`, `NtRaiseException`, `NtSetContextThread` (self) | switch to the guest TEB view, then pass. |
 | registry `Nt*Key*` | `registry::Reg_Nt*` |
+| `NtOpenKeyTransacted`, `NtOpenKeyTransactedEx` | `registry::Reg_NtOpenKeyTransacted(Ex)`: the transaction handle is traced and ignored, the open is the plain `NtOpenKey(Ex)`. `NtCreateKeyTransacted` is unchanged (`STATUS_NOT_IMPLEMENTED`). |
+| `NtLoadKey2` | `registry::Reg_NtLoadKey2`: `NtLoadKeyEx` with the flags and no trust key, event, access or root handle. |
+| `NtQueryDefaultLocale`, `NtSetDefaultLocale`, `NtQueryDefaultUILanguage`, `NtSetDefaultUILanguage` | `nt_nls.cpp` locale state: set stores, query answers, nothing on the host changes. Starts at en-US (0x0409). Zero LCID or LANGID is `STATUS_INVALID_PARAMETER`. |
 | token `Nt*Token*`, `NtAccessCheck`, `NtPrivilegeCheck`, `NtQuerySecurityObject` (token handles) | `token::Tok_Nt*` |
 | `NtQueryPerformanceCounter`, `NtQuerySystemTime`, `NtSetSystemTime`, `NtDelayExecution`, `Nt{Query,Set}TimerResolution` | `clock::Clk_Nt*` |
 
