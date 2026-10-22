@@ -51,11 +51,18 @@ function(win10xbox_guest_test name program exit_code)
   elseif(_guest_machine STREQUAL WIN10XBOX_BUILTIN_MACHINE_DIR)
     set(_require_builtin ON)
   endif()
+  # A console program (the caller sets _guest_console) never loads user32.dll: the builtin check then only
+  # requires that no native system DLL was mapped.
+  set(_require_user32 ${_require_builtin})
+  if(_guest_console)
+    set(_require_user32 OFF)
+  endif()
   add_test(NAME integration.${name}
     COMMAND ${CMAKE_COMMAND}
       -DHOST=$<TARGET_FILE:win10xbox>
       -DMACHINE=${_guest_machine}
       -DREQUIRE_BUILTIN_DLLS=${_require_builtin}
+      -DREQUIRE_USER32=${_require_user32}
       -DPROGRAM=${program}
       "-DPROGRAM_ARGS=${_guest_args}"
       "-DDEBUG_SPEC=${_guest_debug}"
@@ -191,24 +198,34 @@ endif()
 # The official CPython 3.12 embeddable package (python.org zip, nothing compiled), unpacked by
 # tools/ci/fetch_python.ps1 (a named step of ci.yml's windows job) into <machine>/guest/python before ctest runs.
 # Registered where that step exists: MSVC builds, or -DWIN10XBOX_REAL_PYTHON=ON after unpacking the zip there.
+# Both tests run on the builtin-only machine folder (the console's DLL set, "*": "builtin,native"): python312.dll
+# imports ws2_32, bcrypt, advapi32 and version, and the Windows CI runner's own build-26100 copies of those are
+# written against an ntdll and an API-set schema Wine does not have (the failure that put the first run of these
+# tests red: api-ms-win-core-crt-l2-1-0 -> _initterm_e resolved to nothing, Wine's 0x80000100 import stub).
 option(WIN10XBOX_REAL_PYTHON "Register the real-Python guest tests (the embeddable zip in <machine>/guest/python)" OFF)
 if(MSVC OR WIN10XBOX_REAL_PYTHON)
-  configure_file(${CMAKE_SOURCE_DIR}/tests/guest/python/smoke.py ${CMAKE_BINARY_DIR}/bin/guest/python_smoke.py COPYONLY)
-  # (a) python -c: print(1+1), then exit code 42 through sys.exit (no ';': it would split the CMake list).
-  set(_guest_args "-c;__import__('sys').exit(print(1+1) or 42)")
-  win10xbox_guest_test(real_python_c "C:\\guest\\python\\python.exe" 42 "^2[^0-9a-z]")
-  # (b) tests/guest/python/smoke.py: each check prints "py: <name> ok", and each is its own assertion.
-  set(_guest_args "C:\\guest\\python_smoke.py;alpha;beta gamma")
-  set(_py_checks arith argv version json hashlib hashlib.openssl zlib sqlite3 ctypes ctypes.callback
-    file.write file.read file.rename os.listdir threading threading.queue time)
-  set(_py_expect "")
-  foreach(_s ${_py_checks})
-    string(REPLACE "." "\\." _re "${_s}")
-    list(APPEND _py_expect "py: ${_re} ok")
-  endforeach()
-  win10xbox_guest_test(real_python "C:\\guest\\python\\python.exe" 42 ${_py_expect} "py: done fails=0")
-  set_tests_properties(integration.real_python PROPERTIES FAIL_REGULAR_EXPRESSION "py: [a-z.]+ FAILED")
+  configure_file(${CMAKE_SOURCE_DIR}/tests/guest/python/sample.json ${CMAKE_BINARY_DIR}/bin/guest/python_sample.json COPYONLY)
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  set(_guest_console ON)
+  # (a) the interpreter and the platform module: a version line, platform.uname() (os name, release and version from
+  # the layer's Windows 10 identity) and os.cpu_count() as the last line. The ';' inside the program text is escaped
+  # so CMake keeps it in the one argument. The last regex wants the number alone on the final line (CRLF or LF).
+  set(_guest_args "-c;import sys, platform, os\\; print(sys.version)\\; print(platform.uname())\\; print(os.cpu_count())")
+  win10xbox_guest_test(real_python_platform "C:\\guest\\python\\python.exe" 0
+    "3\\.12\\.10 \\(tags/v3\\.12\\.10"
+    "uname_result\\(system='Windows'"
+    "\\)..?[0-9]+.?.?$")
+  # (b) python -m json.tool on a small file: the module is found in python312.zip, the file is read through the
+  # layer's VFS, and the pretty-printed document comes back on stdout, re-indented (the input is one line).
+  set(_guest_args "-m;json.tool;C:\\guest\\python_sample.json")
+  win10xbox_guest_test(real_python_json "C:\\guest\\python\\python.exe" 0
+    "\"name\": \"win10xbox\""
+    ".    \"list\": ."
+    "\"ok\": true"
+    "\"pi\": 3\\.25")
   unset(_guest_args)
+  unset(_guest_console)
+  unset(_guest_machine)
 endif()
 
 # ---- Real GUI programs (not ours), built from source on the Windows runner ------------------------------------------

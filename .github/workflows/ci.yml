@@ -184,7 +184,7 @@ jobs:
         shell: pwsh
         run: ./tools/ci/build_lua.ps1 -Out build/bin/machine/guest
       # The official CPython 3.12 embeddable package from python.org (pinned SHA-256, checked on every run), unpacked
-      # unchanged into build/bin/machine/guest/python; the Test step runs it (integration.real_python*).
+      # unchanged into build/bin/machine/guest/python; the Test step runs it (integration.real_python_platform, integration.real_python_json).
       - name: Cache the Python embeddable zip
         uses: actions/cache@v4
         with:

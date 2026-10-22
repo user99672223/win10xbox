@@ -2,14 +2,14 @@
 # code (cmake -P; ctest's PASS_REGULAR_EXPRESSION alone ignores exit codes).
 #   -DHOST=<win10xbox.exe> -DMACHINE=<machine dir> -DPROGRAM=<C:\guest\x.exe>
 #   -DEXPECT_EXIT=<n> -DEXPECT_REGEX=<regex;regex...> [-DEMULATOR=<wine>]
-#   [-DPROGRAM_ARGS=<arg;arg...>]   the guest's own command-line arguments, one list element each
+#   [-DPROGRAM_ARGS=<arg;arg...>]   the guest's own command-line arguments, one list element each ("\;" inside one)
 #   [-DFORBID_REGEX=<regex>] [-DDEBUG_SPEC=<WIN10XBOX_DEBUG spec>]
 # EXPECT_REGEX/FORBID_REGEX match the guest's stdout. The layer's own trace
 # output goes to stderr, so assertions about it use the TRACE variants:
 #   [-DEXPECT_TRACE_REGEX=<regex;regex...>] [-DFORBID_TRACE_REGEX=<regex>]
 # -DREQUIRE_BUILTIN_DLLS=ON adds +modules to WIN10XBOX_DEBUG and fails unless every system DLL the guest
 # mapped (C:\Windows\System32\<x>.dll in the modules trace) came from <machine>\Windows\builtin, with
-# user32.dll among them; the list is printed either way.
+# user32.dll among them (unless -DREQUIRE_USER32=OFF: a console program); the list is printed either way.
 # Prints "SKIP: ..." and exits 77 (cmake >= 3.29) when the machine folder has
 # no Wine builtins or no Windows NLS data (c_1252.nls, staged by
 # machine/import_windows_dlls.ps1); the test sets both SKIP_RETURN_CODE 77 and
@@ -37,7 +37,6 @@ if(EMULATOR AND _machine MATCHES "^/")
   set(_machine "Z:${_machine}")
 endif()
 string(REPLACE "/" "\\" _machine "${_machine}")
-set(_cmd ${EMULATOR} "${HOST}" --machine "${_machine}" "${_program}" ${PROGRAM_ARGS})
 if(DEBUG_SPEC)
   set(ENV{WIN10XBOX_DEBUG} "${DEBUG_SPEC}")
 endif()
@@ -48,7 +47,10 @@ if(REQUIRE_BUILTIN_DLLS)
     set(ENV{WIN10XBOX_DEBUG} "$ENV{WIN10XBOX_DEBUG},+modules")
   endif()
 endif()
-execute_process(COMMAND ${_cmd} RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 120)
+# PROGRAM_ARGS is expanded right here, not through an intermediate list variable: an argument that holds a ';' is
+# written with the escape "\;" in the list and loses it when set() joins and re-splits the elements.
+execute_process(COMMAND ${EMULATOR} "${HOST}" --machine "${_machine}" "${_program}" ${PROGRAM_ARGS}
+                RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 120)
 # Before the guest's output: ctest keeps only the first 1024 bytes of a passing test's output.
 set(_builtin_fail "")
 if(REQUIRE_BUILTIN_DLLS)
@@ -72,10 +74,12 @@ if(REQUIRE_BUILTIN_DLLS)
     string(REPLACE ";" " " _n "${_native}")
     string(APPEND _builtin_fail "guest mapped system DLLs from outside Windows\\builtin: ${_n}\n")
   endif()
-  string(TOLOWER "${_builtin}" _builtin_lc)
-  list(FIND _builtin_lc "user32.dll" _u32)
-  if(_u32 LESS 0)
-    string(APPEND _builtin_fail "no builtin user32.dll in the modules trace (is +modules on?)\n")
+  if(NOT DEFINED REQUIRE_USER32 OR REQUIRE_USER32)
+    string(TOLOWER "${_builtin}" _builtin_lc)
+    list(FIND _builtin_lc "user32.dll" _u32)
+    if(_u32 LESS 0)
+      string(APPEND _builtin_fail "no builtin user32.dll in the modules trace (is +modules on?)\n")
+    endif()
   endif()
 endif()
 message("${out}")

@@ -154,6 +154,12 @@ std::uint64_t NtdllUnixLibHandle() { return g_ntdll_handle; }
 void RegisterNtdllUnixLib() {
     LoadWineDebugSpec();
     if (!g_ntdll_handle) RegisterUnixLib(L"ntdll", kNtdllFuncs, std::size(kNtdllFuncs));
+    // ws2_32.dll refuses to initialise (DllMain returns FALSE) without its unix library: sockets themselves go
+    // through NtDeviceIoControlFile, the unix side only carries name resolution (getaddrinfo, getnameinfo,
+    // gethostby*, getservby*, ...; dlls/ws2_32/unixlib.c). None of it is implemented, so the library is
+    // registered with an empty table: loading ws2_32 works, and a resolver call logs "unix call ws2_32:<n>
+    // not implemented" and fails with STATUS_NOT_IMPLEMENTED.
+    if (!UnixLibHandleByName(L"ws2_32")) RegisterUnixLib(L"ws2_32", nullptr, 0);
 }
 
 std::uint64_t UnixLibHandleByName(std::wstring_view module_name) {
