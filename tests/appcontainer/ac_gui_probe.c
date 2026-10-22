@@ -173,17 +173,51 @@ static void ProbeContext(void)
         Probe("GUI.os", "INFO", "Windows %lu.%lu build %lu, product type %u", (unsigned long)vi.dwMajorVersion,
               (unsigned long)vi.dwMinorVersion, (unsigned long)vi.dwBuildNumber, (unsigned)vi.wProductType);
     ProcessIdToSessionId(GetCurrentProcessId(), &session);
+    char lpacs[300], attrs[700], err[260];
+    int noallapppkg = 0;
+
+    strcpy(lpacs, "n/a");
+    strcpy(attrs, "n/a");
     if (gti != NULL) {
+        static union {
+            CLAIM_SECURITY_ATTRIBUTES_INFORMATION info;
+            BYTE raw[8192];
+        } sa;
         gti(tok, (TOKEN_INFORMATION_CLASS)29 /* TokenIsAppContainer */, &ac, sizeof ac, &n);
-        gti(tok, (TOKEN_INFORMATION_CLASS)46 /* TokenIsLessPrivilegedAppContainer */, &lpac, sizeof lpac, &n);
+        if (gti(tok, (TOKEN_INFORMATION_CLASS)46 /* TokenIsLessPrivilegedAppContainer */, &lpac, sizeof lpac, &n))
+            snprintf(lpacs, sizeof lpacs, "%lu", (unsigned long)lpac);
+        else
+            snprintf(lpacs, sizeof lpacs, "not queryable (%s)", ErrText(GetLastError(), err, sizeof err));
         if (gti(tok, TokenIntegrityLevel, &il, sizeof il, &n)) {
             PSID sid = il.tml.Label.Sid;
             /* the RID is the last sub-authority of S-1-16-<rid> */
             rid = ((SID *)sid)->SubAuthority[((SID *)sid)->SubAuthorityCount - 1];
         }
+        /* An LPAC token carries the security attribute WIN://NOALLAPPPKG (no ALL APPLICATION PACKAGES access). */
+        if (gti(tok, (TOKEN_INFORMATION_CLASS)39 /* TokenSecurityAttributes */, &sa, sizeof sa, &n)) {
+            size_t used = 0;
+            DWORD i;
+            attrs[0] = '\0';
+            for (i = 0; i < sa.info.AttributeCount && sa.info.Attribute.pAttributeV1 != NULL; i++) {
+                const wchar_t *nm = sa.info.Attribute.pAttributeV1[i].Name;
+                char u[200];
+                if (nm == NULL)
+                    continue;
+                if (lstrcmpiW(nm, L"WIN://NOALLAPPPKG") == 0)
+                    noallapppkg = 1;
+                used += (size_t)snprintf(attrs + used, sizeof attrs - used, "%s%s", used ? " " : "", U8(nm, u, sizeof u));
+                if (used >= sizeof attrs - 210)
+                    break;
+            }
+            if (used == 0)
+                strcpy(attrs, "(none)");
+        } else {
+            snprintf(attrs, sizeof attrs, "not queryable (%s)", ErrText(GetLastError(), err, sizeof err));
+        }
     }
-    Probe("GUI.context", "INFO", "pid %lu, session %lu, token: AppContainer=%ld lpac=%ld integrity=0x%04lX",
-          (unsigned long)GetCurrentProcessId(), (unsigned long)session, (long)ac, (long)lpac, (unsigned long)rid);
+    Probe("GUI.context", "INFO", "pid %lu, session %lu, token: AppContainer=%ld integrity=0x%04lX TokenIsLessPrivilegedAppContainer=%s; "
+          "LPAC attribute WIN://NOALLAPPPKG=%s; security attributes: %s",
+          (unsigned long)GetCurrentProcessId(), (unsigned long)session, (long)ac, (unsigned long)rid, lpacs, noallapppkg ? "present" : "absent", attrs);
 }
 
 /* ------------------------------------------------------------------------------------------------------------------ */
