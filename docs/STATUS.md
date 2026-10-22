@@ -217,7 +217,42 @@ dropped and counted rather than faulting. Verified gating by reinstating the ori
 then **fails** on linux-cross with `err:dispatch: host state reached under the guest TLS view 1 times (last:
 dispatch::S (Host, Lookup, ...))`. Suite is 21/21, `guest_e2e` 10/10 (21 tests, from 14).
 
-### OPEN: the host's own exit code is 127, not the guest's 42
+### FIXED: the host's exit code is the guest's, and `host-win32-smoke` is GREEN
+
+Fixed in `c1e4466`. `host-win32-smoke` on that commit: **`PASS (zero unresolved KERNEL32 imports, guest exit code 42)`**
+in both the console-conditions and desktop runs. An unmodified Windows x64 PE is loaded, run to completion, and the host
+returns the guest's own exit code — on real Windows.
+
+The real cause was a **leaked `PEB.ActivationContextData`**: the guest ntdll overwrites it and nothing restored it, so
+Microsoft's SxS code found Wine's own static `system_actctx` there during `ExitProcess`'s DLL detach. That had been
+incomplete since the PEB takeover was written; it was never a regression. The faulting chain, symbolized from the run's
+own map and pdb, is `__scrt_common_main_seh` → `common_exit` → `exit_or_terminate_process` → `ExitProcess` →
+`LdrShutdownProcess` → `combase` → ntdll, and the new record confirms the phase directly: *"EXITING — ntdll reports DLL
+shutdown in progress (`RtlDllShutdownInProgress`)"*.
+
+A five-variant matrix in the job settles fix-versus-mask rather than leaving it to judgement:
+
+| Variant | Exit path | ActCtx restored | Native status |
+|---|---|---|---|
+| `version-default` | new | yes | `0x00000000` |
+| `version-normal-exit` | old | yes | `0x00000000` |
+| `guest-default` | new | yes | `0x0000002A` (42) |
+| `guest-normal-exit` | old | **yes** | **`0x0000002A` (42)** |
+| `guest-normal-leak` | old | **no** | **`0xC000000D`** |
+
+`guest-normal-exit` clean and `guest-normal-leak` faulting is the controlled comparison: the activation-context restore
+is the actual fix, and the `TerminateProcess` hard exit (`main.cpp`'s `EndProcess`) is defence in depth rather than a
+mask. `version-normal-exit` being clean also establishes that the fault requires a guest at all. The matrix stays in the
+job permanently, so a future regression in the *normal* exit path is still visible even though the shipping path no
+longer uses it.
+
+Two incidental corrections, both of earlier guesses recorded here: the 180-second stall was **not**
+`MiniDumpWriteDump` — `ExitProcess` terminates every other thread before DLL detach, so the crash thread was already
+dead and `PostJob` sat on its 180s timeout (the two records are 180.25s apart and no `crash.dmp` was ever written);
+`PostJob` now waits on the thread handle too. And Git Bash's `127` was its own rendering of an NT status: the raw status
+is `0xC000000D`.
+
+### (historical) OPEN: the host's own exit code is 127, not the guest's 42
 
 `host-win32-smoke` is still red, but for a different and much narrower reason: after the clean shutdown above, the main
 thread raises an **unhandled `0xc000000d` (`STATUS_INVALID_PARAMETER`)** at `ntdll.dll+0x7e55f`, with
