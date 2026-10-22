@@ -66,28 +66,53 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.9
 
       # Wine PE builtins (ntdll/kernelbase/kernel32 and friends) from the latest
-      # successful wine-pe run, same incantation as the `windows` job in ci.yml. They
-      # are bundled INSIDE the package and copied to LocalState at first run (the
-      # default HOST_UWP_BUILTIN_DIR is exactly where this step puts them).
-      # Non-fatal: without them the package is still produced (the owner can drop
-      # the DLLs into LocalState\machine\Windows\builtin on the console).
-      - name: Fetch wine-pe builtin DLLs (optional)
+      # successful wine-pe run. They are bundled INSIDE the package and copied to
+      # LocalState at first run (the default HOST_UWP_BUILTIN_DIR is where this step puts them).
+      #
+      # MANDATORY, and retried. This used to be `continue-on-error` with a "the owner can add
+      # them on the console" note, and that cost a real on-hardware test run: in run
+      # 39809498419 the lookup transiently found nothing, the step shrugged, the package shipped
+      # at 1.4 MB without the builtins, the job went GREEN, and the console reported
+      # "RESULT: FAIL (no Wine PE builtins in the machine folder)". Two and a half hours earlier
+      # the identical code had fetched 23 DLLs, so the failure is transient, not deterministic.
+      # A package without the builtins cannot run a guest, so shipping one is never useful:
+      # retry the lookup, and if it still fails make the job RED instead of publishing a package
+      # that is guaranteed to fail on hardware.
+      - name: Fetch wine-pe builtin DLLs (required)
         shell: pwsh
-        continue-on-error: true
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
-          $id = gh run list --repo ${{ github.repository }} --workflow wine-pe.yml --branch ${{ github.ref_name }} --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+          $ErrorActionPreference = 'Continue'
+          $id = $null
+          foreach ($attempt in 1..3) {
+            foreach ($scope in @("--branch ${{ github.ref_name }}", "")) {
+              $args = @('run','list','--repo','${{ github.repository }}','--workflow','wine-pe.yml',
+                        '--status','success','--limit','1','--json','databaseId','--jq','.[0].databaseId')
+              if ($scope) { $args += $scope.Split(' ') }
+              $id = (& gh @args 2>$null | Select-Object -First 1)
+              if ($id) { break }
+            }
+            if ($id) { break }
+            Write-Host "attempt ${attempt}: no wine-pe run found yet; retrying in $(5 * $attempt)s"
+            Start-Sleep -Seconds (5 * $attempt)
+          }
           if (-not $id) {
-            $id = gh run list --repo ${{ github.repository }} --workflow wine-pe.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+            Write-Host "::error::could not find a successful wine-pe run after 3 attempts. The package would ship without the Wine PE builtins and could not run a guest, so this job fails rather than publishing it. Re-run the job, or run the wine-pe workflow."
+            exit 1
           }
-          if ($id) {
-            New-Item -ItemType Directory -Force -Path wine-pe/out/builtin | Out-Null
+          New-Item -ItemType Directory -Force -Path wine-pe/out/builtin | Out-Null
+          foreach ($attempt in 1..3) {
             gh run download $id --repo ${{ github.repository }} --name wine-pe-builtin --dir wine-pe/out/builtin
-            Write-Host "downloaded wine-pe-builtin from run $id ($((Get-ChildItem wine-pe/out/builtin -Filter *.dll).Count) DLLs)"
-          } else {
-            Write-Host "no successful wine-pe run yet; the package will be built WITHOUT the Wine builtins"
+            if ((Get-ChildItem wine-pe/out/builtin -Filter *.dll -ErrorAction SilentlyContinue).Count -gt 0) { break }
+            Write-Host "attempt ${attempt}: download produced no DLLs; retrying in $(5 * $attempt)s"
+            Start-Sleep -Seconds (5 * $attempt)
           }
-          $global:LASTEXITCODE = 0
+          $n = (Get-ChildItem wine-pe/out/builtin -Filter *.dll -ErrorAction SilentlyContinue).Count
+          if ($n -eq 0 -or -not (Test-Path wine-pe/out/builtin/ntdll.dll)) {
+            Write-Host "::error::wine-pe-builtin from run $id yielded $n DLLs and no ntdll.dll. Failing rather than publishing a package that cannot run."
+            exit 1
+          }
+          Write-Host "downloaded wine-pe-builtin from run $id ($n DLLs, ntdll.dll present)"
 
       # Mirror ci.yml's proven windows Configure. No -DCMAKE_POLICY_VERSION_MINIMUM:
       # ci.yml builds the same third_party/zydis + core/ on this runner without it,
@@ -131,7 +156,7 @@ jobs:
           $msix = Get-ChildItem build-uwp/AppPackages -Filter *.msix -ErrorAction SilentlyContinue | Select-Object -First 1
           $lines = @('### host-uwp (build + package; NOT run on hardware)')
           if ($msix) { $lines += ('- package: `{0}` ({1:N1} MB), version 1.0.0.${{ github.run_number }}' -f $msix.Name, ($msix.Length / 1MB)) } else { $lines += '- package: NOT produced' }
-          $lines += "- Wine PE builtin DLLs bundled: $builtins" + $(if ($builtins -eq 0) { ' (wine-pe-builtin artifact unavailable; add them on the console)' } else { '' })
+          $lines += "- Wine PE builtin DLLs bundled: $builtins"
           $lines += '- winmd bundled: ' + (Test-Path "$stage/Win10XboxUwp.winmd")
           $lines += '- bundled guests: ' + $(if ($guests) { $guests } else { 'none' })
           $lines += '- packaged default launch.json: ' + (Test-Path "$stage/payload/launch.json")
@@ -139,6 +164,30 @@ jobs:
           $lines += '- AUMID: `win10xbox.uwp_eqad6j9zhtw80!App`'
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           $global:LASTEXITCODE = 0
+
+      # Second guard on the same mistake, independent of the fetch step: assert that the package
+      # we are about to publish actually CONTAINS the builtins. The fetch is only one way to end
+      # up without them (a staging or stage.cmake change is another), and the cost of being wrong
+      # is a wasted on-hardware run, which is the most expensive feedback loop we have. ntdll.dll
+      # is the one the host checks for by name at startup.
+      - name: Assert the package can actually run a guest
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $stage = 'build-uwp/AppX'
+          $n = @(Get-ChildItem "$stage/payload/builtin" -Filter *.dll -ErrorAction SilentlyContinue).Count
+          $ntdll = Test-Path "$stage/payload/builtin/ntdll.dll"
+          $msix = Get-ChildItem build-uwp/AppPackages -Filter *.msix -ErrorAction SilentlyContinue | Select-Object -First 1
+          $mb = if ($msix) { [math]::Round($msix.Length / 1MB, 1) } else { 0 }
+          Write-Host "packaged builtins: $n DLL(s); ntdll.dll present: $ntdll; package: $mb MB"
+          if ($n -eq 0 -or -not $ntdll) {
+            Write-Host "::error::the package bundles $n builtin DLL(s) and ntdll.dll present=$ntdll, so it CANNOT run a guest: the host fails at startup with 'no Wine PE builtins in the machine folder'. That is exactly what shipped in run 39809498419 and wasted an on-hardware test. Failing instead of publishing it."
+            exit 1
+          }
+          if ($mb -lt 10) {
+            Write-Host "::error::package is only $mb MB; a complete one is about 21 MB. The builtins are probably missing from the payload even though the staging directory has them."
+            exit 1
+          }
 
       # Upload whenever a package exists, even if the selftest step failed (the job is then
       # red, but the owner still gets the .msix to look at). No package (the build failed)
