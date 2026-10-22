@@ -8,6 +8,19 @@
 | `drivers.*`, `integration.driver_*` | `tests/drivers` | linux-cross (Wine) + windows (see below) |
 | kmtest subset | `tests/kmtest` | windows (M4, not yet started: `tests/drivers/kmtest.h` is a minimal in-driver harness) |
 
+## GUI guests (core/user)
+
+`integration.guest_window` (tests/guest/window.c: frameless popup, FillRect, GetPixel, timers) and
+`integration.guest_window2` (tests/guest/window2.c: captioned window, memory-DC double buffering, Set/GetWindowText,
+InvalidateRect, DestroyWindow, PeekMessage on MsgWaitForMultipleObjectsEx) run through host-win32 with the headless
+display. Each checks its own pixels with GetPixel and exits 42; host-win32 writes the last painted frame of the
+virtual screen to `WIN10XBOX_SCREENSHOT=<file.bmp>` and `run_guest.cmake` checks pixels of it given as
+`WIN10XBOX_EXPECT_SCREENSHOT_PIXELS="x,y,aarrggbb|..."` (0xAARRGGBB as read from the BMP's B,G,R,A bytes). The
+`user_*` cases of `unit.core` cover the GDI handle encoding, the stock objects' slots, HWND encoding, regions and
+DIB reading. Trace channels: `WIN10XBOX_DEBUG=+user,+gdi` (with `+relay` for every win32u call). `guest.window` /
+`guest.window2` (the same programs run natively) are registered only where there is a real win32k (not under the
+cross-compiling emulator).
+
 ## Wine test subset (M3 fidelity baseline)
 
 Wine's own conformance tests (`wine-pe/wine-src/dlls/<dll>/tests/*.c`, LGPL,

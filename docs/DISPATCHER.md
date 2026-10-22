@@ -242,7 +242,9 @@ table; the upper half of 32-bit arguments is whatever the caller left there).
 `NtTerminate*`, `NtRaiseException`) are logged before the call as well.
 `dispatch::Shutdown()` dumps per-syscall call counts on `relay`. Other
 channels: `dispatch` (table, mappings, forwarding), `process` (bootstrap,
-exit), `wine` (output of Wine's own debug channels, see below).
+exit), `wine` (output of Wine's own debug channels, see below), `user`
+(core/user: windows, classes, messages, painting) and `gdi` (core/user: GDI
+objects, DCs, drawing).
 
 ## What is translated or emulated today
 
@@ -258,6 +260,8 @@ exit), `wine` (output of Wine's own debug channels, see below).
 | `NtQueryVirtualMemory` | `MemoryWineLoadUnixLib` (1000) / `ByName` (1002) return our unix-lib handles; `MemoryBasicInformation` on our views reports `MEM_IMAGE` and the view base as `AllocationBase`; `MemoryMappedFilenameInformation` gives the guest device path. |
 | `NtQueryInformationProcess` | `ProcessImageInformation`, `ProcessImageFileName(Win32)`, `ProcessWow64Information` (0) for the guest; others pass. |
 | `NtQueryInformationThread` | `ThreadAmILastThread` counts guest threads only. |
+| `NtGetNextThread` (current process) | guest threads only: Wine's loader (`alloc_tls_slot`) replaces the TLS block of every thread it enumerates when a DLL with a TLS directory loads late, which must never reach a host thread. |
+| `NtCallbackReturn` and the win32u ids `0x1000..` | `core/user` (docs/GUI.md): Emulate when it registers the name, else Todo returning 0 (or `STATUS_NOT_IMPLEMENTED` for the NTSTATUS-returning ones) with `ERROR_CALL_NOT_IMPLEMENTED`. Their whole 64-bit RAX goes back to the guest (HWND, LRESULT, LONG_PTR). |
 | `NtQuerySystemInformation` | `SystemTimeOfDayInformation` from the clock; Wine's `SystemWineVersionInformation`. |
 | `NtTerminateProcess` | `NULL`: terminate the other guest threads. Current process: `process::GuestExit`. |
 | `NtTerminateThread` | current guest thread: bookkeeping, last one -> `GuestExit`. |
