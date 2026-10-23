@@ -17,6 +17,10 @@ enum class JitPolicy      { WriteThenProtect, Rwx };          // D11
 enum class TrapEngine     { Veh, StaticPatch };               // D12
 enum class RegistryBackend{ Regf, HostReadThrough };          // D13 (own REGF reader, not hivex)
 enum class DriverHost     { InProcess, Separate };            // D16
+// Who manages the guest's windows (docs/GUI.md): core/user's own NtUser*/NtGdi* emulation behind Wine's
+// user32/gdi32 (Emulated, route A), or the host's real win32k behind the NATIVE user32/gdi32/win32u, every
+// win32u syscall passed through to the host's win32u.dll export of the same name (Native, route B).
+enum class Gui            { Emulated, Native };
 
 struct Config {
     ProcessModel    process_model    = ProcessModel::RealChild;   // D1: console creates real children
@@ -33,6 +37,8 @@ struct Config {
     TrapEngine      trap_engine      = TrapEngine::Veh;
     RegistryBackend registry_backend = RegistryBackend::Regf;
     DriverHost      driver_host      = DriverHost::InProcess;
+    // machine.json "gui": "emulated" | "native" (process::Launch applies it; WIN10XBOX_GUI overrides both).
+    Gui             gui              = Gui::Emulated;
 
     // D1: may the guest start child processes? NtCreateUserProcess spawns a new HOST process running the host
     // executable itself (GetModuleFileNameW(NULL)) on the child's image, so only a host that is a plain Win32
