@@ -23,6 +23,7 @@
 // Every wrapper call is traced at +dispatch with its HRESULT. No function-local statics on these guest-reachable paths.
 #include "internal.h"
 
+#include "win10xbox/probe.h"
 #include "win10xbox/user.h"
 
 #include <d3d11.h>
@@ -90,6 +91,84 @@ std::atomic<unsigned> g_presents{0};
         W10X_TR( "dxgi: " name " -> %08lx", static_cast<unsigned long>(w10x_hr_)); \
         return w10x_hr_;                                                                \
     } while (0)
+
+// ---- Exceptions raised while the native dxgi/d3d11 run (diagnostic) -------------------------------------------
+// The native runtimes guard their API entry points with catch(...), which turns an SEH exception (EXCEPTION_WINE_STUB
+// from a Wine stub or an unresolved import, an access violation) into E_UNEXPECTED without a trace. A first-position
+// vectored handler records the last exceptions of the process in a ring (plain globals: it runs on whatever thread
+// raised, under whichever TLS view); a failing factory/device call prints the ring.
+struct ExcRec {
+    DWORD code, nparams;
+    std::uintptr_t addr, p[3];
+    char s0[48], s1[64];   // EXCEPTION_WINE_STUB: the dll and function names of the stub
+};
+constexpr unsigned kExcRing = 24;
+ExcRec g_exc[kExcRing];
+volatile LONG g_exc_n = 0;
+volatile LONG g_exc_hook = 0;
+
+void CopyName(char* to, std::size_t cap, std::uintptr_t from) {
+    if (!from || probe::CopyFromUser(to, reinterpret_cast<const void*>(from), cap - 1) != 0) {
+        // a short string at the end of a page: byte by byte
+        std::size_t i = 0;
+        for (; from && i + 1 < cap; ++i)
+            if (probe::CopyFromUser(to + i, reinterpret_cast<const void*>(from + i), 1) != 0 || !to[i]) break;
+        to[i] = 0;
+        return;
+    }
+    to[cap - 1] = 0;
+}
+
+LONG CALLBACK ExcRecorder(PEXCEPTION_POINTERS info) {
+    const EXCEPTION_RECORD* r = info->ExceptionRecord;
+    ExcRec& e = g_exc[static_cast<unsigned>(InterlockedIncrement(&g_exc_n) - 1) % kExcRing];
+    e = ExcRec{};
+    e.code = r->ExceptionCode;
+    e.nparams = r->NumberParameters;
+    e.addr = reinterpret_cast<std::uintptr_t>(r->ExceptionAddress);
+    for (DWORD i = 0; i < 3 && i < r->NumberParameters; ++i) e.p[i] = r->ExceptionInformation[i];
+    if (r->ExceptionCode == 0x80000100 && r->NumberParameters >= 2) {
+        CopyName(e.s0, sizeof e.s0, r->ExceptionInformation[0]);
+        CopyName(e.s1, sizeof e.s1, r->ExceptionInformation[1]);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+void InstallExcRecorder() {
+    if (InterlockedCompareExchange(&g_exc_hook, 1, 0) == 0) AddVectoredExceptionHandler(1, ExcRecorder);
+}
+
+// "dxgi+0x1234" for an address inside the native dxgi/d3d11, else the raw address.
+const char* Where(std::uintptr_t a, char* buf, std::size_t cap) {
+    const char* const kName[2] = {"dxgi", "d3d11"};
+    for (int i = 0; i < 2; ++i)
+        if (g_internal[i].base && a >= g_internal[i].base && a - g_internal[i].base < g_internal[i].size) {
+            std::snprintf(buf, cap, "%s+0x%llx", kName[i], static_cast<unsigned long long>(a - g_internal[i].base));
+            return buf;
+        }
+    std::snprintf(buf, cap, "0x%llx", static_cast<unsigned long long>(a));
+    return buf;
+}
+
+void DumpExceptions(const char* what, HRESULT hr) {
+    const auto* teb = reinterpret_cast<const std::uint8_t*>(NtCurrentTeb());
+    const DWORD last_status = *reinterpret_cast<const DWORD*>(teb + 0x1250), last_error = *reinterpret_cast<const DWORD*>(teb + 0x68);
+    const LONG n = g_exc_n;
+    W10X_TR("dxgi: %s failed %08lx: TEB.LastStatusValue %08lx LastErrorValue %lu; %ld exception(s) raised in the process, last %u:",
+            what, static_cast<unsigned long>(hr), static_cast<unsigned long>(last_status), static_cast<unsigned long>(last_error),
+            static_cast<long>(n), n < static_cast<LONG>(kExcRing) ? static_cast<unsigned>(n) : kExcRing);
+    for (LONG i = n > static_cast<LONG>(kExcRing) ? n - static_cast<LONG>(kExcRing) : 0; i < n; ++i) {
+        const ExcRec e = g_exc[static_cast<unsigned>(i) % kExcRing];
+        char w[48], w2[48];
+        if (e.code == 0x80000100)
+            W10X_TR("dxgi:   exc #%ld %08lx at %s: Wine stub %s!%s called from %s", static_cast<long>(i), static_cast<unsigned long>(e.code),
+                    Where(e.addr, w, sizeof w), e.s0, e.s1, Where(e.p[2], w2, sizeof w2));
+        else
+            W10X_TR("dxgi:   exc #%ld %08lx at %s params %llx %llx %llx", static_cast<long>(i), static_cast<unsigned long>(e.code),
+                    Where(e.addr, w, sizeof w), static_cast<unsigned long long>(e.p[0]), static_cast<unsigned long long>(e.p[1]),
+                    static_cast<unsigned long long>(e.p[2]));
+    }
+}
 
 bool IsIid(REFIID a, REFIID b) { return IsEqualGUID(a, b) != FALSE; }
 
@@ -792,6 +871,7 @@ HRESULT WINAPI W10x_CreateDXGIFactory(REFIID riid, void** pp) {
     IUnknown* u = nullptr;
     const HRESULT real_hr = g_real_create_factory(__uuidof(IDXGIFactory), reinterpret_cast<void**>(&u));
     const HRESULT hr = CreateWrappedFactory(real_hr, u, riid, pp);
+    if (FAILED(hr)) DumpExceptions(FAILED(real_hr) ? "dxgi!CreateDXGIFactory" : "CreateDXGIFactory (wrapping)", hr);
     W10X_TRACE_HR("CreateDXGIFactory", hr);
 }
 
@@ -802,6 +882,7 @@ HRESULT WINAPI W10x_CreateDXGIFactory1(REFIID riid, void** pp) {
     IUnknown* u = nullptr;
     const HRESULT real_hr = g_real_create_factory1(__uuidof(IDXGIFactory), reinterpret_cast<void**>(&u));
     const HRESULT hr = CreateWrappedFactory(real_hr, u, riid, pp);
+    if (FAILED(hr)) DumpExceptions(FAILED(real_hr) ? "dxgi!CreateDXGIFactory1" : "CreateDXGIFactory1 (wrapping)", hr);
     W10X_TRACE_HR("CreateDXGIFactory1", hr);
 }
 
@@ -812,6 +893,7 @@ HRESULT WINAPI W10x_CreateDXGIFactory2(UINT flags, REFIID riid, void** pp) {
     IUnknown* u = nullptr;
     const HRESULT real_hr = g_real_create_factory2(flags, __uuidof(IDXGIFactory), reinterpret_cast<void**>(&u));
     const HRESULT hr = CreateWrappedFactory(real_hr, u, riid, pp);
+    if (FAILED(hr)) DumpExceptions(FAILED(real_hr) ? "dxgi!CreateDXGIFactory2" : "CreateDXGIFactory2 (wrapping)", hr);
     W10X_TRACE_HR("CreateDXGIFactory2", hr);
 }
 
@@ -834,7 +916,10 @@ HRESULT WINAPI W10x_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* adapter, D3D_DRI
     HRESULT hr = g_real_create_device(adapter, type, sw, flags, levels, n_levels, sdk, &dev, &level, &ctx);
     W10X_TR( "dxgi: D3D11CreateDevice (for D3D11CreateDeviceAndSwapChain, driver type %d) -> %08lx feature level 0x%x",
           static_cast<int>(type), static_cast<unsigned long>(hr), static_cast<unsigned>(level));
-    if (FAILED(hr) || !dev) return FAILED(hr) ? hr : E_FAIL;
+    if (FAILED(hr) || !dev) {
+        DumpExceptions("d3d11!D3D11CreateDevice", FAILED(hr) ? hr : E_FAIL);
+        return FAILED(hr) ? hr : E_FAIL;
+    }
     IDXGIFactory* real_factory = nullptr;
     IDXGIDevice* dxgi_dev = nullptr;
     IDXGIAdapter* ad = nullptr;
@@ -846,6 +931,7 @@ HRESULT WINAPI W10x_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* adapter, D3D_DRI
     if (FAILED(hr) || !real_factory) {
         dev->Release();
         if (ctx) ctx->Release();
+        DumpExceptions("D3D11CreateDeviceAndSwapChain (device -> factory)", FAILED(hr) ? hr : E_FAIL);
         W10X_TRACE_HR("D3D11CreateDeviceAndSwapChain (device -> factory)", FAILED(hr) ? hr : E_FAIL);
     }
     auto* wf = new WrapFactory(real_factory);
@@ -856,6 +942,7 @@ HRESULT WINAPI W10x_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* adapter, D3D_DRI
     if (FAILED(hr) || !sc) {
         dev->Release();
         if (ctx) ctx->Release();
+        DumpExceptions("D3D11CreateDeviceAndSwapChain (CreateSwapChain)", FAILED(hr) ? hr : E_FAIL);
         W10X_TRACE_HR("D3D11CreateDeviceAndSwapChain", FAILED(hr) ? hr : E_FAIL);
     }
     *swap = sc;
@@ -937,6 +1024,7 @@ std::size_t ReplaceExports(const loader::MappedImage& img, const Replace* list, 
 
 bool InterposeDxgiImage(const loader::MappedImage& img, const std::wstring& id) {
     if (IsModule(id, L"dxgi.dll")) {
+        InstallExcRecorder();
         g_internal[0] = {reinterpret_cast<std::uintptr_t>(img.base), static_cast<std::uintptr_t>(img.size)};
         const Replace list[] = {
             {"CreateDXGIFactory", reinterpret_cast<const void*>(&W10x_CreateDXGIFactory), reinterpret_cast<void**>(&g_real_create_factory)},

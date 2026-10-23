@@ -211,7 +211,7 @@ INT WINAPI NtUserScrollWindowEx(HWND hwnd, INT dx, INT dy, const RECT* rect, con
 
 // ---- win_sysparams.cpp ----
 ULONG WINAPI NtUserGetSystemDpiForProcess(HANDLE process);
-NTSTATUS WINAPI NtUserGetProcessUIContextInformation(HANDLE process, ULONG* info);
+BOOL WINAPI NtUserGetProcessUIContextInformation(HANDLE process, ULONG* info);
 ULONG WINAPI NtUserGetProcessDpiAwarenessContext(HANDLE process);
 BOOL WINAPI NtUserSetProcessDpiAwarenessContext(ULONG awareness, ULONG unknown);
 BOOL WINAPI NtUserSystemParametersInfo(UINT action, UINT val, void* ptr, UINT winini);

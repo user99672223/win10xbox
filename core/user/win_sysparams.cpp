@@ -329,22 +329,33 @@ ULONG WINAPI NtUserGetSystemDpiForProcess(HANDLE process) {
     return 96;
 }
 
-// NtUserGetProcessUIContextInformation(process, PROCESS_UICONTEXT_INFORMATION*): which kind of UI the process runs
-// (user32!GetProcessUIContextInformation forwards here; the native dxgi.dll imports it to learn whether it is in an
-// immersive/UWP context). { ULONG ProcessUIContext (0 DESKTOP, 1 IMMERSIVE, 2 IMMERSIVE_BROKER, 3 IMMERSIVE_BROWSER);
-// ULONG Flags }. Every window of this layer is a plain desktop window, so the process is PROCESS_UICONTEXT_DESKTOP
-// without flags. The UI context of another process is not tracked: STATUS_NOT_SUPPORTED.
-NTSTATUS WINAPI NtUserGetProcessUIContextInformation(HANDLE process, ULONG* info) {
-    if (!info) return dispatch::detail::st::InvalidParameter;
-    const bool self = !process || process == reinterpret_cast<HANDLE>(~static_cast<ULONG_PTR>(0));
-    if (!self) {
+// NtUserGetProcessUIContextInformation(process, PROCESS_UICONTEXT_INFORMATION*) -> BOOL: which kind of UI the process runs
+// (user32!GetProcessUIContextInformation is the same function; the native dxgi.dll imports it to learn whether it is in
+// an immersive/UWP context). { ULONG ProcessUIContext (0 DESKTOP, 1 IMMERSIVE, 2 IMMERSIVE_BROKER, 3 IMMERSIVE_BROWSER);
+// ULONG Flags }. Measured on the CI runner (ci.yml probe, docs/slices/uwpswap.md): for the current process
+// (pseudo-handle -1) the native function returns TRUE with { 0, 0 }; for a NULL process it returns FALSE with
+// ERROR_INVALID_PARAMETER and leaves the buffer untouched. Every window of this layer is a plain desktop window, so the
+// answer for this process is the measured one. A handle to another process was not measured: FALSE with
+// ERROR_NOT_SUPPORTED (that process's UI context is not tracked), an invalid handle ERROR_INVALID_HANDLE.
+BOOL WINAPI NtUserGetProcessUIContextInformation(HANDLE process, ULONG* info) {
+    if (!process || !info) {
+        SetLastErr(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    if (process != reinterpret_cast<HANDLE>(~static_cast<ULONG_PTR>(0))) {
         const DWORD pid = GetProcessId(process);
-        if (!pid) return dispatch::detail::st::InvalidHandle;
-        if (pid != GetCurrentProcessId()) return dispatch::detail::st::NotSupported;
+        if (!pid) {
+            SetLastErr(ERROR_INVALID_HANDLE);
+            return FALSE;
+        }
+        if (pid != GetCurrentProcessId()) {
+            SetLastErr(ERROR_NOT_SUPPORTED);
+            return FALSE;
+        }
     }
     info[0] = 0;   // PROCESS_UICONTEXT_DESKTOP
     info[1] = 0;   // no flags
-    return dispatch::detail::st::Success;
+    return TRUE;
 }
 
 ULONG WINAPI NtUserGetProcessDpiAwarenessContext(HANDLE process) {
