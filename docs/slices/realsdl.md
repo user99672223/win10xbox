@@ -17,5 +17,5 @@ c0000135` (STATUS_DLL_NOT_FOUND). The static SDL2 imports setupapi.dll, which wa
 
 ## Changes
 
-* wine-pe/dlls.txt: `setupapi` (SDL2.dll's static imports: setupapi, winmm, imm32, version, kernel32, user32, gdi32,
+* wine-pe/dlls.txt: `setupapi` and `msacm32` (winmm's static import; setupapi was the first c0000135, then WINMM.dll failed on msacm32) (SDL2.dll's static imports: setupapi, winmm, imm32, version, kernel32, user32, gdi32,
   advapi32, shell32, ole32, oleaut32).
