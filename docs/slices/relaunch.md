@@ -1,4 +1,6 @@
-status: wip
+status: blocked (2 code pushes used). head a618e7e. Run 40001566624 (host-uwp): msix ok, run ok, launcher two-run assert ok (run=1 hello_cui, run=2 guest_hello, restart works after a guest exits), autoselect-all fails.
+Blocker: the chain stops at the first TIMEOUT program (guest_cursor.exe, 5th): the restart requested while the timed-out guest is still running fails with `RequestRestartAsync failed (HRESULT 0x800736b2)` (status.txt `launcher.restart`), so report.txt has 5 blocks instead of 32. Suspected cause: WinRT call from the worker thread while the guest owns the PEB/TEB, or a restart refused for a process with a live guest. Not tried: issue the restart from the UI thread (CoreDispatcher), or end the guest threads first. Fixed: main.cpp lacked launch_config.h and used a non-existent AppRestartFailureReason::None (2cdc221); os_build=unknown after a guest loaded (now resolved before any guest, a618e7e).
+Runs: https://github.com/user99672223/win10xbox/actions/runs/39999860417 (2cdc221), https://github.com/user99672223/win10xbox/actions/runs/40001566624 (a618e7e), ci https://github.com/user99672223/win10xbox/actions/runs/40001568579
 
 # Slice `-relaunch`: run program after program from the picker
 
