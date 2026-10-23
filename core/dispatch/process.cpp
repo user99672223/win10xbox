@@ -87,6 +87,41 @@ std::wstring ToLowerCopy(std::wstring s) {
     return s;
 }
 
+// Wine's RtlLookupFunctionEntry finds a module's .pdata through LdrFindEntryForAddress, which walks PEB->Ldr,
+// and consults the dynamic function tables only for a pc that is in NO listed module. After the take-over
+// PEB->Ldr is the guest's list, so the host's own modules (ntdll's RtlUnwindEx / call_handler /
+// KiUserExceptionDispatcher, this executable) are unlisted: they would have no unwind info, and a second-phase
+// unwind started by a guest handler (RtlUnwindEx from __C_specific_handler or libunwind) walked them as leaf
+// frames into garbage ("invalid frame" in RtlUnwindEx). Registering each host module's table now (PEB->Ldr is
+// still the host's, so these entries are not consulted until the take-over) puts them on the dynamic list.
+// Real Windows resolves a pc without PEB->Ldr and needs none of this.
+void RegisterHostUnwindTables() {
+    using AddFn = BOOLEAN(NTAPI*)(PRUNTIME_FUNCTION, DWORD, DWORD64);
+    auto add = reinterpret_cast<AddFn>(HostExport("RtlAddFunctionTable"));
+    void* ldr = PebField<void*>(peb::Ldr);
+    if (!add || !ldr) return;
+    // PEB_LDR_DATA.InMemoryOrderModuleList at 0x20; LDR_DATA_TABLE_ENTRY.InMemoryOrderLinks at 0x10, DllBase at 0x30.
+    auto* head = reinterpret_cast<LIST_ENTRY*>(static_cast<std::uint8_t*>(ldr) + 0x20);
+    unsigned walked = 0, registered = 0;
+    for (LIST_ENTRY* e = head->Flink; e && e != head && walked < 256; e = e->Flink, ++walked) {
+        auto* entry = reinterpret_cast<std::uint8_t*>(e) - 0x10;
+        auto* base = *reinterpret_cast<std::uint8_t**>(entry + 0x30);
+        if (!base) continue;
+        auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE) continue;
+        auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+        if (nt->Signature != IMAGE_NT_SIGNATURE || nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) continue;
+        const IMAGE_DATA_DIRECTORY& ex = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+        const DWORD count = ex.Size / sizeof(RUNTIME_FUNCTION);
+        if (!ex.VirtualAddress || !count) continue;
+        if (add(reinterpret_cast<PRUNTIME_FUNCTION>(base + ex.VirtualAddress), count, reinterpret_cast<DWORD64>(base)))
+            ++registered;
+        else
+            WARN(process, "RtlAddFunctionTable failed for host module %p", static_cast<void*>(base));
+    }
+    TRACE(process, "host unwind tables registered for %u of %u modules", registered, walked);
+}
+
 void SavePebFields() {
     SavedPeb& s = G().peb;
     if (s.saved) return;
@@ -578,7 +613,10 @@ int Launch(const LaunchOptions& opts) {
     }
 #endif
     g.wine_host = HostExport("wine_get_version") != nullptr;
-    if (g.wine_host) TRACE(process, "host ntdll is Wine's: development run");
+    if (g.wine_host) {
+        TRACE(process, "host ntdll is Wine's: development run");
+        RegisterHostUnwindTables();
+    }
     {
         // Test hook, read here because the guest's environment block replaces the host's during the take-over.
         wchar_t v[8];

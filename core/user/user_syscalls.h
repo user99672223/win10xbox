@@ -36,6 +36,9 @@ BOOL WINAPI NtUserMoveWindow(HWND hwnd, INT x, INT y, INT cx, INT cy, BOOL repai
 LONG WINAPI NtUserSetWindowLong(HWND hwnd, INT offset, LONG newval, BOOL ansi);
 LONG_PTR WINAPI NtUserSetWindowLongPtr(HWND hwnd, INT offset, LONG_PTR newval, BOOL ansi);
 WORD WINAPI NtUserSetWindowWord(HWND hwnd, INT offset, WORD newval);
+ULONG WINAPI NtUserAlterWindowStyle(HWND hwnd, UINT mask, UINT style);
+BOOL WINAPI NtUserCallMsgFilter(MSG* msg, INT code);
+UINT_PTR WINAPI NtUserQueryInputContext(HANDLE handle, UINT attr);
 ULONG_PTR WINAPI NtUserCallHwnd(HWND hwnd, DWORD code);
 ULONG_PTR WINAPI NtUserCallHwndParam(HWND hwnd, DWORD_PTR param, DWORD code);
 ULONG_PTR WINAPI NtUserCallNoParam(ULONG code);
@@ -127,7 +130,27 @@ BOOL WINAPI NtUserHideCaret(HWND hwnd);
 BOOL WINAPI NtUserSetCaretPos(INT x, INT y);
 BOOL WINAPI NtUserGetCaretPos(POINT* point);
 UINT WINAPI NtUserGetCaretBlinkTime();
+
+// ---- win_clipboard.cpp ----
+BOOL WINAPI NtUserOpenClipboard(HWND hwnd, ULONG unk);
+BOOL WINAPI NtUserCloseClipboard();
+BOOL WINAPI NtUserEmptyClipboard();
+NTSTATUS WINAPI NtUserSetClipboardData(UINT format, HANDLE data, void* params);   // struct set_clipboard_params*
+HANDLE WINAPI NtUserGetClipboardData(UINT format, void* params);                    // struct get_clipboard_params*
+INT WINAPI NtUserCountClipboardFormats();
+BOOL WINAPI NtUserIsClipboardFormatAvailable(UINT format);
+UINT WINAPI NtUserEnumClipboardFormats(UINT format);
+BOOL WINAPI NtUserGetUpdatedClipboardFormats(UINT* formats, UINT size, UINT* out_size);
+INT WINAPI NtUserGetPriorityClipboardFormat(UINT* list, INT count);
+INT WINAPI NtUserGetClipboardFormatName(UINT format, WCHAR* buffer, INT maxlen);
+HWND WINAPI NtUserGetClipboardOwner();
+HWND WINAPI NtUserGetClipboardViewer();
 HWND WINAPI NtUserGetOpenClipboardWindow();
+DWORD WINAPI NtUserGetClipboardSequenceNumber();
+HWND WINAPI NtUserSetClipboardViewer(HWND hwnd);
+BOOL WINAPI NtUserChangeClipboardChain(HWND hwnd, HWND next);
+BOOL WINAPI NtUserAddClipboardFormatListener(HWND hwnd);
+BOOL WINAPI NtUserRemoveClipboardFormatListener(HWND hwnd);
 
 // ---- win_paint.cpp ----
 HDC WINAPI NtUserBeginPaint(HWND hwnd, PAINTSTRUCT* ps);
@@ -295,6 +318,7 @@ BOOL WINAPI NtGdiTransparentBlt(HDC hdc, INT x_dst, INT y_dst, INT width_dst, IN
                                 INT y_src, INT width_src, INT height_src, UINT color);
 
 }  // namespace win10xbox::user::sys
+#include "win_scroll.h"   // the scroll bar syscalls (prototypes)
 
 // The registration list: every name above.
 #define W10X_USER_SYSCALLS(X) \
@@ -303,7 +327,7 @@ BOOL WINAPI NtGdiTransparentBlt(HDC hdc, INT x_dst, INT y_dst, INT width_dst, IN
     X(NtUserSetClassLongPtr) X(NtUserSetClassWord) \
     X(NtUserCreateWindowEx) X(NtUserDestroyWindow) X(NtUserShowWindow) X(NtUserShowWindowAsync) \
     X(NtUserSetWindowPos) X(NtUserMoveWindow) X(NtUserSetWindowLong) X(NtUserSetWindowLongPtr) \
-    X(NtUserSetWindowWord) X(NtUserCallHwnd) X(NtUserCallHwndParam) X(NtUserCallNoParam) X(NtUserCallOneParam) \
+    X(NtUserSetWindowWord) X(NtUserAlterWindowStyle) X(NtUserCallMsgFilter) X(NtUserQueryInputContext) X(NtUserCallHwnd) X(NtUserCallHwndParam) X(NtUserCallNoParam) X(NtUserCallOneParam) \
     X(NtUserCallTwoParam) X(NtUserGetAncestor) X(NtUserSetParent) X(NtUserFindWindowEx) X(NtUserBuildHwndList) \
     X(NtUserQueryWindow) X(NtUserWindowFromPoint) X(NtUserChildWindowFromPointEx) X(NtUserRealChildWindowFromPoint) \
     X(NtUserSetFocus) X(NtUserSetActiveWindow) X(NtUserGetForegroundWindow) X(NtUserSetForegroundWindow) \
@@ -325,11 +349,17 @@ BOOL WINAPI NtGdiTransparentBlt(HDC hdc, INT x_dst, INT y_dst, INT width_dst, IN
     X(NtUserVkKeyScanEx) X(NtUserGetKeyNameText) X(NtUserSendInput) X(NtUserTrackMouseEvent) \
     X(NtUserGetDoubleClickTime) X(NtUserMessageBeep) X(NtUserCreateCaret) X(NtUserDestroyCaret) X(NtUserShowCaret) \
     X(NtUserHideCaret) X(NtUserSetCaretPos) X(NtUserGetCaretPos) X(NtUserGetCaretBlinkTime) \
-    X(NtUserGetOpenClipboardWindow) \
+    X(NtUserOpenClipboard) X(NtUserCloseClipboard) X(NtUserEmptyClipboard) X(NtUserSetClipboardData) \
+    X(NtUserGetClipboardData) X(NtUserCountClipboardFormats) X(NtUserIsClipboardFormatAvailable) \
+    X(NtUserEnumClipboardFormats) X(NtUserGetUpdatedClipboardFormats) X(NtUserGetPriorityClipboardFormat) \
+    X(NtUserGetClipboardFormatName) X(NtUserGetClipboardOwner) X(NtUserGetClipboardViewer) \
+    X(NtUserGetOpenClipboardWindow) X(NtUserGetClipboardSequenceNumber) X(NtUserSetClipboardViewer) \
+    X(NtUserChangeClipboardChain) X(NtUserAddClipboardFormatListener) X(NtUserRemoveClipboardFormatListener) \
     X(NtUserBeginPaint) X(NtUserEndPaint) X(NtUserGetDC) X(NtUserGetDCEx) X(NtUserGetWindowDC) X(NtUserReleaseDC) \
     X(NtUserInvalidateRect) X(NtUserInvalidateRgn) X(NtUserValidateRect) X(NtUserValidateRgn) X(NtUserRedrawWindow) \
     X(NtUserGetUpdateRect) X(NtUserGetUpdateRgn) X(NtUserExcludeUpdateRgn) X(NtUserWindowFromDC) \
     X(NtUserLockWindowUpdate) X(NtUserScrollWindowEx) \
+    X(NtUserSetScrollInfo) X(NtUserShowScrollBar) X(NtUserEnableScrollBar) X(NtUserGetScrollBarInfo) X(NtUserScrollDC) \
     X(NtUserGetSystemDpiForProcess) X(NtUserGetProcessDpiAwarenessContext) X(NtUserSetProcessDpiAwarenessContext) \
     X(NtUserSystemParametersInfo) X(NtUserSystemParametersInfoForDpi) X(NtUserEnumDisplayMonitors) \
     X(NtUserGetDpiForMonitor) X(NtUserEnumDisplaySettings) X(NtUserEnumDisplayDevices) \
