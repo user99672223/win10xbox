@@ -18,4 +18,4 @@ imagehlp (delay imports of crypt32 and wintrust). propsys belongs to -wt-media a
 Not registered: msxml3 (needs widl for xmlparser.idl -> xmlparser.h, which linux-cross does not have).
 Not tested here: urlmon, wininet (network), iertutil (no tests).
 
-Measurements: first run (ci 39886857259, head 9061fb3) recorded in the baselines; diagnosing the dead suites.
+Measurements: ci 39893860706 (head e0d2046) recorded; crypt32 unix library table added, setupapi, wintrust and crypt32 re-measured next.

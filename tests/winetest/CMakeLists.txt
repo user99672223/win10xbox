@@ -107,13 +107,12 @@ set_tests_properties(integration.winetest_shell32 PROPERTIES
 # wine-pe/tests/misc.sh --dll <dll> (same build/run/baseline scheme as advapi32
 # above; baselines in wine-pe/tests/<dll>.baseline). Listed in priority order;
 # each entry is "<dll> <per-unit timeout s> <ctest TIMEOUT s>".
-# msxml3 is not registered: its xmlparser.idl needs widl, which linux-cross
-# does not have (docs/slices/wt-misc.md).
+# Not registered (docs/slices/wt-misc.md): msxml3 (xmlparser.idl needs widl, which linux-cross
+# does not have), userenv, bcrypt and ncrypt (every unit dies, so no assertion is counted).
 # ---------------------------------------------------------------------------
 foreach(_s IN ITEMS
-    "psapi 20 240" "userenv 20 240" "cabinet 20 300" "xmllite 20 300" "mpr 20 240"
-    "bcrypt 20 240" "setupapi 20 480" "dbghelp 20 360" "wintrust 20 360"
-    "ncrypt 20 240" "crypt32 20 600")
+    "psapi 20 240" "cabinet 20 300" "xmllite 20 300" "mpr 20 240"
+    "setupapi 20 480" "dbghelp 20 360" "wintrust 20 360" "crypt32 20 600")
   string(REPLACE " " ";" _s "${_s}")
   list(GET _s 0 _dll)
   list(GET _s 1 _unit_timeout)

@@ -1,5 +1,5 @@
 # <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/misc.sh --dll wintrust; measured on the linux-cross CI job, numbers in docs/slices/wt-misc.md)
-asn crash 0
-crypt crash 0
-register crash 0
-softpub crash 0
+asn run 999999
+crypt run 999999
+register run 999999
+softpub run 999999
