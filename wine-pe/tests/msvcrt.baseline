@@ -1,0 +1,17 @@
+# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/msvcrt.sh; measured numbers in docs/slices/wt-msvcrt.md)
+# Units with 0 failures: the allowlist, which only grows.
+cpp run 0
+data run 0
+dir run 0
+heap run 0
+printf run 0
+scanf run 0
+signal run 0
+string run 0
+# Completes with failures (max = the measured count).
+time run 11
+# Do not complete (the parent process ends abnormally).
+environ crash 0
+file crash 0
+locale crash 0
+misc crash 0

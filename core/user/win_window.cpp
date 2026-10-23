@@ -1187,6 +1187,28 @@ WORD WINAPI NtUserSetWindowWord(HWND hwnd, INT offset, WORD newval) {
     return static_cast<WORD>(SetWindowLongSize(hwnd, offset, sizeof(WORD), newval, TRUE));
 }
 
+// Wine changes the style bits in the window record without any message; only a few bits are alterable.
+ULONG WINAPI NtUserAlterWindowStyle(HWND hwnd, UINT mask, UINT style) {
+    LockGuard lock;
+    mask &= WS_TABSTOP | WS_VSCROLL | WS_HSCROLL | 0x23f;
+    WindowObj* w = WinChecked(hwnd);
+    if (!w) return 0;
+    w->style = (w->style & ~mask) | (style & mask);
+    return 1;
+}
+
+// No hooks are installed (SetWindowsHookEx is Todo), so no filter ever eats a message.
+BOOL WINAPI NtUserCallMsgFilter(MSG* msg, INT code) {
+    (void)msg; (void)code;
+    return FALSE;
+}
+
+// There is no IME: no input context exists.
+UINT_PTR WINAPI NtUserQueryInputContext(HANDLE handle, UINT attr) {
+    (void)handle; (void)attr;
+    return 0;
+}
+
 ULONG_PTR WINAPI NtUserCallHwnd(HWND hwnd, DWORD code) {
     LockGuard lock;
     switch (code) {
@@ -1343,7 +1365,7 @@ ULONG_PTR WINAPI NtUserCallHwndParam(HWND hwnd, DWORD_PTR param, DWORD code) {
     case abi::HwndParamSetDialogInfo: w->dlg_info = static_cast<LONG_PTR>(param); return 0;
     case abi::HwndParamSetMDIClientInfo: w->mdi_info = static_cast<LONG_PTR>(param); return 0;
     case abi::HwndParamGetWinMonitorDpi: return 96;
-    case abi::HwndParamGetScrollInfo: return FALSE;
+    case abi::HwndParamGetScrollInfo: return ScrollGetInfoCall(w->handle, param);   // win_scroll.cpp
     case abi::HwndParamExposeWindowSurface: return FALSE;
     case abi::HwndParamGetPrivateData: {
         auto* p = reinterpret_cast<abi::GetPrivateDataParams*>(param);
@@ -1451,6 +1473,12 @@ NTSTATUS WINAPI NtUserBuildHwndList(HDESK desktop, HWND hwnd, BOOL children, BOO
     (void)desktop; (void)non_immersive;
     WindowObj* root = hwnd ? Win(hwnd) : Win(DesktopWindow());
     if (!root) return static_cast<NTSTATUS>(0xC0000008);   // STATUS_INVALID_HANDLE
+    // Wine's server lists the window's *siblings* (the children of its parent) when `children` is FALSE and a
+    // window is given: GetDlgItem / GetNextDlgTabItem pass the first child of a window and want it and the
+    // controls after it. With `children` TRUE the window is the parent whose descendants are listed.
+    if (hwnd && !children && root->parent) {
+        if (WindowObj* par = Win(root->parent)) root = par;
+    }
     std::vector<HWND> list;
     std::function<void(WindowObj*)> walk = [&](WindowObj* w) {
         for (HWND h : w->children) {

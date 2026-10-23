@@ -124,7 +124,12 @@ jobs:
         if: always()
         with:
           name: linux-cross-bin
-          path: build-mingw/bin/
+          # Testing/Temporary holds every test's full output (ctest shows a passing test's output nowhere else);
+          # winetest/<dll>/ holds the Wine conformance suites' per-unit logs and .tsv rows (wine-pe/tests/*.sh).
+          path: |
+            build-mingw/bin/
+            build-mingw/Testing/Temporary/
+            build-mingw/winetest/
           retention-days: 3
 
   # The real Windows test machine: MSVC 2022, host-win32 runs core/ unsandboxed.
@@ -219,6 +224,18 @@ jobs:
       - name: Populate machine folder from the runner's System32 (never committed)
         shell: pwsh
         run: ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine -CI
+      # A real program that is not ours: 7-Zip 24.09's 7zr.exe from the official source tarball (pinned SHA-256, the
+      # cache key carries it), nmake in CPP/7zip/Bundles/Alone7z -> build/bin/machine/guest/7zr.exe; run by
+      # integration.real7z (tests/integration/real7z.cmake).
+      - name: Cache the 7-Zip source tarball
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/sevenzip-src
+          key: sevenzip-24.09-49c05169f49572c1128453579af1632a952409ced028259381dac30726b6133a
+      - name: Build 7-Zip 7zr.exe (real guest program)
+        shell: pwsh
+        run: ./tools/ci/build_7zip.ps1 -Out build/bin/machine/guest
+
       # A real program that is not ours: the SQLite command-line shell, from the official amalgamation pinned by URL and
       # SHA-256 (verified on every run, cached or not), compiled with cl /O2 /MT into the machine folder's guest
       # directory. integration.sqlite_* and the smoke step below run it; the build fails if the archive changes.
@@ -241,6 +258,16 @@ jobs:
       - name: Build Lua 5.4.7 (real guest program)
         shell: pwsh
         run: ./tools/ci/build_lua.ps1 -Out build/bin/machine/guest
+      # The official CPython 3.12 embeddable package from python.org (pinned SHA-256, checked on every run), unpacked
+      # unchanged into build/bin/machine/guest/python; the Test step runs it (integration.real_python_platform, integration.real_python_json).
+      - name: Cache the Python embeddable zip
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/python-embed
+          key: python-3.12.10-embed-amd64-4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3
+      - name: Fetch Python 3.12 embeddable (real guest program)
+        shell: pwsh
+        run: ./tools/ci/fetch_python.ps1 -Out build/bin/machine/guest/python
       # One more program that is not ours: Sysinternals Coreinfo64.exe, downloaded from
       # live.sysinternals.com and pinned by SHA-256 (tools/ci/fetch_sysinternals.ps1, verified on every run). Left in
       # build/bin/machine/guest for integration.coreinfo (docs/slices/sysinfo.md).
@@ -263,6 +290,17 @@ jobs:
       - name: Fetch fastfetch 2.70.0 (real guest program)
         shell: pwsh
         run: ./tools/ci/fetch_fastfetch.ps1 -Out build/bin/machine/guest
+      # The third prebuilt program: ninja 1.12.1, the project's official ninja-win.zip (tools/ci/fetch_ninja.ps1: pinned
+      # SHA-256, verified on every run), left at build/bin/machine/guest/ninja.exe for integration.ninja_*
+      # (docs/slices/realninja.md). Its build rules run the lua.exe built above.
+      - name: Cache the ninja release zip
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ninja-src
+          key: ninja-1.12.1-f550fec705b6d6ff58f2db3c374c2277a37691678d6aba463adcbb129108467a
+      - name: Fetch ninja 1.12.1 (real guest program)
+        shell: pwsh
+        run: ./tools/ci/fetch_ninja.ps1 -Out build/bin/machine/guest
       # Real GUI programs that are not ours (tools/ci/build_realgui.ps1): Microsoft's LearnWin32 Hello World and PuTTY
       # 0.85 (official tarball, cmake + cl /MT), pinned by SHA-256 and verified on every run. Left in
       # build/bin/machine/guest for integration.realgui_* (docs/TESTING.md, "Real GUI programs").
@@ -285,6 +323,16 @@ jobs:
       - name: Build curl.exe (real guest program, no TLS)
         shell: pwsh
         run: ./tools/ci/build_curl.ps1 -Out build/bin/machine/guest
+      # Git for Windows (MinGit 2.47.1 x64 zip, pinned by SHA-256, verified on every run, cached or not), unpacked into
+      # build/bin/machine/guest/mingit for integration.real_git* (tools/ci/fetch_mingit.ps1).
+      - name: Cache the MinGit zip
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/mingit-download
+          key: mingit-2.47.1-50b04b55425b5c465d076cdb184f63a0cd0f86f6ec8bb4d5860114a713d2c29a
+      - name: Fetch MinGit (real guest program, pinned SHA-256 verified)
+        shell: pwsh
+        run: ./tools/ci/fetch_mingit.ps1 -Out build/bin/machine/guest/mingit
       # The whole suite, end-to-end included. The guest's stdout IS captured on
       # real Windows: run 39818491081 (RelWithDebInfo, the one job of that run
       # that had the builtins) printed "hello from guest" and passed 11 of 13

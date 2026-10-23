@@ -1,0 +1,20 @@
+win10xbox: heap_thread_detach() with the host process heap
+
+The process heap is the host's (patch 0001) and every Rtl*Heap call is forwarded
+to the host ntdll, so this ntdll never created a heap of its own and its static
+process_heap is NULL. LdrShutdownThread() calls heap_thread_detach() on every
+thread exit, which dereferenced that NULL (RtlEnterCriticalSection(NULL + 0xd0))
+and killed the whole process the first time a guest thread returned. With no heap
+of our own there are no low-fragmentation-heap bin groups to hand back.
+
+diff --git a/dlls/ntdll/heap.c b/dlls/ntdll/heap.c
+--- a/dlls/ntdll/heap.c
++++ b/dlls/ntdll/heap.c
+@@ -2021,5 +2021,7 @@ static void heap_thread_detach_bin_groups( struct heap *heap )
+ void heap_thread_detach(void)
+ {
+     struct heap *heap;
+ 
++    if (!process_heap) return;
++
+     RtlEnterCriticalSection( &process_heap->cs );

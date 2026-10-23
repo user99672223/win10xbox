@@ -80,6 +80,7 @@ more. Presentation is the host's: it only needs `ComposeFrame`.
 | `win_defwnd.cpp` | the default window procedure (`NtUserMessageCall(NtUserDefWindowProc)`): text, WM_NCCALCSIZE from the style (Windows 10 frame metrics), WM_NCHITTEST, WM_NCPAINT, WM_ERASEBKGND with the class brush, WM_CTLCOLOR*, WM_CLOSE, WM_WINDOWPOSCHANGED -> WM_MOVE/WM_SIZE, WM_ACTIVATE -> focus, Alt+F4 |
 | `win_message.cpp` | per-thread queues (posted, input, cross-thread sent), WM_PAINT and WM_TIMER pseudo-messages, `GetMessage`, `PeekMessage`, `MsgWaitForMultipleObjectsEx`, `WaitMessage`, `GetQueueStatus`, `NtUserMessageCall` codes, `DispatchMessage` (WM_PAINT / timer procs), `TranslateMessage` (US layout), timers, the input sink and the thread-side processing of mouse input (hit test, activation, `WM_SETCURSOR`, double clicks), key state, `SendInput`, cursor, caret (tracked, not drawn) |
 | `win_paint.cpp` | update regions (bounding rectangle + erase / frame / internal-paint flags), `InvalidateRect`/`Rgn`, `ValidateRect`/`Rgn`, `RedrawWindow`, `GetUpdateRect`/`Rgn`, `BeginPaint`/`EndPaint`, `GetDC`/`GetDCEx`/`GetWindowDC`/`ReleaseDC`, `ScrollWindowEx`, the non-client frame (solid colours), window surfaces from the driver, flush, `ComposeFrame` / `ComposeLastPaintedFrame` |
+| `win_scroll.cpp` | scroll state per window (`NtUserSetScrollInfo`, `GetScrollBarInfo`, `ShowScrollBar`, `EnableScrollBar`, `GetScrollInfo` via `NtUserCallHwndParam`), the non-client WS_VSCROLL / WS_HSCROLL bars (solid colours, drawn from WM_NCPAINT, HTVSCROLL / HTHSCROLL in WM_NCHITTEST, a WM_NCLBUTTONDOWN on a bar sends WM_VSCROLL / WM_HSCROLL SB_LINEUP / SB_LINEDOWN / SB_PAGEUP / SB_PAGEDOWN then SB_ENDSCROLL), the `ScrollBar` control procedure (SBM_*), `ScrollDC` |
 | `win_sysparams.cpp` | `GetSystemMetrics` (Windows 10 at 96 DPI), `SystemParametersInfo[ForDpi]`, DPI awareness, monitors (`EnumDisplayMonitors` via the callback, `GetMonitorInfo`, `MonitorFromRect/Window`), `EnumDisplaySettings`, `EnumDisplayDevices`, `SetSysColors` |
 
 Any syscall not implemented stays **Todo** in the dispatcher: it traces `unimplemented syscall NtUserFoo`, sets the
@@ -116,10 +117,9 @@ Not implemented yet (they stay Todo or are documented FIXMEs), roughly in the or
   `AddFontResource` stay Todo / failing.
 * **Menus** (`NtUserCreateMenu`, `NtUserThunkedMenuItemInfo`, `TrackPopupMenu`...): Todo; `LoadMenu` fails, so
   windows get no menu bar. **Icons and cursors** (`NtUserSetCursorIconData`, `NtUserDrawIconEx`, `LoadImage` of
-  icons/cursors): Todo. **Scroll bars** (`NtUserSetScrollInfo`, the scroll bar window procedure): Todo (WS_VSCROLL
-  only reserves the space). **Clipboard**, **hooks** (`SetWindowsHookEx`, `SetWinEventHook`), **IME**,
+  icons/cursors): Todo. **Scroll bars**: `win_scroll.cpp` (see the module table); thumb dragging and button auto-repeat are not implemented. **Clipboard**, **hooks** (`SetWindowsHookEx`, `SetWinEventHook`), **IME**,
   **raw input**, **layered windows** (`SetLayeredWindowAttributes`, `UpdateLayeredWindow`), **window regions**,
-  `AlphaBlend` / `TransparentBlt` / `GradientFill` / `MaskBlt`, `PrintWindow`, `ScrollDC`, `DeferWindowPos`,
+  `AlphaBlend` / `TransparentBlt` / `GradientFill` / `MaskBlt`, `PrintWindow`, `DeferWindowPos`,
   window stations / desktops: Todo.
 * Window dragging / resizing from the frame (WM_NCLBUTTONDOWN on the caption or border) is not implemented; the
   frame is drawn in solid colours (COLOR_ACTIVEBORDER / COLOR_ACTIVECAPTION, a close-button square), without

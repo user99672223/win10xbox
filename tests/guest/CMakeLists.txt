@@ -70,8 +70,62 @@ win10xbox_add_guest(guest_window_text)
 add_executable(guest_xinput xinput.c)
 target_link_libraries(guest_xinput PRIVATE xinput1_4 user32)
 win10xbox_add_guest(guest_xinput)
+# Exception handling coverage (seh.cpp + the DLL it throws across): C++ throw/catch, SEH, vectored handlers.
+# __try/__except is native on MSVC. For clang's mingw target it is used when a configure-time compile+link of a
+# __try/__except program with -fms-extensions succeeds (SEH_NATIVE); otherwise seh.cpp falls back to a vectored
+# handler that restores a captured context.
+add_library(guest_seh_dll SHARED seh_dll.cpp)
+win10xbox_add_guest(guest_seh_dll)
+add_executable(guest_seh seh.cpp)
+target_link_libraries(guest_seh PRIVATE guest_seh_dll)
+win10xbox_add_guest(guest_seh)
+if(NOT MSVC)
+  include(CheckCXXSourceCompiles)
+  set(CMAKE_REQUIRED_FLAGS "-fms-extensions -g")
+  # The probe mirrors seh.cpp's SehRun (a filter that calls a function, the result passed back by value) so a
+  # compiler that cannot handle the construct is detected here and not in the guest build.
+  check_cxx_source_compiles("
+    #include <windows.h>
+    struct R { int a; unsigned long b; };
+    static R* g_cur; static bool g_flag;
+    static LONG filt(EXCEPTION_POINTERS* ep) { g_cur->b = ep->ExceptionRecord->ExceptionCode; return EXCEPTION_EXECUTE_HANDLER; }
+    static R run(void (*fn)(void*), void* arg, bool flag) {
+      R r = {}; g_cur = &r; g_flag = flag;
+      __try { fn(arg); } __except (filt(GetExceptionInformation())) { }
+      g_cur = 0; return r;
+    }
+    static void thrower(void*) { RaiseException(1, 0, 0, 0); }
+    int main() { R r = run(thrower, 0, false); return r.b == 1 ? 0 : 1; }"
+    WIN10XBOX_CLANG_SEH_TRY)
+  unset(CMAKE_REQUIRED_FLAGS)
+  if(WIN10XBOX_CLANG_SEH_TRY)
+    target_compile_options(guest_seh PRIVATE -fms-extensions)
+    target_compile_definitions(guest_seh PRIVATE SEH_NATIVE=1)
+  endif()
+endif()
+# The scroll bar guest (tests/guest/window_scroll.c): SetScrollInfo/GetScrollInfo, non-client scroll bars, ScrollWindowEx,
+# ScrollDC, and a click injected by the host on the vertical bar's down arrow (WM_VSCROLL SB_LINEDOWN).
+add_executable(guest_window_scroll window_scroll.c)
+target_link_libraries(guest_window_scroll PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_window_scroll)
+# The clipboard guest (tests/guest/clipboard.c): user32 clipboard API -> win32u syscalls -> core/user/win_clipboard.cpp.
+add_executable(guest_clipboard clipboard.c)
+target_link_libraries(guest_clipboard PRIVATE user32)
+win10xbox_add_guest(guest_clipboard)
+# The dialog guest: DialogBoxParamW with a DIALOG resource (dialog.rc); the host clicks OK (tests/guest/dialog.c).
+enable_language(RC)
+add_executable(guest_dialog dialog.c dialog.rc)
+target_link_libraries(guest_dialog PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_dialog)
+# Wine's builtin comctl32 (ListView/TreeView/Progress/Trackbar/StatusBar) through the layer (tests/guest/comctl.c).
+add_executable(guest_comctl comctl.c)
+target_link_libraries(guest_comctl PRIVATE user32 gdi32 comctl32)
+win10xbox_add_guest(guest_comctl)
 
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
+add_test(NAME guest.seh COMMAND guest_seh)
+set_tests_properties(guest.seh PROPERTIES PASS_REGULAR_EXPRESSION "seh: done failures=0"
+  FAIL_REGULAR_EXPRESSION "seh: [a-z_.]+ FAILED;seh: FAIL line")
 add_test(NAME guest.hello COMMAND guest_hello)
 set_tests_properties(guest.hello PROPERTIES PASS_REGULAR_EXPRESSION "hello from guest")
 add_test(NAME guest.cpuid COMMAND guest_cpuid)

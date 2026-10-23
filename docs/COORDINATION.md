@@ -31,7 +31,23 @@ adding `owner: B` as the second line of its slice doc; otherwise leaves them alo
 
 ### Merged (acting-coordinator log)
 
-* (none yet)
+* `-ncframe` merged at 426ec6b (its runs were cancelled by the next push; verdict carried by ae8fc61,
+  ci https://github.com/user99672223/win10xbox/actions/runs/39890044877).
+* `-realcurl` merged at 253a848 (same; wine-pe for bcrypt: https://github.com/user99672223/win10xbox/actions/runs/39889436184).
+* `-dialog` merged at ae8fc61, ci https://github.com/user99672223/win10xbox/actions/runs/39890044877,
+  host-uwp https://github.com/user99672223/win10xbox/actions/runs/39890044955 (guest_dialog added to the package).
+* `-comctl` and `-wt-msvcrt` merged at b41089c (comctl: guest_comctl added to the package), ci
+  https://github.com/user99672223/win10xbox/actions/runs/39891332079, host-uwp
+  https://github.com/user99672223/win10xbox/actions/runs/39891332117.
+* `-seh` merged at 198c357 (guest_seh + guest_seh_dll added to the package; the branch head carried unresolved
+  markers in tests/guest/CMakeLists.txt, resolved in the merge), ci
+  https://github.com/user99672223/win10xbox/actions/runs/39892636777, host-uwp
+  https://github.com/user99672223/win10xbox/actions/runs/39892636936.
+* `-scroll`, `-clipboard`, `-realninja` and `-realpython` (Session A's, ready) merged at 8351827 (guest_window_scroll
+  and guest_clipboard added to the package; one fixup commit repairs the keep-both artefacts), ci
+  https://github.com/user99672223/win10xbox/actions/runs/39893468835, host-uwp
+  https://github.com/user99672223/win10xbox/actions/runs/39893468794, wine-pe
+  https://github.com/user99672223/win10xbox/actions/runs/39893468806.
 
 ## Protocol
 
