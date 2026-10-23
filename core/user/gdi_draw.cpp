@@ -872,8 +872,6 @@ INT WINAPI NtGdiStretchDIBitsInternal(HDC hdc, INT x_dst, INT y_dst, INT width_d
     if (v.bottom_up) sy = v.height - y_src - height_src;
     const RECT dr = LogicalRect(dc, x_dst, y_dst, width_dst, height_dst);
     const RECT sr{x_src, sy, x_src + width_src, sy + height_src};
-    DrawTarget t;
-    if (!ResolveDrawTarget(dc, &t)) return height_src;
     const RECT nd = Normalized(dr);
     const int dw = nd.right - nd.left, dh = nd.bottom - nd.top;
     if (dw <= 0 || dh <= 0 || !width_src || !height_src) return 0;
@@ -882,15 +880,33 @@ INT WINAPI NtGdiStretchDIBitsInternal(HDC hdc, INT x_dst, INT y_dst, INT width_d
     const RECT ns = Normalized(sr);
     const int sw = ns.right - ns.left, sh = ns.bottom - ns.top;
     const BrushPaint b = BrushOf(dc, dc->brush);
-    ForEachPixel(t, nd, [&](int x, int y, std::uint32_t& px) {
+    auto source_at = [&](int x, int y) {
         int sx = ns.left + static_cast<int>((static_cast<long long>(x - nd.left) * sw) / dw);
         int syy = ns.top + static_cast<int>((static_cast<long long>(y - nd.top) * sh) / dh);
         if (flip_x) sx = ns.right - 1 - (sx - ns.left);
         if (flip_y) syy = ns.bottom - 1 - (syy - ns.top);
-        const std::uint32_t s = DibViewPixel(v, sx, syy);
-        px = rop3 == 0xcc ? s | 0xff000000u : 0xff000000u | (Rop3(rop3, b.At(x, y), s, px) & 0xffffff);
-    });
-    NoteDrawn(dc, t, nd);
+        return DibViewPixel(v, sx, syy);
+    };
+    auto combine = [&](int x, int y, std::uint32_t old) {
+        const std::uint32_t s = source_at(x, y);
+        return rop3 == 0xcc ? s | 0xff000000u : 0xff000000u | (Rop3(rop3, b.At(x, y), s, old) & 0xffffff);
+    };
+    DrawTarget t;
+    if (ResolveDrawTarget(dc, &t)) {
+        ForEachPixel(t, nd, [&](int x, int y, std::uint32_t& px) { px = combine(x, y, px); });
+        NoteDrawn(dc, t, nd);
+        return height_src;
+    }
+    // A bitmap without a 32 bpp view (a paletted or 24 bpp DIB section, a monochrome bitmap): pixel by pixel.
+    // user32's LoadImage(LR_CREATEDIBSECTION) fills the DIB section it made through StretchDIBits on a memory DC.
+    SlowDest d;
+    if (!OpenSlowDest(dc, &d)) return height_src;
+    for (const RECT& c : d.clip.rects) {
+        const RECT x = RectIntersect(nd, c);
+        for (int y = x.top; y < x.bottom; ++y)
+            for (int xx = x.left; xx < x.right; ++xx)
+                SetBitmapPixel(*d.bmp, xx, y, combine(xx, y, BitmapPixel(*d.bmp, xx, y)));
+    }
     return height_src;
 }
 
@@ -904,24 +920,42 @@ INT WINAPI NtGdiSetDIBitsToDeviceInternal(HDC hdc, INT x_dst, INT y_dst, DWORD c
     if (!dc || !bits || !MakeDibView(bmi, coloruse, bits, &v)) return 0;
     // `bits` holds `lines` scans starting at scan `startscan` (scan 0 = first row in memory).
     if (lines > static_cast<UINT>(v.height)) lines = static_cast<UINT>(v.height);
-    DrawTarget t;
-    if (!ResolveDrawTarget(dc, &t)) return static_cast<INT>(lines);
     const POINT o = LogicalToDevice(dc, x_dst, y_dst);
     const RECT dr{o.x, o.y, o.x + static_cast<LONG>(cx), o.y + static_cast<LONG>(cy)};
-    ForEachPixel(t, dr, [&](int x, int y, std::uint32_t& px) {
+    // Source pixel for device position (x, y), or false when the scan is outside the `lines` given.
+    auto source_at = [&](int x, int y, std::uint32_t* out) {
         const int sx = x_src + (x - dr.left);
         // DIB y of this destination row: y_src is measured from the bottom for bottom-up DIBs
-        int dib_y = v.bottom_up ? (y_src + static_cast<int>(cy) - 1 - (y - dr.top)) : (y_src + (y - dr.top));
-        const int scan = v.bottom_up ? dib_y : dib_y;
-        if (scan < static_cast<int>(startscan) || scan >= static_cast<int>(startscan + lines) || sx < 0 || sx >= v.width) return;
+        const int scan = v.bottom_up ? (y_src + static_cast<int>(cy) - 1 - (y - dr.top)) : (y_src + (y - dr.top));
+        if (scan < static_cast<int>(startscan) || scan >= static_cast<int>(startscan + lines) || sx < 0 || sx >= v.width)
+            return false;
         const std::uint8_t* row = v.bits + static_cast<std::ptrdiff_t>(scan - static_cast<int>(startscan)) * v.stride;
         DibView one = v;
         one.bits = row;
         one.height = 1;
         one.bottom_up = false;
-        px = DibViewPixel(one, sx, 0) | 0xff000000u;
-    });
-    NoteDrawn(dc, t, dr);
+        *out = DibViewPixel(one, sx, 0) | 0xff000000u;
+        return true;
+    };
+    DrawTarget t;
+    if (ResolveDrawTarget(dc, &t)) {
+        ForEachPixel(t, dr, [&](int x, int y, std::uint32_t& px) {
+            std::uint32_t s;
+            if (source_at(x, y, &s)) px = s;
+        });
+        NoteDrawn(dc, t, dr);
+        return static_cast<INT>(lines);
+    }
+    SlowDest d;   // a bitmap without a 32 bpp view: pixel by pixel
+    if (!OpenSlowDest(dc, &d)) return static_cast<INT>(lines);
+    for (const RECT& c : d.clip.rects) {
+        const RECT r = RectIntersect(dr, c);
+        for (int y = r.top; y < r.bottom; ++y)
+            for (int x = r.left; x < r.right; ++x) {
+                std::uint32_t s;
+                if (source_at(x, y, &s)) SetBitmapPixel(*d.bmp, x, y, s);
+            }
+    }
     return static_cast<INT>(lines);
 }
 
