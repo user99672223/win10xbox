@@ -54,6 +54,35 @@ open-semantics tests):
   and the one genuine IUnknown registration (`Interface` is never an empty key, reg.c deletes it and expects
   `CANNOT_DELETE`); a supplied hive has all of it.
 
+## Result
+
+Windows runners, first run of this slice (head 9487143, before the probe slice was merged in), `reg` unit,
+Debug and RelWithDebInfo: `reg: 1186 tests executed (13 marked as todo, 0 as flaky, 16 failures), 0 skipped.` (was: killed
+by the 20 s cap after millions of failures). 14 of the 16 were pointer assertions (below); the other two were
+`\Device\Null` (`reg.c:337`, `:528`): `NtOpenDirectoryObject` answers PATH_NOT_FOUND on Windows for a device as the last
+name component, where NtOpenKey answers TYPE_MISMATCH, so the object-namespace answer for a name outside `\Registry`
+is now told apart by opening the parent directory. (The host's own `NtOpenKey` would be the better oracle but the
+Wine 9 server that the linux-cross job runs on never answers an open of `\Foobar`.)
+
+With the probe slice merged into this branch (origin/claude/youthful-cerf-l7xxsb-probe: `ProbeForRead/Write`, guarded
+copies, a failed open leaves the handle NULL) the unit is at **1 failure** on the Wine host, measured here; the
+Windows number is the one in "Still failing" below.
+
 ## Still failing
 
-(filled in from the CI runs)
+`reg` is **not** on `wine-pe/tests/ntdll.allowlist`: one assertion cannot pass while the guest is the unprivileged user
+the layer promises (token.h: medium integrity, non-elevated):
+
+* `reg.c:2548: Test failed: Failed to set SE_RESTORE_NAME and SE_BACKUP_NAME privileges, skipping tests`.
+  `test_NtRegLoadKeyEx` enables SeRestorePrivilege and SeBackupPrivilege on its token and `win_skip`s when it cannot. On
+  Windows (not Wine) a `win_skip` is a skip; under the `wine` platform (this guest is Wine's ntdll) it is a failure, so a
+  standard-user token costs exactly one failure. It is not a registry fault and nothing was patched for it.
+* If the token were elevated the test would run on, and then it fails differently: its three `NtLoadKeyEx`
+  assertions are `todo_wine` (reg.c:2573-2590) and a Windows-correct `NtLoadKeyEx` (INVALID_PARAMETER_7 with a root
+  handle and no flags, success with a NULL-free handle for `REG_APP_HIVE`) makes them "succeeded inside todo block",
+  so being right is a failure there (measured here with a temporary elevated token: 3 failures). Same class as the
+  `rtlstr` U+037F difference in docs/slices/wt-ntdll.md: recorded, not patched.
+
+Not done, noticed on the way: `NtLoadKey*`, `NtUnloadKey`, `NtSaveKey`, `NtRestoreKey` and `NtReplaceKey` do not check
+SeRestore/SeBackup the way an unprivileged caller would see them (STATUS_PRIVILEGE_NOT_HELD); no guest reaches them
+because every Wine test and program that needs the privilege skips first, so it was left alone.
