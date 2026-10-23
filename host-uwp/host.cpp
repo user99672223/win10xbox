@@ -417,8 +417,6 @@ void Host::Impl::RunImpl()
     if (lc.has_expect_exit_code) report.Set("launch.expect_exit_code", Fmt("%d", lc.expect_exit_code));
     report.Flush();
 
-    // The picked entry's .env/env= pairs: in the host's environment (the guest inherits it) for this launch only.
-    EnvScope launch_env_scope(launch_env);
     // Tracing knobs reach the core through the environment it reads at Initialize.
     if (!lc.trace.empty()) SetEnvironmentVariableW(L"WIN10XBOX_DEBUG", Widen(lc.trace).c_str());
     if (!lc.winedebug.empty()) SetEnvironmentVariableW(L"WIN10XBOX_WINEDEBUG", Widen(lc.winedebug).c_str());
@@ -564,6 +562,9 @@ void Host::Impl::RunImpl()
             return;
         }
     }
+
+    // The picked entry's .env/env= pairs: in the host's environment (the guest inherits it) for this launch only.
+    EnvScope launch_env_scope(launch_env);
 
     // ---- 2. machine.json, then the layer ------------------------------------------
     report.Set("phase", "machine.json");
