@@ -26,6 +26,7 @@ gdi32
 # --- base services ---------------------------------------------------------
 advapi32
 sechost
+bcrypt             # CPython's os.urandom (BCryptGenRandom -> RtlGenRandom); no unix lib needed for that
 rpcrt4
 comctl32
 shell32

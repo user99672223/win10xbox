@@ -27,7 +27,8 @@ add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
-                   guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog)
+                   guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog guest_comctl
+                   guest_seh guest_window_scroll guest_clipboard)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -51,12 +52,19 @@ function(win10xbox_guest_test name program exit_code)
   elseif(_guest_machine STREQUAL WIN10XBOX_BUILTIN_MACHINE_DIR)
     set(_require_builtin ON)
   endif()
+  # A console program (the caller sets _guest_console) never loads user32.dll: the builtin check then only
+  # requires that no native system DLL was mapped.
+  set(_require_user32 ${_require_builtin})
+  if(_guest_console)
+    set(_require_user32 OFF)
+  endif()
   add_test(NAME integration.${name}
     COMMAND ${CMAKE_COMMAND}
       -DHOST=$<TARGET_FILE:win10xbox>
       -DMACHINE=${_guest_machine}
       -DREQUIRE_BUILTIN_DLLS=${_require_builtin}
       "-DNO_USER32=${_guest_no_user32}"
+      -DREQUIRE_USER32=${_require_user32}
       -DPROGRAM=${program}
       "-DPROGRAM_ARGS=${_guest_args}"
       "-DDEBUG_SPEC=${_guest_debug}"
@@ -103,6 +111,14 @@ win10xbox_guest_test(guest_spawn "C:\\guest\\guest_spawn.exe" 42
   "spawn-child: argc=5" "spawn-child: argv\\[1\\]=\\[child\\]" "spawn-child: argv\\[2\\]=\\[a b\\]"
   "spawn-child: argv\\[3\\]=\\[c.d\\]" "spawn-child: argv\\[4\\]=\\[e\\]"
   "spawn-child: cwd=C:\\\\Windows" "spawn-child: mark=mark42" "spawn: child2 exit 7" "spawn: done")
+
+# Exception handling (tests/guest/seh.cpp): C++ throw/catch across frames and a DLL boundary, SEH __try/__except
+# around an access violation / divide by zero / RaiseException / a fault in a DLL frame, vectored handlers, the
+# unhandled-exception filter. Exceptions are delivered by the host kernel to the host ntdll and unwound with the
+# guest's .pdata (docs/DECISIONS.md E2). A failed section prints "seh: <name> FAILED".
+win10xbox_guest_test(guest_seh "C:\\guest\\guest_seh.exe" 42
+  "seh: throw_catch ok" "seh: dll_boundary ok" "seh: seh ok" "seh: veh ok" "seh: uef ok" "seh: done failures=0")
+set_tests_properties(integration.guest_seh PROPERTIES FAIL_REGULAR_EXPRESSION "seh: [a-z_.]+ FAILED;seh: FAIL line")
 
 # The host-uwp-lite smoke guest (built in tests/guest, MSVC only): the program
 # that ran on the console, in both subsystems. It prints facts and returns 42.
@@ -174,6 +190,25 @@ win10xbox_guest_test(guest_window_text "C:\\guest\\guest_window_text.exe" 42
   "text: done")
 set_tests_properties(integration.guest_window_text PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_text.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=121,123,ff000000|123,123,ffffffff|131,123,ff000000")
+# Scroll bars (tests/guest/window_scroll.c, core/user/win_scroll.cpp): range/position round trip, HTVSCROLL hit test,
+# ScrollWindowEx / ScrollDC pixels, and a host-injected click on the vertical bar's down arrow that must arrive as
+# WM_VSCROLL SB_LINEDOWN + SB_ENDSCROLL. The screenshot shows the bar's track colour (COLOR_SCROLLBAR, ffc8c8c8) at
+# screen (391,250), between the thumb and the down arrow.
+win10xbox_guest_test(guest_window_scroll "C:\\guest\\guest_window_scroll.exe" 42
+  "scroll: client=283x183" "scroll: v min=0 max=100 page=10 pos=20" "scroll: h min=0 max=50 pos=5"
+  "scroll: vbar rect=383,100,400,283" "scroll: hittest down-arrow=7 hbar=6 client=1"
+  "scroll: ScrollWindowEx before=404040 after=0000ff upd=0,0,283,30" "scroll: ScrollDC pixel=0000ff upd=0,0,283,10"
+  "scroll: WM_VSCROLL code=1" "scroll: after click linedown=1 endscroll=1 pos=21" "scroll: done")
+set_tests_properties(integration.guest_window_scroll PROPERTIES
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_scroll.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=391,250,ffc8c8c8;WIN10XBOX_TEST_INJECT_INPUT=sleep 2000\\;move 391,275\\;ldown\\;sleep 100\\;lup")
+# The clipboard (tests/guest/clipboard.c, core/user/win_clipboard.cpp): CF_UNICODETEXT set/read, CF_TEXT synthesis,
+# a registered format, delayed rendering, the sequence number. It creates a (hidden) window, so builtin-only folder.
+win10xbox_guest_test(guest_clipboard "C:\\guest\\guest_clipboard.exe" 42
+  "clipboard: window ok" "clipboard: set-unicode ok" "clipboard: sequence-number ok" "clipboard: get-unicode ok"
+  "clipboard: synthesized-text ok CF_TEXT=Hello Xbox clipboard" "clipboard: enum-formats ok count=4"
+  "clipboard: registered-format ok" "clipboard: delayed-render ok calls=1" "clipboard: listener-update ok count=1"
+  "clipboard: listener-removed ok" "clipboard: done")
+set_tests_properties(integration.guest_clipboard PROPERTIES FAIL_REGULAR_EXPRESSION "clipboard: FAIL")
 # The dialog manager (tests/guest/dialog.c): DialogBoxParamW with a DIALOG resource, WM_INITDIALOG, GetDlgItem,
 # Set/GetDlgItemText, tab order, WM_CTLCOLORSTATIC, a click on the OK button injected by the host (screen (160,163) =
 # the button's centre once the program placed the dialog at (100,100) and the button at client (10,50) 100x26),
@@ -184,6 +219,20 @@ win10xbox_guest_test(guest_dialog "C:\\guest\\guest_dialog.exe" 42
   "dialog: ok clicked" "dialog: result=7" "dialog: done")
 set_tests_properties(integration.guest_dialog PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_dialog.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=110,150,ff646464|118,158,fff0f0f0|160,114,ffffffc0|240,136,ffffffff;WIN10XBOX_TEST_INJECT_INPUT=sleep 2500\\;move 160,163\\;ldown\\;lup")
+# comctl32 (Wine's builtin, v5 classes: no manifest) through the layer: a report-view ListView (2 columns, 3 items) with its
+# header, a TreeView and a smooth progress bar (bar colour RGB(0,160,0), background RGB(230,230,230), position 50 of
+# 100) as children of a 400x300 popup at (100,100). The guest reads the pixels back with GetPixel (tests/guest/comctl.c);
+# the screenshot checks the same ones at screen coordinates: ListView background (ListView at 5,5 -> client (150,100) =
+# screen (255,205)) white, the header's button face right of its two columns (client (180,9) = (285,114)) f0f0f0, the
+# progress bar (at 5,135) inside the fill (client (20,10) = (125,245)) 00a000 and outside it (client (170,10) =
+# (275,245)) e6e6e6.
+win10xbox_guest_test(guest_comctl "C:\\guest\\guest_comctl.exe" 42
+  "comctl: init ok" "comctl: created lv=1 tv=1 pb=1 hdr=1"
+  "comctl: lv count=3 cols=2 tv count=2 pb pos=50"
+  "comctl: pixels lv=00ffffff hdr=00f0f0f0 pb_in=0000a000 pb_out=00e6e6e6"
+  "comctl: label pixels drawn=[1-9][0-9]*" "comctl: done")
+set_tests_properties(integration.guest_comctl PROPERTIES
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_comctl.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=255,205,ffffffff|285,114,fff0f0f0|125,245,ff00a000|275,245,ffe6e6e6")
 unset(_guest_machine)
 
 # ---- Real programs: the first guests that are not ours ----------------------------------------------------------
@@ -261,6 +310,65 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
     "sdl: init video=windows" "sdl: surface 320x240" "sdl: pixels 00dc5000 000000ff 0000ff00" "sdl: done")
   set_tests_properties(integration.real_sdl2 PROPERTIES
     ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/real_sdl2.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=105,105,ff0050dc|130,130,ffff0000|230,150,ff00ff00")
+  unset(_guest_machine)
+endif()
+
+# ---- ninja 1.12.1 (official ninja-win.zip, tools/ci/fetch_ninja.ps1; docs/slices/realninja.md) -----------------------
+# ninja.exe runs on the shared machine folder next to lua.exe: ninja on Windows starts a rule's command with
+# CreateProcess and no cmd.exe, so the two rules of tests/guest/ninja/ninja_build.ninja run C:\guest\lua.exe with
+# ninja_tool.lua. Outputs go to C:\guest\ninja_out (builddir: .ninja_log too), the inputs are files already in C:\guest.
+# The tests run in order (a fresh machine folder: a rerun on the same folder finds ninja_out and builds less).
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  configure_file(${CMAKE_SOURCE_DIR}/tests/guest/ninja/ninja_tool.lua ${CMAKE_BINARY_DIR}/bin/guest/ninja_tool.lua COPYONLY)
+  configure_file(${CMAKE_SOURCE_DIR}/tests/guest/ninja/ninja_build.ninja ${CMAKE_BINARY_DIR}/bin/guest/ninja_build.ninja COPYONLY)
+  set(_guest_args "--version")
+  win10xbox_guest_test(ninja_version "C:\\guest\\ninja.exe" 0 "^1\\.12\\.1\n")
+  set(_guest_args "-C;C:\\guest;-f;ninja_build.ninja;-t;targets;all")
+  win10xbox_guest_test(ninja_targets "C:\\guest\\ninja.exe" 0
+    "ninja_out[/\\]a\\.txt: copy" "ninja_out[/\\]b\\.txt: copy" "ninja_out[/\\]ab\\.txt: concat")
+  set(_guest_args "-C;C:\\guest;-f;ninja_build.ninja")
+  set(_guest_file "guest/ninja_out/ab.txt")
+  win10xbox_guest_test(ninja_build "C:\\guest\\ninja.exe" 0 "\\[1/3\\]" "\\[2/3\\]" "\\[3/3\\] CONCAT ninja_out[/\\]ab\\.txt")
+  unset(_guest_file)
+  # Second run on the outputs the first one left: .ninja_log says everything is up to date.
+  set(_guest_args "-C;C:\\guest;-f;ninja_build.ninja")
+  win10xbox_guest_test(ninja_noop "C:\\guest\\ninja.exe" 0 "ninja: no work to do\\.")
+  set_tests_properties(integration.ninja_noop PROPERTIES DEPENDS integration.ninja_build)
+  unset(_guest_args)
+endif()
+
+# ---- The python.org embeddable CPython (docs/slices/realpython.md) ----------------------------------------------------
+# The official CPython 3.12 embeddable package (python.org zip, nothing compiled), unpacked by
+# tools/ci/fetch_python.ps1 (a named step of ci.yml's windows job) into <machine>/guest/python before ctest runs.
+# Registered where that step exists: MSVC builds, or -DWIN10XBOX_REAL_PYTHON=ON after unpacking the zip there.
+# Both tests run on the builtin-only machine folder (the console's DLL set, "*": "builtin,native"): python312.dll
+# imports ws2_32, bcrypt, advapi32 and version, and the Windows CI runner's own build-26100 copies of those are
+# written against an ntdll and an API-set schema Wine does not have (the failure that put the first run of these
+# tests red: api-ms-win-core-crt-l2-1-0 -> _initterm_e resolved to nothing, Wine's 0x80000100 import stub).
+option(WIN10XBOX_REAL_PYTHON "Register the real-Python guest tests (the embeddable zip in <machine>/guest/python)" OFF)
+if(MSVC OR WIN10XBOX_REAL_PYTHON)
+  configure_file(${CMAKE_SOURCE_DIR}/tests/guest/python/sample.json ${CMAKE_BINARY_DIR}/bin/guest/python_sample.json COPYONLY)
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  set(_guest_console ON)
+  # (a) the interpreter and the platform module: a version line, platform.uname() (os name, release and version from
+  # the layer's Windows 10 identity) and os.cpu_count() as the last line. The ';' inside the program text is written
+  # @SEMI@ (run_guest.cmake turns it back), so CMake keeps it in the one argument. The last regex wants the number
+  # alone on the final line.
+  set(_guest_args "-c;import sys, platform, os@SEMI@ print(sys.version)@SEMI@ print(platform.uname())@SEMI@ print(os.cpu_count())")
+  win10xbox_guest_test(real_python_platform "C:\\guest\\python\\python.exe" 0
+    "3\\.12\\.10 \\(tags/v3\\.12\\.10"
+    "uname_result\\(system='Windows'"
+    "\\)..?[0-9]+.?.?$")
+  # (b) python -m json.tool on a small file: the module is found in python312.zip, the file is read through the
+  # layer's VFS, and the pretty-printed document comes back on stdout, re-indented (the input is one line).
+  set(_guest_args "-m;json.tool;C:\\guest\\python_sample.json")
+  win10xbox_guest_test(real_python_json "C:\\guest\\python\\python.exe" 0
+    "\"name\": \"win10xbox\""
+    ".    \"list\": ."
+    "\"ok\": true"
+    "\"pi\": 3\\.25")
+  unset(_guest_args)
+  unset(_guest_console)
   unset(_guest_machine)
 endif()
 
