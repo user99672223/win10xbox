@@ -33,7 +33,7 @@ endif()
 
 set(_builtins 0)
 if(BUILTIN_DIR AND IS_DIRECTORY "${BUILTIN_DIR}")
-  file(GLOB _files "${BUILTIN_DIR}/*.dll" "${BUILTIN_DIR}/*.exe")
+  file(GLOB _files "${BUILTIN_DIR}/*.dll" "${BUILTIN_DIR}/*.exe" "${BUILTIN_DIR}/*.drv")
   foreach(f ${_files})
     get_filename_component(n "${f}" NAME)
     file(COPY_FILE "${f}" "${MACHINE}/Windows/builtin/${n}" ONLY_IF_DIFFERENT)

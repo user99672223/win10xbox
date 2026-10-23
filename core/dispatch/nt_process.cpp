@@ -41,6 +41,8 @@ constexpr ULONG kThreadAmILastThread = 12;
 #if WIN10XBOX_HAVE_CLOCK
 constexpr ULONG kSystemTimeOfDayInformation = 3;
 #endif
+constexpr ULONG kSystemCpuInformation = 1;
+constexpr ULONG kSystemFirmwareTableInformation = 76;
 constexpr ULONG kSystemWineVersionInformation = 1000;
 
 // A UNICODE_STRING followed by its characters, written into the caller's buffer (the string points into it).
@@ -280,7 +282,20 @@ static NTSTATUS NTAPI Xl_NtQuerySystemInformation(ULONG klass, PVOID buffer, ULO
         if (length < sizeof(kInfo)) return st::InfoLengthMismatch;
         return probe::CopyToUser(buffer, kInfo, sizeof(kInfo));
     }
-    return Host().NtQuerySystemInformation(klass, buffer, length, ret_len);
+    if (klass == kSystemFirmwareTableInformation) {   // D18: firmware tables are denied on the console
+        NTSTATUS answer = st::Success;
+        if (QuerySystemFirmwareTable(buffer, length, ret_len, &answer)) return answer;
+    }
+    const NTSTATUS host = Host().NtQuerySystemInformation(klass, buffer, length, ret_len);
+    if (klass == kSystemCpuInformation && NtSuccess(host) && buffer && length >= 6) {
+        // SYSTEM_CPU_INFORMATION: ProcessorLevel is the family, ProcessorRevision is model << 8 | stepping (what
+        // GetSystemInfo reports); the CPUID patch serves the same machine identity.
+        const auto& id = config::Current().machine_identity;
+        auto* words = static_cast<USHORT*>(buffer);
+        words[1] = static_cast<USHORT>(id.cpu_family);
+        words[2] = static_cast<USHORT>((id.cpu_model << 8) | id.cpu_stepping);
+    }
+    return host;
 }
 
 static NTSTATUS NTAPI Xl_NtQuerySecurityObject(HANDLE h, ULONG info, PVOID sd, ULONG length, PULONG ret_len) {

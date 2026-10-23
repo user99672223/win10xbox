@@ -59,6 +59,11 @@ wtsapi32
 setupapi
 msacm32     # winmm static import
 
+# --- imports of wbemprox (docs/slices/identity.md); its other imports are listed above ---
+winspool.drv=winspool.drv
+setupapi
+compstui     # winspool.drv
+
 # --- COM -------------------------------------------------------------------
 ole32
 oleaut32

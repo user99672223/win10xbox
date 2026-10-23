@@ -66,6 +66,7 @@ NTSTATUS Clk_NtQuerySystemInformation_TimeOfDay(PVOID Buffer, ULONG Length, PULO
 // background thread (period ~1ms) so scanner-redirected absolute reads of
 // 0x7FFE0000.. can be served from here. nullptr until StartSharedDataThread.
 const void* VirtualSharedData();
+const void* EnsureSharedDataPage();     // the page with its static fields (version, product type) and the time as of now, no updater
 NTSTATUS StartSharedDataThread();       // allocates the page, writes it once synchronously, starts the ~1ms updater
 void StopSharedDataThread();            // joins the updater; the page stays allocated and readable (frozen at last update)
 

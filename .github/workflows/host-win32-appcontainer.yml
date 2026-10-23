@@ -69,9 +69,11 @@ name: host-win32-appcontainer
 
 # Every push to every branch, no path filter: the whole project is tested
 # continuously (docs/HANDOFF.md, standing testing rule).
+# Main only (see uwp-lite.yml): slice branches run ci.yml and wine-pe.yml, the rest runs on the merge.
+# A slice that needs the AppContainer measurement runs it with workflow_dispatch on its branch.
 on:
   push:
-    branches: ["**"]
+    branches: ["claude/youthful-cerf-l7xxsb"]
   pull_request:
   workflow_dispatch:
 
