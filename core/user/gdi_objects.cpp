@@ -1,8 +1,8 @@
 // core/user GDI objects: the shared handle table at PEB.GdiSharedHandleTable
 // (Wine's encoding, stock objects in Wine's init_stock_objects order so that
 // gdi32's GetStockObject -- a table lookup at FIRST_GDI_HANDLE + n -- finds
-// them), brushes, pens, fonts (LOGFONT only: no font engine), bitmaps and DIB
-// sections, regions, palettes, and the NtGdi* object syscalls.
+// them), brushes, pens, fonts (a LOGFONT; the glyphs are the built-in 8x16 face), bitmaps and
+// DIB sections, regions, palettes, and the NtGdi* object syscalls.
 #include "user_internal.h"
 #include "user_syscalls.h"
 

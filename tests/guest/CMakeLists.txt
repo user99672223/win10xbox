@@ -24,6 +24,10 @@ win10xbox_add_guest(guest_cpuid)
 add_executable(guest_sleep sleep.c)
 win10xbox_add_guest(guest_sleep)
 
+# CreateProcess through the layer (NtCreateUserProcess): runs guest_hello.exe and itself as children.
+add_executable(guest_spawn spawn.c)
+win10xbox_add_guest(guest_spawn)
+
 add_library(guest_dll SHARED dll.c)
 win10xbox_add_guest(guest_dll)
 
@@ -43,29 +47,40 @@ win10xbox_add_guest(guest_window2)
 add_executable(guest_window_input window_input.c)
 target_link_libraries(guest_window_input PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window_input)
+# Input semantics beyond the plain sequence (tests/guest/window_input2.c): hit test / cursor / activation
+# sequencing, double clicks, capture, children, the keyboard state and the US layout. Host-injected (the same hook) plus
+# SendInput from the guest.
+add_executable(guest_window_input2 window_input2.c)
+target_link_libraries(guest_window_input2 PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_window_input2)
 # The text guest: TextOutW/DrawTextW with the stock system font, glyph pixels read back with GetPixel
 # (tests/guest/window_text.c). Its integration test is DISABLED until the text rendering slice lands.
 add_executable(guest_window_text window_text.c)
 target_link_libraries(guest_window_text PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window_text)
 
-# C++ runtime / exception coverage (cxx_runtime.cpp + the DLL it throws across). One executable per toolchain
-# variant: the default runtime (MSVC /MT static CRT, llvm-mingw static libc++), and on MSVC also /MD (vcruntime140 +
-# ucrt as DLLs). /MD uses the release DLL runtime in Debug too (the debug runtime DLLs are not on the machine).
-function(win10xbox_add_cxx_guest suffix)
-  add_library(guest_cxx_dll${suffix} SHARED cxx_dll.cpp)
-  win10xbox_add_guest(guest_cxx_dll${suffix})
-  add_executable(guest_cxx_runtime${suffix} cxx_runtime.cpp)
-  target_link_libraries(guest_cxx_runtime${suffix} PRIVATE guest_cxx_dll${suffix})
-  win10xbox_add_guest(guest_cxx_runtime${suffix})
-  if(MSVC AND suffix STREQUAL "_md")
-    set_target_properties(guest_cxx_dll${suffix} guest_cxx_runtime${suffix}
-      PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
+# Exception handling coverage (seh.cpp + the DLL it throws across): C++ throw/catch, SEH, vectored handlers.
+# __try/__except is native on MSVC. For clang's mingw target it is used when a configure-time compile+link of a
+# __try/__except program with -fms-extensions succeeds (SEH_NATIVE); otherwise seh.cpp falls back to a vectored
+# handler that restores a captured context.
+add_library(guest_seh_dll SHARED seh_dll.cpp)
+win10xbox_add_guest(guest_seh_dll)
+add_executable(guest_seh seh.cpp)
+target_link_libraries(guest_seh PRIVATE guest_seh_dll)
+win10xbox_add_guest(guest_seh)
+if(NOT MSVC)
+  include(CheckCXXSourceCompiles)
+  set(CMAKE_REQUIRED_FLAGS "-fms-extensions")
+  check_cxx_source_compiles("
+    #include <windows.h>
+    static LONG f(EXCEPTION_POINTERS* ep) { return ep->ExceptionRecord->ExceptionCode == 1 ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH; }
+    int main() { int r = 0; __try { RaiseException(1, 0, 0, 0); } __except (f(GetExceptionInformation())) { r = 1; } return r; }"
+    WIN10XBOX_CLANG_SEH_TRY)
+  unset(CMAKE_REQUIRED_FLAGS)
+  if(WIN10XBOX_CLANG_SEH_TRY)
+    target_compile_options(guest_seh PRIVATE -fms-extensions)
+    target_compile_definitions(guest_seh PRIVATE SEH_NATIVE=1)
   endif()
-endfunction()
-win10xbox_add_cxx_guest("")
-if(MSVC)
-  win10xbox_add_cxx_guest("_md")
 endif()
 
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
@@ -100,3 +115,6 @@ if(NOT CMAKE_CROSSCOMPILING_EMULATOR)
   add_test(NAME guest.window_text COMMAND guest_window_text)
   set_tests_properties(guest.window_text PROPERTIES PASS_REGULAR_EXPRESSION "text: done")
 endif()
+
+# Guests from the SQLite shell bring-up (tests/guest/sqlite).
+add_subdirectory(sqlite)

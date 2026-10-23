@@ -158,6 +158,17 @@ jobs:
           rem informational (the gate prints how many symbols the guest imports); never fails the step
           dumpbin /imports build\bin\machine\guest\smoke_cui.exe > build\smoke_cui.imports.txt || exit /b 0
 
+      # The SQLite shell, a program that is not ours (tools/ci/build_sqlite.ps1: pinned archive, SHA-256 verified on every
+      # run); the smoke gate below runs it under console conditions too.
+      - name: Cache the SQLite amalgamation
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/sqlite-download
+          key: sqlite-amalgamation-3540100-0a9c8e34352dad46006aa82836d5383bff9dc6bc9ce5a60553c05aa30e6ad1f9
+      - name: Build the SQLite shell (pinned, SHA-256 verified)
+        shell: pwsh
+        run: ./tools/ci/build_sqlite.ps1 -OutDir build/bin/machine/guest
+
       # GATING run: the console's condition (host paths unknown). Before eb52c50
       # this is where kernelbase.dll was aliased onto ntdll.dll and every KERNEL32
       # import dangled. The exit code of win10xbox.exe is the guest's.
@@ -410,12 +421,23 @@ jobs:
           fi
           echo "host-win32-smoke: PASS (zero unresolved KERNEL32 imports, guest exit code 42)"
 
+      # Lua 5.4.7, built as in ci.yml (tools/ci/build_lua.ps1), so the first real program also runs under the
+      # console's conditions (builtin DLLs only, host paths unknown).
+      - name: Cache the Lua source tarball
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/lua-src
+          key: lua-5.4.7-9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30
+      - name: Build Lua 5.4.7 (real guest program)
+        shell: pwsh
+        run: ./tools/ci/build_lua.ps1 -Out build/bin/machine/guest
+
       # Every bundled guest (prepare_machine copied bin/guest into the machine
       # folder), console conditions, each gated on its exit code and output.
       - name: Gate - every bundled guest through the host (console conditions)
         if: ${{ !cancelled() }}
         shell: pwsh
-        run: ./tools/ci/smoke_guests.ps1 -Bin build/bin -Machine build/bin/machine -LogDir guest-smoke -ConsoleConditions
+        run: ./tools/ci/smoke_guests.ps1 -Bin build/bin -Machine build/bin/machine -LogDir guest-smoke -ConsoleConditions -RealPrograms
 
       - uses: actions/upload-artifact@v4
         if: always()

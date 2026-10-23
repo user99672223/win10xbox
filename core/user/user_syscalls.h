@@ -252,6 +252,7 @@ BOOL WINAPI NtGdiGetTextExtentExW(HDC hdc, const WCHAR* str, INT count, INT max_
                                   UINT flags);
 INT WINAPI NtGdiGetTextFaceW(HDC hdc, INT count, WCHAR* name, BOOL alias_name);
 BOOL WINAPI NtGdiGetCharWidthW(HDC hdc, UINT first_char, UINT last_char, WCHAR* chars, ULONG flags, void* buffer);
+BOOL WINAPI NtGdiGetCharWidthInfo(HDC hdc, abi::CharWidthInfo* info);
 BOOL WINAPI NtGdiGetCharABCWidthsW(HDC hdc, UINT first, UINT last, WCHAR* chars, ULONG flags, void* buffer);
 UINT WINAPI NtGdiGetTextCharsetInfo(HDC hdc, FONTSIGNATURE* fs, DWORD flags);
 DWORD WINAPI NtGdiGetFontData(HDC hdc, DWORD table, DWORD offset, void* buffer, DWORD length);
@@ -347,7 +348,7 @@ INT WINAPI NtGdiStretchDIBitsInternal(HDC hdc, INT x_dst, INT y_dst, INT width_d
     X(NtGdiGetTransform) X(NtGdiModifyWorldTransform) X(NtGdiSetLayout) X(NtGdiSetVirtualResolution) \
     X(NtGdiScaleViewportExtEx) X(NtGdiScaleWindowExtEx) X(NtGdiFlush) X(NtGdiSetBoundsRect) X(NtGdiGetBoundsRect) \
     X(NtGdiGetTextMetricsW) X(NtGdiGetTextExtentExW) X(NtGdiGetTextFaceW) X(NtGdiGetCharWidthW) \
-    X(NtGdiGetCharABCWidthsW) X(NtGdiGetTextCharsetInfo) X(NtGdiGetFontData) X(NtGdiGetOutlineTextMetricsInternalW) \
+    X(NtGdiGetCharWidthInfo) X(NtGdiGetCharABCWidthsW) X(NtGdiGetTextCharsetInfo) X(NtGdiGetFontData) X(NtGdiGetOutlineTextMetricsInternalW) \
     X(NtGdiGetRealizationInfo) X(NtGdiGetGlyphIndicesW) X(NtGdiFontIsLinked) X(NtGdiGetKerningPairs) \
     X(NtGdiSetTextJustification) \
     X(NtGdiPatBlt) X(NtGdiBitBlt) X(NtGdiStretchBlt) \
