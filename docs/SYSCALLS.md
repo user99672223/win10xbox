@@ -5,7 +5,7 @@ Windows 10 x64 / 22H2 NT syscall numbers) and the hand-maintained policy
 `core/dispatch/syscall_policy.inc`; win32u entries (ids 0x1000..) are Emulate when
 `core/user/user_syscalls.h` registers them. Do not edit by hand.
 
-1798 syscalls. passthrough 155, translate 35, emulate 308, todo 1300. Generated 2026-10-23.
+1798 syscalls. passthrough 155, translate 35, emulate 311, todo 1297. Generated 2026-10-23.
 
 Policy: **PassThrough** calls the host ntdll export by name; **Translate**
 rewrites arguments (paths, handles, timeouts) then passes through;
@@ -1070,7 +1070,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x131b | NtUserAddVisualIdentifier | 0 | Todo |  |
 | 0x131c | NtUserAllowForegroundActivation | 0 | Todo |  |
 | 0x131d | NtUserAllowSetForegroundWindow | 0 | Todo |  |
-| 0x131e | NtUserAlterWindowStyle | 3 | Todo |  |
+| 0x131e | NtUserAlterWindowStyle | 3 | Emulate | core/user |
 | 0x131f | NtUserApplyWindowAction | 0 | Todo |  |
 | 0x1320 | NtUserArrangeIconicWindows | 1 | Todo |  |
 | 0x1321 | NtUserAssociateInputContext | 3 | Todo |  |
@@ -1098,7 +1098,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1337 | NtUserCallHwndParamLock | 0 | Todo |  |
 | 0x1338 | NtUserCallHwndParamLockSafe | 0 | Todo |  |
 | 0x1339 | NtUserCallHwndSafe | 0 | Todo |  |
-| 0x133a | NtUserCallMsgFilter | 2 | Todo |  |
+| 0x133a | NtUserCallMsgFilter | 2 | Emulate | core/user |
 | 0x133b | NtUserCallNextHookEx | 4 | Todo |  |
 | 0x133c | NtUserCallNoParam | 1 | Emulate | core/user |
 | 0x133d | NtUserCallOneParam | 2 | Emulate | core/user |
@@ -1517,7 +1517,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x14da | NtUserQueryBSDRWindow | 0 | Todo |  |
 | 0x14db | NtUserQueryDisplayConfig | 6 | Todo |  |
 | 0x14dc | NtUserQueryInformationThread | 0 | Todo |  |
-| 0x14dd | NtUserQueryInputContext | 2 | Todo |  |
+| 0x14dd | NtUserQueryInputContext | 2 | Emulate | core/user |
 | 0x14de | NtUserQuerySendMessage | 0 | Todo |  |
 | 0x14df | NtUserQueryWindow | 2 | Emulate | core/user |
 | 0x14e0 | NtUserRaiseLowerShellWindow | 0 | Todo |  |

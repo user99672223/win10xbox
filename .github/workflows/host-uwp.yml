@@ -184,7 +184,7 @@ jobs:
           $expected = @('window.exe', 'hello.exe', 'hello_cui.exe', 'guest_hello.exe', 'guest_cpuid.exe',
                         'guest_sleep.exe', 'guest_dll.dll', 'smoke_cui.exe', 'drv_client.exe',
                         'guest_window2.exe', 'guest_window_input.exe', 'guest_window_input2.exe',
-                        'guest_window_scroll.exe', 'guest_window_text.exe', 'smoke.exe')
+                        'guest_window_scroll.exe', 'guest_window_text.exe', 'guest_window_nc.exe', 'smoke.exe')
           $missing = @($expected | Where-Object { -not (Test-Path "$stage/payload/guest/$_") })
           Write-Host ("bundled guests: " + (@(Get-ChildItem "$stage/payload/guest" -File | ForEach-Object { $_.Name }) -join ', '))
           if ($missing.Count -gt 0) {

@@ -349,6 +349,32 @@ void AdjustRectForStyle(RECT* rect, DWORD style, bool menu, DWORD ex_style) {
     }
 }
 
+int FrameInset(const WindowObj* w) {
+    RECT r{0, 0, 0, 0};
+    AdjustRectForStyle(&r, w->style, false, w->ex_style & ~WS_EX_CLIENTEDGE);
+    return -r.left;
+}
+
+int CaptionHeightOf(const WindowObj* w) {
+    return (w->ex_style & WS_EX_TOOLWINDOW) ? SystemMetric(SM_CYSMCAPTION) : SystemMetric(SM_CYCAPTION);
+}
+
+bool CaptionButtonRect(const WindowObj* w, int hittest, RECT* out) {
+    if ((w->style & WS_CAPTION) != WS_CAPTION || !(w->style & WS_SYSMENU)) return false;
+    const bool boxes = (w->style & (WS_MINIMIZEBOX | WS_MAXIMIZEBOX)) && !(w->ex_style & WS_EX_TOOLWINDOW);
+    int slot;
+    switch (hittest) {
+    case HTCLOSE: slot = 1; break;
+    case HTMAXBUTTON: slot = 2; break;
+    case HTMINBUTTON: slot = 3; break;
+    default: return false;
+    }
+    if (slot > 1 && !boxes) return false;
+    const int f = FrameInset(w), bw = SystemMetric(SM_CXSIZE), right = (w->window.right - w->window.left) - f;
+    *out = RECT{right - slot * bw, f, right - (slot - 1) * bw, f + CaptionHeightOf(w) - 1};
+    return true;
+}
+
 void SendNcCalcSize(HWND hwnd, RECT* window_parent, RECT* client_out) {
     WindowObj* w = Win(hwnd);
     if (!w) return;
@@ -1161,6 +1187,28 @@ WORD WINAPI NtUserSetWindowWord(HWND hwnd, INT offset, WORD newval) {
     return static_cast<WORD>(SetWindowLongSize(hwnd, offset, sizeof(WORD), newval, TRUE));
 }
 
+// Wine changes the style bits in the window record without any message; only a few bits are alterable.
+ULONG WINAPI NtUserAlterWindowStyle(HWND hwnd, UINT mask, UINT style) {
+    LockGuard lock;
+    mask &= WS_TABSTOP | WS_VSCROLL | WS_HSCROLL | 0x23f;
+    WindowObj* w = WinChecked(hwnd);
+    if (!w) return 0;
+    w->style = (w->style & ~mask) | (style & mask);
+    return 1;
+}
+
+// No hooks are installed (SetWindowsHookEx is Todo), so no filter ever eats a message.
+BOOL WINAPI NtUserCallMsgFilter(MSG* msg, INT code) {
+    (void)msg; (void)code;
+    return FALSE;
+}
+
+// There is no IME: no input context exists.
+UINT_PTR WINAPI NtUserQueryInputContext(HANDLE handle, UINT attr) {
+    (void)handle; (void)attr;
+    return 0;
+}
+
 ULONG_PTR WINAPI NtUserCallHwnd(HWND hwnd, DWORD code) {
     LockGuard lock;
     switch (code) {
@@ -1425,6 +1473,12 @@ NTSTATUS WINAPI NtUserBuildHwndList(HDESK desktop, HWND hwnd, BOOL children, BOO
     (void)desktop; (void)non_immersive;
     WindowObj* root = hwnd ? Win(hwnd) : Win(DesktopWindow());
     if (!root) return static_cast<NTSTATUS>(0xC0000008);   // STATUS_INVALID_HANDLE
+    // Wine's server lists the window's *siblings* (the children of its parent) when `children` is FALSE and a
+    // window is given: GetDlgItem / GetNextDlgTabItem pass the first child of a window and want it and the
+    // controls after it. With `children` TRUE the window is the parent whose descendants are listed.
+    if (hwnd && !children && root->parent) {
+        if (WindowObj* par = Win(root->parent)) root = par;
+    }
     std::vector<HWND> list;
     std::function<void(WindowObj*)> walk = [&](WindowObj* w) {
         for (HWND h : w->children) {

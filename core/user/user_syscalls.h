@@ -36,6 +36,9 @@ BOOL WINAPI NtUserMoveWindow(HWND hwnd, INT x, INT y, INT cx, INT cy, BOOL repai
 LONG WINAPI NtUserSetWindowLong(HWND hwnd, INT offset, LONG newval, BOOL ansi);
 LONG_PTR WINAPI NtUserSetWindowLongPtr(HWND hwnd, INT offset, LONG_PTR newval, BOOL ansi);
 WORD WINAPI NtUserSetWindowWord(HWND hwnd, INT offset, WORD newval);
+ULONG WINAPI NtUserAlterWindowStyle(HWND hwnd, UINT mask, UINT style);
+BOOL WINAPI NtUserCallMsgFilter(MSG* msg, INT code);
+UINT_PTR WINAPI NtUserQueryInputContext(HANDLE handle, UINT attr);
 ULONG_PTR WINAPI NtUserCallHwnd(HWND hwnd, DWORD code);
 ULONG_PTR WINAPI NtUserCallHwndParam(HWND hwnd, DWORD_PTR param, DWORD code);
 ULONG_PTR WINAPI NtUserCallNoParam(ULONG code);
@@ -298,7 +301,7 @@ INT WINAPI NtGdiStretchDIBitsInternal(HDC hdc, INT x_dst, INT y_dst, INT width_d
     X(NtUserSetClassLongPtr) X(NtUserSetClassWord) \
     X(NtUserCreateWindowEx) X(NtUserDestroyWindow) X(NtUserShowWindow) X(NtUserShowWindowAsync) \
     X(NtUserSetWindowPos) X(NtUserMoveWindow) X(NtUserSetWindowLong) X(NtUserSetWindowLongPtr) \
-    X(NtUserSetWindowWord) X(NtUserCallHwnd) X(NtUserCallHwndParam) X(NtUserCallNoParam) X(NtUserCallOneParam) \
+    X(NtUserSetWindowWord) X(NtUserAlterWindowStyle) X(NtUserCallMsgFilter) X(NtUserQueryInputContext) X(NtUserCallHwnd) X(NtUserCallHwndParam) X(NtUserCallNoParam) X(NtUserCallOneParam) \
     X(NtUserCallTwoParam) X(NtUserGetAncestor) X(NtUserSetParent) X(NtUserFindWindowEx) X(NtUserBuildHwndList) \
     X(NtUserQueryWindow) X(NtUserWindowFromPoint) X(NtUserChildWindowFromPointEx) X(NtUserRealChildWindowFromPoint) \
     X(NtUserSetFocus) X(NtUserSetActiveWindow) X(NtUserGetForegroundWindow) X(NtUserSetForegroundWindow) \
