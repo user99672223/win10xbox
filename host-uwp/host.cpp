@@ -547,7 +547,8 @@ void Host::Impl::RunWorker()
 void Host::Impl::RunImpl()
 {
     const std::wstring ls = info.local_state;
-    const std::wstring machine = ls + L"\\machine";
+    std::wstring machine = ls + L"\\machine";   // re-pointed below when launch.json / the picked entry names another folder
+    std::string machine_name = "machine";
     const std::wstring payload = info.package_dir + L"\\payload";
 
     // ---- 0. the evidence trail first, so everything below is captured -------
@@ -666,6 +667,13 @@ void Host::Impl::RunImpl()
                 e.title = gl.title;
                 e.args = gl.args;
                 e.env = gl.env;
+                e.machine = gl.machine;
+                bool mok = true;
+                if (e.machine.empty() && read(stem + L".machine", &text))
+                {
+                    e.machine = ParseMachineFile(text, &mok);
+                    if (!mok) diag::Line("launcher: %s.machine ignored (not a folder name)", Narrow(stem).c_str());
+                }
             }
             else
             {
@@ -677,6 +685,12 @@ void Host::Impl::RunImpl()
                     e.env.clear();
                 }
                 if (read(stem + L".title", &text)) e.title = ParseTitleFile(text);
+                if (read(stem + L".machine", &text))
+                {
+                    bool mok = true;
+                    e.machine = ParseMachineFile(text, &mok);
+                    if (!mok) diag::Line("launcher: %s.machine ignored (not a folder name)", Narrow(stem).c_str());
+                }
             }
             for (LauncherEntry& o : entries)
                 if (_stricmp(o.name.c_str(), e.name.c_str()) == 0) return;   // the bundled one wins
@@ -801,7 +815,9 @@ void Host::Impl::RunImpl()
             lc.args.clear();
             lc.args_raw.clear();
             lc.has_expect_exit_code = false;
+            lc.machine.clear();
         }
+        if (!chosen.machine.empty()) lc.machine = chosen.machine;   // the entry's .machine / machine= wins
         lc.guest = "C:\\guest\\" + chosen.exe;
         if (!chosen.args.empty())
         {
@@ -824,10 +840,17 @@ void Host::Impl::RunImpl()
     // The picked entry's .env/env= pairs: in the host's environment (the guest inherits it) for this launch only.
     EnvScope launch_env_scope(launch_env);
 
+    // The machine folder: launch.json "machine" / the picked entry's .machine, default "machine".
+    if (!lc.machine.empty()) machine_name = lc.machine;
+    machine = ls + L"\\" + Widen(machine_name);
+    const bool d3d_machine = _stricmp(machine_name.c_str(), kD3dMachineName) == 0;
+    report.Set("machine.folder", machine_name);
+    diag::Line("machine folder: %s", machine_name.c_str());
+
     // ---- 2. machine.json, then the layer ------------------------------------------
     report.Set("phase", "machine.json");
     report.Flush();
-    if (!StageMachineJson(machine, payload))
+    if (!StageMachineJson(machine, payload, d3d_machine ? Widen(machine_name) + L"\\machine.json" : std::wstring(L"machine.json")))
         diag::Line("warning: no machine.json in the package payload and none in the machine folder: the layer uses its defaults");
 
     // stdout/stderr -> LocalState\stdout.txt, stdin -> an empty file.
@@ -869,7 +892,7 @@ void Host::Impl::RunImpl()
     if (vfs_rc != 0)
     {
         Fail("machine.json is malformed or its machine root is unusable (vfs::Initialize " + Hex32(vfs_rc) + ")",
-             "fix LocalState\\machine\\machine.json (schema: machine/machine.schema.json) or delete it to restore the "
+             "fix LocalState\\<machine folder>\\machine.json (schema: machine/machine.schema.json) or delete it to restore the "
              "packaged default; the 'err:vfs' line in trace.log names the problem");
         return;
     }
@@ -898,10 +921,18 @@ void Host::Impl::RunImpl()
     plan.profile_rel = profile_rel;
     plan.stamp = Widen(info.package_full_name);
     for (const std::string& n : lc.stage_native) plan.native_names.push_back(Widen(n));
+    if (d3d_machine)
+    {
+        // Route B + Direct3D 11: the native GUI and D3D runtime, read BY NAME from the console's System32
+        // (tests/integration/prepare_machine.cmake D3D_MACHINE), plus the package's msctf.dll stand-in.
+        for (const std::string& n : D3dMachineNativeDlls()) plan.native_names.push_back(Widen(n));
+        plan.profile_dir = Widen(machine_name);
+    }
     const StageResult st = StageMachineFiles(plan);
     report.Set("stage.builtin", st.builtin.Summary());
     report.Set("stage.guest", st.guest.Summary());
     report.Set("stage.nls", st.nls.Summary());
+    if (d3d_machine) report.Set("stage.stubs", st.stubs.Summary());
     if (!lc.stage_native.empty()) report.Set("stage.native", st.native.Summary());
     if (!st.builtin.bad.empty()) report.Set("stage.builtin.not_staged", st.builtin.BadList());
     if (!st.nls.bad.empty()) report.Set("stage.nls.not_staged", st.nls.BadList());

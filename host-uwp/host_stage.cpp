@@ -191,14 +191,14 @@ Copy CopyFileTo(const std::wstring& src, const std::wstring& dst, bool always, u
     return Copy::Copied;
 }
 
-bool StageMachineJson(const std::wstring& machine_root, const std::wstring& payload_dir)
+bool StageMachineJson(const std::wstring& machine_root, const std::wstring& payload_dir, const std::wstring& json_rel)
 {
     EnsureDir(machine_root);
     const std::wstring dst = machine_root + L"\\machine.json";
     unsigned long long sz = 0;
     if (FileSize(dst, &sz)) return true;   // the owner's file (or an earlier run's): never overwritten
     GroupStats g;
-    StageOne(g, "config", payload_dir + L"\\machine.json", dst, L"machine.json", true);
+    StageOne(g, "config", payload_dir + L"\\" + json_rel, dst, L"machine.json", true);
     return FileSize(dst, &sz);
 }
 
@@ -267,6 +267,13 @@ StageResult StageMachineFiles(const StagePlan& plan)
             if (c == Copy::Missing || c == Copy::Failed) r.required_missing.push_back("sortdefault.nls");
         }
     }
+
+    // Package-owned stand-in DLLs of a machine profile (route B + D3D: msctf.dll, which imm32 delay-loads).
+    if (!plan.profile_dir.empty() && IsLeafName(plan.profile_dir))
+        for (const std::wstring& f : ListFiles(plan.payload_dir + L"\\" + plan.profile_dir))
+            if (f.size() > 4 && _wcsicmp(f.c_str() + f.size() - 4, L".dll") == 0)
+                StageOne(r.stubs, "stub", plan.payload_dir + L"\\" + plan.profile_dir + L"\\" + f, dst_sys32 + f, f,
+                         r.refreshed);
 
     // Genuine DLLs the owner asked for in launch.json ("stage_native"), by name.
     for (const std::wstring& name : plan.native_names)

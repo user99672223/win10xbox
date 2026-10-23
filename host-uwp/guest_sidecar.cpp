@@ -80,6 +80,34 @@ namespace w10x_uwp
         return title;
     }
 
+    bool IsMachineFolderName(std::string_view name)
+    {
+        return IsLeafNameUtf8(name) && name[0] != '.';
+    }
+
+    std::string ParseMachineFile(std::string_view text, bool* ok)
+    {
+        std::string name;
+        *ok = true;
+        ForEachLine(text, [&](std::string_view line) {
+            name = std::string(Trim(line));
+            return false;   // the first non-blank line only
+        });
+        if (!name.empty() && !IsMachineFolderName(name)) *ok = false;
+        return *ok ? name : std::string();
+    }
+
+    const std::vector<std::string>& D3dMachineNativeDlls()
+    {
+        // prepare_machine.cmake: _d3d_native plus machine/guest_dlls_d3d.txt (D3D_EXTRA_DIR).
+        static const std::vector<std::string> k = {
+            "user32.dll", "win32u.dll", "gdi32.dll", "gdi32full.dll", "msvcp_win.dll", "imm32.dll",
+            "d3d11.dll", "dxgi.dll", "d3dcompiler_47.dll", "d3d10warp.dll", "dxcore.dll", "dwmapi.dll",
+            "d3d12.dll", "D3D12Core.dll", "D3DSCache.dll", "powrprof.dll", "umpdc.dll",
+            "directxdatabasehelper.dll", "kernel.appcore.dll"};
+        return k;
+    }
+
     std::vector<std::string> SplitArgLine(std::string_view line)
     {
         std::vector<std::string> words;
@@ -123,6 +151,15 @@ namespace w10x_uwp
             else if (k == "args")
             {
                 for (std::string& w : SplitArgLine(v)) out->args.push_back(std::move(w));
+            }
+            else if (k == "machine")
+            {
+                out->machine = std::string(Trim(v));
+                if (!IsMachineFolderName(out->machine))
+                {
+                    *error = "machine= must be a folder name under LocalState: " + std::string(line);
+                    return false;
+                }
             }
             else if (k == "env")
             {

@@ -23,6 +23,8 @@
 //   exit_when_done    boolean  close the app when the guest has exited (default true)
 //   expect_exit_code  integer  status.txt reports PASS/FAIL against this guest exit code
 //   stage_native      array of file names to copy BY NAME from the console's System32 into the machine folder
+//   machine           string   machine folder under LocalState to run on (default "machine"; "machine-native-d3d" =
+//                              route B + native Direct3D 11, for D3D11 guests). A launcher entry's .machine sidecar wins
 //   picker            boolean  show the on-console launcher (launcher.h) instead of running "guest" directly;
 //                              the default is true only when there is no launch.json at all
 //   autoselect        string or array of strings: file name(s) of launcher entries to launch without waiting
@@ -64,6 +66,7 @@ namespace w10x_uwp
 
         // Machine folder / shell.
         std::vector<std::string> stage_native;   // System32 file names (leaf names only)
+        std::string machine;                     // machine folder name under LocalState; empty = "machine"
         bool input_pump = true;
 
         // Launcher (launcher.h).
