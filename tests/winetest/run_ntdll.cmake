@@ -147,6 +147,12 @@ string(REPLACE "/" "\\" _machine "${_machine}")
 set(_re "([0-9]+) tests executed \\(([0-9]+) marked as todo, ([0-9]+) as flaky, ([0-9]+) failures?\\), ([0-9]+) skipped")
 set(ENV{WIN10XBOX_DEBUG} "-all")   # relay tracing would bury the test output
 
+# Units whose crash is being diagnosed (docs/slices/wt-ntdll-rest.md): a unit of this list that does not complete is
+# run once more with the relay trace on, and the tail of that trace and the host's crash record go to
+# <RESULTS_DIR>/<unit>.trace.log and <unit>.crash.txt (the windows-<config>-logs artifact).
+set(_trace_units exception info pipe sync threadpool virtual wow64)
+get_filename_component(_host_dir "${HOST}" DIRECTORY)
+
 set(_problems "")
 set(_table "| unit | gate | outcome | executed | failed | todo | skipped | exit | s |\n|---|---|---|---:|---:|---:|---:|---:|---:|\n")
 set(_todo "")
@@ -187,6 +193,10 @@ foreach(_u IN LISTS _units)
     set(_stdin "")
   endif()
   math(EXPR _cmake_to "${_to} + 15")
+  list(FIND _trace_units "${_u}" _tr)
+  if(_tr GREATER -1)
+    file(REMOVE "${_host_dir}/crash.txt")
+  endif()
   string(TIMESTAMP _t0 "%s")
   execute_process(COMMAND ${_cmd} RESULT_VARIABLE _rc OUTPUT_FILE "${_log}" ERROR_VARIABLE _err
     TIMEOUT ${_cmake_to} ${_stdin})
@@ -217,6 +227,31 @@ foreach(_u IN LISTS _units)
     set(_outcome timeout)
   else()
     set(_outcome crashed)
+  endif()
+
+  if(_tr GREATER -1)
+    if(EXISTS "${_host_dir}/crash.txt")
+      file(COPY_FILE "${_host_dir}/crash.txt" "${RESULTS_DIR}/${_u}.crash.txt")
+    endif()
+    if(NOT _outcome STREQUAL "ok")
+      w10x_summarize("layer" "${_u}" "${_log}" "${_rc}")
+      message("---- stderr of ntdll:${_u} ----\n${_err}\n----")
+      set(ENV{WIN10XBOX_DEBUG} "-all,+relay,+dispatch,+process")
+      set(_dbg "${RESULTS_DIR}/${_u}.trace.log")
+      execute_process(COMMAND ${_cmd} RESULT_VARIABLE _rc3 OUTPUT_FILE "${_dbg}.out" ERROR_FILE "${_dbg}"
+        TIMEOUT ${_cmake_to} ${_stdin})
+      set(ENV{WIN10XBOX_DEBUG} "-all")
+      if(EXISTS "${_dbg}")
+        file(SIZE "${_dbg}" _fs)
+        if(_fs GREATER 150000)
+          math(EXPR _o "${_fs} - 150000")
+          file(READ "${_dbg}" _tl OFFSET ${_o} LIMIT 150000)
+        else()
+          file(READ "${_dbg}" _tl)
+        endif()
+        file(WRITE "${_dbg}" "[${_fs} bytes, exit ${_rc3}, tail]\n${_tl}")
+      endif()
+    endif()
   endif()
 
   # The first failing assertions (one per source line), or where a crash/hang stopped.

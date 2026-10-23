@@ -7,3 +7,11 @@
 # assertion in two layer runs that the native run on the same runner passes. Add a unit here only with the failing
 # lines of its native run recorded in its slice doc.
 file 1300
+# Diagnostic floors (docs/slices/wt-ntdll-rest.md), replaced by measured floors once each unit is measured.
+exception 1
+info 1
+pipe 1
+sync 1
+threadpool 1
+virtual 1
+wow64 1
