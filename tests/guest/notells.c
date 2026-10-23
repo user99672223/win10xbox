@@ -12,7 +12,8 @@
  *                    "Microsoft(R) Windows(R) Operating System", and no string of the whole block says "wine"
  *   registry         HKCU\Software\Wine, HKLM\Software\Wine (and the 32-bit view) do not exist
  *   environment      no variable starts with WINE or WIN10XBOX
- *   drives           no Z: (GetLogicalDrives, GetDriveTypeW, GetFileAttributesW, \\.\Z:, QueryDosDeviceW)
+ *   drives           no Z: (GetLogicalDrives, GetDriveTypeW, GetFileAttributesW, \\.\Z:, QueryDosDeviceW), C: reads
+ *                    as \Device\HarddiskVolume1, DefineDosDevice makes a drive and removes it again
  *   os-version       RtlGetVersion, GetVersionExW (the manifest asks for Windows 10) and GetVersion say 10.0.19045
  * `info` lines are measurements that are not gated (the DOS-stub marker of the builtin DLLs, the DOS device names).
  *
@@ -337,6 +338,28 @@ static void check_drives(void) {
     if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
     wchar_t target[512];
     check(QueryDosDeviceW(L"Z:", target, 512) == 0, "QueryDosDeviceW(Z:) succeeds");
+    /* C: reads like a volume of a Windows machine (the VFS numbers C: as \Device\HarddiskVolume1). */
+    wchar_t ctarget[512];
+    if (QueryDosDeviceW(L"C:", ctarget, 512) == 0) {
+        printf("FAIL QueryDosDeviceW(C:) error %lu\n", GetLastError());
+        g_fail++;
+    } else {
+        char nt[128];
+        narrow(ctarget, nt, sizeof(nt));
+        printf("notells: info QueryDosDeviceW(C:) = %s\n", nt);
+        check(wcsncmp(ctarget, L"\\Device\\HarddiskVolume", 22) == 0, "QueryDosDeviceW(C:) is not a \\Device\\HarddiskVolumeN");
+    }
+    /* DefineDosDevice: a drive the program makes itself shows up and goes away again (the guest's own namespace). */
+    wchar_t qtarget[512];
+    check(DefineDosDeviceW(0, L"Q:", L"C:\\Windows"), "DefineDosDeviceW(Q:) fails");
+    check(QueryDosDeviceW(L"Q:", qtarget, 512) != 0 && wcsncmp(qtarget, L"\\??\\C:", 7) == 0,
+          "QueryDosDeviceW(Q:) does not return the definition");
+    check(GetLogicalDrives() & (1u << ('Q' - 'A')), "Q: is not in GetLogicalDrives after DefineDosDeviceW");
+    check(DefineDosDeviceW(DDD_REMOVE_DEFINITION, L"Q:", NULL), "DefineDosDeviceW(Q:, remove) fails");
+    SetLastError(0);
+    check(QueryDosDeviceW(L"Q:", qtarget, 512) == 0 && GetLastError() == ERROR_FILE_NOT_FOUND,
+          "QueryDosDeviceW(Q:) still answers after the definition was removed");
+    check((GetLogicalDrives() & (1u << ('Q' - 'A'))) == 0, "Q: is still in GetLogicalDrives after the removal");
     /* Informational: every DOS device name the guest can list. */
     wchar_t *all = (wchar_t *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, 65536 * sizeof(wchar_t));
     DWORD got = all ? QueryDosDeviceW(NULL, all, 65536) : 0;

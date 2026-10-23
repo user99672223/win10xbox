@@ -548,11 +548,153 @@ static NTSTATUS NTAPI Xl_NtSetInformationFile(HANDLE file, PIO_STATUS_BLOCK io, 
     return Host().NtSetInformationFile(file, io, out.data(), static_cast<ULONG>(out.size()), klass);
 }
 
+// ---- The guest's \DosDevices ---------------------------------------------------------------------------------------
+// The host's \DosDevices (= \?? = \GLOBAL??) lists the HOST's drive letters (a runner's D:, a Wine host's Z:) and device
+// links, and on a Windows host its \?? is the per-session directory, which does not list the global C: at all. The guest's
+// drives are the VFS's, so the guest gets a directory object of its own with one symbolic link per guest drive
+// ("C:" -> \Device\HarddiskVolume1, the numbering the VFS resolves back), which kernelbase's GetLogicalDrives and
+// QueryDosDeviceW list and read. Opening \DosDevices, \?? or \GLOBAL?? gives a handle to it; opening, creating or
+// deleting an "X:" link under those names works inside it (DefineDosDevice keeps working: the link is made temporary
+// and kept alive by a handle of ours, as a permanent object would be). Other names under \DosDevices (PIPE, NUL, ...)
+// are not links the guest reaches this way: they are opened as files and the host resolves them.
+// A temporary named object dies with its last handle, so the directory and the links are held for the process's life.
+// If the host refuses to make the directory (nothing else about the namespace changes) everything passes through.
+using PFN_NtCreateDirectoryObject = NTSTATUS(NTAPI*)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES);
+using PFN_NtCreateSymbolicLinkObject = NTSTATUS(NTAPI*)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PUNICODE_STRING);
+using PFN_NtMakeTemporaryObject = NTSTATUS(NTAPI*)(HANDLE);
+
+constexpr ACCESS_MASK kDirectoryAllAccess = 0x000F000F;
+constexpr ACCESS_MASK kSymbolicLinkAllAccess = 0x000F0001;
+constexpr ULONG kObjPermanent = 0x10;
+constexpr ULONG kObjCaseInsensitive = 0x40;
+constexpr ACCESS_MASK kDelete = 0x00010000;
+
+struct DosLink {
+    wchar_t letter;
+    bool guest_drive;   // one of the VFS's drives: the guest cannot delete it
+    HANDLE keep;
+};
+SRWLOCK g_dos_lock = SRWLOCK_INIT;
+bool g_dos_built = false;
+HANDLE g_dos_dir = nullptr;
+std::vector<DosLink> g_dos_links;
+std::vector<std::pair<HANDLE, wchar_t>> g_dos_deletable;   // guest handles opened with DELETE on a link of ours
+
+bool INamesEqual(std::wstring_view a, std::wstring_view b) { return a.size() == b.size() && IStartsWith(a, b); }
+
+// \DosDevices, \??, \GLOBAL?? (the directories Wine's kernelbase opens to list the drives).
+bool IsDosDevicesDirName(std::wstring_view n) {
+    if (!n.empty() && n.back() == L'\\') n.remove_suffix(1);
+    return INamesEqual(n, L"\\DosDevices") || INamesEqual(n, L"\\??") || INamesEqual(n, L"\\GLOBAL??");
+}
+
+// "\DosDevices\X:", "\??\X:", "\GLOBAL??\X:" -> X, upper case.
+bool DosDriveLinkName(std::wstring_view n, wchar_t* letter) {
+    const std::wstring_view prefixes[] = {L"\\DosDevices\\", L"\\??\\", L"\\GLOBAL??\\"};
+    for (std::wstring_view p : prefixes) {
+        if (!IStartsWith(n, p)) continue;
+        std::wstring_view rest = n.substr(p.size());
+        if (rest.size() != 2 || rest[1] != L':' || !std::iswalpha(rest[0]) || rest[0] > 0x7f) return false;
+        *letter = static_cast<wchar_t>(std::towupper(rest[0]));
+        return true;
+    }
+    return false;
+}
+
+std::vector<wchar_t> GuestDriveLetters() {
+    std::vector<wchar_t> r;
+#if WIN10XBOX_HAVE_VFS
+    for (const auto& d : vfs::Drives()) r.push_back(static_cast<wchar_t>(std::towupper(d.letter)));
+#else
+    r.push_back(L'C');
+    AcquireSRWLockShared(&g_drive_lock);
+    for (const auto& d : FallbackDrives()) r.push_back(d.first);
+    ReleaseSRWLockShared(&g_drive_lock);
+#endif
+    return r;
+}
+
+// Under g_dos_lock, once.
+void BuildDosDevicesLocked() {
+    auto create_dir = reinterpret_cast<PFN_NtCreateDirectoryObject>(HostExport("NtCreateDirectoryObject"));
+    auto create_link = reinterpret_cast<PFN_NtCreateSymbolicLinkObject>(HostExport("NtCreateSymbolicLinkObject"));
+    if (!create_dir || !create_link) return;
+    OBJECT_ATTRIBUTES doa{};
+    doa.Length = sizeof(doa);
+    HANDLE dir = nullptr;
+    if (NTSTATUS s = create_dir(&dir, kDirectoryAllAccess, &doa)) {
+        WARN(dispatch, "\\DosDevices: the host refused a private directory (%08lx); the guest sees the host's", static_cast<unsigned long>(s));
+        return;
+    }
+    for (wchar_t letter : GuestDriveLetters()) {
+        wchar_t name[3] = {letter, L':', 0};
+        UNICODE_STRING un{4, 6, name};
+        const std::wstring target = GuestWin32ToDevicePath(name);   // "C:" -> \Device\HarddiskVolume1
+        UNICODE_STRING ut{static_cast<USHORT>(target.size() * sizeof(wchar_t)),
+                          static_cast<USHORT>(target.size() * sizeof(wchar_t)), const_cast<wchar_t*>(target.c_str())};
+        OBJECT_ATTRIBUTES loa{};
+        loa.Length = sizeof(loa);
+        loa.RootDirectory = dir;
+        loa.ObjectName = &un;
+        loa.Attributes = kObjCaseInsensitive;
+        HANDLE link = nullptr;
+        if (NTSTATUS s = create_link(&link, kSymbolicLinkAllAccess, &loa, &ut)) {
+            WARN(dispatch, "\\DosDevices: no link for %c: (%08lx)", static_cast<char>(letter), static_cast<unsigned long>(s));
+            continue;
+        }
+        g_dos_links.push_back({letter, true, link});
+    }
+    if (g_dos_links.empty()) {   // a directory without its drives would be worse than the host's
+        Host().NtClose(dir);
+        return;
+    }
+    g_dos_dir = dir;
+}
+
+// The private directory, or null when the host would not make one.
+HANDLE GuestDosDevicesDir() {
+    AcquireSRWLockExclusive(&g_dos_lock);
+    if (!g_dos_built) {
+        g_dos_built = true;
+        BuildDosDevicesLocked();
+    }
+    HANDLE dir = g_dos_dir;
+    ReleaseSRWLockExclusive(&g_dos_lock);
+    return dir;
+}
+
+// The caller's attributes for the link "X:" inside the private directory.
+void DosLinkAttributes(const OBJECT_ATTRIBUTES& in, HANDLE dir, UNICODE_STRING* name, wchar_t* name_buf, wchar_t letter,
+                       OBJECT_ATTRIBUTES* out) {
+    name_buf[0] = letter;
+    name_buf[1] = L':';
+    name_buf[2] = 0;
+    *name = UNICODE_STRING{4, 6, name_buf};
+    *out = in;
+    out->RootDirectory = dir;
+    out->ObjectName = name;
+    out->Attributes = (in.Attributes & ~kObjPermanent) | kObjCaseInsensitive;
+}
+
 static NTSTATUS NTAPI Xl_NtOpenDirectoryObject(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr) {
     // E3: no KnownDlls, so Wine's loader searches the file system through the VFS.
     NTSTATUS cs;
     if (IsKnownDllsName(attr, &cs)) return st::ObjectNameNotFound;
     if (cs) return cs;
+    probe::ObjectAttributes cap;
+    if (attr && handle && probe::CaptureObjectAttributes(attr, &cap) == st::Success && !cap.oa.RootDirectory &&
+        IsDosDevicesDirName(OAName(&cap.oa))) {
+        if (HANDLE dir = GuestDosDevicesDir()) {
+            const HANDLE self = reinterpret_cast<HANDLE>(-1);
+            HANDLE dup = nullptr;
+            if (NTSTATUS s = Host().NtDuplicateObject(self, dir, self, &dup, 0, 0, DUPLICATE_SAME_ACCESS)) return s;
+            if (NTSTATUS ws = probe::Store<HANDLE>(handle, dup)) {
+                Host().NtClose(dup);
+                return ws;
+            }
+            return st::Success;
+        }
+    }
     return Host().NtOpenDirectoryObject(handle, access, attr);
 }
 
@@ -560,7 +702,87 @@ static NTSTATUS NTAPI Xl_NtOpenSymbolicLinkObject(PHANDLE handle, ACCESS_MASK ac
     NTSTATUS cs;
     if (IsKnownDllsName(attr, &cs)) return st::ObjectNameNotFound;
     if (cs) return cs;
+    probe::ObjectAttributes cap;
+    wchar_t letter = 0;
+    if (attr && handle && probe::CaptureObjectAttributes(attr, &cap) == st::Success && !cap.oa.RootDirectory &&
+        DosDriveLinkName(OAName(&cap.oa), &letter)) {
+        if (HANDLE dir = GuestDosDevicesDir()) {
+            wchar_t name_buf[3];
+            UNICODE_STRING name;
+            OBJECT_ATTRIBUTES oa;
+            DosLinkAttributes(cap.oa, dir, &name, name_buf, letter, &oa);
+            HANDLE out = nullptr;
+            if (NTSTATUS s = Host().NtOpenSymbolicLinkObject(&out, access, &oa)) return s;
+            if (NTSTATUS ws = probe::Store<HANDLE>(handle, out)) {
+                Host().NtClose(out);
+                return ws;
+            }
+            if (access & kDelete) {   // DefineDosDevice(DDD_REMOVE_DEFINITION): NtMakeTemporaryObject follows
+                AcquireSRWLockExclusive(&g_dos_lock);
+                g_dos_deletable.emplace_back(out, letter);
+                ReleaseSRWLockExclusive(&g_dos_lock);
+            }
+            return st::Success;
+        }
+    }
     return Host().NtOpenSymbolicLinkObject(handle, access, attr);
+}
+
+static NTSTATUS NTAPI Xl_NtCreateSymbolicLinkObject(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr,
+                                                    PUNICODE_STRING target) {
+    auto host = reinterpret_cast<PFN_NtCreateSymbolicLinkObject>(HostExport("NtCreateSymbolicLinkObject"));
+    if (!host) return st::NotImplemented;
+    probe::ObjectAttributes cap;
+    wchar_t letter = 0;
+    if (attr && handle && probe::CaptureObjectAttributes(attr, &cap) == st::Success && !cap.oa.RootDirectory &&
+        DosDriveLinkName(OAName(&cap.oa), &letter)) {
+        if (HANDLE dir = GuestDosDevicesDir()) {
+            wchar_t name_buf[3];
+            UNICODE_STRING name;
+            OBJECT_ATTRIBUTES oa;
+            DosLinkAttributes(cap.oa, dir, &name, name_buf, letter, &oa);   // not permanent: that needs a privilege
+            HANDLE out = nullptr;
+            if (NTSTATUS s = host(&out, access, &oa, target)) return s;
+            // What a permanent link would be: alive until NtMakeTemporaryObject, whatever the caller does with its handle.
+            const HANDLE self = reinterpret_cast<HANDLE>(-1);
+            HANDLE keep = nullptr;
+            if (Host().NtDuplicateObject(self, out, self, &keep, 0, 0, DUPLICATE_SAME_ACCESS) == st::Success) {
+                AcquireSRWLockExclusive(&g_dos_lock);
+                g_dos_links.push_back({letter, false, keep});
+                ReleaseSRWLockExclusive(&g_dos_lock);
+            }
+            if (NTSTATUS ws = probe::Store<HANDLE>(handle, out)) {
+                Host().NtClose(out);
+                return ws;
+            }
+            return st::Success;
+        }
+    }
+    return host(handle, access, attr, target);
+}
+
+static NTSTATUS NTAPI Xl_NtMakeTemporaryObject(HANDLE h) {
+    auto host = reinterpret_cast<PFN_NtMakeTemporaryObject>(HostExport("NtMakeTemporaryObject"));
+    if (!host) return st::NotImplemented;
+    const NTSTATUS s = host(h);
+    if (s != st::Success) return s;
+    HANDLE release = nullptr;
+    AcquireSRWLockExclusive(&g_dos_lock);
+    for (auto it = g_dos_deletable.begin(); it != g_dos_deletable.end(); ++it) {
+        if (it->first != h) continue;
+        const wchar_t letter = it->second;
+        g_dos_deletable.erase(it);
+        for (auto l = g_dos_links.begin(); l != g_dos_links.end(); ++l) {
+            if (l->letter != letter || l->guest_drive) continue;
+            release = l->keep;
+            g_dos_links.erase(l);
+            break;
+        }
+        break;
+    }
+    ReleaseSRWLockExclusive(&g_dos_lock);
+    if (release) Host().NtClose(release);   // the link goes away with the caller's own handle
+    return s;
 }
 
 // ---- Byte-range locks -------------------------------------------------------
@@ -627,6 +849,8 @@ const ImplDef* FileImpls() {
         {"NtQueryObject", reinterpret_cast<void*>(&Xl_NtQueryObject)},
         {"NtOpenDirectoryObject", reinterpret_cast<void*>(&Xl_NtOpenDirectoryObject)},
         {"NtOpenSymbolicLinkObject", reinterpret_cast<void*>(&Xl_NtOpenSymbolicLinkObject)},
+        {"NtCreateSymbolicLinkObject", reinterpret_cast<void*>(&Xl_NtCreateSymbolicLinkObject)},
+        {"NtMakeTemporaryObject", reinterpret_cast<void*>(&Xl_NtMakeTemporaryObject)},
         {"NtLockFile", reinterpret_cast<void*>(&Xl_NtLockFile)},
         {"NtUnlockFile", reinterpret_cast<void*>(&Xl_NtUnlockFile)},
         {nullptr, nullptr},

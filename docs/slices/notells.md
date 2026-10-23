@@ -55,7 +55,7 @@ Decisions:
 * ProductName and CompanyName are what Windows reports for these files. The file version uses the build the layer
   virtualises (19045); it is not compared with a genuine 22H2 file.
 
-## Registry, environment, drives (no change needed, measured by the guest)
+## Registry and environment (no change needed, measured by the guest)
 
 * Registry: `core/registry` has no `Software\Wine` key in its defaults and no hive is staged in the machine folder
   (`Windows\System32\config` is empty); the guest asserts `HKCU\Software\Wine`, `HKLM\Software\Wine` (default, 32-bit and
@@ -63,9 +63,28 @@ Decisions:
 * Environment: the guest's block is `DefaultEnvironment()` (a fixed Windows list); a host-supplied block and the child
   process path pass through `IsHostOwnedVariable` (`WIN10XBOX_*` and `WINE*` never reach a guest). The guest asserts no
   variable starts with `WINE` or `WIN10XBOX`.
-* Drives: the VFS has `C:` only. The guest asserts no `Z:` in `GetLogicalDrives`, `GetDriveTypeW`, `GetFileAttributesW`,
-  `CreateFileW("\\.\Z:")`, `QueryDosDeviceW("Z:")`, and prints (not gated) the `QueryDosDeviceW(NULL)` list, failing only if
-  a name contains "wine".
+
+## Drives and DOS devices (core/dispatch/nt_file.cpp changed)
+
+Found while writing the gate: `\DosDevices` was passed through to the HOST's object manager, and Wine's kernelbase builds
+`GetLogicalDrives` / `QueryDosDeviceW` on it (`NtOpenDirectoryObject("\DosDevices")` + `NtQueryDirectoryObject`). So a guest saw
+the host's letters: a Wine host's `Z:` (the default Wine prefix, i.e. the linux-cross job), a runner's `D:`, and on a Windows
+host, whose `\??` is the per-session directory, possibly no `C:` at all. The VFS already answers the file side with `C:` only
+(`GetDriveTypeW(Z:\)`, `CreateFileW("\\.\Z:")` fail), so only the enumeration leaked.
+
+Now the guest has a directory object of its own (`BuildDosDevicesLocked`): one symbolic link per VFS drive (`C:` ->
+`\Device\HarddiskVolume1`, the numbering `vfs::TranslateNtPath` already resolves), created on first use and held for the
+process's life. `NtOpenDirectoryObject` of `\DosDevices` / `\??` / `\GLOBAL??` returns a handle to it; `NtOpenSymbolicLinkObject`,
+`NtCreateSymbolicLinkObject` and `NtMakeTemporaryObject` on `\DosDevices\X:` work inside it, so `DefineDosDevice` (create and
+remove) keeps working (the link is not permanent, which needs a privilege; a handle of ours keeps it alive until
+`NtMakeTemporaryObject`). Other names under `\DosDevices` (PIPE, NUL, ...) are opened as files, not as links, and still reach the
+host. If the host refuses to create the directory or any link the old pass-through stays. Policy notes in
+`syscall_policy.inc` / `docs/SYSCALLS.md` updated (NtCreateSymbolicLinkObject and NtMakeTemporaryObject are now Translate).
+
+The guest asserts no `Z:` in `GetLogicalDrives`, `GetDriveTypeW`, `GetFileAttributesW`, `CreateFileW("\\.\Z:")`,
+`QueryDosDeviceW("Z:")`; that `QueryDosDeviceW("C:")` is a `\Device\HarddiskVolumeN`; that `DefineDosDeviceW` makes `Q:`, it is
+listed and queried, and removing it makes it vanish; and prints (not gated) the `QueryDosDeviceW(NULL)` list, failing only if a
+name contains "wine".
 
 ## What still tells (not changed)
 

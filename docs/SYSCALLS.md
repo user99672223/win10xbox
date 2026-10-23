@@ -5,7 +5,7 @@ Windows 10 x64 / 22H2 NT syscall numbers) and the hand-maintained policy
 `core/dispatch/syscall_policy.inc`; win32u entries (ids 0x1000..) are Emulate when
 `core/user/user_syscalls.h` registers them. Do not edit by hand.
 
-1798 syscalls. passthrough 151, translate 38, emulate 352, todo 1257. Generated 2026-10-23.
+1798 syscalls. passthrough 149, translate 40, emulate 352, todo 1257. Generated 2026-10-23.
 
 Policy: **PassThrough** calls the host ntdll export by name; **Translate**
 rewrites arguments (paths, handles, timeouts) then passes through;
@@ -102,7 +102,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0055 | NtCreateFile | 11 | Translate | VFS path rewrite |
 | 0x0056 | NtQueryEvent | 5 | PassThrough |  |
 | 0x0057 | NtWriteRequestData | 6 | PassThrough |  |
-| 0x0058 | NtOpenDirectoryObject | 3 | Translate | \\KnownDlls reported absent (E3); other directories pass through |
+| 0x0058 | NtOpenDirectoryObject | 3 | Translate | \\KnownDlls reported absent (E3); \\DosDevices / \\?? / \\GLOBAL?? is the guest's own directory of its VFS drives; other directories pass through |
 | 0x0059 | NtAccessCheckByTypeAndAuditAlarm | 16 | PassThrough |  |
 | 0x005a | NtQuerySystemTime | 1 | Emulate | clock |
 | 0x005b | NtWaitForMultipleObjects | 5 | PassThrough |  |
@@ -146,7 +146,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0081 | NtCreatePort | 5 | PassThrough |  |
 | 0x0082 | NtCreateSectionEx | 9 | Translate | SEC_IMAGE sections are ours (E3): emulated handle + manual map |
 | 0x0083 | NtCreateSemaphore | 5 | PassThrough |  |
-| 0x0084 | NtCreateSymbolicLinkObject | 4 | PassThrough |  |
+| 0x0084 | NtCreateSymbolicLinkObject | 4 | Translate | \\DosDevices\\X: is made in the guest's own directory of its VFS drives (DefineDosDevice), kept alive by a handle of ours; other links pass through |
 | 0x0085 | NtCreateThreadEx | 11 | Translate | guest thread start wrapper (E4): per-thread loader init through guest LdrInitializeThunk |
 | 0x0086 | NtCreateTimer | 4 | PassThrough |  |
 | 0x0087 | NtCreateToken | 13 | Emulate | privileged: refused like Windows does for an unprivileged caller |
@@ -183,7 +183,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x00a6 | NtCreateDebugObject | 4 | Emulate | STATUS_NOT_SUPPORTED: no debugger support (E6) |
 | 0x00a7 | NtLockVirtualMemory | 4 | PassThrough |  |
 | 0x00a8 | NtMakePermanentObject | 1 | PassThrough |  |
-| 0x00a9 | NtMakeTemporaryObject | 1 | PassThrough |  |
+| 0x00a9 | NtMakeTemporaryObject | 1 | Translate | releases our hold on a \\DosDevices\\X: link the guest made (DefineDosDevice remove); other objects pass through |
 | 0x00aa | NtMapViewOfSectionEx | 9 | Translate | views of our image sections are mapped by core/loader |
 | 0x00ab | NtNotifyChangeDirectoryFile | 9 | PassThrough |  |
 | 0x00ac | NtNotifyChangeKey | 10 | Emulate | registry |
@@ -197,7 +197,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x00b4 | NtOpenMutant | 3 | PassThrough |  |
 | 0x00b5 | NtOpenProcessToken | 3 | Emulate | token |
 | 0x00b6 | NtOpenSemaphore | 3 | PassThrough |  |
-| 0x00b7 | NtOpenSymbolicLinkObject | 3 | Translate | \\KnownDlls reported absent (E3); other directories pass through |
+| 0x00b7 | NtOpenSymbolicLinkObject | 3 | Translate | \\KnownDlls reported absent (E3); \\DosDevices\\X: is a link in the guest's own directory of its VFS drives; other links pass through |
 | 0x00b8 | NtOpenThread | 4 | PassThrough |  |
 | 0x00b9 | NtOpenTimer | 3 | PassThrough |  |
 | 0x00ba | NtPrivilegeCheck | 3 | Emulate | token |
