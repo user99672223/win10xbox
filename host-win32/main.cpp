@@ -36,6 +36,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cwctype>
+#include <set>
 #include <string>
 #include <vector>
 #if defined(WIN10XBOX_HOST_CRASH_CAPTURE)
@@ -46,7 +47,8 @@ namespace {
 
 void Usage() {
     std::fputs("usage: win10xbox [--machine <dir>] [--debug <spec>] [--cwd <guestdir>] [--version] <program.exe> [args...]\n"
-               "  program: guest path (C:\\dir\\app.exe), or a host path; see docs/DISPATCHER.md\n",
+               "  program: guest path (C:\\dir\\app.exe), or a host path; see docs/DISPATCHER.md\n"
+               "  (set by the layer when a guest starts a child: --cmdline <raw guest command line>, --guest-env)\n",
                stderr);
 }
 
@@ -297,6 +299,7 @@ bool EnvFlag(const wchar_t* name) {
     return n != 0 && n < 8 && v[0] != L'0';
 }
 
+std::wstring g_shot_path;   // WIN10XBOX_SCREENSHOT, for the inject script's `shot`
 bool g_guest_ran = false;   // a guest was launched: EndProcess says how the process ends (stderr; stdout stays the guest's)
 
 // Leaves without running ExitProcess's DLL detach. TerminateProcess on the current process ends every thread at once and
@@ -361,7 +364,8 @@ private:
 
 // WIN10XBOX_TEST_INJECT_INPUT=<script>: a scripted user for the GUI tests (tests/guest/window_input.c). Commands are
 // separated by ';': sleep N (ms), move X,Y (screen coordinates), ldown / lup / rdown / rup (at the last moved position),
-// wheel D (WHEEL_DELTA units), key 0xVK (key down, then up; the scan code is set 1 for 'A'..'Z', else 0). Each command
+// wheel D (WHEEL_DELTA units), waitwin N (until a window is painted, at most N ms), shot (screenshot now + distinct
+// colour count), quit N (end the process with exit code N), key 0xVK (key down, then up; the scan code is set 1 for 'A'..'Z', else 0). Each command
 // logs one "host-win32: inject" line on stderr. The thread touches no guest state: the loader initialisation it runs
 // on creation completes before Launch takes over the PEB, and after that it only calls the driver, whose InjectInput
 // is thread-safe. It is detached and no exception leaves it.
@@ -436,6 +440,49 @@ bool RunInjectCommand(winexbox::IWinexboxDriver* display, const std::string& cmd
         events.push_back(ev);
         ev.kind = winexbox::InputKind::KeyUp;
         events.push_back(ev);
+    } else if (verb == "waitwin") {
+        // waitwin N: until the guest has created a window and flushed pixels, at most N ms (the first top-level
+        // window of a real GUI program, tests integration.realgui_*). Logs how it ended; `shot` follows regardless.
+        ok = ParseInt(arg, a) && a >= 0;
+        if (ok) {
+            const DWORD t0 = GetTickCount();
+            win10xbox::user::Stats st = win10xbox::user::GetStats();
+            while ((st.windows_created == 0 || st.flushes == 0) && GetTickCount() - t0 < static_cast<DWORD>(a)) {
+                Sleep(50);
+                st = win10xbox::user::GetStats();
+            }
+            std::fprintf(stderr, "host-win32: waitwin: windows=%llu flushes=%llu paints=%llu after %lu ms%s\n",
+                         static_cast<unsigned long long>(st.windows_created), static_cast<unsigned long long>(st.flushes),
+                         static_cast<unsigned long long>(st.paints), static_cast<unsigned long>(GetTickCount() - t0),
+                         (st.windows_created == 0 || st.flushes == 0) ? " (TIMEOUT: nothing painted)" : "");
+        }
+        events.clear();
+        std::fprintf(stderr, "host-win32: inject %s\n", cmd.c_str());
+        return ok;
+    } else if (verb == "shot") {
+        // shot: write the last painted frame to WIN10XBOX_SCREENSHOT now (the guest keeps running) and log how many
+        // distinct colours it holds ("shot: distinct=N"; a blank desktop is 1).
+        std::int32_t w = 0, h = 0;
+        win10xbox::user::ScreenSize(&w, &h);
+        size_t distinct = 0;
+        if (w > 0 && h > 0) {
+            std::vector<std::uint32_t> px(static_cast<size_t>(w) * h);
+            if (win10xbox::user::ComposeLastPaintedFrame(px.data(), w, h, w * 4)) {
+                std::set<std::uint32_t> seen;
+                for (std::uint32_t p : px) { seen.insert(p); if (seen.size() >= 1000) break; }
+                distinct = seen.size();
+            }
+        }
+        const bool wrote = !g_shot_path.empty() && win10xbox::user::WriteScreenshot(g_shot_path);
+        std::fprintf(stderr, "host-win32: shot: distinct=%zu written=%d\n", distinct, wrote ? 1 : 0);
+        return true;
+    } else if (verb == "quit") {
+        // quit N: end the process with exit code N (a real program has no reason to exit by itself).
+        ok = ParseInt(arg, a);
+        if (ok) {
+            std::fprintf(stderr, "host-win32: inject %s\n", cmd.c_str());
+            EndProcess(static_cast<int>(a));
+        }
     } else {
         ok = false;
     }
@@ -503,13 +550,15 @@ static int HostMain(int argc, wchar_t** argv) {
     HostCrash crash;
     win10xbox::config::Config cfg;
     std::vector<std::wstring> rest;
-    std::wstring cwd;
-    bool version_only = false;
+    std::wstring cwd, cmdline;
+    bool guest_env = false, version_only = false;
     for (int i = 1; i < argc; ++i) {
         std::wstring a = argv[i];
         if (a == L"--machine" && i + 1 < argc) cfg.machine_root = argv[++i];
         else if (a == L"--debug" && i + 1 < argc) SetEnvironmentVariableW(L"WIN10XBOX_DEBUG", argv[++i]);
         else if (a == L"--cwd" && i + 1 < argc) cwd = argv[++i];
+        else if (a == L"--cmdline" && i + 1 < argc) cmdline = argv[++i];   // the layer: a child started by a guest
+        else if (a == L"--guest-env") guest_env = true;                    // the layer: environment is the guest's
         else if (a == L"--version") version_only = true;
         else if (a == L"--help" || a == L"-h") { Usage(); return 0; }
         else { for (; i < argc; ++i) rest.emplace_back(argv[i]); }
@@ -523,6 +572,7 @@ static int HostMain(int argc, wchar_t** argv) {
         cfg.machine_root = exe.substr(0, exe.find_last_of(L"\\/")) + L"\\machine";
     }
     cfg.machine_root = FullPath(cfg.machine_root);
+    cfg.child_processes = true;   // a plain Win32 program can start the host executable again (D1)
     // A guest will run: trace sink for the entry marker, +modules, the startup lines on stderr (before Initialize,
     // which reads WIN10XBOX_DEBUG; not for --version / --help / hello).
     if (!rest.empty()) crash.BeforeInitialize();
@@ -538,6 +588,8 @@ static int HostMain(int argc, wchar_t** argv) {
     if (opts.image_path.empty()) { win10xbox::Shutdown(); return 3; }
     opts.command_line = QuoteArg(opts.image_path);
     for (size_t i = 1; i < rest.size(); ++i) opts.command_line += L" " + QuoteArg(rest[i]);
+    if (!cmdline.empty()) opts.command_line = cmdline;   // raw, as the parent guest wrote it
+    if (guest_env) opts.environment = win10xbox::process::InheritedGuestEnvironment();
     opts.current_directory = cwd;
     opts.run_on_new_thread = true;
     opts.wait = false;   // Launch returns once the guest runs; HostMain waits for it itself (below)
@@ -551,6 +603,7 @@ static int HostMain(int argc, wchar_t** argv) {
     display->SetEventSink(win10xbox::user::InputSink());   // driver input -> the guest's message queues
     wchar_t screenshot[MAX_PATH * 2] = {};
     const DWORD screenshot_len = GetEnvironmentVariableW(L"WIN10XBOX_SCREENSHOT", screenshot, MAX_PATH * 2);
+    if (screenshot_len && screenshot_len < MAX_PATH * 2) g_shot_path.assign(screenshot, screenshot_len);
     // WIN10XBOX_TEST_INJECT_INPUT=<script>: scripted input on a host thread (see InjectThreadProc). Read and started
     // before Launch, like the screenshot switch: the thread runs its loader initialisation on the host's PEB, and the
     // script waits for `go`, which is set once Launch has started the guest.

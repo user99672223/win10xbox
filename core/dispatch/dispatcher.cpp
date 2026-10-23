@@ -2,6 +2,7 @@
 // generic host caller, emulated handles and the per-thread TEB view switch.
 // See docs/DISPATCHER.md.
 #include "internal.h"
+#include "nt_spawn.h"
 #include "win10xbox/config.h"
 #include <algorithm>
 #include <cctype>
@@ -141,7 +142,8 @@ bool IEquals(const char* a, const char* b) {
 }
 
 void* FindImpl(const char* name) {
-    for (auto list : {FileImpls(), SectionImpls(), ProcessImpls(), NlsImpls(), SubsystemImpls(), UserImpls()})
+    for (auto list : {FileImpls(), SectionImpls(), ProcessImpls(), NlsImpls(), SubsystemImpls(), UserImpls(),
+                      PrivilegedImpls()})
         for (const ImplDef* d = list; d && d->name; ++d)
             if (!std::strcmp(d->name, name)) return d->fn;
     return nullptr;
@@ -150,7 +152,7 @@ void* FindImpl(const char* name) {
 void ResolveHost(HostNt& h) {
 #define R(field) h.field = reinterpret_cast<decltype(h.field)>(HostExport(#field))
     R(NtClose); R(NtCreateFile); R(NtOpenFile); R(NtQueryAttributesFile); R(NtQueryFullAttributesFile);
-    R(NtDeleteFile); R(NtQueryInformationFile); R(NtOpenDirectoryObject); R(NtOpenSymbolicLinkObject);
+    R(NtDeleteFile); R(NtQueryInformationFile); R(NtSetInformationFile); R(NtOpenDirectoryObject); R(NtOpenSymbolicLinkObject);
     R(NtCreateSection); R(NtCreateSectionEx); R(NtMapViewOfSection); R(NtMapViewOfSectionEx);
     R(NtUnmapViewOfSection); R(NtUnmapViewOfSectionEx); R(NtQuerySection); R(NtAreMappedFilesTheSame);
     R(NtDuplicateObject); R(NtQueryVirtualMemory); R(NtQueryInformationProcess); R(NtQueryInformationThread);
@@ -587,6 +589,7 @@ NTSTATUS Initialize() {
     if (s.initialized) { ReleaseSRWLockExclusive(&s.lock); return st::Success; }
     if (!HostNtdll()) { ReleaseSRWLockExclusive(&s.lock); return st::DllNotFound; }
     ResolveHost(s.host);
+    PrimeChildProcesses();   // host kernel32 entry points and executable path, before the PEB take-over
     QueryPerformanceFrequency(&s.qpf);
 
     s.entries.clear();
