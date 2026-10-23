@@ -5,7 +5,7 @@ Windows 10 x64 / 22H2 NT syscall numbers) and the hand-maintained policy
 `core/dispatch/syscall_policy.inc`; win32u entries (ids 0x1000..) are Emulate when
 `core/user/user_syscalls.h` registers them. Do not edit by hand.
 
-1798 syscalls. passthrough 150, translate 39, emulate 360, todo 1249. Generated 2026-10-23.
+1798 syscalls. passthrough 150, translate 39, emulate 362, todo 1247. Generated 2026-10-23.
 
 Policy: **PassThrough** calls the host ntdll export by name; **Translate**
 rewrites arguments (paths, handles, timeouts) then passes through;
@@ -1180,7 +1180,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1389 | NtUserDisableThreadIme | 1 | Todo |  |
 | 0x138a | NtUserDiscardPointerFrameMessages | 0 | Todo |  |
 | 0x138b | NtUserDispatchMessage | 1 | Emulate | core/user |
-| 0x138c | NtUserDisplayConfigGetDeviceInfo | 1 | Todo |  |
+| 0x138c | NtUserDisplayConfigGetDeviceInfo | 1 | Emulate | core/user |
 | 0x138d | NtUserDisplayConfigSetDeviceInfo | 0 | Todo |  |
 | 0x138e | NtUserDoInitMessagePumpHook | 0 | Todo |  |
 | 0x138f | NtUserDoSoundConnect | 0 | Todo |  |
@@ -1515,7 +1515,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x14d8 | NtUserPromotePointer | 0 | Todo |  |
 | 0x14d9 | NtUserQueryActivationObject | 0 | Todo |  |
 | 0x14da | NtUserQueryBSDRWindow | 0 | Todo |  |
-| 0x14db | NtUserQueryDisplayConfig | 6 | Todo |  |
+| 0x14db | NtUserQueryDisplayConfig | 6 | Emulate | core/user |
 | 0x14dc | NtUserQueryInformationThread | 0 | Todo |  |
 | 0x14dd | NtUserQueryInputContext | 2 | Emulate | core/user |
 | 0x14de | NtUserQuerySendMessage | 0 | Todo |  |
