@@ -62,7 +62,12 @@ jobs:
           for i in 1 2 3; do
             if sudo timeout 420 apt-get install -y -q --no-install-recommends -o Acquire::Retries=3 -o Acquire::http::Timeout=60 \
                  -o Dir::Cache::archives="$HOME/apt-cache" wine wine64 ninja-build pulseaudio; then ok=1; break; fi
-            echo "apt-get install attempt $i failed"; sleep 10
+            echo "apt-get install attempt $i failed"
+            # The Azure mirror is the usual culprit (run 39982478666 lost the 105 MB libwine twice): switch every
+            # apt source to the main archive before the next attempt and refresh the index once.
+            sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true
+            sudo apt-get update -q || true
+            sleep 10
           done
           [ "$ok" = 1 ]
           # Leave only the .deb files for the cache (lock and partial/ are root-owned).
