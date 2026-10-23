@@ -199,6 +199,13 @@ std::uint64_t UnixLibHandleByName(std::wstring_view module_name) {
     return h;
 }
 
+extern "C" PVOID NTAPI w10x_RtlCreateHeap(ULONG flags, PVOID base, SIZE_T reserve, SIZE_T commit, PVOID lock, PVOID params) {
+    constexpr ULONG kHeapGrowable = 0x2;
+    HostModeScope host;
+    if (!reserve) flags |= kHeapGrowable;
+    return Host().RtlCreateHeap(flags, base, reserve, commit, lock, params);
+}
+
 extern "C" unsigned char __cdecl w10x_wine_dbg_get_channel_flags(WineDebugChannel* ch) {
     if (!(ch->flags & kInitBit)) return ch->flags;
     HostModeScope host;

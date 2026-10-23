@@ -27,7 +27,8 @@ add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
-                   guest_window_input guest_window_input2 guest_window_text guest_net)
+                   guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog guest_comctl
+                   guest_seh guest_window_scroll guest_clipboard guest_net)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -51,11 +52,19 @@ function(win10xbox_guest_test name program exit_code)
   elseif(_guest_machine STREQUAL WIN10XBOX_BUILTIN_MACHINE_DIR)
     set(_require_builtin ON)
   endif()
+  # A console program (the caller sets _guest_console) never loads user32.dll: the builtin check then only
+  # requires that no native system DLL was mapped.
+  set(_require_user32 ${_require_builtin})
+  if(_guest_console)
+    set(_require_user32 OFF)
+  endif()
   add_test(NAME integration.${name}
     COMMAND ${CMAKE_COMMAND}
       -DHOST=$<TARGET_FILE:win10xbox>
       -DMACHINE=${_guest_machine}
-      -DREQUIRE_BUILTIN_DLLS=${_require_builtin} "-DREQUIRE_BUILTIN_DLL=${_guest_require_dll}"
+      -DREQUIRE_BUILTIN_DLLS=${_require_builtin}
+      "-DNO_USER32=${_guest_no_user32}"
+      -DREQUIRE_USER32=${_require_user32}
       -DPROGRAM=${program}
       "-DPROGRAM_ARGS=${_guest_args}"
       "-DDEBUG_SPEC=${_guest_debug}"
@@ -103,6 +112,14 @@ win10xbox_guest_test(guest_spawn "C:\\guest\\guest_spawn.exe" 42
   "spawn-child: argv\\[3\\]=\\[c.d\\]" "spawn-child: argv\\[4\\]=\\[e\\]"
   "spawn-child: cwd=C:\\\\Windows" "spawn-child: mark=mark42" "spawn: child2 exit 7" "spawn: done")
 
+# Exception handling (tests/guest/seh.cpp): C++ throw/catch across frames and a DLL boundary, SEH __try/__except
+# around an access violation / divide by zero / RaiseException / a fault in a DLL frame, vectored handlers, the
+# unhandled-exception filter. Exceptions are delivered by the host kernel to the host ntdll and unwound with the
+# guest's .pdata (docs/DECISIONS.md E2). A failed section prints "seh: <name> FAILED".
+win10xbox_guest_test(guest_seh "C:\\guest\\guest_seh.exe" 42
+  "seh: throw_catch ok" "seh: dll_boundary ok" "seh: seh ok" "seh: veh ok" "seh: uef ok" "seh: done failures=0")
+set_tests_properties(integration.guest_seh PROPERTIES FAIL_REGULAR_EXPRESSION "seh: [a-z_.]+ FAILED;seh: FAIL line")
+
 # The host-uwp-lite smoke guest (built in tests/guest, MSVC only): the program
 # that ran on the console, in both subsystems. It prints facts and returns 42.
 if(TARGET guest_smoke_cui)
@@ -142,6 +159,17 @@ win10xbox_guest_test(guest_window_input "C:\\guest\\guest_window_input.exe" 42
   "input: WM_LBUTTONDOWN x=50 y=50" "input: WM_CHAR ch=a" "input: WM_MOUSEWHEEL delta=120")
 set_tests_properties(integration.guest_window_input PROPERTIES
   ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=sleep 1500\\;move 150,150\\;ldown\\;lup\\;key 0x41\\;wheel 120")
+# The non-client area (tests/guest/window_nc.c): frame metrics, hit testing, a caption drag (+50,+40), a bottom-right
+# corner drag (+30,+20) and a click on the close button, injected by the host; the guest reads the frame's pixels back
+# with GetPixel and exits 42 once the window was moved and resized and WM_CLOSE/WM_DESTROY arrived. The screenshot (the
+# last frame painted: window at 150,140, 430x320) is checked too: active caption (153,180,209) at (420,152), border
+# (180,180,180) at (153,300), the close button (199,80,80) at (538,150), the client (64,64,64) at (300,300).
+win10xbox_guest_test(guest_window_nc "C:\\guest\\guest_window_nc.exe" 42
+  "window_nc: frame ok" "window_nc: hit caption=2 close=20 max=9 min=8 client=1 top=12 topleft=13 left=10 bottomright=17"
+  "window_nc: dragged to 150,140 size=400x300" "window_nc: resized to 150,140 size=430x320" "window_nc: pixels ok"
+  "window_nc: WM_SYSCOMMAND SC_CLOSE" "window_nc: WM_CLOSE" "window_nc: WM_DESTROY" "window_nc: done")
+set_tests_properties(integration.guest_window_nc PROPERTIES
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_nc.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=420,152,ff99b4d1|153,300,ffb4b4b4|538,150,ffc75050|300,300,ff404040;WIN10XBOX_TEST_INJECT_INPUT=sleep 4000\\;move 300,115\\;sleep 300\\;ldown\\;sleep 300\\;move 320,130\\;sleep 300\\;move 350,155\\;sleep 300\\;lup\\;sleep 1000\\;move 548,438\\;sleep 300\\;ldown\\;sleep 300\\;move 560,450\\;sleep 300\\;move 578,458\\;sleep 300\\;lup\\;sleep 1000\\;move 555,155\\;sleep 300\\;ldown\\;sleep 300\\;lup")
 # Input semantics (tests/guest/window_input2.c): the host script covers the driver path (move, double click, right
 # click, wheel, key; the guest compares every message with its hit test / WM_SETCURSOR companions), the guest the rest with
 # SendInput. It prints PASS/FAIL per case and exits 42 only when every case passed.
@@ -162,19 +190,62 @@ win10xbox_guest_test(guest_window_text "C:\\guest\\guest_window_text.exe" 42
   "text: done")
 set_tests_properties(integration.guest_window_text PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_text.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=121,123,ff000000|123,123,ffffffff|131,123,ff000000")
+# Scroll bars (tests/guest/window_scroll.c, core/user/win_scroll.cpp): range/position round trip, HTVSCROLL hit test,
+# ScrollWindowEx / ScrollDC pixels, and a host-injected click on the vertical bar's down arrow that must arrive as
+# WM_VSCROLL SB_LINEDOWN + SB_ENDSCROLL. The screenshot shows the bar's track colour (COLOR_SCROLLBAR, ffc8c8c8) at
+# screen (391,250), between the thumb and the down arrow.
+win10xbox_guest_test(guest_window_scroll "C:\\guest\\guest_window_scroll.exe" 42
+  "scroll: client=283x183" "scroll: v min=0 max=100 page=10 pos=20" "scroll: h min=0 max=50 pos=5"
+  "scroll: vbar rect=383,100,400,283" "scroll: hittest down-arrow=7 hbar=6 client=1"
+  "scroll: ScrollWindowEx before=404040 after=0000ff upd=0,0,283,30" "scroll: ScrollDC pixel=0000ff upd=0,0,283,10"
+  "scroll: WM_VSCROLL code=1" "scroll: after click linedown=1 endscroll=1 pos=21" "scroll: done")
+set_tests_properties(integration.guest_window_scroll PROPERTIES
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_scroll.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=391,250,ffc8c8c8;WIN10XBOX_TEST_INJECT_INPUT=sleep 2000\\;move 391,275\\;ldown\\;sleep 100\\;lup")
+# The clipboard (tests/guest/clipboard.c, core/user/win_clipboard.cpp): CF_UNICODETEXT set/read, CF_TEXT synthesis,
+# a registered format, delayed rendering, the sequence number. It creates a (hidden) window, so builtin-only folder.
+win10xbox_guest_test(guest_clipboard "C:\\guest\\guest_clipboard.exe" 42
+  "clipboard: window ok" "clipboard: set-unicode ok" "clipboard: sequence-number ok" "clipboard: get-unicode ok"
+  "clipboard: synthesized-text ok CF_TEXT=Hello Xbox clipboard" "clipboard: enum-formats ok count=4"
+  "clipboard: registered-format ok" "clipboard: delayed-render ok calls=1" "clipboard: listener-update ok count=1"
+  "clipboard: listener-removed ok" "clipboard: done")
+set_tests_properties(integration.guest_clipboard PROPERTIES FAIL_REGULAR_EXPRESSION "clipboard: FAIL")
+# The dialog manager (tests/guest/dialog.c): DialogBoxParamW with a DIALOG resource, WM_INITDIALOG, GetDlgItem,
+# Set/GetDlgItemText, tab order, WM_CTLCOLORSTATIC, a click on the OK button injected by the host (screen (160,163) =
+# the button's centre once the program placed the dialog at (100,100) and the button at client (10,50) 100x26),
+# EndDialog(7). The screenshot is the last painted frame: the button's frame (110,150) and face (118,158), the static's
+# light yellow (160,114) and the edit's white (240,136), all in screen coordinates.
+win10xbox_guest_test(guest_dialog "C:\\guest\\guest_dialog.exe" 42
+  "dialog: init edit=100 button=1" "dialog: text=hello dialog" "dialog: class=#32770 edit=Edit button=Button static=Static"
+  "dialog: ok clicked" "dialog: result=7" "dialog: done")
+set_tests_properties(integration.guest_dialog PROPERTIES
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_dialog.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=110,150,ff646464|118,158,fff0f0f0|160,114,ffffffc0|240,136,ffffffff;WIN10XBOX_TEST_INJECT_INPUT=sleep 2500\\;move 160,163\\;ldown\\;lup")
+# comctl32 (Wine's builtin, v5 classes: no manifest) through the layer: a report-view ListView (2 columns, 3 items) with its
+# header, a TreeView and a smooth progress bar (bar colour RGB(0,160,0), background RGB(230,230,230), position 50 of
+# 100) as children of a 400x300 popup at (100,100). The guest reads the pixels back with GetPixel (tests/guest/comctl.c);
+# the screenshot checks the same ones at screen coordinates: ListView background (ListView at 5,5 -> client (150,100) =
+# screen (255,205)) white, the header's button face right of its two columns (client (180,9) = (285,114)) f0f0f0, the
+# progress bar (at 5,135) inside the fill (client (20,10) = (125,245)) 00a000 and outside it (client (170,10) =
+# (275,245)) e6e6e6.
+win10xbox_guest_test(guest_comctl "C:\\guest\\guest_comctl.exe" 42
+  "comctl: init ok" "comctl: created lv=1 tv=1 pb=1 hdr=1"
+  "comctl: lv count=3 cols=2 tv count=2 pb pos=50"
+  "comctl: pixels lv=00ffffff hdr=00f0f0f0 pb_in=0000a000 pb_out=00e6e6e6"
+  "comctl: label pixels drawn=[1-9][0-9]*" "comctl: done")
+set_tests_properties(integration.guest_comctl PROPERTIES
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_comctl.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=255,205,ffffffff|285,114,fff0f0f0|125,245,ff00a000|275,245,ffe6e6e6")
 unset(_guest_machine)
 
 # ---- Networking: Wine's ws2_32 over core/afd (host Winsock) -----------------------------------------------------
 # tests/guest/net.c runs an echo server thread and a client over TCP loopback. Builtin-only machine folder: a native
 # ws2_32 would talk to the real AFD and bypass the code under test.
 set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
-set(_guest_require_dll "ws2_32.dll")
+set(_guest_no_user32 ON)
 win10xbox_guest_test(guest_net "C:\\guest\\guest_net.exe" 42
   "net: WSAStartup ok" "net: gethostname ok" "net: getaddrinfo localhost -> 127\\.0\\.0\\.1" "net: listening"
   "net: connected" "net: FIONBIO ok" "net: sent 35 bytes" "net: received 35 bytes: hello from the guest over loopback"
   "net: done")
 set_tests_properties(integration.guest_net PROPERTIES FAIL_REGULAR_EXPRESSION "net: FAILED")
-unset(_guest_require_dll)
+unset(_guest_no_user32)
 unset(_guest_machine)
 
 # ---- Real programs: the first guests that are not ours ----------------------------------------------------------
@@ -230,6 +301,81 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   unset(_guest_machine)
 endif()
 
+# ---- fastfetch: the first prebuilt real program ----------------------------------------------------------------------
+# fastfetch 2.70.0, the project's official Windows x64 release (tools/ci/fetch_fastfetch.ps1: pinned SHA-256, verified on
+# every run), left at <machine>/guest/fastfetch.exe by a named step of ci.yml's windows job before ctest runs. It is a
+# system-information tool: it asks the layer for the OS version, kernel, CPU, memory, locale and uptime. Gate: exit 0
+# and the four headline modules on stdout; the other modules (Disk, GPU, Display, ...) are run one by one, for information,
+# by a step of ci.yml (docs/slices/fastfetch.md).
+# It runs on the builtin-only folder (the console's DLL set): the shared folder's native DLLs (the runner's build 26100)
+# do not work under Wine's ntdll (see the GUI tests above), and fastfetch imports shell32, ole32 and advapi32.
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  set(_guest_args "--pipe;--logo;none;-s;OS:Kernel:CPU:Memory:Locale:Uptime")
+  win10xbox_guest_test(fastfetch "C:\\guest\\fastfetch.exe" 0 "OS: " "Kernel: " "CPU: " "Memory: ")
+  unset(_guest_args)
+  unset(_guest_machine)
+endif()
+
+# ---- ninja 1.12.1 (official ninja-win.zip, tools/ci/fetch_ninja.ps1; docs/slices/realninja.md) -----------------------
+# ninja.exe runs on the shared machine folder next to lua.exe: ninja on Windows starts a rule's command with
+# CreateProcess and no cmd.exe, so the two rules of tests/guest/ninja/ninja_build.ninja run C:\guest\lua.exe with
+# ninja_tool.lua. Outputs go to C:\guest\ninja_out (builddir: .ninja_log too), the inputs are files already in C:\guest.
+# The tests run in order (a fresh machine folder: a rerun on the same folder finds ninja_out and builds less).
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  configure_file(${CMAKE_SOURCE_DIR}/tests/guest/ninja/ninja_tool.lua ${CMAKE_BINARY_DIR}/bin/guest/ninja_tool.lua COPYONLY)
+  configure_file(${CMAKE_SOURCE_DIR}/tests/guest/ninja/ninja_build.ninja ${CMAKE_BINARY_DIR}/bin/guest/ninja_build.ninja COPYONLY)
+  set(_guest_args "--version")
+  win10xbox_guest_test(ninja_version "C:\\guest\\ninja.exe" 0 "^1\\.12\\.1\n")
+  set(_guest_args "-C;C:\\guest;-f;ninja_build.ninja;-t;targets;all")
+  win10xbox_guest_test(ninja_targets "C:\\guest\\ninja.exe" 0
+    "ninja_out[/\\]a\\.txt: copy" "ninja_out[/\\]b\\.txt: copy" "ninja_out[/\\]ab\\.txt: concat")
+  set(_guest_args "-C;C:\\guest;-f;ninja_build.ninja")
+  set(_guest_file "guest/ninja_out/ab.txt")
+  win10xbox_guest_test(ninja_build "C:\\guest\\ninja.exe" 0 "\\[1/3\\]" "\\[2/3\\]" "\\[3/3\\] CONCAT ninja_out[/\\]ab\\.txt")
+  unset(_guest_file)
+  # Second run on the outputs the first one left: .ninja_log says everything is up to date.
+  set(_guest_args "-C;C:\\guest;-f;ninja_build.ninja")
+  win10xbox_guest_test(ninja_noop "C:\\guest\\ninja.exe" 0 "ninja: no work to do\\.")
+  set_tests_properties(integration.ninja_noop PROPERTIES DEPENDS integration.ninja_build)
+  unset(_guest_args)
+endif()
+
+# ---- The python.org embeddable CPython (docs/slices/realpython.md) ----------------------------------------------------
+# The official CPython 3.12 embeddable package (python.org zip, nothing compiled), unpacked by
+# tools/ci/fetch_python.ps1 (a named step of ci.yml's windows job) into <machine>/guest/python before ctest runs.
+# Registered where that step exists: MSVC builds, or -DWIN10XBOX_REAL_PYTHON=ON after unpacking the zip there.
+# Both tests run on the builtin-only machine folder (the console's DLL set, "*": "builtin,native"): python312.dll
+# imports ws2_32, bcrypt, advapi32 and version, and the Windows CI runner's own build-26100 copies of those are
+# written against an ntdll and an API-set schema Wine does not have (the failure that put the first run of these
+# tests red: api-ms-win-core-crt-l2-1-0 -> _initterm_e resolved to nothing, Wine's 0x80000100 import stub).
+option(WIN10XBOX_REAL_PYTHON "Register the real-Python guest tests (the embeddable zip in <machine>/guest/python)" OFF)
+if(MSVC OR WIN10XBOX_REAL_PYTHON)
+  configure_file(${CMAKE_SOURCE_DIR}/tests/guest/python/sample.json ${CMAKE_BINARY_DIR}/bin/guest/python_sample.json COPYONLY)
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  set(_guest_console ON)
+  # (a) the interpreter and the platform module: a version line, platform.uname() (os name, release and version from
+  # the layer's Windows 10 identity) and os.cpu_count() as the last line. The ';' inside the program text is written
+  # @SEMI@ (run_guest.cmake turns it back), so CMake keeps it in the one argument. The last regex wants the number
+  # alone on the final line.
+  set(_guest_args "-c;import sys, platform, os@SEMI@ print(sys.version)@SEMI@ print(platform.uname())@SEMI@ print(os.cpu_count())")
+  win10xbox_guest_test(real_python_platform "C:\\guest\\python\\python.exe" 0
+    "3\\.12\\.10 \\(tags/v3\\.12\\.10"
+    "uname_result\\(system='Windows'"
+    "\\)..?[0-9]+.?.?$")
+  # (b) python -m json.tool on a small file: the module is found in python312.zip, the file is read through the
+  # layer's VFS, and the pretty-printed document comes back on stdout, re-indented (the input is one line).
+  set(_guest_args "-m;json.tool;C:\\guest\\python_sample.json")
+  win10xbox_guest_test(real_python_json "C:\\guest\\python\\python.exe" 0
+    "\"name\": \"win10xbox\""
+    ".    \"list\": ."
+    "\"ok\": true"
+    "\"pi\": 3\\.25")
+  unset(_guest_args)
+  unset(_guest_console)
+  unset(_guest_machine)
+endif()
+
 # ---- Real GUI programs (not ours), built from source on the Windows runner ------------------------------------------
 # tools/ci/build_realgui.ps1 (a named ci.yml step of the windows job) leaves realgui_hellowin.exe (Microsoft's LearnWin32
 # Hello World) and realgui_putty.exe (PuTTY 0.85, cmake + MSVC) in <machine>/guest before ctest runs. Registered only
@@ -262,6 +408,53 @@ if(MSVC OR WIN10XBOX_REAL_GUI_PROGRAMS)
   unset(_guest_forbid_trace)
   unset(_realgui_script)
   unset(_guest_machine)
+endif()
+
+# ---- Real program: Git for Windows (MinGit 2.47.1 x64) ------------------------------------------------------------
+# tools/ci/fetch_mingit.ps1 (a named ci.yml step of the windows job) unpacks MinGit into <machine>/guest/mingit before
+# ctest; prepare_machine.cmake mirrors it into the builtin-only folder these tests run on (git.exe imports msvcrt,
+# advapi32, user32 and ws2_32: on the shared folder the runner's native advapi32/sechost are mapped next to Wine's
+# msvcrt, the 0x80000100 import-stub failure of docs/TESTING.md). mingw64/bin/git.exe is run directly (cmd/git.exe
+# only wraps it). Registered where the Lua tests are: MSVC builds, or -DWIN10XBOX_REAL_PROGRAMS=ON with MinGit staged.
+# The tests share one repository, C:\guest\gitrepo, and are ordered by fixtures: prepare -> init -> add -> commit.
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  set(_git "C:\\guest\\mingit\\mingw64\\bin\\git.exe")
+  set(_repo "C:\\guest\\gitrepo")
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  add_test(NAME integration.real_git_prepare
+    COMMAND ${CMAKE_COMMAND} -DREPO=${WIN10XBOX_BUILTIN_MACHINE_DIR}/guest/gitrepo
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/real_git_prepare.cmake)
+  set_tests_properties(integration.real_git_prepare PROPERTIES
+    FIXTURES_REQUIRED w10x_machine FIXTURES_SETUP w10x_git_prepared)
+  # git's own configuration for the run: no pager, no CRLF conversion, no signing, a fixed identity, and the repository
+  # directory trusted (the ownership check is git's, not the layer's).
+  set(_gitcfg "--no-pager;-c;core.autocrlf=false;-c;commit.gpgsign=false;-c;user.name=w10x;-c;user.email=w10x@example.com;-c;safe.directory=*")
+  set(_guest_args "--version")
+  win10xbox_guest_test(real_git "${_git}" 0 "git version 2\\.47\\.1\\.windows\\.1")
+  set(_guest_args "${_gitcfg};init;${_repo}")
+  win10xbox_guest_test(real_git_init "${_git}" 0 "Initialized empty Git repository in .*gitrepo/\\.git/")
+  set_tests_properties(integration.real_git_init PROPERTIES
+    FIXTURES_REQUIRED "w10x_machine;w10x_git_prepared" FIXTURES_SETUP w10x_git_init)
+  set(_guest_args "${_gitcfg};-C;${_repo};add;hello.txt")
+  win10xbox_guest_test(real_git_add "${_git}" 0)
+  set_tests_properties(integration.real_git_add PROPERTIES
+    FIXTURES_REQUIRED "w10x_machine;w10x_git_init" FIXTURES_SETUP w10x_git_add)
+  set(_guest_args "${_gitcfg};-C;${_repo};status;--short")
+  win10xbox_guest_test(real_git_status "${_git}" 0 "A  hello\\.txt")
+  set_tests_properties(integration.real_git_status PROPERTIES
+    FIXTURES_REQUIRED "w10x_machine;w10x_git_add" FIXTURES_SETUP w10x_git_status)
+  set(_guest_args "${_gitcfg};-C;${_repo};commit;-m;layer commit")
+  win10xbox_guest_test(real_git_commit "${_git}" 0 "\\[[a-z]+ \\(root-commit\\) [0-9a-f]+\\] layer commit")
+  set_tests_properties(integration.real_git_commit PROPERTIES
+    FIXTURES_REQUIRED "w10x_machine;w10x_git_status" FIXTURES_SETUP w10x_git_commit)
+  set(_guest_args "${_gitcfg};-C;${_repo};log;--oneline")
+  win10xbox_guest_test(real_git_log "${_git}" 0 "[0-9a-f]+ layer commit")
+  set_tests_properties(integration.real_git_log PROPERTIES FIXTURES_REQUIRED "w10x_machine;w10x_git_commit")
+  unset(_guest_args)
+  unset(_guest_machine)
+  unset(_gitcfg)
+  unset(_git)
+  unset(_repo)
 endif()
 
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
@@ -352,5 +545,68 @@ win10xbox_guest_tls_test(guest_view_violation_detected 42 "+dispatch,+modules"
   "host state reached under the guest TLS view [0-9]+ times \\(last: dispatch::ExportCache\\), [1-9][0-9]* trace lines dropped"
   "")
 
+# ---- Real program: 7-Zip's 7zr.exe (docs/TESTING.md, "Real programs") --------------------------------------------
+# Built from the official source by tools/ci/build_7zip.ps1 (a named step of ci.yml's windows job, which leaves it at
+# <machine>/guest/7zr.exe before ctest runs). Registered only where that step exists (MSVC) or with
+# -DWIN10XBOX_REAL_PROGRAMS=ON after putting a 7zr.exe into the machine folder; never on linux-cross's skip floor.
+# real7z: 7zr a / t / l / x round trip (SHA-256 of every extracted file); real7z_bench: 7zr b -mmt1.
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  foreach(_mode roundtrip bench)
+    if(_mode STREQUAL "roundtrip")
+      set(_t integration.real7z)
+    else()
+      set(_t integration.real7z_bench)
+    endif()
+    add_test(NAME ${_t}
+      COMMAND ${CMAKE_COMMAND} -DHOST=$<TARGET_FILE:win10xbox> -DMACHINE=${WIN10XBOX_BUILTIN_MACHINE_DIR}
+        -DMODE=${_mode} -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR} -P ${CMAKE_CURRENT_SOURCE_DIR}/real7z.cmake)
+    set_tests_properties(${_t} PROPERTIES
+      FIXTURES_REQUIRED w10x_machine
+      SKIP_RETURN_CODE 77
+      SKIP_REGULAR_EXPRESSION "SKIP:"
+      LABELS "guest_e2e;real7z"
+      TIMEOUT 900)
+  endforeach()
+endif()
+
 # The SQLite shell and the regression guests its bring-up needed (tests/guest/sqlite).
 include(${CMAKE_CURRENT_LIST_DIR}/sqlite_tests.cmake)
+
+# ---- Real program: curl's curl.exe (docs/TESTING.md, "Real programs") ---------------------------------------------
+# Built from the release tarball by tools/ci/build_curl.ps1 (CMake + MSVC, no TLS; a named step of ci.yml's windows
+# job, which leaves it at <machine>/guest/curl.exe before ctest runs). Registered like the Lua tests: MSVC builds, or
+# -DWIN10XBOX_REAL_PROGRAMS=ON after putting a curl.exe into the machine folder. No network: --version, and the
+# file:// handler reading and copying files under the machine folder's guest home (C:\Users\User).
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  # curl links ws2_32, which on the shared folder is the runner's native one (its advapi32/sechost/rpcrt4 chain dies
+  # on Wine's 0x80000100 import stub, docs/TESTING.md "GUI guests"): run on the builtin-only folder, where it is Wine's.
+  # curl never loads user32, which that folder's trace check otherwise demands.
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  set(_guest_no_user32 ON)
+  set(_curl_home ${WIN10XBOX_BUILTIN_MACHINE_DIR}/Users/User)
+  file(MAKE_DIRECTORY ${_curl_home})
+  file(WRITE ${_curl_home}/curl_in.txt "hello from a guest file, read by curl\nsecond line\n")
+  string(REPEAT "0123456789abcdef" 20000 _curl_big)   # 320000 bytes
+  file(WRITE ${_curl_home}/curl_big.bin "${_curl_big}")
+  unset(_curl_big)
+  # (a) the banner and the protocol list (no TLS backend: https must not be listed).
+  set(_guest_args "--version")
+  win10xbox_guest_test(real_curl_version "C:\\guest\\curl.exe" 0
+    "curl 8\\.[0-9]+\\.[0-9]+ " "libcurl/8\\." "Protocols: [a-z0-9 ]*file" "Protocols: [a-z0-9 ]*http" "Features: ")
+  set_tests_properties(integration.real_curl_version PROPERTIES FAIL_REGULAR_EXPRESSION "Protocols: [a-z0-9 ]*https")
+  # (b) file:// of a guest file to stdout.
+  set(_guest_args "-sS;file:///C:/Users/User/curl_in.txt")
+  win10xbox_guest_test(real_curl_file "C:\\guest\\curl.exe" 0
+    "hello from a guest file, read by curl.second line")
+  # (c) file:// copied with -o (a new file under the guest home, which must exist afterwards); curl reports the size.
+  set(_guest_args "-sS;-o;C:\\Users\\User\\curl_out.bin;-w;size=%{size_download};file:///C:/Users/User/curl_big.bin")
+  set(_guest_file Users/User/curl_out.bin)
+  win10xbox_guest_test(real_curl_file_copy "C:\\guest\\curl.exe" 0 "size=320000")
+  unset(_guest_file)
+  # (d) a missing file: CURLE_FILE_COULDNT_READ_FILE, exit code 37.
+  set(_guest_args "-sS;file:///C:/Users/User/curl_missing.txt")
+  win10xbox_guest_test(real_curl_file_missing "C:\\guest\\curl.exe" 37 "")
+  unset(_guest_args)
+  unset(_guest_machine)
+  unset(_guest_no_user32)
+endif()
