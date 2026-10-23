@@ -637,6 +637,58 @@ NTSTATUS UntranslateWin32Path(std::wstring_view host_win32_path, std::wstring* g
     return UntranslateImpl(host_win32_path, false, guest_win32_path);
 }
 
+namespace {
+
+// An NT object name is not normalised on its way to the file system: unlike a Win32 path it keeps every separator
+// and "." / ".." are ordinary (and invalid) names. This checks a name under a DOS-device prefix ("\??\C:\...")
+// the way NTFS and the object manager answer it, so that the lexical clean-up the VFS applies to the paths it
+// translates (NormalizeComponents) cannot turn a name the caller got wrong into one that opens.
+//   * "C:" followed by "/" is not the drive symlink but a name in \?? that does not exist: NAME_NOT_FOUND for the
+//     last component, PATH_NOT_FOUND when a separator follows;
+//   * one empty component right after the device is tolerated ("\??\C:\\windows"), a second one is not;
+//   * an empty component anywhere else ("a\\b", "a\\"), "." and "..", a "/" inside a component, control
+//     characters and the characters  " * < > ? |  are NAME_INVALID.
+// A single trailing separator is a directory request: *dir_only is set.
+// STATUS_NOT_SUPPORTED: not a drive-device name, nothing to check here.
+NTSTATUS ValidateGuestNtFileName(std::wstring_view p, bool* dir_only) {
+    *dir_only = false;
+    static const wchar_t* const kDrivePrefixes[] = {L"\\??\\", L"\\DosDevices\\", L"\\GLOBAL??\\"};
+    std::wstring_view rest;
+    bool matched = false;
+    for (const wchar_t* pre : kDrivePrefixes) {
+        size_t n = wcslen(pre);
+        if (StartsWithNoCase(p, pre)) { rest = p.substr(n); matched = true; break; }
+    }
+    if (!matched || rest.size() < 2 || rest[1] != L':' || !IsAlpha(rest[0])) return STATUS_NOT_SUPPORTED;
+    rest.remove_prefix(2);
+    if (rest.empty()) return STATUS_NOT_SUPPORTED;
+    if (rest[0] == L'/') {
+        for (wchar_t c : rest)
+            if (c == L'\\') return STATUS_OBJECT_PATH_NOT_FOUND;
+        return STATUS_OBJECT_NAME_NOT_FOUND;
+    }
+    if (rest[0] != L'\\') return STATUS_NOT_SUPPORTED;   // "C:foo": not a drive path, left to the host
+    rest.remove_prefix(1);
+    if (!rest.empty() && rest[0] == L'\\') rest.remove_prefix(1);   // the one tolerated empty component
+    if (rest.empty()) return STATUS_SUCCESS;                          // the volume root
+    if (rest.back() == L'\\') { *dir_only = true; rest.remove_suffix(1); }
+    while (true) {
+        size_t e = rest.find(L'\\');
+        std::wstring_view c = rest.substr(0, e);
+        if (c.empty() || c == L"." || c == L"..") return STATUS_OBJECT_NAME_INVALID;
+        for (wchar_t ch : c) {
+            if (ch < 0x20 || ch == L'/' || ch == L'"' || ch == L'*' || ch == L'<' || ch == L'>' || ch == L'?' ||
+                ch == L'|')
+                return STATUS_OBJECT_NAME_INVALID;
+        }
+        if (e == std::wstring_view::npos) break;
+        rest.remove_prefix(e + 1);
+    }
+    return STATUS_SUCCESS;
+}
+
+}  // namespace
+
 NTSTATUS TranslateObjectAttributes(const OBJECT_ATTRIBUTES* in, TranslatedAttributes* out) {
     out->attr = OBJECT_ATTRIBUTES{};
     out->name = UNICODE_STRING{};
@@ -650,7 +702,17 @@ NTSTATUS TranslateObjectAttributes(const OBJECT_ATTRIBUTES* in, TranslatedAttrib
 
     std::wstring_view guest(in->ObjectName->Buffer, in->ObjectName->Length / sizeof(wchar_t));
     std::wstring host;
-    NTSTATUS s = TranslateNtPath(guest, &host);
+    bool dir_only = false;
+    NTSTATUS s = ValidateGuestNtFileName(guest, &dir_only);
+    if (s != STATUS_SUCCESS && s != STATUS_NOT_SUPPORTED) return s;
+    if (dir_only) {
+        // "file.txt\" names a directory component: an existing regular file answers NAME_INVALID.
+        std::wstring file_host;
+        if (TranslateNtPath(guest.substr(0, guest.size() - 1), &file_host) == STATUS_SUCCESS &&
+            file_host.size() > 4 && FileExists(file_host.substr(4)))
+            return STATUS_OBJECT_NAME_INVALID;
+    }
+    s = TranslateNtPath(guest, &host);
     if (s == STATUS_NOT_SUPPORTED) return STATUS_SUCCESS;   // namespace we do not own: pass through
     if (s != STATUS_SUCCESS) return s;
     if (host.size() > kMaxUnicodeStringChars - 1) return STATUS_NAME_TOO_LONG;
