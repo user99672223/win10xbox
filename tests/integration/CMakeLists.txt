@@ -34,7 +34,7 @@ if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
                    guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog guest_comctl
                    guest_seh guest_window_scroll guest_clipboard guest_net msctf_stub guest_gdi_bitmap
-                   guest_window_hooks guest_window_menu guest_xinput xinput1_4 guest_identity)
+                   guest_window_hooks guest_window_menu guest_xinput xinput1_4 guest_identity guest_cursor)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -249,6 +249,32 @@ win10xbox_guest_test(guest_window_menu "C:\\guest\\guest_window_menu.exe" 42
 set_tests_properties(integration.guest_window_menu PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_menu.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=300,140,fff0f0f0|116,134,ff000000;WIN10XBOX_TEST_INJECT_INPUT=waitwin 60000\\;sleep 2000\\;move 132,140\\;ldown\\;lup\\;sleep 1500\\;move 128,196\\;ldown\\;lup\\;sleep 2500\\;move 320,264\\;ldown\\;lup"
   FAIL_REGULAR_EXPRESSION "FAIL ")
+# Cursors and icons (tests/guest/cursor.c, core/user/win_cursor.cpp). The guest loads Wine's IDC_ARROW / IDC_IBEAM (user32
+# reads the 32 bpp images from its resources and hands the bitmaps to NtUserSetCursorIconData), builds a monochrome
+# AND/XOR cursor, checks GetIconInfo / GetCursorInfo / SetCursor / ShowCursor and draws the icons with DrawIconEx
+# (pixels read back with GetPixel). The composed cursor is not painted by the guest, so the host script moves the
+# pointer to four places (the guest changes the cursor on each move) and writes a screenshot after the first three with
+# `shot FILE` (host-win32/main.cpp); run_guest.cmake checks pixels of each file (WIN10XBOX_SCREENSHOT_2.._4):
+#  _2 pointer (250,250), I-beam, hotspot (3,9): image (1,1) and (3,1) opaque white at (248,242) and (250,242), image
+#     (3,9) fd fd fd at (250,250), image (10,9) transparent at (257,250) = the window colour ff4080c0;
+#  _3 pointer (320,250), arrow, hotspot (0,0): image (1,1) opaque black at (321,251), (2,4) and (3,5) opaque white at
+#     (322,254) and (323,255), (20,5) transparent at (340,255); the old I-beam spot (250,250) is the window colour again;
+#  _4 pointer (390,250), the monochrome cursor, hotspot (4,4), columns of 8: black at (388,252), white at (396,252),
+#     inverted window colour (ffbf7f3f) at (404,252), unchanged at (412,252);
+#  the final file (WIN10XBOX_SCREENSHOT, written when the guest has exited): the pointer at (392,252) after
+#  ShowCursor(FALSE), so none of those pixels of the monochrome cursor is drawn (390,254), (398,254), (406,254), plus
+#  the DrawIconEx results in the window: arrow (111,111) black and (112,114) white, stretched arrow (162,112) black,
+#  monochrome (222,116) black, (230,116) white, (238,116) ffbf7f3f, (246,116) unchanged.
+win10xbox_guest_test(guest_cursor "C:\\guest\\guest_cursor.exe" 42
+  "cursor: loaded arrow=[0-9a-fA-Fx]+ ibeam=[0-9a-fA-Fx]+ shared=1"
+  "cursor: arrow icon=0 hot=0,0 mask=32x32x1 color=32x32x32" "cursor: ibeam icon=0 hot=3,9 mask=32x32x1 color=32x32x32"
+  "cursor: mono icon=0 hot=4,4 mask=32x64x1 color=none"
+  "cursor: DrawIconEx arrow=ok stretched=ok mono=ok" "cursor: P0 ibeam showing pos=250,250"
+  "cursor: P1 SetCursor\\(arrow\\) returned ibeam" "cursor: P2 SetCursor\\(mono\\) returned arrow"
+  "cursor: P3 ShowCursor\\(FALSE\\)=-1 flags=0" "cursor: done")
+set_tests_properties(integration.guest_cursor PROPERTIES
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_cursor.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=390,254,ff4080c0|398,254,ff4080c0|406,254,ff4080c0|111,111,ff000000|112,114,ffffffff|162,112,ff000000|222,116,ff000000|230,116,ffffffff|238,116,ffbf7f3f|246,116,ff4080c0;WIN10XBOX_SCREENSHOT_2=${CMAKE_BINARY_DIR}/bin/guest_cursor_ibeam.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS_2=248,242,ffffffff|250,242,ffffffff|250,250,fffdfdfd|257,250,ff4080c0|270,250,ff4080c0;WIN10XBOX_SCREENSHOT_3=${CMAKE_BINARY_DIR}/bin/guest_cursor_arrow.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS_3=321,251,ff000000|322,254,ffffffff|323,255,ffffffff|340,255,ff4080c0|250,250,ff4080c0;WIN10XBOX_SCREENSHOT_4=${CMAKE_BINARY_DIR}/bin/guest_cursor_mono.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS_4=388,252,ff000000|396,252,ffffffff|404,252,ffbf7f3f|412,252,ff4080c0|321,251,ff4080c0;WIN10XBOX_TEST_INJECT_INPUT=waitwin 60000\\;sleep 1500\\;move 250,250\\;sleep 1500\\;shot ${CMAKE_BINARY_DIR}/bin/guest_cursor_ibeam.bmp\\;move 320,250\\;sleep 1500\\;shot ${CMAKE_BINARY_DIR}/bin/guest_cursor_arrow.bmp\\;move 390,250\\;sleep 1500\\;shot ${CMAKE_BINARY_DIR}/bin/guest_cursor_mono.bmp\\;move 392,252\\;sleep 1500"
+  FAIL_REGULAR_EXPRESSION "cursor: FAIL")
 # XInput (tests/guest/xinput.c): the guest imports the layer's own xinput1_4.dll (guest-dlls/xinput, a builtin next to
 # Wine's) and reads the gamepad the HOST holds, through the "xinput1_4" unix library. The host script connects a neutral
 # pad, waits (padwait) until the guest has read it, then presses A with stick and trigger values: the guest sees its packet

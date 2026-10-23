@@ -23,6 +23,7 @@ target_sources(win10xbox_core PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/native_compose.cpp
   ${CMAKE_CURRENT_LIST_DIR}/win_scroll.cpp
   ${CMAKE_CURRENT_LIST_DIR}/win_clipboard.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/win_cursor.cpp
 )
 target_include_directories(win10xbox_core PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 target_include_directories(win10xbox_core PUBLIC ${CMAKE_CURRENT_LIST_DIR}/../../winexbox/include)
