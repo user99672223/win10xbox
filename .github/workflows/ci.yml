@@ -194,6 +194,28 @@ jobs:
       - name: Build Lua 5.4.7 (real guest program)
         shell: pwsh
         run: ./tools/ci/build_lua.ps1 -Out build/bin/machine/guest
+      # One more program that is not ours: Sysinternals Coreinfo64.exe, downloaded from
+      # live.sysinternals.com and pinned by SHA-256 (tools/ci/fetch_sysinternals.ps1, verified on every run). Left in
+      # build/bin/machine/guest for integration.coreinfo (docs/slices/sysinfo.md).
+      - name: Cache the Sysinternals tools
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/sysinternals
+          key: sysinternals-coreinfo-4be1e87e
+      - name: Fetch Sysinternals Coreinfo64 (real guest programs)
+        shell: pwsh
+        run: ./tools/ci/fetch_sysinternals.ps1 -Out build/bin/machine/guest
+      # The second real program, and the first prebuilt one: fastfetch 2.70.0, the project's official release zip
+      # (tools/ci/fetch_fastfetch.ps1: pinned SHA-256, verified on every run, restored from the cache or downloaded),
+      # left at build/bin/machine/guest/fastfetch.exe for integration.fastfetch (docs/slices/fastfetch.md).
+      - name: Cache the fastfetch release zip
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/fastfetch-src
+          key: fastfetch-2.70.0-89e5a20f46ac04b154c7d0ea13dbac97e43f799a98d7ae4c598863ba357a8c7f
+      - name: Fetch fastfetch 2.70.0 (real guest program)
+        shell: pwsh
+        run: ./tools/ci/fetch_fastfetch.ps1 -Out build/bin/machine/guest
       # Real GUI programs that are not ours (tools/ci/build_realgui.ps1): Microsoft's LearnWin32 Hello World and PuTTY
       # 0.85 (official tarball, cmake + cl /MT), pinned by SHA-256 and verified on every run. Left in
       # build/bin/machine/guest for integration.realgui_* (docs/TESTING.md, "Real GUI programs").
@@ -237,7 +259,34 @@ jobs:
       - name: Smoke - every bundled guest through the host
         if: ${{ !cancelled() }}
         shell: pwsh
-        run: ./tools/ci/smoke_guests.ps1 -Bin build/bin -Machine build/bin/machine -LogDir build/guest-smoke -RealPrograms
+        run: ./tools/ci/smoke_guests.ps1 -Bin build/bin -Machine build/bin/machine -LogDir build/guest-smoke -RealPrograms -Sysinternals
+      # fastfetch module by module on the console's DLL set, gating: one process per module, so a module that stops the
+      # guest fails by name. Each module that works must exit 0 and print its line. The ones that do not yet (Display,
+      # Sound, GPU, Packages, LocalIp, Battery, Bluetooth) are the todo list of docs/slices/fastfetch.md.
+      - name: Gate - fastfetch, each working module prints its line
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $expect = [ordered]@{ OS = '^OS: '; Host = '^Host: '; Kernel = '^Kernel: '; Uptime = '^Uptime: '; Shell = '^Shell: ';
+                                Terminal = '^Terminal: '; CPU = '^CPU: '; Memory = '^Memory: '; Swap = '^Swap: ';
+                                Disk = '^Disk \(.*\): '; Locale = '^Locale: ' }
+          $machine = (Resolve-Path build/bin/machine-builtin).Path
+          $fail = 0
+          foreach ($m in $expect.Keys) {
+            $o = "ff-$m.out"; $e = "ff-$m.err"
+            $p = Start-Process build/bin/win10xbox.exe -ArgumentList '--machine', $machine, 'C:\guest\fastfetch.exe', '--pipe', '--logo', 'none', '-s', $m `
+                   -RedirectStandardOutput $o -RedirectStandardError $e -PassThru -NoNewWindow
+            $null = $p.Handle
+            if (-not $p.WaitForExit(120000)) { $p.Kill(); $p.WaitForExit(); Write-Host "::error::fastfetch[$m]: killed after 120 s"; $fail = 1; continue }
+            $text = (Get-Content $o -Raw); if ($null -eq $text) { $text = '' }
+            Write-Host ("fastfetch[{0}]: exit {1}: {2}" -f $m, $p.ExitCode, ($text -replace "\r?\n", ' | '))
+            if ($p.ExitCode -ne 0 -or $text -notmatch "(?m)$($expect[$m])") {
+              Write-Host "::error::fastfetch[$m]: exit $($p.ExitCode), expected 0 and a line matching $($expect[$m])"
+              Select-String -Path $e -Pattern 'err:|fixme:|FATAL|CRASH|unresolved import|exception:' | Select-Object -First 8 | ForEach-Object { Write-Host "    $($_.Line)" }
+              $fail = 1
+            }
+          }
+          if ($fail) { exit 1 }
       # crash.txt / crash.dmp / entry-reached.txt: what host-win32/crash.cpp writes into build/bin when a guest run
       # (ctest or the smoke step) dies; *.bmp: the GUI tests' screenshots (WIN10XBOX_SCREENSHOT).
       - uses: actions/upload-artifact@v4
