@@ -104,6 +104,7 @@ foreach ($t in $table) {
   $rc = $p.ExitCode
   $stdout = if (Test-Path $out) { Get-Content $out -Raw } else { '' }
   if ($null -eq $stdout) { $stdout = '' }
+  $stdout = $stdout -replace "`0", ''   # Coreinfo64 writes UTF-16 to a redirected stdout; the NULs hide every anchor
   $ok = (-not $note) -and ($rc -eq $t.Exit) -and ((-not $t.Out) -or ($stdout -match $t.Out))
   $why = @()
   if ($note) { $why += $note.Trim() }
