@@ -17,3 +17,7 @@ Pass condition: `curl --version` lists protocols; `curl file:///C:/...` reads a 
   `api-ms-win-core-crt-l2-1-0.dll` `_initterm_e`) because ws2_32 was the runner's native System32 DLL
   (native advapi32/sechost/rpcrt4 chain). Same cause as the GUI guests (docs/TESTING.md): the curl tests now run on the
   builtin-only machine folder, where ws2_32 is Wine's; `run_guest.cmake` got `-DNO_USER32=ON` for a console program.
+- Run 39877475822 (push 2): only the four curl tests failed; curl.exe imports `bcrypt.dll` (libcurl's `BCryptGenRandom`),
+  which the builtin-only folder did not have (`err:wine:module:import_dll Library bcrypt.dll ... not found`, c0000135).
+  Wine's bcrypt.dll is now in `wine-pe/dlls.txt`: its DllMain tolerates a missing unix lib and `BCryptGenRandom` with the
+  system RNG goes through `RtlGenRandom`, so no unix call is needed for curl.
