@@ -1014,3 +1014,8 @@ per-syscall status table is the fidelity ledger going forward.
   jobs since 2026-10-22 (the CI section at the top of this file). The earlier
   claim here that stdio was not captured on real Windows is withdrawn: run
   39818491081 shows guest stdout matched on the windows RelWithDebInfo job.
+
+## Native GUI (route B), 2026-10-23
+- `integration.guest_window_native` passes on both Windows configs (run 39881185269): the guest runs the host's user32/gdi32/win32u.
+- Needed: kernelbase exports for the host API-set map (wine-pe patches 0003, 0004), coml2 + cryptbase builtins, a do-nothing msctf.dll for imm32, and an argument fix in the Csr wrapper.
+- Details and open gaps: docs/slices/native.md.
