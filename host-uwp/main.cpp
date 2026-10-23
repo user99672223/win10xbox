@@ -36,6 +36,7 @@
 // Suspending / Resuming handlers are written so that they are also correct on another thread
 // (they only read host_ and call thread-safe Host methods).
 #include "pch.h"
+#include <stdexcept>
 #include "App.h"
 #include "host.h"
 #include "host_diag.h"
@@ -192,6 +193,11 @@ namespace
             try
             {
                 const wgdc::HdmiDisplayInformation hdmi = wgdc::HdmiDisplayInformation::GetForCurrentView();
+                if (!hdmi)   // no HDMI output on this device (the runner): GetForCurrentView returns null, not an error
+                {
+                    d.notes.push_back("HdmiDisplayInformation::GetForCurrentView returned null: falling back to DisplayInformation");
+                    throw std::runtime_error("no hdmi");
+                }
                 wgdc::HdmiDisplayMode cur = hdmi.GetCurrentDisplayMode();
                 const auto modes = hdmi.GetSupportedDisplayModes();
                 d.supported = static_cast<unsigned>(modes.Size());
