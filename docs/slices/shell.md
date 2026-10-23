@@ -11,6 +11,8 @@ status: wip
 8. Debug: `WIN10XBOX_DEBUG=-all,+user,+dispatch` shows `unimplemented syscall NtUser*`; run explorer with `win10xbox.exe --machine build-mingw/bin/machine-builtin C:\Windows\System32\explorer.exe /desktop=shell,1920x1080` and WIN10XBOX_TEST_INJECT_INPUT="waitwin 30000;sleep 3000;shot;quit 0".
 9. Commands: `cmake --build build-mingw -j4; ctest --test-dir build-mingw -R 'integration.shell_desktop'`.
 
+Half 1 verified: ci.yml https://github.com/user99672223/win10xbox/actions/runs/40004553209 (linux-cross, windows Debug, windows RelWithDebInfo all green) and wine-pe.yml https://github.com/user99672223/win10xbox/actions/runs/40004553359 (user32 rebuilt with patch 0021) at 4bee0d4. integration.shell_desktop and integration.shell_desktop_hook pass on Windows. Printed lines: `shellhook: registered, message=49152`, `shellhook: message code=1/2/4/6 window=0000000000010022`, `shellhook: created ok`, `shellhook: activated ok`, `shellhook: destroyed ok`; `shot: distinct=8 written=1` (shell_desktop; the other `shot: distinct=312` is a different test). The first push failed seven later GUI guests because the added tests' `unset(_guest_machine)` ended the builtin-only block that continues to guest_gdi_bitmap; fixed in 4bee0d4. Half 2 (child processes) pending; status stays wip.
+
 # Slice: shell (desktop) — design question for Session A before any code
 
 Session B, 2026-10-23. Not started; waiting for Session A's answer here (edit this file on this branch or
