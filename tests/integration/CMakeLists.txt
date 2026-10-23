@@ -187,20 +187,16 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   unset(_guest_debug)
   unset(_guest_forbid_trace)
 
-  # Sysinternals Coreinfo64.exe and PsInfo64.exe (tools/ci/fetch_sysinternals.ps1, pinned by SHA-256), both
-  # system-information programs: they read the CPU / OS / uptime through NtQuerySystemInformation and the registry.
+  # Sysinternals Coreinfo64.exe (tools/ci/fetch_sysinternals.ps1, pinned by SHA-256), a system-information program:
+  # it reads the CPU topology through NtQuerySystemInformation. PsInfo64 is not gated here (docs/slices/sysinfo.md).
   # The anchors are lines every runner prints whatever its CPU vendor is (docs/slices/sysinfo.md).
-  # They import comdlg32/shell32 (and PsInfo64 pdh, mpr, netapi32), whose native copies cannot load on the shared
+  # It imports comdlg32/shell32, whose native copies cannot load on the shared
   # machine folder (docs/slices/sysinfo.md), so they run on the builtin-only one, like the GUI guests below.
   set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
   set(_guest_args "-accepteula")
   win10xbox_guest_test(coreinfo "C:\\guest\\Coreinfo64.exe" 0
     "Logical to Physical Processor Map:"
     "Logical Processor to Socket Map:")
-  win10xbox_guest_test(psinfo "C:\\guest\\PsInfo64.exe" 0
-    "System information for "
-    "Uptime:"
-    "Kernel version:")
   unset(_guest_args)
   unset(_guest_machine)
 endif()
