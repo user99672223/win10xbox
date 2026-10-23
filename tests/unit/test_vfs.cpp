@@ -456,6 +456,9 @@ TEST(vfs_override_lookup) {
     CHECK(OverrideFor(L"gdi32") == DllOverride::Builtin);
     CHECK(OverrideFor(L"win32u") == DllOverride::Builtin);
     CHECK(OverrideFor(L"imm32.dll") == DllOverride::Builtin);
+    CHECK(OverrideFor(L"xinput1_4.dll") == DllOverride::Builtin);   // the layer's own XInput, under its three names
+    CHECK(OverrideFor(L"XInput1_3") == DllOverride::Builtin);
+    CHECK(OverrideFor(L"xinput9_1_0") == DllOverride::Builtin);
     CHECK(OverrideFor(L"d3d9") == DllOverride::Disabled);
     CHECK(OverrideFor(L"msvcrt") == DllOverride::Native);
     // E1: ntdll/kernelbase/kernel32 are always builtin, whatever machine.json says

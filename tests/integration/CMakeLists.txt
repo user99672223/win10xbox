@@ -20,6 +20,7 @@ set(_prepare_args
   -DBUILTIN_ONLY_MACHINE=${WIN10XBOX_BUILTIN_MACHINE_DIR}
   -DBUILTIN_DIR=${WIN10XBOX_BUILTIN_DIR}
   -DGUEST_DIR=${CMAKE_BINARY_DIR}/bin/guest
+  -DGUEST_DLL_DIR=${WIN10XBOX_GUEST_DLL_DIR}
   -DDEFAULT_JSON=${_default_json}
   -P ${CMAKE_CURRENT_SOURCE_DIR}/prepare_machine.cmake)
 
@@ -27,7 +28,7 @@ add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
-                   guest_window_input guest_window_input2 guest_window_text guest_window_nc)
+                   guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_xinput xinput1_4)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -173,6 +174,18 @@ win10xbox_guest_test(guest_window_text "C:\\guest\\guest_window_text.exe" 42
   "text: done")
 set_tests_properties(integration.guest_window_text PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_text.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=121,123,ff000000|123,123,ffffffff|131,123,ff000000")
+# XInput (tests/guest/xinput.c): the guest imports the layer's own xinput1_4.dll (guest-dlls/xinput, a builtin next to
+# Wine's) and reads the gamepad the HOST holds, through the "xinput1_4" unix library. The host script connects a neutral
+# pad, waits (padwait) until the guest has read it, then presses A with stick and trigger values: the guest sees its packet
+# number move and the injected values, users 1..3 stay ERROR_DEVICE_NOT_CONNECTED (1167).
+win10xbox_guest_test(guest_xinput "C:\\guest\\guest_xinput.exe" 42
+  "xinput: screen=[0-9]+x[0-9]+" "xinput: caps ok type=1 subtype=1" "xinput: idle packet=[0-9]+ buttons=0x0000"
+  "xinput: packet changed [0-9]+ -> [0-9]+" "xinput: buttons=0x1000 lx=1000 ly=-2000 rx=3000 ry=-4000 lt=128 rt=255"
+  "xinput: users 1\\.\\.3 not connected \\(1167 1167 1167\\)" "xinput: set state ok, battery type=1 level=3, bad index=160"
+  "xinput: done")
+set_tests_properties(integration.guest_xinput PROPERTIES
+  ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=pad 0 0 0 0 0 0 0\\;padwait 30000\\;sleep 300\\;pad 1000 1000 -2000 3000 -4000 128 255"
+  FAIL_REGULAR_EXPRESSION "xinput: FAIL")
 unset(_guest_machine)
 
 # ---- Real programs: the first guests that are not ours ----------------------------------------------------------

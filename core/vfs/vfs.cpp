@@ -121,10 +121,11 @@ std::wstring OverrideKey(std::wstring_view name) {
 
 // E1: Wine's ntdll/kernelbase/kernel32 always. And the GUI stack (E1 extended, docs/GUI.md): core/user
 // implements Wine's win32u contract (Wine's syscall numbering, ntuser.h's call codes), and native
-// user32/gdi32/win32u/imm32 are clients of a real win32k that an AppContainer guest does not have.
+// user32/gdi32/win32u/imm32 are clients of a real win32k that an AppContainer guest does not have. And the layer's own
+// XInput (guest-dlls/xinput, under its three names): the native one is a client of the HID stack.
 bool IsAlwaysBuiltin(const std::wstring& key) {
     return key == L"NTDLL" || key == L"KERNELBASE" || key == L"KERNEL32" || key == L"WIN32U" || key == L"USER32" ||
-           key == L"GDI32" || key == L"IMM32";
+           key == L"GDI32" || key == L"IMM32" || key == L"XINPUT1_4" || key == L"XINPUT1_3" || key == L"XINPUT9_1_0";
 }
 
 DllOverride OverrideImpl(const State& st, std::wstring_view name) {
@@ -392,7 +393,7 @@ void ApplyConfig(const json::Value& root, State* st) {
             std::wstring key = OverrideKey(Widen(m.first));
             if (key == L"*") { st->default_override = ov; continue; }
             if (IsAlwaysBuiltin(key)) {
-                WARN(vfs, "machine.json: dll_overrides.%s ignored: ntdll/kernelbase/kernel32 and the GUI stack (win32u/user32/gdi32/imm32) are always builtin (E1)",
+                WARN(vfs, "machine.json: dll_overrides.%s ignored: ntdll/kernelbase/kernel32, the GUI stack (win32u/user32/gdi32/imm32) and xinput1_x are always builtin (E1)",
                      m.first.c_str());
                 continue;
             }

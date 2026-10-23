@@ -64,6 +64,13 @@ add_executable(guest_window_text window_text.c)
 target_link_libraries(guest_window_text PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window_text)
 
+# The XInput guest (tests/guest/xinput.c): imports xinput1_4.dll (guest-dlls/xinput, our own builtin DLL) and reads the
+# pad state the host holds, which host-win32's WIN10XBOX_TEST_INJECT_INPUT "pad" command sets. Nothing to see without
+# that injection, so there is no native smoke test.
+add_executable(guest_xinput xinput.c)
+target_link_libraries(guest_xinput PRIVATE xinput1_4 user32)
+win10xbox_add_guest(guest_xinput)
+
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
 add_test(NAME guest.hello COMMAND guest_hello)
 set_tests_properties(guest.hello PROPERTIES PASS_REGULAR_EXPRESSION "hello from guest")

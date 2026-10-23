@@ -5,7 +5,7 @@
 #         -DWINMD=<Win10XboxUwp.winmd or empty>
 #         -DMANIFEST=<AppxManifest.xml> -DASSETS_DIR=<dir with *.png>
 #         -DPAYLOAD_DIR=<host-uwp/payload> -DBUILTIN_DIR=<wine-pe/out/builtin>
-#         -DMACHINE_JSON=<machine.default.json>
+#         -DMACHINE_JSON=<machine.default.json> [-DGUEST_DLL_DIR=<bin/guest-dlls>: our own builtin DLLs]
 #         -P stage.cmake
 #
 # Layout (see the header of host-uwp/CMakeLists.txt):
@@ -102,11 +102,24 @@ if(NOT "${BUILTIN_DIR}" STREQUAL "" AND IS_DIRECTORY "${BUILTIN_DIR}")
   endforeach()
 endif()
 
-if(_nb EQUAL 0)
+# Our own builtin DLLs (guest-dlls/: xinput1_4.dll and its copies), next to Wine's. Counted apart: a package with only
+# these still cannot run a guest (the warning below is about Wine's).
+set(_nw ${_nb})
+if(NOT "${GUEST_DLL_DIR}" STREQUAL "" AND IS_DIRECTORY "${GUEST_DLL_DIR}")
+  file(GLOB _dlls "${GUEST_DLL_DIR}/*.dll")
+  foreach(_f IN LISTS _dlls)
+    get_filename_component(_n "${_f}" NAME)
+    file(COPY_FILE "${_f}" "${STAGE}/payload/builtin/${_n}")
+    math(EXPR _nb "${_nb} + 1")
+  endforeach()
+  message(STATUS "stage.cmake: bundled ${_nb} builtin DLLs in all, ${_nw} from Wine")
+endif()
+
+if(_nw EQUAL 0)
   message(WARNING "stage.cmake: no Wine PE builtin DLLs in '${BUILTIN_DIR}'. The package is still produced; on the "
                   "console, copy ntdll.dll, kernelbase.dll, kernel32.dll (and friends) into "
                   "LocalState\\machine\\Windows\\builtin, or rebuild with the wine-pe-builtin artifact.")
 else()
-  message(STATUS "stage.cmake: bundled ${_nb} Wine PE builtin DLLs from ${BUILTIN_DIR}")
+  message(STATUS "stage.cmake: bundled ${_nw} Wine PE builtin DLLs from ${BUILTIN_DIR}")
 endif()
 message(STATUS "stage.cmake: AppX layout ready in ${STAGE}")

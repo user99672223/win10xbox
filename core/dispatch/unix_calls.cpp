@@ -12,6 +12,7 @@
 // WINEDEBUG syntax ("+loaddll,warn+module,-all").
 #include "internal.h"
 #include "win10xbox/config.h"
+#include "win10xbox/gamepad.h"
 #if WIN10XBOX_HAVE_CLOCK
 #include "win10xbox/clock.h"
 #endif
@@ -121,6 +122,37 @@ const UnixCallFn kWs2Funcs[] = {
     &U_ws_not_implemented,   // getnameinfo
 };
 
+// ---- xinput1_4's unix functions (win10xbox/xinput_abi.h; the guest DLL is guest-dlls/xinput) --------------------
+// The guest's XInput is our own small DLL (Wine's is PE code over hid/setupapi and a HID bus driver we do not have).
+// It reaches the host's gamepad store (win10xbox/gamepad.h) the way Wine's PE DLLs reach their unix side. Return
+// values are Win32 error codes, as the DLL hands them to its caller.
+constexpr NTSTATUS kErrorSuccess = 0, kErrorInvalidParameter = 87, kErrorDeviceNotConnected = 1167;
+
+NTSTATUS WINAPI U_xinput_get_state(void* args) {
+    auto* p = static_cast<W10xXInputGetState*>(args);
+    if (!p) return kErrorInvalidParameter;
+    return input::GetGamepadState(p->index, &p->state) ? kErrorSuccess : kErrorDeviceNotConnected;
+}
+
+NTSTATUS WINAPI U_xinput_set_state(void* args) {
+    auto* p = static_cast<W10xXInputSetState*>(args);
+    if (!p) return kErrorInvalidParameter;
+    return input::SetGamepadVibration(p->index, p->left_motor, p->right_motor) ? kErrorSuccess
+                                                                               : kErrorDeviceNotConnected;
+}
+
+NTSTATUS WINAPI U_xinput_get_caps(void* args) {
+    auto* p = static_cast<W10xXInputGetCaps*>(args);
+    if (!p) return kErrorInvalidParameter;
+    if (!input::GamepadConnected(p->index)) return kErrorDeviceNotConnected;
+    p->type = 1;      // XINPUT_DEVTYPE_GAMEPAD
+    p->subtype = 1;   // XINPUT_DEVSUBTYPE_GAMEPAD
+    p->flags = 0;
+    return kErrorSuccess;
+}
+
+const UnixCallFn kXInputFuncs[] = {&U_xinput_get_state, &U_xinput_set_state, &U_xinput_get_caps};
+
 // ---- Wine debug channels ---------------------------------------------------------
 constexpr unsigned char kInitBit = 1u << 7;
 struct WineSpec { std::string channel; unsigned char mask; bool on; };
@@ -189,6 +221,7 @@ void RegisterNtdllUnixLib() {
     LoadWineDebugSpec();
     if (!g_ntdll_handle) RegisterUnixLib(L"ntdll", kNtdllFuncs, std::size(kNtdllFuncs));
     RegisterUnixLib(L"ws2_32", kWs2Funcs, std::size(kWs2Funcs));
+    RegisterUnixLib(W10X_XINPUT_UNIXLIB_NAME, kXInputFuncs, std::size(kXInputFuncs));
 }
 
 std::uint64_t UnixLibHandleByName(std::wstring_view module_name) {

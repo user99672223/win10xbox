@@ -217,9 +217,14 @@ set_target_properties(window_guest PROPERTIES OUTPUT_NAME "window")
 
 # Every other guest of the repo, so the package carries them all to the console (HANDOFF.md
 # "Standing testing rule"). Console programs; output names as in the main tree.
-foreach(_g hello cpuid sleep spawn)
+foreach(_g hello cpuid sleep spawn xinput)
   add_executable(guest_${_g} "${WIN10XBOX_ROOT}/tests/guest/${_g}.c")
 endforeach()
+# Our own builtin DLLs (guest-dlls/: xinput1_4.dll and its copies xinput1_3.dll / xinput9_1_0.dll, staged into
+# payload\builtin next to Wine's) and the XInput guest that imports one.
+set(WIN10XBOX_GUEST_DLL_DIR ${CMAKE_BINARY_DIR}/bin/guest-dlls)
+add_subdirectory(${WIN10XBOX_ROOT}/guest-dlls guest-dlls)
+target_link_libraries(guest_xinput PRIVATE xinput1_4 user32)
 add_library(guest_dll SHARED "${WIN10XBOX_ROOT}/tests/guest/dll.c")
 set_target_properties(guest_dll PROPERTIES PREFIX "")
 add_executable(smoke_guest_cui "${WIN10XBOX_ROOT}/host-uwp-lite/smoke_guest.c")
@@ -242,7 +247,7 @@ set_target_properties(smoke_guest PROPERTIES OUTPUT_NAME "smoke")
 
 set(HOST_UWP_GUESTS window_guest hello_guest hello_guest_cui guest_hello guest_cpuid guest_sleep guest_dll
     smoke_guest_cui drv_client guest_window2 guest_window_input guest_window_input2 guest_window_text smoke_guest
-    guest_spawn guest_window_nc)
+    guest_spawn guest_window_nc guest_xinput)
 
 # ---------------------------------------------------------------------------
 # The selftest: the launch.json parser (launch_config.cpp has no Windows or layer
@@ -327,7 +332,7 @@ endif()
 #   payload\launch.json             host-uwp/payload: the packaged default launch configuration
 #   payload\launch.example.json     host-uwp/payload: every key documented (published to LocalState)
 #   payload\guest\*                 every guest of HOST_UWP_GUESTS (window.exe is the default)
-#   payload\builtin\*.dll           Wine PE builtins (optional, see HOST_UWP_BUILTIN_DIR)
+#   payload\builtin\*.dll           Wine PE builtins (optional, see HOST_UWP_BUILTIN_DIR) + our own (guest-dlls/)
 # resources.pri is made by package.cmd (makepri).
 # ---------------------------------------------------------------------------
 set(HOST_UWP_STAGE_DIR "${CMAKE_BINARY_DIR}/AppX")
@@ -354,11 +359,12 @@ add_custom_target(stage_appx ALL
           "-DASSETS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/assets"
           "-DPAYLOAD_DIR=${CMAKE_CURRENT_SOURCE_DIR}/payload"
           "-DBUILTIN_DIR=${HOST_UWP_BUILTIN_DIR}"
+          "-DGUEST_DLL_DIR=${WIN10XBOX_GUEST_DLL_DIR}"
           "-DMACHINE_JSON=${WIN10XBOX_ROOT}/machine/machine.default.json"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/stage.cmake"
   COMMENT "Staging the AppX layout in ${HOST_UWP_STAGE_DIR}"
   VERBATIM)
-add_dependencies(stage_appx host_uwp ${HOST_UWP_GUESTS})
+add_dependencies(stage_appx host_uwp xinput1_4 ${HOST_UWP_GUESTS})
 if(HOST_UWP_WINMD_TARGET)
   add_dependencies(stage_appx ${HOST_UWP_WINMD_TARGET})
 endif()
