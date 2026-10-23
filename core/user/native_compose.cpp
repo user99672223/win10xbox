@@ -57,7 +57,9 @@ BOOL CALLBACK CollectGuestWindow(HWND hwnd, LPARAM lp) {
     // guest thread list (route B: native windows, docs/slices/swapchain2.md).
     if (std::find(es->guest_tids.begin(), es->guest_tids.end(), tid) == es->guest_tids.end() && !FindClientFrame(hwnd))
         return TRUE;
-    if (!es->h->IsWindowVisible(hwnd) || es->h->IsIconic(hwnd)) return TRUE;
+    // The presenting window counts even when the guest's SW_SHOWDEFAULT resolved to the launcher's hidden startup
+    // state (imgui_d3d11: visible 0 in CI): its swap chain frame is what the guest shows.
+    if ((!es->h->IsWindowVisible(hwnd) && !FindClientFrame(hwnd)) || es->h->IsIconic(hwnd)) return TRUE;
     es->windows.push_back(hwnd);
     return TRUE;
 }
