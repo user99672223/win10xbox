@@ -228,6 +228,29 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   unset(_guest_machine)
 endif()
 
+# ---- Tiny C Compiler 0.9.27: a compiler that runs through the layer, and the program it writes ---------------------
+# tools/ci/fetch_tcc.ps1 (the official prebuilt win64 zip, pinned SHA-256) leaves tcc.exe, libtcc.dll, include/ and lib/
+# in <machine>/guest/tcc before ctest runs (docs/slices/realtcc.md). tcc_compile writes C:\Users\User\tcc_hello.exe
+# (GUEST_FILE: deleted before, required after) and tcc_hello_runs runs that exe, so it DEPENDS on tcc_compile;
+# tcc_run is tcc's in-memory mode (-run: the program is relocated into VirtualAlloc'd memory and called).
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  configure_file(${CMAKE_SOURCE_DIR}/tests/guest/tcc/hello.c ${CMAKE_BINARY_DIR}/bin/guest/tcc_hello.c COPYONLY)
+  set(_guest_args "-v")
+  win10xbox_guest_test(tcc_version "C:\\guest\\tcc\\tcc.exe" 0 "tcc version 0\\.9\\.27")
+  set(_guest_args "-o;C:\\Users\\User\\tcc_hello.exe;C:\\guest\\tcc_hello.c")
+  set(_guest_file "Users/User/tcc_hello.exe")
+  win10xbox_guest_test(tcc_compile "C:\\guest\\tcc\\tcc.exe" 0)
+  unset(_guest_file)
+  unset(_guest_args)
+  win10xbox_guest_test(tcc_hello_runs "C:\\Users\\User\\tcc_hello.exe" 42
+    "hello from tcc 42" "argc=1 sizeof\\(void\\*\\)=8")
+  set_tests_properties(integration.tcc_hello_runs PROPERTIES DEPENDS integration.tcc_compile)
+  set(_guest_args "-run;C:\\guest\\tcc_hello.c")
+  win10xbox_guest_test(tcc_run "C:\\guest\\tcc\\tcc.exe" 42
+    "hello from tcc 42" "argc=1 sizeof\\(void\\*\\)=8")
+  unset(_guest_args)
+endif()
+
 # ---- Real GUI programs (not ours), built from source on the Windows runner ------------------------------------------
 # tools/ci/build_realgui.ps1 (a named ci.yml step of the windows job) leaves realgui_hellowin.exe (Microsoft's LearnWin32
 # Hello World) and realgui_putty.exe (PuTTY 0.85, cmake + MSVC) in <machine>/guest before ctest runs. Registered only
