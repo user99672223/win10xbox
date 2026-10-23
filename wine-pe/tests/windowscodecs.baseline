@@ -1,0 +1,17 @@
+# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/media.sh --dll windowscodecs; numbers in docs/slices/wt-media.md)
+# measured on the CI linux-cross job (ci run 39939220417, head f413503); CLSIDs unregistered, see docs/slices/wt-media.md
+bitmap crash 0
+bmpformat crash 0
+converter crash 0
+ddsformat run 1
+gifformat run 1
+icoformat run 7
+info crash 0
+jpegformat run 1
+metadata crash 0
+palette crash 0
+pngformat run 1
+propertybag crash 0
+stream crash 0
+tiffformat run 1
+wmpformat run 1
