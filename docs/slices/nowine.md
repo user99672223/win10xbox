@@ -1,4 +1,4 @@
-status: wip
+status: blocked (nowine work green: wine-pe https://github.com/user99672223/win10xbox/actions/runs/39971769387, ci 39975537479 linux-cross + guest_nowine + fastfetch gate pass; only integration.winetest_ntdll fails on both windows jobs, pre-existing on sibling branches: "WINETEST layer ntdll:exception did not finish, exit=-2147483646" and "WINETEST parity ntdll:file -> FAIL ... file.c:5415 ...")
 HANDOFF (build side finished, CI not yet run):
 1. Done: build.sh applies -DWINE_NO_TRACE_MSGS -DWINE_NO_DEBUG_MSGS (+ patches/0005 for ERR), no -g, file-prefix-map, and now llvm-strip --strip-all at staging (the COFF symbol table named every __wine_spec_*/wine_* symbol). Both runners use build.sh.
 2. Patches 0006/0007/0008 regenerated with gen-nowine.py after merging main: dlls.txt now also holds dbghelp (wine_get_module_information) and iertutil (wine_get_canonicalized_uri), both -noname; 28 FileDescription lines added to version_strings.txt (status recalled/module, unverified).
