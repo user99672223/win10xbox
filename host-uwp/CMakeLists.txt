@@ -307,7 +307,8 @@ add_executable(host_uwp_blittest selftest/blit_test.cpp blit.cpp blit.h)
 target_include_directories(host_uwp_blittest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(host_uwp_blittest PRIVATE d3d11)
 enable_testing()
-add_test(NAME host_uwp.selftest COMMAND host_uwp_selftest "${CMAKE_CURRENT_SOURCE_DIR}/payload")
+add_test(NAME host_uwp.selftest COMMAND host_uwp_selftest "${CMAKE_CURRENT_SOURCE_DIR}/payload"
+         "${CMAKE_CURRENT_SOURCE_DIR}/../tests/guest/expected_exit.txt" "${CMAKE_BINARY_DIR}/AppX/payload/expected_exit.txt")
 add_test(NAME host_uwp.blit COMMAND host_uwp_blittest)
 
 # ---------------------------------------------------------------------------

@@ -36,6 +36,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -166,9 +167,23 @@ namespace w10x_uwp
     std::vector<ReportBlock> ParseReport(const std::string& text);   // the blocks of a report body (a header is ignored)
     // The first word of a verdict line ("PASS (...)" gives "PASS").
     std::string VerdictWord(const std::string& verdict);
-    // The exit code the bundled program is known to end with. `pad_present`: guest_xinput needs a gamepad.
-    bool KnownExpectedExit(const std::string& name, bool pad_present, int* code);
-    // PASS / FAIL when `expected_known`, else TIMEOUT / CRASH (an NTSTATUS-style exit code) / EXITED.
-    std::string ReportVerdict(bool timed_out, long exit_code, bool expected_known, int expected);
+    // The expected-exit table (tests/guest/expected_exit.txt, staged as payload\\expected_exit.txt):
+    //   <program> <code>[=<label>] [<code>=<label> ...]      "#" starts a comment
+    // <code> is an integer or the word TIMEOUT (the program is interactive and is ended by the per-program timeout).
+    // Every listed outcome is a PASS; the label names it ("PASS (exit code 3 = no-input)").
+    struct ExpectedRow
+    {
+        bool timeout = false;
+        int code = 0;
+        std::string label;
+    };
+    using ExpectedTable = std::map<std::string, std::vector<ExpectedRow>>;   // key: lower-case program name
+    bool ParseExpectedTable(std::string_view text, ExpectedTable* out, std::string* error);
+    // The rows of `name` in `table`; when the table has none, the built-in fallback (window.exe, hello_cui.exe,
+    // guest_hello.exe, guest_cpuid.exe, guest_xinput.exe); nullptr when neither knows the program.
+    const std::vector<ExpectedRow>* FindExpected(const ExpectedTable& table, const std::string& name);
+    // PASS (an outcome of the table, labelled) / FAIL (a listed program ended otherwise) / TIMEOUT / CRASH (an
+    // NTSTATUS-style exit code) / EXITED (no table entry).
+    std::string ReportVerdict(bool timed_out, long exit_code, const std::vector<ExpectedRow>* rows);
 
 }  // namespace w10x_uwp

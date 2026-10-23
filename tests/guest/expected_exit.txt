@@ -1,0 +1,57 @@
+# Expected exit codes of the bundled guest programs under host-uwp (launcher verdict, CI "Assert on report.txt").
+# Format:  <program> <code>[=<label>] [<code>=<label> ...]     (# starts a comment; <code> is an integer or TIMEOUT)
+# Every listed outcome is a PASS and the verdict names its label: "PASS (exit code 3 = no-input)". A listed program that
+# ends with another code is FAIL; one with no row is EXITED/CRASH. TIMEOUT is allowed only where a row lists it.
+# Codes were observed on the windows-latest runner (host-uwp run 40009489508) and standalone; labels other than the
+# first say why the runner/console cannot take the first path.
+
+# Plain programs
+window.exe 42
+hello.exe 42
+hello_cui.exe 42
+smoke.exe 42
+smoke_cui.exe 42
+guest_hello.exe 42
+guest_cpuid.exe 0
+guest_sleep.exe 7
+drv_client.exe 2
+guest_clipboard.exe 42
+guest_comctl.exe 42
+guest_gdi_bitmap.exe 42
+guest_identity.exe 42
+guest_net.exe 42
+guest_nowine.exe 42
+guest_rdrand.exe 42
+guest_regpersist.exe 42
+guest_seh.exe 42
+guest_tebframe.exe 42
+guest_window2.exe 42
+guest_window_text.exe 42
+
+# Programs that wait for input only the integration harness injects ("timeout after 0 steps"): 3/5/1 = no input arrived
+guest_cursor.exe 42=driven 3=no-input
+guest_window_hooks.exe 42=driven 3=no-input
+guest_window_input.exe 42=driven 3=no-input
+guest_window_input2.exe 42=driven 3=no-input
+guest_window_nc.exe 42=driven 3=no-input
+guest_window_scroll.exe 42=driven 3=no-input
+guest_window_menu.exe 42=driven 5=no-input
+guest_dialog.exe 42=clicked 1=no-click
+
+# No child processes under UWP (DECISIONS D1: CreateProcess fails with error 50)
+guest_spawn.exe 42=child-ran 1=no-child-processes
+guest_named_objects.exe 42=child-ran 1=no-child-processes
+
+# Audio: the runner has no endpoint (hr 0x80070490), the console has one
+guest_wasapi.exe 42=endpoint 43=no-endpoint
+guest_xaudio2.exe 42=endpoint 43=no-endpoint
+
+# Gamepad: 42 with a pad, 1 after the 30 s wait without one
+guest_xinput.exe 42=pad 1=no-pad
+
+# d3d11.dll does not load under the launcher (error 126): separate slice
+guest_d3d11_tri.exe 42=d3d11 10=no-d3d11
+
+# Chocolate Doom (fetched, not in tests/guest): interactive; the timedemo ends through I_Error, which exits with -1
+chocolate-doom.exe TIMEOUT=interactive
+doom-timedemo.launch -1=timedemo

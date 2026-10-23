@@ -71,6 +71,8 @@ foreach(_g IN LISTS _guests)
   string(APPEND _list "${_n}\n")
 endforeach()
 file(WRITE "${STAGE}/payload/guests.txt" "${_list}")
+# The expected-exit table the launcher's verdict reads (tests/guest/expected_exit.txt), next to guests.txt.
+stage_copy("${CMAKE_CURRENT_LIST_DIR}/../tests/guest/expected_exit.txt" "${STAGE}/payload/expected_exit.txt")
 
 # Files that are not built here: the sidecars (.args/.env/.title/.launch, host-uwp/payload/guest/) and, when
 # EXTRA_GUEST_DIR is given, everything in it (Chocolate Doom, its DLLs and the WAD). Not listed in guests.txt.

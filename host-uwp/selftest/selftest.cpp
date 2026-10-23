@@ -270,20 +270,31 @@ namespace
         CHECK(r.valid && r.all_k == -1);
         CHECK(!ParseRestartArgs("picker all=x").valid);
         int code = -1;
-        CHECK(KnownExpectedExit("Hello_CUI.exe", false, &code) && code == 42);
-        CHECK(KnownExpectedExit("guest_cpuid.exe", false, &code) && code == 0);
-        CHECK(KnownExpectedExit("guest_xinput.exe", false, &code) && code == 1);
-        CHECK(KnownExpectedExit("guest_xinput.exe", true, &code) && code == 42);
-        CHECK(!KnownExpectedExit("guest_net.exe", false, &code));
-        CHECK(VerdictWord(ReportVerdict(false, 42, true, 42)) == "PASS");
-        CHECK(VerdictWord(ReportVerdict(false, 3, true, 42)) == "FAIL");
-        CHECK(VerdictWord(ReportVerdict(false, 3, false, 0)) == "EXITED");
-        CHECK(VerdictWord(ReportVerdict(false, static_cast<long>(0xC0000005u), false, 0)) == "CRASH");
-        CHECK(VerdictWord(ReportVerdict(true, 0, true, 0)) == "TIMEOUT");
+        ExpectedTable t;
+        CHECK(FindExpected(t, "Hello_CUI.exe") && (*FindExpected(t, "Hello_CUI.exe"))[0].code == 42);
+        CHECK(FindExpected(t, "guest_cpuid.exe") && (*FindExpected(t, "guest_cpuid.exe"))[0].code == 0);
+        CHECK(FindExpected(t, "guest_xinput.exe") && FindExpected(t, "guest_xinput.exe")->size() == 2);
+        CHECK(!FindExpected(t, "guest_net.exe"));
+        CHECK(ParseExpectedTable("# c\nguest_wasapi.exe 42=endpoint 43=no-endpoint  # tail\nchocolate-doom.exe TIMEOUT=interactive\n"
+                                 "doom-timedemo.launch -1=timedemo\n", &t, &err));
+        const std::vector<ExpectedRow>* w = FindExpected(t, "GUEST_WASAPI.exe");
+        CHECK(w && w->size() == 2 && (*w)[1].code == 43 && (*w)[1].label == "no-endpoint");
+        CHECK(ReportVerdict(false, 43, w) == "PASS (exit code 43 = no-endpoint)");
+        CHECK(VerdictWord(ReportVerdict(false, 3, w)) == "FAIL");
+        CHECK(ReportVerdict(false, -1, FindExpected(t, "doom-timedemo.launch")) == "PASS (exit code -1 = timedemo)");
+        CHECK(VerdictWord(ReportVerdict(true, 0, FindExpected(t, "chocolate-doom.exe"))) == "TIMEOUT" &&
+              Contains(ReportVerdict(true, 0, FindExpected(t, "chocolate-doom.exe")), "expected: interactive"));
+        CHECK(!Contains(ReportVerdict(true, 0, w), "expected"));
+        CHECK(!ParseExpectedTable("a.exe\n", &t, &err) && Contains(err, "line 1"));
+        CHECK(!ParseExpectedTable("a.exe 4x\n", &t, &err));
+        CHECK(!ParseExpectedTable("a.exe 1\nA.exe 2\n", &t, &err) && Contains(err, "twice"));
+        CHECK(VerdictWord(ReportVerdict(false, 3, nullptr)) == "EXITED");
+        CHECK(VerdictWord(ReportVerdict(false, static_cast<long>(0xC0000005u), nullptr)) == "CRASH");
+        CHECK(VerdictWord(ReportVerdict(true, 0, nullptr)) == "TIMEOUT");
         ReportBlock b;
         b.program = "x.exe";
         b.exit_code = 42;
-        b.verdict = ReportVerdict(false, 42, true, 42);
+        b.verdict = ReportVerdict(false, 42, FindExpected(ExpectedTable(), "window.exe"));
         b.screen = "x.bmp";
         b.crash = true;
         b.crash_lines = {"c1"};
@@ -419,6 +430,29 @@ namespace
     }
 }  // namespace
 
+// tests/guest/expected_exit.txt (argv[2]) parses; the copy staged into the package (argv[3], when given) is identical.
+void TestExpectedTable(const std::string& src, const std::string& staged)
+{
+    bool ok = false;
+    const std::string text = ReadAll(src, &ok);
+    ExpectedTable t;
+    std::string err;
+    CHECK(ok && ParseExpectedTable(text, &t, &err));
+    if (!err.empty()) std::printf("expected_exit.txt: %s\n", err.c_str());
+    CHECK(t.size() >= 35);
+    const std::vector<ExpectedRow>* d = FindExpected(t, "doom-timedemo.launch");
+    CHECK(d && d->size() == 1 && (*d)[0].code == -1 && (*d)[0].label == "timedemo");
+    const std::vector<ExpectedRow>* c = FindExpected(t, "chocolate-doom.exe");
+    CHECK(c && c->size() == 1 && (*c)[0].timeout);
+    for (const char* n : {"window.exe", "hello_cui.exe", "guest_hello.exe", "guest_cpuid.exe", "guest_xinput.exe"}) CHECK(t.count(n) == 1);
+    if (!staged.empty())
+    {
+        bool ok2 = false;
+        const std::string copy = ReadAll(staged, &ok2);
+        if (ok2) CHECK(copy == text);   // not staged yet (a plain local ctest): the workflow checks the package itself
+    }
+}
+
 int main(int argc, char** argv)
 {
     TestDefaults();
@@ -435,6 +469,7 @@ int main(int argc, char** argv)
     TestRestartArgs();
     TestReportAndAll();
     if (argc > 1) TestPackagedPayload(argv[1]);   // ctest passes host-uwp/payload
+    if (argc > 2) TestExpectedTable(argv[2], argc > 3 ? argv[3] : "");
     std::printf("host_uwp_selftest: %d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

@@ -918,36 +918,112 @@ std::string VerdictWord(const std::string& verdict)
     return sp == std::string::npos ? verdict : verdict.substr(0, sp);
 }
 
-bool KnownExpectedExit(const std::string& name, bool pad_present, int* code)
+static std::string LowerName(const std::string& name)
 {
     std::string n;
     for (char ch : name) n += (ch >= 'A' && ch <= 'Z') ? static_cast<char>(ch - 'A' + 'a') : ch;
-    struct Row { const char* name; int code; };
-    const Row kRows[] = {{"window.exe", 42},      {"hello.exe", 42},        {"hello_cui.exe", 42}, {"smoke.exe", 42},
-                                {"smoke_cui.exe", 42},   {"guest_hello.exe", 42},  {"guest_cpuid.exe", 0}, {"guest_sleep.exe", 7},
-                                {"drv_client.exe", 2}};
-    for (const Row& r : kRows)
-        if (n == r.name)
-        {
-            *code = r.code;
-            return true;
-        }
-    if (n == "guest_xinput.exe")
-    {
-        *code = pad_present ? 42 : 1;   // without a pad the guest gives up after 30 s with exit code 1
-        return true;
-    }
-    return false;
+    return n;
 }
 
-std::string ReportVerdict(bool timed_out, long exit_code, bool expected_known, int expected)
+bool ParseExpectedTable(std::string_view text, ExpectedTable* out, std::string* error)
 {
-    if (timed_out) return "TIMEOUT (the guest did not exit within the per-program timeout)";
-    if (expected_known)
-        return exit_code == expected ? "PASS (exit code " + std::to_string(exit_code) + " as expected)"
-                                     : "FAIL (exit code " + std::to_string(exit_code) + ", expected " + std::to_string(expected) + ")";
+    out->clear();
+    std::size_t pos = 0;
+    int lineno = 0;
+    auto fail = [&](const std::string& why) {
+        if (error) *error = "line " + std::to_string(lineno) + ": " + why;
+        return false;
+    };
+    while (pos <= text.size())
+    {
+        std::size_t e = text.find('\n', pos);
+        if (e == std::string_view::npos) e = text.size();
+        std::string line(text.substr(pos, e - pos));
+        pos = e + 1;
+        ++lineno;
+        const std::size_t hash = line.find('#');
+        if (hash != std::string::npos) line.erase(hash);
+        std::vector<std::string> w;
+        std::string cur;
+        for (char ch : line)
+        {
+            if (ch == ' ' || ch == '\t' || ch == '\r')
+            {
+                if (!cur.empty()) w.push_back(cur);
+                cur.clear();
+            }
+            else cur += ch;
+        }
+        if (!cur.empty()) w.push_back(cur);
+        if (w.empty()) continue;
+        if (w.size() < 2) return fail("'" + w[0] + "' has no expected outcome");
+        const std::string key = LowerName(w[0]);
+        if (out->count(key)) return fail("'" + w[0] + "' is listed twice");
+        std::vector<ExpectedRow> rows;
+        for (std::size_t i = 1; i < w.size(); ++i)
+        {
+            ExpectedRow r;
+            const std::size_t eq = w[i].find('=');
+            const std::string head = w[i].substr(0, eq);
+            if (eq != std::string::npos)
+            {
+                r.label = w[i].substr(eq + 1);
+                if (r.label.empty()) return fail("empty label in '" + w[i] + "'");
+            }
+            if (head == "TIMEOUT") r.timeout = true;
+            else
+            {
+                char* endp = nullptr;
+                const long v = std::strtol(head.c_str(), &endp, 10);
+                if (head.empty() || *endp != '\0') return fail("'" + w[i] + "' is neither <code> nor TIMEOUT");
+                r.code = static_cast<int>(v);
+            }
+            rows.push_back(r);
+        }
+        (*out)[key] = rows;
+    }
+    return true;
+}
+
+const std::vector<ExpectedRow>* FindExpected(const ExpectedTable& table, const std::string& name)
+{
+    const std::string n = LowerName(name);
+    auto it = table.find(n);
+    if (it != table.end()) return &it->second;
+    static const ExpectedTable fallback = [] {
+        ExpectedTable t;
+        ParseExpectedTable("window.exe 42\nhello_cui.exe 42\nguest_hello.exe 42\nguest_cpuid.exe 0\n"
+                           "guest_xinput.exe 42=pad 1=no-pad\n", &t, nullptr);
+        return t;
+    }();
+    it = fallback.find(n);
+    return it == fallback.end() ? nullptr : &it->second;
+}
+
+std::string ReportVerdict(bool timed_out, long exit_code, const std::vector<ExpectedRow>* rows)
+{
+    if (timed_out)
+    {
+        if (rows)
+            for (const ExpectedRow& r : *rows)
+                if (r.timeout) return "TIMEOUT (expected" + (r.label.empty() ? std::string() : ": " + r.label) + "; the guest ran to the per-program timeout)";
+        return "TIMEOUT (the guest did not exit within the per-program timeout)";
+    }
+    const int code = static_cast<int>(exit_code);
+    if (rows)
+    {
+        std::string want;
+        for (const ExpectedRow& r : *rows)
+        {
+            if (r.timeout) continue;
+            if (r.code == code)
+                return "PASS (exit code " + std::to_string(code) + (r.label.empty() ? std::string() : " = " + r.label) + ")";
+            want += (want.empty() ? "" : " or ") + std::to_string(r.code);
+        }
+        return "FAIL (exit code " + std::to_string(code) + ", expected " + (want.empty() ? std::string("a timeout") : want) + ")";
+    }
     if ((static_cast<unsigned long>(exit_code) & 0xC0000000ul) == 0xC0000000ul) return "CRASH (exit code " + std::to_string(exit_code) + " is an NTSTATUS error)";
-    return "EXITED (exit code " + std::to_string(exit_code) + ", no expected code known)";
+    return "EXITED (exit code " + std::to_string(exit_code) + ", no entry in the expected-exit table)";
 }
 
 }  // namespace w10x_uwp
