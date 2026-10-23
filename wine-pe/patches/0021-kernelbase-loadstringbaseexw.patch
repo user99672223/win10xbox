@@ -1,0 +1,62 @@
+win10xbox: kernelbase exports LoadStringBaseExW
+
+The genuine user32 (the native-GUI folders) implements LoadStringW by calling kernelbase!LoadStringBaseExW, which Wine had as
+a stub: the loader bound a stub that raised EXCEPTION_WINE_STUB on the first string load, e.g. in the DllMain of Wine's crypt32
+(LoadLibrary failed). LoadStringW and the new export share one loader with a language argument. Applies on top of 0004.
+
+diff --git a/dlls/kernelbase/kernelbase.spec b/dlls/kernelbase/kernelbase.spec
+--- a/dlls/kernelbase/kernelbase.spec
++++ b/dlls/kernelbase/kernelbase.spec
+@@ -978,7 +978,7 @@
+ @ stdcall LoadPackagedLibrary(wstr long)
+ @ stdcall LoadResource(long long)
+ @ stdcall LoadStringA(long long ptr long)
+-@ stub LoadStringBaseExW
++@ stdcall LoadStringBaseExW(long long ptr long long)
+ @ stub LoadStringByReference
+ @ stdcall LoadStringW(long long ptr long)
+ @ stdcall LocalAlloc(long long)
+diff --git a/dlls/kernelbase/string.c b/dlls/kernelbase/string.c
+--- a/dlls/kernelbase/string.c
++++ b/dlls/kernelbase/string.c
+@@ -1217,19 +1217,19 @@
+     }
+ }
+ 
+-INT WINAPI DECLSPEC_HOTPATCH LoadStringW(HINSTANCE instance, UINT resource_id, LPWSTR buffer, INT buflen)
++static INT load_string(HINSTANCE instance, UINT resource_id, LPWSTR buffer, INT buflen, WORD lang)
+ {
+     int string_num, i;
+     HGLOBAL hmem;
+     HRSRC hrsrc;
+     WCHAR *p;
+ 
+-    TRACE("instance = %p, id = %04x, buffer = %p, length = %d\n", instance, resource_id, buffer, buflen);
++    TRACE("instance = %p, id = %04x, buffer = %p, length = %d, lang = %04x\n", instance, resource_id, buffer, buflen, lang);
+ 
+     if (!buffer)
+         return 0;
+ 
+-    if (!(hrsrc = FindResourceW(instance, MAKEINTRESOURCEW((LOWORD(resource_id) >> 4) + 1), (LPWSTR)RT_STRING)) ||
++    if (!(hrsrc = FindResourceExW(instance, (LPWSTR)RT_STRING, MAKEINTRESOURCEW((LOWORD(resource_id) >> 4) + 1), lang)) ||
+         !(hmem = LoadResource(instance, hrsrc)))
+     {
+         TRACE( "Failed to load string.\n" );
+@@ -1260,6 +1260,17 @@
+     return i;
+ }
+ 
++INT WINAPI DECLSPEC_HOTPATCH LoadStringW(HINSTANCE instance, UINT resource_id, LPWSTR buffer, INT buflen)
++{
++    return load_string(instance, resource_id, buffer, buflen, 0);
++}
++
++/* The genuine user32's LoadStringW calls this export. */
++INT WINAPI DECLSPEC_HOTPATCH LoadStringBaseExW(HINSTANCE instance, UINT resource_id, LPWSTR buffer, INT buflen, WORD lang)
++{
++    return load_string(instance, resource_id, buffer, buflen, lang);
++}
++
+ INT WINAPI DECLSPEC_HOTPATCH LoadStringA(HINSTANCE instance, UINT resource_id, LPSTR buffer, INT buflen)
+ {
+     DWORD retval = 0;

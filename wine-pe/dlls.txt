@@ -114,6 +114,15 @@ cryptnet    # crypt32 delay import
 cryptui     # wintrust delay import
 imagehlp    # wintrust delay import
 
+# --- game closure (docs/slices/gameclosure.md): HTTP client, the VC++ runtime, wininet's dhcpcsvc import ---
+winhttp
+jsproxy         # winhttp delay import (WPAD auto-proxy)
+msvcp140
+msvcp140_1
+vcruntime140
+vcruntime140_1
+dhcpcsvc
+
 # --- console programs (wine-pe/programs/*.sh, ctest integration.wineprog_*) --
 programs/xcopy
 programs/findstr
