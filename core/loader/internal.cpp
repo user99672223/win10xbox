@@ -1,4 +1,5 @@
 // Private helpers for the loader module. See internal.h.
+#include <cstring>
 #include "internal.h"
 
 #include <algorithm>
@@ -14,9 +15,31 @@ void* HostNtdllProc(const char* name) {
     // which Wine's loader_init replaces with the guest loader list, so a lookup
     // made afterwards would hand back the GUEST ntdll's exports. Resolving it
     // once also drops a GetModuleHandleW + GetProcAddress from every call.
-    static HMODULE const ntdll = GetModuleHandleW(L"ntdll.dll");
-    if (!ntdll) return nullptr;
-    return reinterpret_cast<void*>(GetProcAddress(ntdll, name));
+    //
+    // The same applies to GetProcAddress itself: after the take-over it finds nothing, even in the handle
+    // latched here (measured: RtlAddFunctionTable resolved for the first two images and returned null for every
+    // image the guest mapped, so kernel32/kernelbase/ucrtbase had no unwind info in the host's tables and a
+    // longjmp through them unwound garbage). The exports this loader needs are therefore resolved here, together.
+    struct Exports {
+        HMODULE ntdll;
+        void* add_function_table;
+        void* delete_function_table;
+        void* add_veh;
+    };
+    static const Exports ex = [] {
+        Exports e{};
+        e.ntdll = GetModuleHandleW(L"ntdll.dll");
+        if (!e.ntdll) return e;
+        e.add_function_table = reinterpret_cast<void*>(GetProcAddress(e.ntdll, "RtlAddFunctionTable"));
+        e.delete_function_table = reinterpret_cast<void*>(GetProcAddress(e.ntdll, "RtlDeleteFunctionTable"));
+        e.add_veh = reinterpret_cast<void*>(GetProcAddress(e.ntdll, "RtlAddVectoredExceptionHandler"));
+        return e;
+    }();
+    if (!ex.ntdll) return nullptr;
+    if (std::strcmp(name, "RtlAddFunctionTable") == 0) return ex.add_function_table;
+    if (std::strcmp(name, "RtlDeleteFunctionTable") == 0) return ex.delete_function_table;
+    if (std::strcmp(name, "RtlAddVectoredExceptionHandler") == 0) return ex.add_veh;
+    return reinterpret_cast<void*>(GetProcAddress(ex.ntdll, name));
 }
 
 bool GetNtHeaders(const void* base, const IMAGE_NT_HEADERS64** nt_out) {

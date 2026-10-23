@@ -1063,6 +1063,43 @@ TEST(loader_scan_guest_dll_hide_hypervisor_and_fix_tsc) {
     UnmapImage(img);
 }
 
+// A jump table inside the code section, which is where MSVC puts it without optimisation: the bytes of its entries
+// decode as instructions, one of which is `rdtsc` here (the entry 0x310F is 0F 31 00 00). Before the scanner learned
+// to leave such tables out, the patch wrote an INT3 over an entry and the switch jumped into the middle of another
+// instruction (a Debug build of tests/guest/sqlite/lockfile.c: printf of a %lu died with an access violation).
+TEST(loader_scan_leaves_jump_tables_in_code_alone) {
+    SynthPE pe;
+    pe.entry = 0x1000;
+    Bytes code(0x100, 0xCC);
+    const u8 head[] = {
+        0x48, 0x8D, 0x0D, 0xF9, 0xEF, 0xFF, 0xFF,         // lea rcx, [rip-0x1007]      ; rcx = image base
+        0x8B, 0x84, 0x81, 0x20, 0x10, 0x00, 0x00,         // mov eax, [rcx+rax*4+0x1020]
+        0x48, 0x01, 0xC8,                                 // add rax, rcx
+        0xFF, 0xE0,                                       // jmp rax
+        0xC3,                                             // ret
+    };
+    std::memcpy(code.data(), head, sizeof head);
+    const std::uint32_t entries[4] = {0x1100, 0x310F, 0x1110, 0x1120};
+    std::memcpy(code.data() + 0x20, entries, sizeof entries);
+    const u8 real[] = {0x0F, 0x31, 0xC3};                 // a genuine rdtsc, after the table
+    std::memcpy(code.data() + 0x80, real, sizeof real);
+    pe.secs.push_back({".text", 0x1000, 0x4000, code, kRX});
+    Bytes f = pe.Build();
+    MappedImage img;
+    CHECK(MapImageFromMemory(f.data(), f.size(), kDefaultMapFlags, nullptr, &img) >= 0);
+    if (!img.base) return;
+    TestCtx ctx;
+    ScanOptions opt;
+    opt.handler = TestHandler;
+    opt.handler_ctx = &ctx;
+    ScanResult res;
+    CHECK_EQ(ScanAndPatch(img, opt, &res), kStatusSuccess);
+    CHECK_EQ(res.sites.size(), std::size_t(1));
+    if (res.sites.size() == 1) CHECK(res.sites[0].address == static_cast<u8*>(img.base) + 0x1080);
+    CHECK(std::memcmp(static_cast<u8*>(img.base) + 0x1020, entries, sizeof entries) == 0);
+    UnmapImage(img);
+}
+
 // A big real image, when the Wine PE build is present (not in CI): stub
 // rewriting must find the Wine-form thunks and the scanner must neither crash
 // nor touch them.
