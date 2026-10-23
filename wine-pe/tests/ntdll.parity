@@ -8,10 +8,11 @@
 # lines of its native run recorded in its slice doc.
 file 1300
 # Diagnostic floors (docs/slices/wt-ntdll-rest.md), replaced by measured floors once each unit is measured.
-exception 1
+# (exception is not here: the unit ends with an unhandled STATUS_DATATYPE_MISALIGNMENT natively on the runner too.)
 info 1
 pipe 1
 sync 1
-threadpool 1
+threadpool 2300
 virtual 1
 wow64 1
+reg 500

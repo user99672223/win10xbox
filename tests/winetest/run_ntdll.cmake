@@ -149,7 +149,7 @@ set(ENV{WIN10XBOX_DEBUG} "-all")   # relay tracing would bury the test output
 
 # Units whose crash is being diagnosed (docs/slices/wt-ntdll-rest.md): a unit of this list that does not complete is
 # run once more with the relay trace on, and the tail of that trace and the host's crash record go to
-# <RESULTS_DIR>/<unit>.trace.log and <unit>.crash.txt (the windows-<config>-logs artifact).
+# <RESULTS_DIR>/<unit>.relay.log and <unit>.crash.txt (the windows-<config>-logs artifact).
 set(_trace_units exception info pipe sync threadpool virtual wow64)
 get_filename_component(_host_dir "${HOST}" DIRECTORY)
 
@@ -237,7 +237,7 @@ foreach(_u IN LISTS _units)
       w10x_summarize("layer" "${_u}" "${_log}" "${_rc}")
       message("---- stderr of ntdll:${_u} ----\n${_err}\n----")
       set(ENV{WIN10XBOX_DEBUG} "-all,+relay,+dispatch,+process")
-      set(_dbg "${RESULTS_DIR}/${_u}.trace.log")
+      set(_dbg "${RESULTS_DIR}/${_u}.relay.log")
       execute_process(COMMAND ${_cmd} RESULT_VARIABLE _rc3 OUTPUT_FILE "${_dbg}.out" ERROR_FILE "${_dbg}"
         TIMEOUT ${_cmake_to} ${_stdin})
       set(ENV{WIN10XBOX_DEBUG} "-all")

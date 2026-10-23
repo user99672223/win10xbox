@@ -36,6 +36,7 @@ constexpr ULONG kProcessImageFileName = 27;
 constexpr ULONG kProcessImageInformation = 37;
 constexpr ULONG kProcessImageFileNameWin32 = 43;
 // THREADINFOCLASS
+constexpr ULONG kThreadQuerySetWin32StartAddress = 9;
 constexpr ULONG kThreadAmILastThread = 12;
 // SYSTEM_INFORMATION_CLASS
 #if WIN10XBOX_HAVE_CLOCK
@@ -264,6 +265,18 @@ static NTSTATUS NTAPI Xl_NtQueryInformationThread(HANDLE thread, ULONG klass, PV
             if (NTSTATUS ws = probe::Store<ULONG>(static_cast<ULONG*>(buffer), GuestThreads().size() <= 1 ? 1 : 0))
                 return ws;
             return probe::StoreIfPresent<ULONG>(ret_len, sizeof(ULONG));
+        }
+    }
+    if (klass == kThreadQuerySetWin32StartAddress && IsCurrentThreadHandle(thread)) {
+        // The host thread started in GuestThreadProc; a guest sees the address it asked for.
+        ThreadState* self = CurrentThreadState();
+        if (self && (self->flags & kThreadGuest) && self->win32_start) {
+            if (length != sizeof(PVOID)) return st::InfoLengthMismatch;
+            if (NTSTATUS ps = probe::ProbeWrite(buffer, length, sizeof(PVOID))) return ps;
+            if (ret_len)
+                if (NTSTATUS ps = probe::ProbeWrite(ret_len, sizeof(ULONG), sizeof(ULONG))) return ps;
+            if (NTSTATUS ws = probe::Store<PVOID>(static_cast<PVOID*>(buffer), self->win32_start)) return ws;
+            return probe::StoreIfPresent<ULONG>(ret_len, sizeof(PVOID));
         }
     }
     return Host().NtQueryInformationThread(thread, klass, buffer, length, ret_len);

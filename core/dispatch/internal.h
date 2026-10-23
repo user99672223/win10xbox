@@ -143,6 +143,9 @@ struct ThreadState {
     // through SetSyscallLastError and the dispatcher writes that value instead.
     std::uint32_t syscall_error;
     std::uint32_t syscall_error_set;
+    // The start address the guest asked for (the EXE entry for the main thread, NtCreateThreadEx's StartRoutine
+    // otherwise): what ThreadQuerySetWin32StartAddress reports. The host thread itself starts in GuestThreadProc.
+    void*         win32_start;
 };
 static_assert(offsetof(ThreadState, host_tls) == 0x00);
 static_assert(offsetof(ThreadState, host_fls) == 0x08);
