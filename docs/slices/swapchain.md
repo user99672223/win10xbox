@@ -1,4 +1,4 @@
-status: wip (implemented, never run: the D3D path needs a Windows host; local build clean, compile only)
+status: blocked (two CI pushes used; first Present never reached). First error, run 39990xxx replaced by 39993683707 (head 53299a0): guest_d3d11_swap dies with an access violation at 0x1700500a4 right after "StartHostWindowThread" and "MapGuestNtdll guest ntdll has no __wine_unix_call_dispatcher"; before that fix (run 39991075116, head 204c945) the exception was EXCEPTION_WINE_STUB user32.dll.GetProcessUIContextInformation (native dxgi imports it, Wine's user32 lacks it).
 design: emulated GUI + native dxgi. machine.json "d3dkmt": "host" (or WIN10XBOX_D3DKMT=host) forwards every NtGdiDdDDI* of Wine's win32u thunks to the host's win32u by name (dispatcher.cpp UseHostD3dkmt, Policy::Translate, nargs 20); the host user32/gdi32/win32u are loaded and win32k connected before the PEB take-over (win32k_native.cpp ConfigureHostD3dkmt, same callback trampolines as route B).
 host window: core/dispatch/swapchain.cpp. One host popup (off-screen, WS_EX_NOACTIVATE|TOOLWINDOW, shown) per emulated HWND that reaches a window-carrying D3DKMT call, made on a host thread started BEFORE the take-over (a host thread created later initialises against the guest loader lists).
 translated: NtGdiDdDDIPresent (D3DKMT_PRESENT.hWindow at +8 -> host window, restored after), NtGdiDdDDIOpenAdapterFromHdc (hDc at +0: emulated window DC -> host window DC, via user::WindowOfDc), NtGdiDdDDICheckOcclusion (visible emulated window = not occluded, answered by core/user; the host window is off-screen). All other NtGdiDdDDI* pass through unchanged (CreateDCFromMemory, SetVidPnSourceOwner, ...), first status per name traced "native d3d: ... returned".
@@ -17,7 +17,10 @@ NotifyClientFrame), core/vfs (machine.json "d3dkmt"), tests/guest/d3d11_swap.c, 
 
 ## Measurements
 
-(filled in by the CI runs)
+- Run 39988392847 (f86849b): d3dkmt host mode starts ("191 NtGdiDdDDI* forwarded", host window thread runs); the native dxgi load dies on the import user32!GetProcessUIContextInformation (stub). No D3DKMT call, no Present reached; hWindow offset, refused calls and PrintWindow remain unmeasured.
+- Fix 1 (204c945, 53299a0): native_imports.cpp ExtendExports now also extends Wine's user32/gdi32 (and kernelbase) from the host modules when d3dkmt host is active. First attempt warned "user32/gdi32 exports not extended (no export directory)" (host module lookup by GetModuleHandleW after the PEB take-over, or guest image); second attempt passes the handles from ConfigureHostD3dkmt.
+- Run 39993683707 (53299a0): windows Debug: 0xc0000374 heap corruption in guest_d3d11 (the -d3d gate, trace "first D3DKMT call" missing); RelWithDebInfo: guest_d3d11_swap access violation at 0x1700500a4 (rax=0x15, rdx=0x170064630), imgui 0xc0000135. Both jobs log "MapGuestNtdll guest ntdll has no __wine_unix_call_dispatcher" in this mode. linux-cross failed on winetest_kernel32/msvcrt/shell32 + conformance kernel32.path/time (the Wine step ran 10 minutes; not related to the d3dkmt path, needs a rerun to tell).
+- Coordinator note: the imgui on-screen check (WIN10XBOX_EXPECT_SCREENSHOT_VARIED=110,140,1010,760,40,3,ff738c99) should be re-enabled here after merging origin/claude/youthful-cerf-l7xxsb-d3d, and the capture must read the host back buffer (GetBuffer + staging copy after Present) or a visible host window rather than PrintWindow of an off-screen window. Not done: push budget exhausted.
 
 ## Runs
 
