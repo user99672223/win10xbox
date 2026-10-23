@@ -32,7 +32,7 @@ add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
 if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
                    guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog guest_comctl
-                   guest_seh guest_window_scroll guest_clipboard msctf_stub)
+                   guest_seh guest_window_scroll guest_clipboard guest_net msctf_stub)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -272,6 +272,19 @@ set_tests_properties(integration.guest_window_native PROPERTIES
   ENVIRONMENT "WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_native.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=110,110,ff0050dc|130,130,ffff0000")
 endif()
 
+# ---- Networking: Wine's ws2_32 over core/afd (host Winsock) -----------------------------------------------------
+# tests/guest/net.c runs an echo server thread and a client over TCP loopback. Builtin-only machine folder: a native
+# ws2_32 would talk to the real AFD and bypass the code under test.
+set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+set(_guest_no_user32 ON)
+win10xbox_guest_test(guest_net "C:\\guest\\guest_net.exe" 42
+  "net: WSAStartup ok" "net: gethostname ok" "net: getaddrinfo localhost -> 127\\.0\\.0\\.1" "net: listening"
+  "net: connected" "net: FIONBIO ok" "net: sent 35 bytes" "net: received 35 bytes: hello from the guest over loopback"
+  "net: done")
+set_tests_properties(integration.guest_net PROPERTIES FAIL_REGULAR_EXPRESSION "net: FAILED")
+unset(_guest_no_user32)
+unset(_guest_machine)
+
 # ---- Real programs: the first guests that are not ours ----------------------------------------------------------
 # Lua 5.4.7, built from the upstream tarball with MSVC by tools/ci/build_lua.ps1 (a named step of ci.yml's windows
 # job, which leaves it at <machine>/guest/lua.exe before ctest runs). Registered only where that step exists: MSVC
@@ -307,7 +320,8 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   unset(_guest_forbid_trace)
 
   # Sysinternals Coreinfo64.exe (tools/ci/fetch_sysinternals.ps1, pinned by SHA-256), a system-information program:
-  # it reads the CPU topology through NtQuerySystemInformation. PsInfo64 is not gated here (docs/slices/sysinfo.md).
+  # it reads the CPU topology through NtQuerySystemInformation. PsInfo64 (also pinned) reports the system's name, uptime
+  # and kernel version; it needs Wine's ws2_32 (core/afd, docs/slices/net.md).
   # The anchors are lines every runner prints whatever its CPU vendor is (docs/slices/sysinfo.md).
   # It imports comdlg32/shell32, whose native copies cannot load on the shared
   # machine folder (docs/slices/sysinfo.md), so they run on the builtin-only one, like the GUI guests below.
@@ -316,6 +330,10 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   win10xbox_guest_test(coreinfo "C:\\guest\\Coreinfo64.exe" 0
     "Logical to Physical Processor Map:"
     "Logical Processor to Socket Map:")
+  win10xbox_guest_test(psinfo "C:\\guest\\PsInfo64.exe" 0
+    "System information for "
+    "Uptime:"
+    "Kernel version:")
   unset(_guest_args)
   unset(_guest_machine)
 endif()

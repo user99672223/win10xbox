@@ -179,7 +179,11 @@ struct TrapSite {
 struct ArenaRec { u64 base; std::size_t size; u64 owner_lo, owner_hi; };
 
 SRWLOCK                g_lock = SRWLOCK_INIT;
-std::vector<TrapSite>& Traps() { static std::vector<TrapSite> v; return v; }
+// Namespace scope, not a function-local static: TrapVeh runs on the guest's TEB view, where the MSVC thread-safe-init
+// guard of a function-local static reads the host image's TLS block, which is not installed (docs/DISPATCHER.md,
+// "The guest-view window"). The first guest to execute a trapped site faulted there on the Windows host.
+std::vector<TrapSite> g_traps;
+std::vector<TrapSite>& Traps() { return g_traps; }
 std::vector<ArenaRec>& Arenas() { static std::vector<ArenaRec> v; return v; }
 PVOID                  g_veh = nullptr;
 

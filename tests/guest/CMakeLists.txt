@@ -124,6 +124,11 @@ add_executable(guest_comctl comctl.c)
 target_link_libraries(guest_comctl PRIVATE user32 gdi32 comctl32)
 win10xbox_add_guest(guest_comctl)
 
+# The networking guest (tests/guest/net.c): Wine's ws2_32 -> \\Device\\Afd -> core/afd -> host Winsock, over loopback.
+add_executable(guest_net net.c)
+target_link_libraries(guest_net PRIVATE ws2_32)
+win10xbox_add_guest(guest_net)
+
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
 add_test(NAME guest.seh COMMAND guest_seh)
 set_tests_properties(guest.seh PROPERTIES PASS_REGULAR_EXPRESSION "seh: done failures=0"
