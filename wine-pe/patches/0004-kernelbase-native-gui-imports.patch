@@ -1,0 +1,83 @@
+win10xbox: kernelbase exports what the genuine user32/imm32 import through the host API-set map
+
+The guest shares the host PEB, so ApiSetMap is Windows' own schema: api-ms-win-core-heap-obsolete
+resolves to kernelbase (Wine: kernel32), and the native user32/imm32 import CheckTokenMembershipEx,
+SetProcessValidCallTargets and the Global*/Local* family from there. Wine had the first two as stubs and
+the rest only in kernel32, so the loader bound a stub that raised EXCEPTION_WINE_STUB (the Global*/Local*
+ones now forward to kernel32). Applies on top of 0003.
+
+diff --git a/dlls/kernelbase/kernelbase.spec b/dlls/kernelbase/kernelbase.spec
+index cc298e3..f227fa2 100644
+--- a/dlls/kernelbase/kernelbase.spec
++++ b/dlls/kernelbase/kernelbase.spec
+@@ -131,7 +131,7 @@
+ @ stdcall CheckRemoteDebuggerPresent(long ptr)
+ # @ stub CheckTokenCapability
+ @ stdcall CheckTokenMembership(long ptr ptr)
+-# @ stub CheckTokenMembershipEx
++@ stdcall CheckTokenMembershipEx(long ptr long ptr)
+ @ stdcall ChrCmpIA(long long)
+ @ stdcall ChrCmpIW(long long)
+ @ stdcall ClearCommBreak(long)
+@@ -807,7 +807,13 @@
+ @ stdcall GetWsChangesEx(long ptr ptr)
+ @ stdcall -arch=i386,x86_64 GetXStateFeaturesMask(ptr ptr)
+ @ stdcall GlobalAlloc(long long)
++@ stdcall GlobalFlags(long) kernel32.GlobalFlags
+ @ stdcall GlobalFree(long)
++@ stdcall GlobalHandle(ptr) kernel32.GlobalHandle
++@ stdcall GlobalLock(long) kernel32.GlobalLock
++@ stdcall GlobalReAlloc(long long long) kernel32.GlobalReAlloc
++@ stdcall GlobalSize(long) kernel32.GlobalSize
++@ stdcall GlobalUnlock(long) kernel32.GlobalUnlock
+ @ stdcall GlobalMemoryStatusEx(ptr)
+ # @ stub GuardCheckLongJumpTarget
+ # @ stub HasPolicyForegroundProcessingCompletedInternal
+@@ -977,7 +983,9 @@
+ @ stdcall LoadStringW(long long ptr long)
+ @ stdcall LocalAlloc(long long)
+ @ stdcall LocalFileTimeToFileTime(ptr ptr)
++@ stdcall LocalFlags(long) kernel32.LocalFlags
+ @ stdcall LocalFree(long)
++@ stdcall LocalSize(long) kernel32.LocalSize
+ @ stdcall LocalLock(long)
+ @ stdcall LocalReAlloc(long long long)
+ @ stdcall LocalUnlock(long)
+@@ -1511,7 +1519,7 @@
+ @ stdcall SetProcessPreferredUILanguages(long ptr ptr)
+ @ stdcall SetProcessPriorityBoost(long long)
+ @ stdcall SetProcessShutdownParameters(long long)
+-# @ stub SetProcessValidCallTargets
++@ stdcall SetProcessValidCallTargets(long ptr long long ptr)
+ @ stdcall SetProcessWorkingSetSizeEx(long long long long)
+ # @ stub SetProtectedPolicy
+ # @ stub SetRoamingLastObservedChangeTime
+diff --git a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
+index e51a361..ed63ffc 100644
+--- a/dlls/kernelbase/process.c
++++ b/dlls/kernelbase/process.c
+@@ -1163,6 +1163,24 @@ BOOL WINAPI DECLSPEC_HOTPATCH ProcessIdToSessionId( DWORD pid, DWORD *id )
+ }
+ 
+ 
++/***********************************************************************
++ *           CheckTokenMembershipEx   (kernelbase.@)
++ */
++BOOL WINAPI CheckTokenMembershipEx( HANDLE token, PSID sid, DWORD flags, PBOOL is_member )
++{
++    return CheckTokenMembership( token, sid, is_member );
++}
++
++
++/***********************************************************************
++ *           SetProcessValidCallTargets   (kernelbase.@)
++ */
++BOOL WINAPI SetProcessValidCallTargets( HANDLE process, PVOID base, SIZE_T size, ULONG count, PVOID info )
++{
++    return TRUE;
++}
++
++
+ /***********************************************************************
+  *           WTSGetServiceSessionId   (kernelbase.@)
+  */

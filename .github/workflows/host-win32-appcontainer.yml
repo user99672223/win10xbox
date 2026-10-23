@@ -44,6 +44,11 @@ name: host-win32-appcontainer
 #   gui-plain              control: ac_gui_probe through ac_launch --plain (no container, detached like a UWP app)
 #   gui-ac                 ac_gui_probe in the AppContainer, same capabilities and grants as probe-ac
 #   gui-lpac               ac_gui_probe in the LPAC
+#   window-plain           control: win10xbox.exe + window.exe (tests/guest/window.c) in gui native mode ("route B": the
+#                          guest's NATIVE user32/gdi32/win32u, every win32u syscall passed through to the host's win32k)
+#                          through ac_launch --plain
+#   window-ac              the same inside the AppContainer: does window.c paint through the real win32k inside our layer
+#                          inside the container? NON-gating, reported in the GUI MEASUREMENT block ("WINDOW (route B)")
 # The three measurements (also in the job summary and ac-out/ac-measurements.txt):
 #   1. does GetFinalPathNameByHandleW(VOLUME_NAME_DOS) fail inside the container? Evidence: the probe, and the layer's own
 #      "host path of image file ... unavailable" warning (core/dispatch/nt_section.cpp) in the smoke-ac log WITHOUT the hook.
@@ -130,6 +135,11 @@ jobs:
             Write-Host "::error::host-win32-appcontainer cannot run, missing: $($missing -join '; ')"
             exit 1
           }
+          # Route B (window-* runs): the native GUI DLLs the guest's window.exe loads instead of Wine's. smoke_cui.exe imports
+          # only kernel32, so they change nothing for the smoke runs.
+          $gui = Join-Path $env:RUNNER_TEMP 'native-gui-dlls.txt'
+          Set-Content -Path $gui -Value @('user32.dll', 'win32u.dll', 'gdi32.dll', 'gdi32full.dll', 'msvcp_win.dll', 'imm32.dll')
+          ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine -CI -ListFile $gui
           $nb = @(Get-ChildItem "$machine/Windows/builtin" -Filter *.dll).Count
           $nn = @(Get-ChildItem "$machine/Windows/System32" -Filter *.nls).Count
           Write-Host "staged $nb Wine builtins and $nn NLS files in $machine"
@@ -236,6 +246,16 @@ jobs:
           gui gui-plain plain
           gui gui-ac ac
           gui gui-lpac lpac
+          # Route B through the layer (non-gating): window.c with gui native, plain and in the container.
+          window() {
+            local label="$1" mode="$2"
+            XARGS=(--env WIN10XBOX_GUI=native --env WIN10XBOX_DEBUG=+dispatch,+process,+user,+modules
+                   --env "WIN10XBOX_SCREENSHOT=$OUTW\\$label.bmp" --env "WIN10XBOX_CRASH_DIR=$OUTW\\crash-$label")
+            run "$label" "$mode" 180 "$HOST" --machine "$MACHINE" 'C:\guest\guest_window.exe'
+            if [ -f "$OUT/$label.log" ]; then grep -a -E '^window:|gui native|user-mode callback #1:|KernelCallbackTable|native compose|screenshot|guest exit' "$OUT/$label.log" | tr -d '\r' | cut -c1-300; fi
+          }
+          window window-plain plain
+          window window-ac ac
           echo
           echo "files in $OUT:"; ls -l "$OUT" | cut -c1-200
           exit 0
@@ -463,6 +483,31 @@ jobs:
             md "</details>"
           done
           if [ "$gui_fail" -ne 0 ]; then echo "::error::host-win32-appcontainer: GUI run(s) did not execute, missing:$gui_missing"; fi
+
+          # ---- WINDOW (route B): window.c through the layer with gui native. NON-gating; a missing log fails ------
+          # BMP pixel as AARRGGBB (32-bit top-down BMP, 54-byte header): bmppx <file> <x> <y>
+          bmppx() {
+            if [ ! -s "$1" ]; then echo "no-bmp"; return; fi
+            local w; w=$(od -An -tu4 -j18 -N4 "$1" | tr -d ' ')
+            od -An -tx1 -j $((54 + ($3 * w + $2) * 4)) -N4 "$1" | awk '{print $4 $3 $2 $1}'
+          }
+          say ""
+          say "WINDOW (route B): tests/guest/window.c through the layer, gui native (the guest's native user32/gdi32/win32u,"
+          say "  win32u syscalls passed through to the host's win32k), screenshot composed from the real window"
+          md ""
+          md "### WINDOW (route B): window.c through the layer, gui native"
+          md ""
+          md "| run | context | exit code | window: lines | callbacks to the guest | screen (110,110) / (130,130) |"
+          md "|---|---|---|---|---|---|"
+          for r in window-plain window-ac; do
+            if [ ! -f "$OUT/$r.log" ]; then gui_fail=1; gui_missing="$gui_missing $r.log"; fi
+            wl=$(if [ -f "$OUT/$r.log" ]; then grep -a '^window:' "$OUT/$r.log" | tr -d '\r' | tr '\n' ' '; fi)
+            ncb=$(cnt "$r" 'user-mode callback #')
+            px="$(bmppx "$OUT/$r.bmp" 110 110) / $(bmppx "$OUT/$r.bmp" 130 130)"
+            say "  $r: context=$(prov $r) exit code=$(rcx $r) callbacks=$ncb screen=$px (want ff0050dc / ffff0000)"
+            say "      $wl"
+            md "| $r | $(prov $r) | $(rcx $r) | $(printf '%s' "$wl" | clip 300) | $ncb | $px |"
+          done
 
           # ---- everything the probes saw, for the record ----------------------------------------------------------
           for ctx in plain ac lpac; do
