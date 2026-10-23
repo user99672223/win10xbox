@@ -1,6 +1,7 @@
+status: ready (head 39e4e59; ci https://github.com/user99672223/win10xbox/actions/runs/40000187575 host-uwp /runs/40000194945 host-win32-smoke /runs/40000243207 host-win32-appcontainer /runs/40000247847)
 # Slice: rdrand (D18 RDRAND emulation)
 
-HANDOFF (status: wip)
+HANDOFF (status: ready)
 1. Symptom: on the Xbox Series S guest_identity.exe died 0xc000001d at +0x89d0 (`rdrand eax`), nothing printed.
 2. Root cause (from code; the console was not reachable): the #UD handler existed but nothing ever ran it on a host with RDRAND, and its
    first BCryptGenRandom call happened inside the handler, after the PEB take-over, where the RNG provider's lazy load goes through the
