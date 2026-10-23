@@ -7,7 +7,6 @@
 
 #include <algorithm>
 
-WIN10XBOX_DECLARE_CHANNEL(gdi);
 
 namespace win10xbox::user {
 namespace detail {
