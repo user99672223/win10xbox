@@ -15,4 +15,12 @@ An earlier attempt (c924f64, MSVC build of the tarball) failed at CMake configur
 lost a space in a merge (`sim"C:\\guest..."`), so `set_tests_properties` named a test that did not exist. It is replaced
 by the prebuilt zip; nothing of it was ever run.
 
+Run 39883508387 (83e1888): linux-cross green; both Windows jobs failed only on the four tcc tests (everything else passed),
+all with `tcc: error: memory full (malloc)` on the first allocation. tcc.exe and libtcc.dll import `malloc` from Wine's
+msvcrt.dll, whose DllMain does `heap = HeapCreate(0, 0, 0)` (the only Wine C runtime with a private heap; ucrtbase uses
+the process heap). RtlCreateHeap is forwarded to the host ntdll, and Wine's RtlCreateHeap adds HEAP_GROWABLE when no
+maximum size is given where the host's does not (kernelbase does it on Windows), so the heap msvcrt got could not serve
+malloc. `w10x_RtlCreateHeap` (core/dispatch/unix_calls.cpp, WINE_OVERRIDE in rtl_forward.inc) adds the flag and traces
+the call (`RtlCreateHeap flags=... -> ...`).
+
 Results: to be filled in from the CI run.

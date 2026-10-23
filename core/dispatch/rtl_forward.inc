@@ -21,7 +21,7 @@
 // boundary in both directions (the host frees what RtlCreateProcessParameters
 // or the guest allocated and vice versa), and heap handles from
 // GetProcessHeap()/RtlGetProcessHeaps() must mean the same heap to both.
-RTL_FORWARD(RtlCreateHeap)
+WINE_OVERRIDE(RtlCreateHeap, w10x_RtlCreateHeap)
 RTL_FORWARD(RtlDestroyHeap)
 RTL_FORWARD(RtlAllocateHeap)
 RTL_FORWARD(RtlFreeHeap)

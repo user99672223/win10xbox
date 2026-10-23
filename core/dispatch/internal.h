@@ -465,6 +465,7 @@ extern "C" unsigned char __cdecl w10x_wine_dbg_get_channel_flags(WineDebugChanne
 extern "C" int __cdecl w10x_wine_dbg_header(int cls, WineDebugChannel* channel, const char* function);
 extern "C" int __cdecl w10x_wine_dbg_output(const char* str);
 extern "C" const char* __cdecl w10x_wine_dbg_strdup(const char* str);
+extern "C" PVOID NTAPI w10x_RtlCreateHeap(ULONG flags, PVOID base, SIZE_T reserve, SIZE_T commit, PVOID lock, PVOID params);
 
 // ---- Function-level forwarding (rtl_forward.cpp) -----------------------------
 struct ForwardResult { std::size_t forwarded = 0, skipped = 0; };
