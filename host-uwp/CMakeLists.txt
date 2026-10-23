@@ -217,7 +217,7 @@ set_target_properties(window_guest PROPERTIES OUTPUT_NAME "window")
 
 # Every other guest of the repo, so the package carries them all to the console (HANDOFF.md
 # "Standing testing rule"). Console programs; output names as in the main tree.
-foreach(_g hello cpuid sleep)
+foreach(_g hello cpuid sleep spawn)
   add_executable(guest_${_g} "${WIN10XBOX_ROOT}/tests/guest/${_g}.c")
 endforeach()
 add_library(guest_dll SHARED "${WIN10XBOX_ROOT}/tests/guest/dll.c")
