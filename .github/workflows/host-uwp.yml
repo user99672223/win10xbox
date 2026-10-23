@@ -223,6 +223,7 @@ jobs:
           $groups | Sort-Object MB -Descending | Format-Table -AutoSize | Out-String | Write-Host
           $want = @(Get-Content build-uwp/AppX/payload/guests.txt | Where-Object { $_ })
           foreach ($c in Get-ChildItem tests/guest -Filter *.c) {
+            if ($c.BaseName -eq 'msctf_stub') { continue }   # a msctf.dll stand-in for the native-GUI machine folder, not a guest
             $n = if ($c.BaseName -eq 'dll') { 'guest_dll.dll' } elseif ($c.BaseName -eq 'window') { 'window.exe' } else { "guest_$($c.BaseName).exe" }
             if ($want -notcontains $n) { $want += $n }
           }

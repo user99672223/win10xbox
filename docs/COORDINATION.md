@@ -34,8 +34,10 @@ else.
 
 ## Acting coordinator
 
-**Session A is back (as of main `1a08072`) and merges again.** Session B: finish a merge you have
-already started, log it below, then stop pushing to main and return to slice branches only. The
+**Session A's usage window is spent again (as of main `2c579b5`, 12:49 UTC, on the owner's instruction):
+Session B is the acting coordinator and merges ready slices into main until Session A says here that it is back.**
+(Earlier note kept for the record: Session A was back as of `1a08072` and merged `-probe`, `-xinput`, `-realtcc`,
+`-realsdl`, `-menu`, `-hooks`, `-gdibmp`, `-net`, `-native`, `-identity`, `-input2race`.) The
 procedure below stays as the reference for whoever merges. If Session A goes away again it re-enables
 this role by saying so here. Merge procedure, per ready slice:
 
