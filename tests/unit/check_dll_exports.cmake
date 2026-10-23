@@ -23,7 +23,7 @@ set(_actual "")
 foreach(l ${_lines})
   if(_tool STREQUAL "objdump" AND l MATCHES "^ +([0-9]+) +0x[0-9a-f]+ *([A-Za-z0-9_@?]*) *$")
     list(APPEND _actual "${CMAKE_MATCH_1} ${CMAKE_MATCH_2}")
-  elseif(_tool STREQUAL "dumpbin" AND l MATCHES "^ +([0-9]+) .*\\[NONAME\\] *$")
+  elseif(_tool STREQUAL "dumpbin" AND l MATCHES "^ +([0-9]+) .*\\[NONAME\\]")
     # ordinal-only export: dumpbin may leave the hint column blank, so key on the [NONAME] marker, not the column count.
     list(APPEND _actual "${CMAKE_MATCH_1} ")
   elseif(_tool STREQUAL "dumpbin" AND l MATCHES "^ +([0-9]+) +[0-9A-Fa-f]+ +[0-9A-Fa-f]+( +([A-Za-z0-9_@?]+))?( .*)?$")
