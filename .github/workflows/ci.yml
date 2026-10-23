@@ -172,6 +172,17 @@ jobs:
       - name: Populate machine folder from the runner's System32 (never committed)
         shell: pwsh
         run: ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine -CI
+      # A real program that is not ours: the SQLite command-line shell, from the official amalgamation pinned by URL and
+      # SHA-256 (verified on every run, cached or not), compiled with cl /O2 /MT into the machine folder's guest
+      # directory. integration.sqlite_* and the smoke step below run it; the build fails if the archive changes.
+      - name: Cache the SQLite amalgamation
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/sqlite-download
+          key: sqlite-amalgamation-3540100-0a9c8e34352dad46006aa82836d5383bff9dc6bc9ce5a60553c05aa30e6ad1f9
+      - name: Build the SQLite shell (pinned, SHA-256 verified)
+        shell: pwsh
+        run: ./tools/ci/build_sqlite.ps1 -OutDir build/bin/machine/guest
       # The first program that is not ours: Lua 5.4.7, built from the upstream tarball (pinned SHA-256, checked on
       # every run, restored from the cache or downloaded) with cl /O2 /MT into build/bin/machine/guest/lua.exe;
       # the Test and Smoke steps below run it (integration.lua_*, docs/STATUS.md "Real programs").
@@ -231,4 +242,6 @@ jobs:
             build/bin/crash.dmp
             build/bin/entry-reached.txt
             build/bin/*.bmp
+            build/bin/guest/guest_lockfile.*
+            build/bin/guest/sqlite3.exe
           retention-days: 7

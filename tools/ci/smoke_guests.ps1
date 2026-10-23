@@ -36,7 +36,9 @@ foreach ($sys in @(Get-ChildItem (Join-Path $Bin 'drivers') -Filter *.sys -Error
   Copy-Item $sys.FullName -Destination $drivers -Force
 }
 
-# name, host, guest image (in <machine>\guest), driver (or ''), expected exit code, stdout regex (or ''), Args, Real
+# name, host, guest image (in <machine>\guest), driver (or ''), expected exit code, stdout regex (or ''), Args, Real; optional:
+# Args (the guest's command line), Stdin (a file the guest reads as standard input), Fresh (a path under the machine
+# folder deleted before the run, so the run starts from nothing, and required to exist after it)
 $table = @(
   @{ Name = 'guest_hello';     Host = $host_exe; Guest = 'guest_hello.exe';     Driver = '';                  Exit = 42; Out = 'hello from guest' },
   @{ Name = 'guest_cpuid';     Host = $host_exe; Guest = 'guest_cpuid.exe';     Driver = '';                  Exit = 0;  Out = 'cpuid\.1\.ecx=' },
@@ -45,6 +47,18 @@ $table = @(
   @{ Name = 'guest_smoke';     Host = $host_exe; Guest = 'guest_smoke.exe';     Driver = '';                  Exit = 42; Out = 'guest: done, returning 42' },
   @{ Name = 'drv_client';      Host = $drv_host; Guest = 'drv_client.exe';      Driver = 'OurTestDevice.sys'; Exit = 0;  Out = 'driver_ioctl: all checks passed' },
   @{ Name = 'drv_kmdf_client'; Host = $drv_host; Guest = 'drv_kmdf_client.exe'; Driver = 'OurKmdfDevice.sys'; Exit = 0;  Out = 'kmdf: all checks passed' },
+  # The command line a guest sees (tests/guest/sqlite/args.c).
+  @{ Name = 'guest_args';      Host = $host_exe; Guest = 'guest_args.exe';      Driver = '';                  Exit = 42; Out = 'args: argc=4';
+     Args = @('one', 'two words', 'three') },
+  # Byte-range locking (tests/guest/sqlite/lockfile.c).
+  @{ Name = 'guest_lockfile';  Host = $host_exe; Guest = 'guest_lockfile.exe';  Driver = '';                  Exit = 42; Out = 'lockfile: done' },
+  # The SQLite shell (tools/ci/build_sqlite.ps1), a program this repository did not write: an in-memory query, then
+  # tests/guest/sqlite/smoke.sql against a database file in the machine folder.
+  @{ Name = 'sqlite3_memory';  Host = $host_exe; Guest = 'sqlite3.exe';         Driver = '';                  Exit = 0;  Out = '(?m)^42\r?$'; Real = $true;
+     Args = @('-batch', ':memory:', 'select 6*7;') },
+  @{ Name = 'sqlite3_script';  Host = $host_exe; Guest = 'sqlite3.exe';         Driver = '';                  Exit = 42; Real = $true; Out = '(?s)plum\|7.*CREATE INDEX fruit_name.*COMMIT;.*date\|10\|1\|1\r?\nok';
+     Args = @('-batch', 'C:\Users\User\smoke.db'); Stdin = (Join-Path $PSScriptRoot '..\..\tests\guest\sqlite\smoke.sql');
+     Fresh = 'Users\User\smoke.db' },
   @{ Name = 'lua_hello';       Host = $host_exe; Guest = 'lua.exe';             Driver = '';                  Exit = 42; Out = 'hello from lua\t42'; Real = $true
      Args = @('-e', "print('hello from lua', 6*7) os.exit(42)") },
   @{ Name = 'lua_smoke';       Host = $host_exe; Guest = 'lua.exe';             Driver = '';                  Exit = 42; Out = 'smoke: done fails=0'; Real = $true
@@ -82,9 +96,13 @@ foreach ($t in $table) {
   if ($t.Args) { $hostArgs += $t.Args }
   $out = Join-Path $LogDir "$($t.Name).stdout.log"
   $err = Join-Path $LogDir "$($t.Name).stderr.log"
+  $fresh = if ($t.Fresh) { Join-Path $Machine $t.Fresh } else { $null }
+  if ($fresh) { Remove-Item -Force -ErrorAction SilentlyContinue $fresh }
+  $redirect = @{}
+  if ($t.Stdin) { $redirect['RedirectStandardInput'] = (Resolve-Path $t.Stdin).Path }
   $sw = [Diagnostics.Stopwatch]::StartNew()
   $p = Start-Process -FilePath $t.Host -ArgumentList ($hostArgs | ForEach-Object { '"' + $_ + '"' }) -RedirectStandardOutput $out `
-         -RedirectStandardError $err -PassThru -NoNewWindow
+         -RedirectStandardError $err -PassThru -NoNewWindow @redirect
   $null = $p.Handle
   $note = ''
   if (-not $p.WaitForExit($TimeoutSeconds * 1000)) {
@@ -94,11 +112,12 @@ foreach ($t in $table) {
   $rc = $p.ExitCode
   $stdout = if (Test-Path $out) { Get-Content $out -Raw } else { '' }
   if ($null -eq $stdout) { $stdout = '' }
-  $ok = (-not $note) -and ($rc -eq $t.Exit) -and ((-not $t.Out) -or ($stdout -match $t.Out))
+  $ok = (-not $note) -and ($rc -eq $t.Exit) -and ((-not $t.Out) -or ($stdout -match $t.Out)) -and ((-not $fresh) -or (Test-Path $fresh))
   $why = @()
   if ($note) { $why += $note.Trim() }
   if ($rc -ne $t.Exit) { $why += ('exit {0} (0x{1:X8}), expected {2}' -f $rc, [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$rc), 0), $t.Exit) }
   if ($t.Out -and $stdout -notmatch $t.Out) { $why += "stdout lacks '$($t.Out)'" }
+  if ($fresh -and -not (Test-Path $fresh)) { $why += "$($t.Fresh) was not created" }
   $line = ('{0,-16} exit {1,-4} expected {2,-3} {3,6:N1} s  {4}' -f $t.Name, $rc, $t.Exit, $sw.Elapsed.TotalSeconds, $(if ($ok) { 'ok' } else { 'FAIL: ' + ($why -join '; ') }))
   Write-Host $line
   $rows += $line
@@ -113,8 +132,8 @@ foreach ($t in $table) {
 }
 foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
 
-$known = $table | ForEach-Object { $_.Guest }
-if (-not $RealPrograms) { $known += 'lua.exe' }   # not built here; not "unlisted" either
+$known = $table | ForEach-Object { $_.Guest } | Select-Object -Unique
+if (-not $RealPrograms) { $known += 'lua.exe', 'sqlite3.exe' }   # not built here; not "unlisted" either
 $extra = @(Get-ChildItem (Join-Path $Machine 'guest') -Filter *.exe -ErrorAction SilentlyContinue |
            Where-Object { $known -notcontains $_.Name } | ForEach-Object { $_.Name })
 if ($extra.Count -gt 0) {
