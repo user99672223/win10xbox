@@ -145,6 +145,15 @@ win10xbox_guest_test(guest_seh "C:\\guest\\guest_seh.exe" 42
   "seh: throw_catch ok" "seh: dll_boundary ok" "seh: seh ok" "seh: veh ok" "seh: uef ok" "seh: done failures=0")
 set_tests_properties(integration.guest_seh PROPERTIES FAIL_REGULAR_EXPRESSION "seh: [a-z_.]+ FAILED;seh: FAIL line")
 
+# Wine's cmd.exe (programs/cmd in wine-pe/dlls.txt) is the machine's C:\Windows\System32\cmd.exe: ComSpec points at it,
+# ntdll's file.c opens it, kernelbase starts it for .bat files. The VFS serves it from Windows\builtin, on the
+# builtin-only folder like the GUI tests; the program path is the guest's (host-win32 must not run the host's own cmd.exe).
+set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+set(_guest_args "/c;echo cmd runs through the layer")
+win10xbox_guest_test(cmd_builtin "C:\\Windows\\System32\\cmd.exe" 0 "cmd runs through the layer")
+unset(_guest_args)
+unset(_guest_machine)
+
 # The host-uwp-lite smoke guest (built in tests/guest, MSVC only): the program
 # that ran on the console, in both subsystems. It prints facts and returns 42.
 if(TARGET guest_smoke_cui)
