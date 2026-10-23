@@ -105,6 +105,12 @@ win10xbox_add_guest(guest_gdi_bitmap)
 add_executable(guest_window_menu window_menu.c)
 target_link_libraries(guest_window_menu PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window_menu)
+# Cursors and icons (tests/guest/cursor.c): LoadCursor of Wine's own IDC_ARROW / IDC_IBEAM, GetIconInfo, GetCursorInfo,
+# SetCursor, ShowCursor, DrawIconEx, and the cursor composed onto the screen, which the host looks at with screenshots
+# taken by the inject script. Nothing to see without that injection, so there is no native smoke test.
+add_executable(guest_cursor cursor.c)
+target_link_libraries(guest_cursor PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_cursor)
 # The XInput guest (tests/guest/xinput.c): imports xinput1_4.dll (guest-dlls/xinput, our own builtin DLL) and reads the
 # pad state the host holds, which host-win32's WIN10XBOX_TEST_INJECT_INPUT "pad" command sets. Nothing to see without
 # that injection, so there is no native smoke test.

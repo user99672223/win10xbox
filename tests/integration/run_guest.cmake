@@ -151,9 +151,12 @@ if(FORBID_TRACE_REGEX AND err MATCHES "${FORBID_TRACE_REGEX}")
   string(APPEND _fail "trace output matches forbidden '${FORBID_TRACE_REGEX}'\n")
 endif()
 # WIN10XBOX_EXPECT_SCREENSHOT_PIXELS="x,y,aarrggbb|x,y,aarrggbb": the host wrote WIN10XBOX_SCREENSHOT (a 32-bit
-# top-down BMP of the virtual screen, see core/user); check pixels of it.
-if(DEFINED ENV{WIN10XBOX_SCREENSHOT} AND DEFINED ENV{WIN10XBOX_EXPECT_SCREENSHOT_PIXELS})
-  set(_bmp "$ENV{WIN10XBOX_SCREENSHOT}")
+# top-down BMP of the virtual screen, see core/user); check pixels of it. WIN10XBOX_SCREENSHOT_2 .. _4 with
+# WIN10XBOX_EXPECT_SCREENSHOT_PIXELS_2 .. _4 do the same for further files, which the inject script wrote in the middle of
+# the run with `shot FILE` (the host does not know these variables; the script names the files).
+foreach(_sfx "" "_2" "_3" "_4")
+if(DEFINED ENV{WIN10XBOX_SCREENSHOT${_sfx}} AND DEFINED ENV{WIN10XBOX_EXPECT_SCREENSHOT_PIXELS${_sfx}})
+  set(_bmp "$ENV{WIN10XBOX_SCREENSHOT${_sfx}}")
   if(NOT EXISTS "${_bmp}")
     string(APPEND _fail "screenshot ${_bmp} was not written\n")
   else()
@@ -162,8 +165,8 @@ if(DEFINED ENV{WIN10XBOX_SCREENSHOT} AND DEFINED ENV{WIN10XBOX_EXPECT_SCREENSHOT
     string(SUBSTRING "${_hex}" 36 8 _w_le)
     string(REGEX REPLACE "(..)(..)(..)(..)" "\\4\\3\\2\\1" _w_be "${_w_le}")
     math(EXPR _w "0x${_w_be}")
-    string(REPLACE "|" ";" _pixels "$ENV{WIN10XBOX_EXPECT_SCREENSHOT_PIXELS}")
-  foreach(_px ${_pixels})
+    string(REPLACE "|" ";" _pixels "$ENV{WIN10XBOX_EXPECT_SCREENSHOT_PIXELS${_sfx}}")
+    foreach(_px ${_pixels})
       string(REPLACE "," ";" _p "${_px}")
       list(GET _p 0 _x)
       list(GET _p 1 _y)
@@ -177,6 +180,7 @@ if(DEFINED ENV{WIN10XBOX_SCREENSHOT} AND DEFINED ENV{WIN10XBOX_EXPECT_SCREENSHOT
     endforeach()
   endif()
 endif()
+endforeach()
 if(_fail)
   message(FATAL_ERROR "${PROGRAM}:\n${_fail}")
 endif()

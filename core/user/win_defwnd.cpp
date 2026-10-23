@@ -358,9 +358,12 @@ LRESULT DefWindowProcInternal(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, bool an
             if (SendMessageInternal(w->parent, WM_SETCURSOR, wp, lp)) return TRUE;
             if (!(w = Win(hwnd))) return FALSE;
         }
-        if (LOWORD(lp) == HTCLIENT && w->cls->cursor)
-            if (winexbox::IWinexboxDriver* d = Driver()) d->CursorSet(reinterpret_cast<winexbox::WindowId>(hwnd),
-                                                                       reinterpret_cast<winexbox::CursorId>(w->cls->cursor));
+        // Wine's handle_set_cursor: the class cursor over the client area; anywhere else the built-in arrow (the sizing
+        // cursors of the borders are not chosen)
+        if (UserThread* t = FindUserThread()) {
+            if (LOWORD(lp) == HTCLIENT && w->cls->cursor) SetThreadCursor(*t, w->cls->cursor);
+            else if (LOWORD(lp) != HTCLIENT) { t->cursor = nullptr; t->cursor_set = false; }
+        }
         return FALSE;
     case WM_SYSKEYDOWN:
         if (wp == VK_F4 && (HIWORD(lp) & KF_ALTDOWN)) PostMessageInternal(TopLevelOf(hwnd), WM_SYSCOMMAND, SC_CLOSE, 0);

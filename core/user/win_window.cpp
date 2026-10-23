@@ -1882,6 +1882,7 @@ ULONG_PTR WINAPI NtUserCallOneParam(ULONG_PTR arg, ULONG code) {
         return TRUE;
     }
     case abi::OneParamGetMenuItemCount: return MenuItemCount(arg);
+    case abi::OneParamCreateCursorIcon: return HandleToUlong(CreateCursorObject(arg != 0));
     case abi::OneParamEnableThunkLock:
         return 0;   // the thunk lock exists for 16-bit code, which never runs here
     case abi::OneParamSetKeyboardAutoRepeat:

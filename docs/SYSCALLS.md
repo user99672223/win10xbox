@@ -6,6 +6,7 @@ Windows 10 x64 / 22H2 NT syscall numbers) and the hand-maintained policy
 `core/user/user_syscalls.h` registers them. Do not edit by hand.
 
 1798 syscalls. passthrough 150, translate 39, emulate 352, todo 1257. Generated 2026-10-23.
+1798 syscalls. passthrough 151, translate 38, emulate 360, todo 1249. Generated 2026-10-23.
 
 Policy: **PassThrough** calls the host ntdll export by name; **Translate**
 rewrites arguments (paths, handles, timeouts) then passes through;
@@ -1167,7 +1168,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x137c | NtUserDestroyActivationGroup | 0 | Todo |  |
 | 0x137d | NtUserDestroyActivationObject | 0 | Todo |  |
 | 0x137e | NtUserDestroyCaret | 0 | Emulate | core/user |
-| 0x137f | NtUserDestroyCursor | 2 | Todo |  |
+| 0x137f | NtUserDestroyCursor | 2 | Emulate | core/user |
 | 0x1380 | NtUserDestroyDCompositionHwndTarget | 0 | Todo |  |
 | 0x1381 | NtUserDestroyInputContext | 1 | Todo |  |
 | 0x1382 | NtUserDestroyMenu | 1 | Emulate | core/user |
@@ -1194,7 +1195,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1397 | NtUserDrawAnimatedRects | 0 | Todo |  |
 | 0x1398 | NtUserDrawCaption | 0 | Todo |  |
 | 0x1399 | NtUserDrawCaptionTemp | 7 | Todo |  |
-| 0x139a | NtUserDrawIconEx | 9 | Todo |  |
+| 0x139a | NtUserDrawIconEx | 9 | Emulate | core/user |
 | 0x139b | NtUserDrawMenuBar | 1 | Emulate | core/user |
 | 0x139c | NtUserDrawMenuBarTemp | 5 | Todo |  |
 | 0x139d | NtUserDwmGetRemoteSessionOcclusionEvent | 0 | Todo |  |
@@ -1237,7 +1238,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x13c2 | NtUserEvent | 0 | Todo |  |
 | 0x13c3 | NtUserExcludeUpdateRgn | 2 | Emulate | core/user |
 | 0x13c4 | NtUserFillWindow | 0 | Todo |  |
-| 0x13c5 | NtUserFindExistingCursorIcon | 3 | Todo |  |
+| 0x13c5 | NtUserFindExistingCursorIcon | 3 | Emulate | core/user |
 | 0x13c6 | NtUserFindWindowEx | 5 | Emulate | core/user |
 | 0x13c7 | NtUserFlashWindowEx | 1 | Emulate | core/user |
 | 0x13c8 | NtUserForceEnableNumpadTranslation | 0 | Todo |  |
@@ -1272,8 +1273,8 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x13e5 | NtUserGetCurrentDpiInfoForWindow | 0 | Todo |  |
 | 0x13e6 | NtUserGetCurrentInputMessageSource | 1 | Todo |  |
 | 0x13e7 | NtUserGetCursor | 0 | Emulate | core/user |
-| 0x13e8 | NtUserGetCursorFrameInfo | 4 | Todo |  |
-| 0x13e9 | NtUserGetCursorInfo | 1 | Todo |  |
+| 0x13e8 | NtUserGetCursorFrameInfo | 4 | Emulate | core/user |
+| 0x13e9 | NtUserGetCursorInfo | 1 | Emulate | core/user |
 | 0x13ea | NtUserGetCursorPos | 1 | Emulate | core/user |
 | 0x13eb | NtUserGetDC | 1 | Emulate | core/user |
 | 0x13ec | NtUserGetDCEx | 3 | Emulate | core/user |
@@ -1299,8 +1300,8 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1400 | NtUserGetHDevName | 0 | Todo |  |
 | 0x1401 | NtUserGetHimetricScaleFactorFromPixelLocation | 0 | Todo |  |
 | 0x1402 | NtUserGetIMEShowStatus | 0 | Todo |  |
-| 0x1403 | NtUserGetIconInfo | 6 | Todo |  |
-| 0x1404 | NtUserGetIconSize | 4 | Todo |  |
+| 0x1403 | NtUserGetIconInfo | 6 | Emulate | core/user |
+| 0x1404 | NtUserGetIconSize | 4 | Emulate | core/user |
 | 0x1405 | NtUserGetImeHotKey | 0 | Todo |  |
 | 0x1406 | NtUserGetImeInfoEx | 0 | Todo |  |
 | 0x1407 | NtUserGetInputContainerId | 0 | Todo |  |
@@ -1624,7 +1625,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1545 | NtUserSetCoveredWindowStates | 0 | Todo |  |
 | 0x1546 | NtUserSetCursor | 1 | Emulate | core/user |
 | 0x1547 | NtUserSetCursorContents | 0 | Todo |  |
-| 0x1548 | NtUserSetCursorIconData | 4 | Todo |  |
+| 0x1548 | NtUserSetCursorIconData | 4 | Emulate | core/user |
 | 0x1549 | NtUserSetCursorIconDataEx | 0 | Todo |  |
 | 0x154a | NtUserSetCursorPos | 2 | Emulate | core/user |
 | 0x154b | NtUserSetDesktopColorTransform | 0 | Todo |  |

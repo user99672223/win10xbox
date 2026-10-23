@@ -375,8 +375,8 @@ private:
 
 // WIN10XBOX_TEST_INJECT_INPUT=<script>: a scripted user for the GUI tests (tests/guest/window_input.c). Commands are
 // separated by ';': sleep N (ms), move X,Y (screen coordinates), ldown / lup / rdown / rup (at the last moved position),
-// wheel D (WHEEL_DELTA units), waitwin N (until a window is painted, at most N ms), shot (screenshot now + distinct
-// colour count), quit N (end the process with exit code N), key 0xVK (key down, then up; the scan code is set 1 for 'A'..'Z', else 0),
+// wheel D (WHEEL_DELTA units), waitwin N (until a window is painted, at most N ms), shot [FILE] (screenshot now + distinct
+// colour count; FILE is an ASCII path, default WIN10XBOX_SCREENSHOT), quit N (end the process with exit code N), key 0xVK (key down, then up; the scan code is set 1 for 'A'..'Z', else 0),
 // pad BUTTONS LX LY RX RY LT RT (the host's gamepad 0, which the guest's XInput reads: XINPUT_GAMEPAD_* bits in hex,
 // four signed 16-bit sticks, two trigger bytes; the first one connects the pad), padwait N (until the guest has
 // polled the pad, at most N ms). Each command
@@ -514,7 +514,7 @@ bool RunInjectCommand(winexbox::IWinexboxDriver* display, const std::string& cmd
         std::fprintf(stderr, "host-win32: inject %s\n", cmd.c_str());
         return ok;
     } else if (verb == "shot") {
-        // shot: write the last painted frame to WIN10XBOX_SCREENSHOT now (the guest keeps running) and log how many
+        // shot [FILE]: write the last painted frame to FILE (default WIN10XBOX_SCREENSHOT) now (the guest keeps running) and log how many
         // distinct colours it holds ("shot: distinct=N"; a blank desktop is 1).
         std::int32_t w = 0, h = 0;
         win10xbox::user::ScreenSize(&w, &h);
@@ -527,7 +527,9 @@ bool RunInjectCommand(winexbox::IWinexboxDriver* display, const std::string& cmd
                 distinct = seen.size();
             }
         }
-        const bool wrote = !g_shot_path.empty() && win10xbox::user::WriteScreenshot(g_shot_path);
+        std::wstring shot_path = g_shot_path;
+        if (!arg.empty()) shot_path.assign(arg.begin(), arg.end());   // `shot FILE`: an ASCII path
+        const bool wrote = !shot_path.empty() && win10xbox::user::WriteScreenshot(shot_path);
         std::fprintf(stderr, "host-win32: shot: distinct=%zu written=%d\n", distinct, wrote ? 1 : 0);
         return true;
     } else if (verb == "quit") {

@@ -287,4 +287,28 @@ static_assert(offsetof(MENUITEMINFOW, hbmpItem) == 72);
 static_assert(sizeof(MENUINFO) == 40);
 static_assert(sizeof(MENUBARINFO) == 48);
 
+// NtUserSetCursorIconData's argument (struct cursoricon_frame / cursoricon_desc in include/ntuser.h): the bitmaps of one
+// image, which the cursor object then owns.
+struct CursorIconFrame {
+    UINT width, height;
+    HBITMAP color;     // colour bitmap (null for a monochrome image: the mask is then twice as high)
+    HBITMAP alpha;     // premultiplied alpha DIB section of a 32 bpp image
+    HBITMAP mask;
+    POINT hotspot;
+};
+struct CursorIconDesc {
+    UINT flags;        // LR_*
+    UINT num_steps, num_frames, delay;
+    CursorIconFrame* frames;
+    DWORD* frame_seq;
+    DWORD* frame_rates;
+    HRSRC rsrc;
+};
+static_assert(sizeof(CursorIconFrame) == 40);
+static_assert(offsetof(CursorIconFrame, mask) == 24);
+static_assert(offsetof(CursorIconFrame, hotspot) == 32);
+static_assert(sizeof(CursorIconDesc) == 48);
+static_assert(offsetof(CursorIconDesc, frames) == 16);
+static_assert(offsetof(CursorIconDesc, rsrc) == 40);
+
 }  // namespace win10xbox::user::abi

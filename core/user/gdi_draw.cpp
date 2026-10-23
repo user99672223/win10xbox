@@ -898,16 +898,22 @@ INT WINAPI NtGdiStretchDIBitsInternal(HDC hdc, INT x_dst, INT y_dst, INT width_d
     const RECT ns = Normalized(sr);
     const int sw = ns.right - ns.left, sh = ns.bottom - ns.top;
     const BrushPaint b = BrushOf(dc, dc->brush);
+    // A SRCCOPY of a 32 bpp DIB onto a 32 bpp DIB section copies all four bytes, alpha included: user32 builds the
+    // alpha bitmap of a 32 bpp icon or cursor that way (create_alpha_bitmap). Every other destination gets alpha 0xff.
+    bool keep_alpha = false;
+    if (rop3 == 0xcc && v.bpp == 32)
+        if (auto* dbmp = GdiGetT<BitmapObj>(dc->bitmap, abi::kObjBitmap)) keep_alpha = dc->kind == DcKind::Memory && dbmp->dib;
     auto source_at = [&](int x, int y) {
         int sx = ns.left + static_cast<int>((static_cast<long long>(x - nd.left) * sw) / dw);
         int syy = ns.top + static_cast<int>((static_cast<long long>(y - nd.top) * sh) / dh);
         if (flip_x) sx = ns.right - 1 - (sx - ns.left);
         if (flip_y) syy = ns.bottom - 1 - (syy - ns.top);
-        return DibViewPixel(v, sx, syy);
+        return keep_alpha ? DibViewPixelRaw(v, sx, syy) : DibViewPixel(v, sx, syy);
     };
     auto combine = [&](int x, int y, std::uint32_t old) {
         const std::uint32_t s = source_at(x, y);
-        return rop3 == 0xcc ? s | 0xff000000u : 0xff000000u | (Rop3(rop3, b.At(x, y), s, old) & 0xffffff);
+        if (rop3 == 0xcc) return keep_alpha ? s : s | 0xff000000u;
+        return 0xff000000u | (Rop3(rop3, b.At(x, y), s, old) & 0xffffff);
     };
     DrawTarget t;
     if (ResolveDrawTarget(dc, &t)) {
