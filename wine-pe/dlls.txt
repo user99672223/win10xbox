@@ -26,6 +26,7 @@ gdi32
 # --- base services ---------------------------------------------------------
 advapi32
 sechost
+cryptbase
 rpcrt4
 comctl32
 shell32
@@ -39,6 +40,7 @@ winmm
 ole32
 oleaut32
 combase
+coml2
 
 # --- helpers / programs ----------------------------------------------------
 programs/services
