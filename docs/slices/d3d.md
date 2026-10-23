@@ -1,4 +1,5 @@
-status: wip
+status: blocked
+blocked: first error (run 39974430791 @ 3b3f1b9, both MSVC jobs): the sechost device-notify thread connects to \\pipe\\wine_plugplay (c0000034), rpcrt4 raises 1722 (RPC_S_SERVER_UNAVAILABLE) and the exception skips sechost's Wine __TRY frame (teb->ExceptionList chain) and ends in RtlUserThreadStart's handler -> NtTerminateProcess(1722). No "d3d11: adapter=" line has printed in any run. Next: find why RtlDispatchException does not see the thread's ExceptionList frame (guest TLS view vs host TEB on host-created guest threads).
 handoff (run 39946954565 @ 8237882: linux-cross green, both MSVC jobs red on integration.guest_d3d11):
 - the guest reaches the host dxgkrnl: NtGdiDdDDIQueryAdapterInfo returns c000000d (host), QueryStatistics success.
 - RelWithDebInfo: exit 1722 (RPC_S_SERVER_UNAVAILABLE) before the "d3d11: adapter=" line; no d3d11: adapter line printed yet.
