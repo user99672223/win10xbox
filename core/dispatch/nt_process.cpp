@@ -1,6 +1,7 @@
 // Handle routing, memory/process/thread queries, termination, context
 // switches and hard errors.
 #include "internal.h"
+#include "nt_spawn.h"
 #include "win10xbox/config.h"
 #if WIN10XBOX_HAVE_AFD
 #include "win10xbox/afd.h"
@@ -373,6 +374,13 @@ const ImplDef* ProcessImpls() {
         {"NtSetContextThread", reinterpret_cast<void*>(&Xl_NtSetContextThread)},
         {"NtCreateThreadEx", reinterpret_cast<void*>(&Xl_NtCreateThreadEx)},
         {"NtGetNextThread", reinterpret_cast<void*>(&Xl_NtGetNextThread)},
+        // nt_spawn.cpp: child processes and the refusals around them
+        {"NtCreateUserProcess", reinterpret_cast<void*>(&Xl_NtCreateUserProcess)},
+        {"NtCreateProcessEx", reinterpret_cast<void*>(&Xl_NtCreateProcessEx)},
+        {"NtCreateThread", reinterpret_cast<void*>(&Xl_NtCreateThread)},
+        {"NtCreateDebugObject", reinterpret_cast<void*>(&Xl_NtCreateDebugObject)},
+        {"NtDebugActiveProcess", reinterpret_cast<void*>(&Xl_NtDebugActiveProcess)},
+        {"NtSetSystemInformation", reinterpret_cast<void*>(&Xl_NtSetSystemInformation)},
         {nullptr, nullptr},
     };
     return k;
