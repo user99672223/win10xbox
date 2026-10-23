@@ -55,12 +55,19 @@ function(win10xbox_guest_test name program exit_code)
   elseif(_guest_machine STREQUAL WIN10XBOX_BUILTIN_MACHINE_DIR)
     set(_require_builtin ON)
   endif()
+  # A console program (the caller sets _guest_console) never loads user32.dll: the builtin check then only
+  # requires that no native system DLL was mapped.
+  set(_require_user32 ${_require_builtin})
+  if(_guest_console)
+    set(_require_user32 OFF)
+  endif()
   add_test(NAME integration.${name}
     COMMAND ${CMAKE_COMMAND}
       -DHOST=$<TARGET_FILE:win10xbox>
       -DMACHINE=${_guest_machine}
       -DREQUIRE_BUILTIN_DLLS=${_require_builtin}
       "-DNO_USER32=${_guest_no_user32}"
+      -DREQUIRE_USER32=${_require_user32}
       -DPROGRAM=${program}
       "-DPROGRAM_ARGS=${_guest_args}"
       "-DDEBUG_SPEC=${_guest_debug}"
@@ -317,6 +324,38 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   win10xbox_guest_test(ninja_noop "C:\\guest\\ninja.exe" 0 "ninja: no work to do\\.")
   set_tests_properties(integration.ninja_noop PROPERTIES DEPENDS integration.ninja_build)
   unset(_guest_args)
+# The official CPython 3.12 embeddable package (python.org zip, nothing compiled), unpacked by
+# tools/ci/fetch_python.ps1 (a named step of ci.yml's windows job) into <machine>/guest/python before ctest runs.
+# Registered where that step exists: MSVC builds, or -DWIN10XBOX_REAL_PYTHON=ON after unpacking the zip there.
+# Both tests run on the builtin-only machine folder (the console's DLL set, "*": "builtin,native"): python312.dll
+# imports ws2_32, bcrypt, advapi32 and version, and the Windows CI runner's own build-26100 copies of those are
+# written against an ntdll and an API-set schema Wine does not have (the failure that put the first run of these
+# tests red: api-ms-win-core-crt-l2-1-0 -> _initterm_e resolved to nothing, Wine's 0x80000100 import stub).
+option(WIN10XBOX_REAL_PYTHON "Register the real-Python guest tests (the embeddable zip in <machine>/guest/python)" OFF)
+if(MSVC OR WIN10XBOX_REAL_PYTHON)
+  configure_file(${CMAKE_SOURCE_DIR}/tests/guest/python/sample.json ${CMAKE_BINARY_DIR}/bin/guest/python_sample.json COPYONLY)
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  set(_guest_console ON)
+  # (a) the interpreter and the platform module: a version line, platform.uname() (os name, release and version from
+  # the layer's Windows 10 identity) and os.cpu_count() as the last line. The ';' inside the program text is written
+  # @SEMI@ (run_guest.cmake turns it back), so CMake keeps it in the one argument. The last regex wants the number
+  # alone on the final line.
+  set(_guest_args "-c;import sys, platform, os@SEMI@ print(sys.version)@SEMI@ print(platform.uname())@SEMI@ print(os.cpu_count())")
+  win10xbox_guest_test(real_python_platform "C:\\guest\\python\\python.exe" 0
+    "3\\.12\\.10 \\(tags/v3\\.12\\.10"
+    "uname_result\\(system='Windows'"
+    "\\)..?[0-9]+.?.?$")
+  # (b) python -m json.tool on a small file: the module is found in python312.zip, the file is read through the
+  # layer's VFS, and the pretty-printed document comes back on stdout, re-indented (the input is one line).
+  set(_guest_args "-m;json.tool;C:\\guest\\python_sample.json")
+  win10xbox_guest_test(real_python_json "C:\\guest\\python\\python.exe" 0
+    "\"name\": \"win10xbox\""
+    ".    \"list\": ."
+    "\"ok\": true"
+    "\"pi\": 3\\.25")
+  unset(_guest_args)
+  unset(_guest_console)
+  unset(_guest_machine)
 endif()
 
 # ---- Real GUI programs (not ours), built from source on the Windows runner ------------------------------------------

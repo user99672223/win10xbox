@@ -2,7 +2,7 @@
 # code (cmake -P; ctest's PASS_REGULAR_EXPRESSION alone ignores exit codes).
 #   -DHOST=<win10xbox.exe> -DMACHINE=<machine dir> -DPROGRAM=<C:\guest\x.exe>
 #   -DEXPECT_EXIT=<n> -DEXPECT_REGEX=<regex;regex...> [-DEMULATOR=<wine>]
-#   [-DPROGRAM_ARGS=<arg;arg...>]   the guest's own command-line arguments, one list element each
+#   [-DPROGRAM_ARGS=<arg;arg...>]   the guest's own command-line arguments, one list element each ("\;" inside one)
 #   [-DFORBID_REGEX=<regex>] [-DDEBUG_SPEC=<WIN10XBOX_DEBUG spec>]
 # EXPECT_REGEX/FORBID_REGEX match the guest's stdout. The layer's own trace
 # output goes to stderr, so assertions about it use the TRACE variants:
@@ -13,6 +13,7 @@
 # -DREQUIRE_BUILTIN_DLLS=ON adds +modules to WIN10XBOX_DEBUG and fails unless every system DLL the guest
 # mapped (C:\Windows\System32\<x>.dll in the modules trace) came from <machine>\Windows\builtin, with
 # user32.dll among them (unless -DNO_USER32=ON: a console program that never loads it); the list is printed either way.
+# user32.dll among them (unless -DREQUIRE_USER32=OFF: a console program); the list is printed either way.
 # Prints "SKIP: ..." and exits 77 (cmake >= 3.29) when the machine folder has
 # no Wine builtins or no Windows NLS data (c_1252.nls, staged by
 # machine/import_windows_dlls.ps1); the test sets both SKIP_RETURN_CODE 77 and
@@ -41,7 +42,6 @@ if(EMULATOR AND _machine MATCHES "^/")
 endif()
 string(REPLACE "/" "\\" _machine "${_machine}")
 string(REPLACE "@SEMI@" "\\;" _args "${PROGRAM_ARGS}")   # '@SEMI@' stands for a ';' inside one argument
-set(_cmd ${EMULATOR} "${HOST}" --machine "${_machine}" "${_program}" ${_args})
 if(GUEST_FILE)
   file(REMOVE "${MACHINE}/${GUEST_FILE}")
 endif()
@@ -59,7 +59,10 @@ if(REQUIRE_BUILTIN_DLLS)
     set(ENV{WIN10XBOX_DEBUG} "$ENV{WIN10XBOX_DEBUG},+modules")
   endif()
 endif()
-execute_process(COMMAND ${_cmd} ${_stdin} RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 120)
+# ${_args} is expanded right here, not through an intermediate list variable: set() joins the expanded elements
+# without their "\;" escape, so an argument that holds a ';' would be split in two.
+execute_process(COMMAND ${EMULATOR} "${HOST}" --machine "${_machine}" "${_program}" ${_args} ${_stdin}
+                RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 120)
 # Before the guest's output: ctest keeps only the first 1024 bytes of a passing test's output.
 set(_builtin_fail "")
 if(REQUIRE_BUILTIN_DLLS)
@@ -87,6 +90,12 @@ if(REQUIRE_BUILTIN_DLLS)
   list(FIND _builtin_lc "user32.dll" _u32)
   if(_u32 LESS 0 AND NOT NO_USER32)
     string(APPEND _builtin_fail "no builtin user32.dll in the modules trace (is +modules on?)\n")
+  if(NOT DEFINED REQUIRE_USER32 OR REQUIRE_USER32)
+    string(TOLOWER "${_builtin}" _builtin_lc)
+    list(FIND _builtin_lc "user32.dll" _u32)
+    if(_u32 LESS 0)
+      string(APPEND _builtin_fail "no builtin user32.dll in the modules trace (is +modules on?)\n")
+    endif()
   endif()
 endif()
 string(REPLACE "\r\n" "\n" out "${out}")   # text-mode stdout of a Windows console program
