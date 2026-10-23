@@ -1,4 +1,4 @@
-status: wip
+status: blocked
 
 # -gameclosure: DLL/import closure of a game through the layer
 
@@ -52,3 +52,18 @@ dhcpcsvc from WIN10XBOX_BUILTIN_DIR (those present at configure time). Local gue
 Push 1 on CI: both closure tests failed with `closure: no *_imports.txt in C:\guest`: ci.yml runs `cmake --build` (ALL) then ctest, and
 closure_lists was not part of ALL (only of the prepare_machine target, which the integration.prepare_machine test does not build).
 closure_lists is now `ALL`.
+
+### Status after two ci-loop pushes (blocked)
+Runs for f108c41: ci https://github.com/user99672223/win10xbox/actions/runs/40023521598 (linux-cross success incl. guest_closure_builtin;
+both windows jobs fail only on integration.guest_closure), wine-pe https://github.com/user99672223/win10xbox/actions/runs/40019588822 (success, abf02a2:
+winhttp, jsproxy, msvcp140, msvcp140_1, vcruntime140, vcruntime140_1, dhcpcsvc all built).
+Windows (Debug, machine-native-d3d) first error: `closure: MISSING DLL crypt32.dll (needed by winhttp.dll)`; summary
+`closure: 13 modules, 19 dlls, 1157 symbols, 2 missing dlls, 15 missing symbols`. Missing: crypt32.dll (CertDuplicateCertificateContext,
+CertFreeCertificateChain, CertFreeCertificateContext, CertGetCertificateChain, CertNameToStrW, CertVerifyCertificateChainPolicy,
+CryptFindOIDInfo for winhttp; CertCreateCertificateContext, CertDuplicateCertificateChain, CertNameToStrA and the same chain calls for
+wininet) and cryptui.dll (CryptUIDlgViewCertificateW, wininet). crypt32.dll is in the fetched builtin artifact (716800 bytes), so on that
+folder LoadLibrary of crypt32 fails (not an absent file): unexplained, needs `WIN10XBOX_DEBUG` trace of the load on Windows. Everything
+else (ws2_32, secur32, bcrypt, dbghelp, ucrtbase, d3d11, dxgi, VC runtime, dhcpcsvc, jsproxy) resolves. windows RelWithDebInfo printed no
+closure lines at all (0.86 s, minidump record failures): unexplained.
+Owner next: run guest_closure by hand on machine-native-d3d with a load trace for crypt32/cryptui; cryptui is a wintrust/wininet delay chain
+that is not in the d3d machine's folder.
