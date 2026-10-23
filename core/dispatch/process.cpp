@@ -705,6 +705,7 @@ int Launch(const LaunchOptions& opts) {
 #if WIN10XBOX_HAVE_AFD
     afd::PrimeHost();   // before the PEB take-over (see afd.h)
 #endif
+    dispatch::detail::PrimeSchannelHost();   // likewise: the host's SChannel loads its providers lazily
     RegisterNtdllUnixLib();
 
     if ((s = MapGuestNtdll(root))) return static_cast<int>(s);

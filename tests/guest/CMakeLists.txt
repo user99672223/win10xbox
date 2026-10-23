@@ -217,3 +217,7 @@ endif()
 
 # Guests from the SQLite shell bring-up (tests/guest/sqlite).
 add_subdirectory(sqlite)
+
+add_executable(guest_net2 net2.c)
+target_link_libraries(guest_net2 PRIVATE ws2_32 secur32 crypt32)
+win10xbox_add_guest(guest_net2)

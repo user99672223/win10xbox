@@ -539,6 +539,10 @@ NTSTATUS WINAPI Ws2UnixGetAddrInfo(void* args);
 NTSTATUS WINAPI Ws2UnixGetHostByAddr(void* args);
 NTSTATUS WINAPI Ws2UnixGetHostByName(void* args);
 NTSTATUS WINAPI Ws2UnixGetNameInfo(void* args);
+// secur32's unix calls on the host's SSPI SChannel (unix_schannel.cpp); the table is registered in unix_calls.cpp.
+extern const UnixCallFn kSchannelFuncs[];
+extern const std::size_t kSchannelFuncCount;
+void PrimeSchannelHost();   // before the PEB take-over, like afd::PrimeHost
 std::uint64_t UnixLibHandleByName(std::wstring_view module_name);   // 0 if none
 // Replacements patched over the guest ntdll's __wine_dbg_* exports.
 struct WineDebugChannel { unsigned char flags; char name[15]; };

@@ -34,7 +34,7 @@ if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
                    guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog guest_comctl
                    guest_seh guest_window_scroll guest_clipboard guest_net msctf_stub guest_gdi_bitmap
-                   guest_window_hooks guest_window_menu guest_xinput xinput1_4 guest_identity guest_cursor guest_regpersist)
+                   guest_window_hooks guest_window_menu guest_xinput xinput1_4 guest_identity guest_cursor guest_regpersist guest_net2)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -401,6 +401,35 @@ win10xbox_guest_test(guest_net "C:\\guest\\guest_net.exe" 42
   "net: connected" "net: FIONBIO ok" "net: sent 35 bytes" "net: received 35 bytes: hello from the guest over loopback"
   "net: done")
 set_tests_properties(integration.guest_net PROPERTIES FAIL_REGULAR_EXPRESSION "net: FAILED")
+unset(_guest_no_user32)
+unset(_guest_machine)
+
+# tests/guest/net2.c: UDP loopback on Wine's ws2_32 and TLS (SChannel over the host's SSPI) against a local server.
+set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+set(_guest_no_user32 ON)
+# The TLS server (tests/integration/net2_tls_server.py, a self-signed certificate made at test time) is a fixture:
+# the setup test starts it detached on 127.0.0.1:${_net2_port} and the cleanup test stops it.
+find_program(WIN10XBOX_PYTHON NAMES python3 python)
+set(_net2_port 47583)
+set(_net2_state ${CMAKE_BINARY_DIR}/bin/net2_tls)
+if(WIN10XBOX_PYTHON)
+  set(_net2_py ${WIN10XBOX_PYTHON})
+else()
+  set(_net2_py ${CMAKE_COMMAND} -E false)   # no python on this machine: the fixture, and with it the test, fails
+endif()
+add_test(NAME integration.net2_tls_server_start
+  COMMAND ${_net2_py} ${CMAKE_CURRENT_SOURCE_DIR}/net2_tls_server.py start ${_net2_port} ${_net2_state})
+add_test(NAME integration.net2_tls_server_stop
+  COMMAND ${_net2_py} ${CMAKE_CURRENT_SOURCE_DIR}/net2_tls_server.py stop ${_net2_state})
+set_tests_properties(integration.net2_tls_server_start PROPERTIES FIXTURES_SETUP w10x_net2_server TIMEOUT 120)
+set_tests_properties(integration.net2_tls_server_stop PROPERTIES FIXTURES_CLEANUP w10x_net2_server TIMEOUT 60)
+set(_guest_args ${_net2_port})
+win10xbox_guest_test(guest_net2 "C:\\guest\\guest_net2.exe" 42
+  "net2: udp ok" "net2: tls handshake ok, protocol TLS 1\\.[23]" "net2: tls sent 14 bytes"
+  "net2: tls received 14 bytes: hello over tls" "net2: tls ok \\(TLS 1\\.[23]\\)" "net2: done")
+set_tests_properties(integration.guest_net2 PROPERTIES FAIL_REGULAR_EXPRESSION "net2: FAILED"
+  FIXTURES_REQUIRED "w10x_machine;w10x_net2_server")
+unset(_guest_args)
 unset(_guest_no_user32)
 unset(_guest_machine)
 

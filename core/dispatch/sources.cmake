@@ -43,6 +43,7 @@ target_sources(win10xbox_core PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/subsystems.cpp
   ${CMAKE_CURRENT_LIST_DIR}/unix_calls.cpp
   ${CMAKE_CURRENT_LIST_DIR}/unix_ws2_32.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/unix_schannel.cpp
   ${CMAKE_CURRENT_LIST_DIR}/rtl_forward.cpp
   ${CMAKE_CURRENT_LIST_DIR}/cpu_sites.cpp
   ${CMAKE_CURRENT_LIST_DIR}/firmware.cpp
@@ -57,3 +58,6 @@ if(MSVC)
 else()
   target_sources(win10xbox_core PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../asm/syscall_entry.S ${CMAKE_CURRENT_LIST_DIR}/../asm/probe.S)
 endif()
+
+# secur32's unix calls (unix_schannel.cpp) run on the host's SSPI SChannel; the peer certificate is read with crypt32.
+target_link_libraries(win10xbox_core PUBLIC secur32 crypt32)

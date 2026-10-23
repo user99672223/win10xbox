@@ -53,6 +53,7 @@ coml2       # ole32
 cfgmgr32
 hid
 secur32
+schannel         # secur32 loads it as the schannel provider module (docs/slices/net2.md)
 winbrand
 wtsapi32
 # --- SDL2.dll (docs/slices/realsdl.md) static imports: setupapi (-> cfgmgr32, already built), winmm (-> msacm32) ---
