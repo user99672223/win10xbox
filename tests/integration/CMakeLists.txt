@@ -852,7 +852,7 @@ add_test(NAME integration.guest_d3d11_swap
     -DEXPECT_EXIT=42
     -DSAVE_STDOUT=${CMAKE_BINARY_DIR}/bin/guest_d3d11_swap.log
     "-DEXPECT_REGEX=swap: window hwnd=;swap: CreateDXGIFactory1 -> 00000000;swap: CreateSwapChain -> 00000000;swap: readback centre=ffff0000 corner=ff0000ff;swap: presented 60 frames;swap: done"
-    "-DEXPECT_TRACE_REGEX=dxgi: dxgi.dll: 3 export\\(s\\) interposed;dxgi: d3d11.dll: 1 export\\(s\\) interposed;dxgi: CreateDXGIFactory1 -> 00000000;dxgi: IDXGIFactory::CreateSwapChain\\(window [0-9a-fA-Fx]+, 256x256[^)]*\\) -> 00000000;dxgi: IDXGISwapChain::Present\\(1, 0x0\\) -> 0000000[0-9] \\(back buffer copied\\)"
+    "-DEXPECT_TRACE_REGEX=dxgi: dxgi.dll: 3 export\\(s\\) interposed;dxgi: d3d11.dll: 2 export\\(s\\) interposed;dxgi: CreateDXGIFactory1 -> 00000000;dxgi: IDXGIFactory::CreateSwapChain\\(window [0-9a-fA-Fx]+, 256x256[^)]*\\) -> 00000000;dxgi: IDXGISwapChain::Present\\(1, 0x0\\) -> 0000000[0-9] \\(back buffer copied\\)"
     "-DFORBID_TRACE_REGEX=host state reached under the guest TLS view;not handed to the compositor"
     -DDEBUG_SPEC=+dispatch,+modules,+process,+user
     -DREQUIRE=Windows/System32/d3d11.dll
