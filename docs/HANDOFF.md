@@ -13,8 +13,10 @@ supplies the NT syscall surface beneath them, inside a UWP AppContainer.
 
 ## What works on main (measured)
 
-* **Console:** one unmodified MSVC x64 guest is mapped, bound, run and exits 42 on an Xbox Series S
-  (build 26100). This is the only evidence from hardware so far.
+* **Console:** package 1.0.0.333 (run 39981119649) on an Xbox Series S, OS 26100.9445: `window.exe` painted its
+  blue window and red square on the TV and `guest_xinput.exe` read the real controller (exit 42). Needed by hand:
+  `l_intl.nls` and `c_10000.nls` uploaded into LocalState (the package did not bundle NLS; `-nlspkg`). One guest per
+  app run (`-relaunch`); `rdrand` faults (`-rdrand`). Details: STATUS.md "On the console".
 * **Loader** (`core/loader`): PE mapping, import binding, Wine builtin stub rewrite, scanner.
 * **Dispatcher** (`core/dispatch`): by-name table generated from Wine's headers; `Emulate` / `PassThrough` /
   `Todo` per syscall; privileged calls answered as an unprivileged caller.
