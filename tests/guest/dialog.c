@@ -1,9 +1,12 @@
 /* guest_dialog: DialogBoxParamW through Wine's user32 and core/user. The dialog template is a DIALOG resource
- * (dialog.rc). In WM_INITDIALOG the program places the dialog at screen (100,100), moves the OK button to client
- * (10,10) size 100x30 (so the click position does not depend on dialog units), sets the edit text and reads it back.
- * The host injects a click on the OK button's centre, screen (160,125), with WIN10XBOX_TEST_INJECT_INPUT; the button
- * sends WM_COMMAND(IDOK) and the dialog procedure calls EndDialog(hDlg, 7). An 8 s timer ends the dialog with -2.
- * The program exits 42 when DialogBoxParamW returned 7 and every check passed.
+ * (dialog.rc). In WM_INITDIALOG the program places the dialog at screen (100,100), size 160x80, and lays the controls
+ * out in pixels (so nothing depends on dialog-unit conversion): the static text at client (4,4) 60x20, the edit at
+ * (4,26) 152x22, the OK button at (10,50) 100x26. It sets the edit text and reads it back; the dialog procedure
+ * answers WM_CTLCOLORSTATIC with a light yellow brush, the edit and the button take the default colours through
+ * DefWindowProc. The host injects a click on the OK button's centre, screen (160,163), with
+ * WIN10XBOX_TEST_INJECT_INPUT; the button sends WM_COMMAND(IDOK) and the dialog procedure calls EndDialog(hDlg, 7).
+ * An 8 s timer ends the dialog with -2. The program exits 42 when DialogBoxParamW returned 7 and every check passed.
+ * The host's screenshot (the last painted frame) shows the button face, the static's yellow and the edit's white.
  *
  *   dialog: init edit=100 button=1
  *   dialog: text=hello dialog
@@ -24,6 +27,7 @@
 
 static int g_fail;
 static int g_clicked;
+static HBRUSH g_static_brush;
 
 static void check(int ok, const char* what) {
     if (!ok) {
@@ -45,7 +49,9 @@ static INT_PTR CALLBACK dlgproc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         check(edit && ok && stat && GetDlgItem(dlg, IDCANCEL), "GetDlgItem finds every control");
         printf("dialog: init edit=%d button=%d\n", (int)GetDlgCtrlID(edit), (int)GetDlgCtrlID(ok));
         SetWindowPos(dlg, NULL, 100, 100, 160, 80, SWP_NOZORDER | SWP_NOACTIVATE);
-        MoveWindow(ok, 10, 10, 100, 30, FALSE);
+        MoveWindow(stat, 4, 4, 60, 20, FALSE);
+        MoveWindow(edit, 4, 26, 152, 22, FALSE);
+        MoveWindow(ok, 10, 50, 100, 26, FALSE);
         check(SetDlgItemTextW(dlg, IDC_EDIT, L"hello dialog"), "SetDlgItemText");
         memset(buf, 0, sizeof buf);
         check(GetDlgItemTextW(dlg, IDC_EDIT, buf, 64) == 12 && !wcscmp(buf, L"hello dialog"), "GetDlgItemText");
@@ -67,6 +73,13 @@ static INT_PTR CALLBACK dlgproc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         fflush(stdout);
         return FALSE;   /* we set the focus ourselves */
     }
+    case WM_CTLCOLORSTATIC:
+        if ((HWND)lp == GetDlgItem(dlg, IDC_STATIC)) {
+            if (!g_static_brush) g_static_brush = CreateSolidBrush(RGB(255, 255, 192));
+            SetBkColor((HDC)wp, RGB(255, 255, 192));
+            return (INT_PTR)g_static_brush;
+        }
+        return FALSE;
     case WM_COMMAND:
         if (LOWORD(wp) == IDOK) {
             WCHAR buf[64];
