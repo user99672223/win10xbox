@@ -101,6 +101,9 @@ endif()
 
 set(HOST_UWP_PACKAGE_VERSION "1.0.0.0" CACHE STRING
     "Identity Version of the package, a.b.c.d (CI passes 1.0.0.<run number> so each build installs over the last)")
+# Extra files copied flat into payload\guest (e.g. the output of tools/ci/fetch_doom.ps1: chocolate-doom.exe, SDL2 DLLs,
+# doom1.wad). Empty = none. The sidecars in host-uwp/payload/guest/ are always staged.
+set(HOST_UWP_EXTRA_GUEST_DIR "" CACHE PATH "Directory whose files are staged into payload\\guest")
 set(HOST_UWP_BUILTIN_DIR "${WIN10XBOX_ROOT}/wine-pe/out/builtin" CACHE PATH
     "Wine PE builtin DLLs to bundle in the package (the wine-pe-builtin artifact). Optional: without them the package is still produced and the owner drops the DLLs into LocalState\\machine\\Windows\\builtin")
 option(HOST_UWP_SKIP_WINMD "Skip midl (the package then lacks the WinRT metadata the Xbox launcher wants; CI debugging only)" OFF)
@@ -150,6 +153,7 @@ add_executable(host_uwp WIN32
   host_util.cpp
   host_shell.cpp
   launch_config.cpp
+  guest_sidecar.cpp
   crash.cpp
   presenter.cpp
   blit.cpp
@@ -161,6 +165,7 @@ add_executable(host_uwp WIN32
   host_stage.h
   host_util.h
   launch_config.h
+  guest_sidecar.h
   crash.h
   presenter.h
   blit.h
@@ -292,7 +297,8 @@ set(HOST_UWP_GUESTS window_guest hello_guest hello_guest_cui guest_hello guest_c
 # enable_testing() comes after the add_subdirectory() calls on purpose: the tests of the
 # third-party projects are not registered here, only this one.
 # ---------------------------------------------------------------------------
-add_executable(host_uwp_selftest selftest/selftest.cpp launch_config.cpp launch_config.h)
+add_executable(host_uwp_selftest selftest/selftest.cpp launch_config.cpp launch_config.h guest_sidecar.cpp guest_sidecar.h)
+target_include_directories(host_uwp_selftest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # The presenter's frame path (blit.cpp, the exact code the console runs) on a WARP device.
 add_executable(host_uwp_blittest selftest/blit_test.cpp blit.cpp blit.h)
 target_include_directories(host_uwp_blittest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -395,6 +401,7 @@ add_custom_target(stage_appx ALL
           "-DASSETS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/assets"
           "-DPAYLOAD_DIR=${CMAKE_CURRENT_SOURCE_DIR}/payload"
           "-DBUILTIN_DIR=${HOST_UWP_BUILTIN_DIR}"
+          "-DEXTRA_GUEST_DIR=${HOST_UWP_EXTRA_GUEST_DIR}"
           "-DGUEST_DLL_DIR=${WIN10XBOX_GUEST_DLL_DIR}"
           "-DMACHINE_JSON=${WIN10XBOX_ROOT}/machine/machine.default.json"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/stage.cmake"

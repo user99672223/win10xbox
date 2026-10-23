@@ -101,6 +101,19 @@ jobs:
           }
           Write-Host "downloaded wine-pe-builtin from run $id ($n DLLs, ntdll.dll present)"
 
+      # Chocolate Doom 3.1.1 + SDL2 DLLs + the shareware doom1.wad (about 10 MB), pinned by SHA-256 and verified on every
+      # run (tools/ci/fetch_doom.ps1, same pins and cache key as ci.yml). Staged flat into payload\guest by stage.cmake
+      # (-DHOST_UWP_EXTRA_GUEST_DIR); the sidecars (chocolate-doom.args/.env/.title, doom-timedemo.launch) are in
+      # host-uwp/payload/guest. docs/slices/doompkg.md.
+      - name: Cache Chocolate Doom and doom1.wad
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/doom-src
+          key: doom-3.1.1-58c34c61ae954493fce5ff01fd553898240a0de25658aa97b43ac9510c49581f-wad-1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771
+      - name: Fetch Chocolate Doom 3.1.1 and doom1.wad (packaged guest)
+        shell: pwsh
+        run: ./tools/ci/fetch_doom.ps1 -Out "${{ runner.temp }}/doom-guest"
+
       # Mirror ci.yml's proven windows Configure. No -DCMAKE_POLICY_VERSION_MINIMUM:
       # ci.yml builds the same third_party/zydis + core/ on this runner without it,
       # and the earlier malformed value ("3") poisoned the cache so every
@@ -116,6 +129,7 @@ jobs:
           -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
           -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
           -DHOST_UWP_PACKAGE_VERSION=1.0.0.${{ github.run_number }}
+          -DHOST_UWP_EXTRA_GUEST_DIR=${{ runner.temp }}\doom-guest
       - name: Build
         env: { SCCACHE_GHA_ENABLED: "true" }
         run: cmake --build build-uwp -- -k 0   # keep going so all compile errors surface in one run
@@ -196,6 +210,14 @@ jobs:
             Write-Host "::error::the package is missing bundled guest(s): $($missing -join ', ')"
             exit 1
           }
+          # Chocolate Doom is not a tests/guest program: it comes from fetch_doom.ps1 plus the sidecars, checked by name.
+          $doom = @('chocolate-doom.exe', 'doom1.wad', 'SDL2.dll', 'chocolate-doom.args', 'chocolate-doom.env',
+                    'chocolate-doom.title', 'doom-timedemo.launch')
+          $missingDoom = @($doom | Where-Object { -not (Test-Path "$stage/payload/guest/$_") })
+          if ($missingDoom.Count -gt 0) {
+            Write-Host "::error::the package is missing Chocolate Doom file(s): $($missingDoom -join ', ')"
+            exit 1
+          }
           # Our own builtin DLLs (guest-dlls/): the XInput DLL under its three names.
           $ownDlls = @('xinput1_4.dll', 'xinput1_3.dll', 'xinput9_1_0.dll')
           $missingDlls = @($ownDlls | Where-Object { -not (Test-Path "$stage/payload/builtin/$_") })
@@ -235,9 +257,12 @@ jobs:
           $lines = @('### host-uwp package contents', "- package size: $mb MB (budget 500 MB)", "- guests: $($want -join ', ')", '', '| dir | files | MB |', '|---|---|---|')
           $lines += @($groups | ForEach-Object { "| $($_.Dir) | $($_.Files) | $($_.MB) |" })
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          $doomMissing = @('chocolate-doom.exe', 'doom1.wad', 'SDL2.dll', 'chocolate-doom.args', 'chocolate-doom.env',
+                           'chocolate-doom.title', 'doom-timedemo.launch') | Where-Object { $entries -notcontains "payload/guest/$_" }
           if ($entries -notcontains 'payload/guests.txt') { Write-Host '::error::payload/guests.txt manifest missing from package'; exit 1 }
           if (-not ($entries | Where-Object { $_ -like 'payload/builtin/*.dll' })) { Write-Host '::error::no Wine builtins in package'; exit 1 }
           if ($missing.Count -gt 0) { Write-Host "::error::guest(s) missing from the .msix: $($missing -join ', ')"; exit 1 }
+          if ($doomMissing) { Write-Host "::error::Chocolate Doom file(s) missing from the .msix: $($doomMissing -join ', ')"; exit 1 }
           if ($mb -gt 500) { Write-Host "::error::package is $mb MB, over the 500 MB sideload budget"; exit 1 }
 
       # Upload whenever a package exists, even if the selftest step failed (the job is then
