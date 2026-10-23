@@ -1,20 +1,20 @@
-# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/shell32.sh; measured on linux-cross, run 39880509318)
+# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/shell32.sh; measured locally under Wine 9 after the shell32 COM registration and profile folders; shlfileop kept at the linux-cross run 39880509318 value; the CI loop re-measures from the runner's linux-cross-bin artifact)
 appbar run 36
-assoc run 2
-autocomplete crash 0
+assoc run 8
+autocomplete run 2
 brsfolder run 2
-ebrowser run 1
+ebrowser crash 0
 generated run 0
 progman_dde crash 0
 recyclebin run 6
 shelldispatch crash 0
-shelllink crash 0
-shellole crash 0
-shellpath run 46
-shfldr_special crash 0
+shelllink run 16
+shellole run 0
+shellpath run 118
+shfldr_special run 0
 shlexec timeout 0
 shlfileop run 101
 shlfolder crash 0
-shlview crash 0
+shlview run 2
 string run 0
 systray run 8

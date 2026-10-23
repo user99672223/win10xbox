@@ -1,0 +1,9 @@
+# Wine shell32 conformance units that must complete through the layer with 0 failures
+# (wine-pe/tests/shell32.sh, ctest integration.winetest_shell32; docs/slices/wt-shell32.md has the rest).
+#
+#   <unit> <minimum number of assertions executed>
+#
+# A listed unit fails the gate when it crashes, times out, has any failure, or executes fewer assertions than
+# its floor. The list grows only: add a unit once the runner (linux-cross) measured 0 failures for it.
+string 5
+generated 0

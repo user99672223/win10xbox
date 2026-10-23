@@ -5,7 +5,7 @@
 #   wine-pe/tests/shell32.sh build --out <dir> [--gen-include <dir>]
 #   wine-pe/tests/shell32.sh run   --out <dir> --host <win10xbox.exe> --machine <dir>
 #                                   [--emulator <wine>] [--units "registry security crypt"]
-#                                   [--timeout <s>] [--baseline <file>]
+#                                   [--timeout <s>] [--baseline <file>] [--allowlist <file>]
 #   wine-pe/tests/shell32.sh all   (build, then run; takes the options of both)
 #
 # build: compiles the shell32 test sources of wine-pe/wine-src (fetch-wine.sh;
@@ -26,6 +26,10 @@
 #   run    the unit must complete with failures <= max (fewer prints IMPROVED)
 #   crash|timeout  must not complete; completing prints IMPROVED (record it)
 #   and at least one assertion must have executed over all units.
+#   A unit whose failure count is LOWER than the baseline (or that completes where the baseline says crash|timeout) is
+#   a regression of the baseline file: the run fails until the file is rewritten (a ratchet; it only goes down).
+# Allowlist (default wine-pe/tests/shell32.allowlist, lines "<unit> <min executed>"): a listed unit must complete with
+#   0 failures and at least its floor of executed assertions, whatever the baseline says. It grows only.
 # Exit: 0 baseline holds, 1 regression, 2 usage, 77 prerequisites missing
 # (the Wine sources, the builtins or the NLS data): ctest SKIP.
 set -uo pipefail
@@ -38,7 +42,7 @@ LLVM_MINGW="${LLVM_MINGW:-/opt/llvm-mingw}"
 
 MODE="${1:-}"; shift || true
 OUT=""; GEN="$ROOT/wine-pe/build/include"; HOST=""; MACHINE=""; EMULATOR=""
-UNITS="appbar assoc autocomplete brsfolder ebrowser generated progman_dde recyclebin shelldispatch shelllink shellole shellpath shfldr_special shlexec shlfileop shlfolder shlview string systray"; TIMEOUT=30; BASELINE="$HERE/shell32.baseline"
+UNITS="appbar assoc autocomplete brsfolder ebrowser generated progman_dde recyclebin shelldispatch shelllink shellole shellpath shfldr_special shlexec shlfileop shlfolder shlview string systray"; TIMEOUT=30; BASELINE="$HERE/shell32.baseline"; ALLOWLIST="$HERE/shell32.allowlist"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --out) OUT="$2"; shift 2 ;;
@@ -49,6 +53,7 @@ while [[ $# -gt 0 ]]; do
         --units) UNITS="$2"; shift 2 ;;
         --timeout) TIMEOUT="$2"; shift 2 ;;
         --baseline) BASELINE="$2"; shift 2 ;;
+        --allowlist) ALLOWLIST="$2"; shift 2 ;;
         *) echo "shell32.sh: unknown argument '$1'" >&2; exit 2 ;;
     esac
 done
@@ -97,6 +102,11 @@ do_build() {
         -lntdll -lkernel32 -luser32 -lgdi32 -ladvapi32 -lshell32 -lole32 -loleaut32 -lshlwapi -luuid \
         || { echo "shell32.sh: build failed" >&2; exit 1; }
     echo "shell32.sh: built $EXE"
+}
+
+allow_floor_of() {   # <unit> -> floor, or empty when the unit is not on the allowlist
+    [[ -f "$ALLOWLIST" ]] || return 0
+    awk -v u="$1" '$1 == u && $1 !~ /^#/ { print $2; exit }' "$ALLOWLIST"
 }
 
 baseline_of() {   # <unit> -> "<expect> <max>"
@@ -155,12 +165,19 @@ do_run() {
             elif (( fails > max )); then
                 echo "  REGRESSION: $fails failures, baseline allows $max"; bad=1
             elif (( fails < max )); then
-                echo "  IMPROVED: $fails failures < baseline $max; lower $BASELINE"
+                echo "  REGRESSION OF THE BASELINE FILE: $fails failures < baseline $max; rewrite $BASELINE"; bad=1
             fi
         elif [[ $status == ok ]]; then
-            echo "  IMPROVED: now completes ($ex executed, $fails failures), baseline is '$expect'; update $BASELINE"
+            echo "  REGRESSION OF THE BASELINE FILE: now completes ($ex executed, $fails failures), baseline is '$expect'; rewrite $BASELINE"; bad=1
         else
             echo "  XFAIL: $status as recorded"
+        fi
+        local floor; floor="$(allow_floor_of "$unit")"
+        if [[ -n "$floor" ]]; then
+            if [[ $status != ok ]]; then echo "  REGRESSION: allowlisted unit must complete, now $status"; bad=1
+            elif (( fails != 0 )); then echo "  REGRESSION: allowlisted unit has $fails failures"; bad=1
+            elif (( ex < floor )); then echo "  REGRESSION: allowlisted unit executed $ex < floor $floor"; bad=1
+            fi
         fi
     done
     echo "WINETEST shell32 total executed=$total"
