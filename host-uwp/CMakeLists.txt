@@ -218,7 +218,7 @@ set_target_properties(window_guest PROPERTIES OUTPUT_NAME "window")
 
 # Every other guest of the repo, so the package carries them all to the console (HANDOFF.md
 # "Standing testing rule"). Console programs; output names as in the main tree.
-foreach(_g hello cpuid sleep spawn xinput)
+foreach(_g hello cpuid sleep spawn xinput identity)
   add_executable(guest_${_g} "${WIN10XBOX_ROOT}/tests/guest/${_g}.c")
 endforeach()
 # Our own builtin DLLs (guest-dlls/: xinput1_4.dll and its copies xinput1_3.dll / xinput9_1_0.dll, staged into
@@ -226,9 +226,6 @@ endforeach()
 set(WIN10XBOX_GUEST_DLL_DIR ${CMAKE_BINARY_DIR}/bin/guest-dlls)
 add_subdirectory(${WIN10XBOX_ROOT}/guest-dlls guest-dlls)
 target_link_libraries(guest_xinput PRIVATE xinput1_4 user32)
-foreach(_g hello cpuid sleep spawn identity)
-  add_executable(guest_${_g} "${WIN10XBOX_ROOT}/tests/guest/${_g}.c")
-endforeach()
 # guest_identity: COM / WMI / registry, and the Windows 10 compatibility manifest the version checks need.
 target_sources(guest_identity PRIVATE "${WIN10XBOX_ROOT}/tests/guest/identity.manifest")
 target_link_libraries(guest_identity PRIVATE ole32 oleaut32 advapi32)
