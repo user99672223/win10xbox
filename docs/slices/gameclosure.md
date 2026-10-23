@@ -1,4 +1,4 @@
-status: blocked
+status: wip
 
 # -gameclosure: DLL/import closure of a game through the layer
 
@@ -67,3 +67,17 @@ else (ws2_32, secur32, bcrypt, dbghelp, ucrtbase, d3d11, dxgi, VC runtime, dhcpc
 closure lines at all (0.86 s, minidump record failures): unexplained.
 Owner next: run guest_closure by hand on machine-native-d3d with a load trace for crypt32/cryptui; cryptui is a wintrust/wininet delay chain
 that is not in the d3d machine's folder.
+
+### Root-cause push (fresh agent)
+crypt32 load failure: not a missing file and not an apiset. The job log's crash record for the Debug run shows two EXCEPTION_WINE_STUB
+exceptions, `unresolved import: dll "kernelbase.dll" function "LoadStringBaseExW"`, raised under crypt32's DllMain
+(crypt32+0x40a61, CertOIDToAlgId region) -> the genuine user32!LoadStringW (route B: native user32 in the folder) -> kernelbase!LoadStringBaseExW,
+which Wine's kernelbase.spec has as `@ stub`. The stub raise is caught by Wine's __TRY in MODULE_InitDLL, DllMain fails, LoadLibrary(crypt32)
+returns 0 (so winhttp and wininet report it, and cryptui.dll, which imports crypt32, fails the same way; cryptui is already in dlls.txt and in
+the artifact). The builtin-only folder uses Wine's own user32, which never calls that export, hence linux-cross is green.
+Fix: wine-pe/patches/0021-kernelbase-loadstringbaseexw.patch exports LoadStringBaseExW(instance, id, buffer, length, language) sharing one
+loader with LoadStringW (same pattern as 0004 for CheckTokenMembershipEx and friends).
+RelWithDebInfo: the same stub exception, not a crash in closure.c. Exit code -2147483392 is 0x80000100 (EXCEPTION_WINE_STUB) of the first
+crypt32 load; no `closure:` line was printed because the host process ended on it. In the Debug host the same two exceptions are recovered
+through the TEB-frame VEH (`2 unwinds to a frame`) and LoadLibrary returns 0; in the optimised host the recovery did not take place (why is
+open: core/dispatch/teb_frames.cpp is the only code between). With the stub gone neither build raises it.
