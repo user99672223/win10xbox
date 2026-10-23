@@ -518,7 +518,7 @@ NTSTATUS NTAPI Xl_NtMapViewOfSection(HANDLE section, HANDLE process, PVOID* base
 // (MemExtendedParameterImageMachine) other than this process's (AMD64) cannot be honoured: Windows answers
 // STATUS_NOT_SUPPORTED for it on an x64 process, 0 meaning "the section's own machine".
 static NTSTATUS CheckImageMachineParameters(PVOID ext, ULONG ext_count) {
-    constexpr ULONG kMemExtendedParameterImageMachine = 5;
+    constexpr ULONG kMemExtendedParameterImageMachine = 6;
     if (!ext) return st::Success;
     for (ULONG i = 0; i < ext_count; ++i) {
         std::uint64_t e[2];

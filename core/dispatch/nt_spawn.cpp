@@ -743,6 +743,10 @@ SetSystemInfoAction ClassifySetSystemInformation(ULONG klass, const char** name,
 }
 
 NTSTATUS NTAPI Xl_NtSetSystemInformation(ULONG klass, PVOID info, ULONG length) {
+    // SystemTimeAdjustmentInformation: the kernel checks the structure's size (SYSTEM_SET_TIME_ADJUST_INFORMATION,
+    // 8 bytes) before it checks the privilege, so a wrong length is not an unprivileged caller's PRIVILEGE_NOT_HELD.
+    constexpr ULONG kSystemTimeAdjustmentInformation = 28;
+    if (klass == kSystemTimeAdjustmentInformation && length != 8) return st::InfoLengthMismatch;
     const char* name = nullptr;
     const char* privilege = nullptr;
     if (ClassifySetSystemInformation(klass, &name, &privilege) == SetSystemInfoAction::PassThrough) {
