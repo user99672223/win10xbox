@@ -56,17 +56,21 @@ open-semantics tests):
 
 ## Result
 
-Windows runners, first run of this slice (head 9487143, before the probe slice was merged in), `reg` unit,
-Debug and RelWithDebInfo: `reg: 1186 tests executed (13 marked as todo, 0 as flaky, 16 failures), 0 skipped.` (was: killed
-by the 20 s cap after millions of failures). 14 of the 16 were pointer assertions (below); the other two were
-`\Device\Null` (`reg.c:337`, `:528`): `NtOpenDirectoryObject` answers PATH_NOT_FOUND on Windows for a device as the last
-name component, where NtOpenKey answers TYPE_MISMATCH, so the object-namespace answer for a name outside `\Registry`
-is now told apart by opening the parent directory. (The host's own `NtOpenKey` would be the better oracle but the
-Wine 9 server that the linux-cross job runs on never answers an open of `\Foobar`.)
+`reg` unit on the Windows runners (Debug and RelWithDebInfo; "was" = killed by the 20 s cap after millions of failures):
 
-With the probe slice merged into this branch (origin/claude/youthful-cerf-l7xxsb-probe: `ProbeForRead/Write`, guarded
-copies, a failed open leaves the handle NULL) the unit is at **1 failure** on the Wine host, measured here; the
-Windows number is the one in "Still failing" below.
+| head | failures | what was left |
+|---|---:|---|
+| 9487143 (statuses, no probe) | 16 | 14 pointer assertions (the probe slice) and `\Device\Null` (`reg.c:337`, `:528`) |
+| c9fdfea (probe merged in) | 3 | `\Device\Null` twice and `reg.c:2548` below |
+
+`\Device\Null` is the object-manager part of `reg.c:337/528`: NtOpenKey answers `STATUS_OBJECT_TYPE_MISMATCH` for a device
+in the namespace. `NamespaceStatus` asks the host's `NtOpenDirectoryObject`, which says PATH_NOT_FOUND for a device as the
+last component, so a PATH_NOT_FOUND on a name with a parent is told from a missing directory by opening the parent. That
+did not work in the layer although it did in the unit tests (which pass on the runners): the registry module looked the
+function up with `GetModuleHandle("ntdll.dll")`, and once a guest runs, the process's module list names Wine's ntdll
+(dispatcher.cpp `HostNtdll`). The dispatcher now hands the host's `NtOpenDirectoryObject`/`NtClose` to the registry
+(`registry::SetHostNamespace`, process.cpp). The host's own `NtOpenKey` would be the better oracle, but the Wine 9 server that
+the linux-cross job runs on never answers an open of `\Foobar` (found here: the unit hung).
 
 ## Still failing
 

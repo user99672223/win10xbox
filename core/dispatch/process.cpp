@@ -593,6 +593,8 @@ int Launch(const LaunchOptions& opts) {
     cfg.os_ubr = mi.windows.ubr;
 #endif
 #if WIN10XBOX_HAVE_REGISTRY
+    registry::SetHostNamespace(reinterpret_cast<registry::OpenDirectoryFn>(HostExport("NtOpenDirectoryObject")),
+                               reinterpret_cast<registry::CloseObjectFn>(HostExport("NtClose")));
     if ((s = registry::Initialize(root))) WARN(process, "registry::Initialize failed: %08lx", static_cast<unsigned long>(s));
 #endif
 #if WIN10XBOX_HAVE_CLOCK

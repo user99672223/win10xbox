@@ -20,6 +20,7 @@
 #include "win10xbox/registry.h"
 
 #include <algorithm>
+#include <atomic>
 #include <condition_variable>
 #include <cstring>
 #include <cwchar>
@@ -161,6 +162,8 @@ std::mutex g_mu;
 std::condition_variable g_cv;
 std::unique_ptr<State> g_st;
 HostPathResolver g_resolver;
+std::atomic<OpenDirectoryFn> g_ns_open{nullptr};
+std::atomic<CloseObjectFn> g_ns_close{nullptr};
 
 // ---- small helpers -----------------------------------------------------------
 
@@ -495,13 +498,16 @@ struct ResolveOpts {
 // namespace's answer: the leaf is missing (NAME_NOT_FOUND), a directory on the way is (PATH_NOT_FOUND), or the object
 // is no key (TYPE_MISMATCH, e.g. \Device\Null). NtOpenDirectoryObject asks the host namespace the guest shares; the one
 // thing it does differently is a device as the leaf (PATH_NOT_FOUND, its parse routine has no name to parse), which is
-// told from a missing directory by the parent opening.
+// told from a missing directory by the parent: if that is not missing, the leaf is an object that is no directory.
+// The host functions come from SetHostNamespace: once a guest runs, "ntdll.dll" in the process names Wine's ntdll.
 NTSTATUS NamespaceStatus(std::wstring_view path, std::size_t components) {
-    using OpenDirectoryFn = NTSTATUS(NTAPI*)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES);
-    using CloseFn = NTSTATUS(NTAPI*)(HANDLE);
-    const HMODULE host = GetModuleHandleW(L"ntdll.dll");
-    auto open = host ? reinterpret_cast<OpenDirectoryFn>(GetProcAddress(host, "NtOpenDirectoryObject")) : nullptr;
-    auto close = host ? reinterpret_cast<CloseFn>(GetProcAddress(host, "NtClose")) : nullptr;
+    OpenDirectoryFn open = g_ns_open.load();
+    CloseObjectFn close = g_ns_close.load();
+    if (!open || !close) {   // no dispatcher (unit tests): the process's own ntdll is the host's
+        const HMODULE host = GetModuleHandleW(L"ntdll.dll");
+        open = host ? reinterpret_cast<OpenDirectoryFn>(GetProcAddress(host, "NtOpenDirectoryObject")) : nullptr;
+        close = host ? reinterpret_cast<CloseObjectFn>(GetProcAddress(host, "NtClose")) : nullptr;
+    }
     if (!open || !close || path.size() >= 0x7FFF) return components > 1 ? kStatusObjectPathNotFound : nt::kObjectNameNotFound;
     auto open_directory = [&](std::wstring name) {
         UNICODE_STRING us;
@@ -522,8 +528,12 @@ NTSTATUS NamespaceStatus(std::wstring_view path, std::size_t components) {
         std::size_t end = path.size();
         while (end > 1 && path[end - 1] == L'\\') --end;   // trailing separators
         const std::size_t cut = path.rfind(L'\\', end - 1);
-        if (cut != std::wstring_view::npos && cut > 0 && open_directory(std::wstring(path.substr(0, cut))) >= 0)
-            return nt::kObjectTypeMismatch;   // the directory is there, so the leaf is: an object that is no directory
+        if (cut != std::wstring_view::npos && cut > 0) {
+            const NTSTATUS parent = open_directory(std::wstring(path.substr(0, cut)));
+            TRACE(registry, "namespace %ls: %08lx, parent %08lx", std::wstring(path).c_str(),
+                  static_cast<unsigned long>(s), static_cast<unsigned long>(parent));
+            if (parent != nt::kObjectNameNotFound && parent != kStatusObjectPathNotFound) return nt::kObjectTypeMismatch;
+        }
     }
     return s;
 }
@@ -1086,6 +1096,11 @@ bool DefaultResolve(const std::wstring& root, const std::wstring& nt_path, std::
 void SetHostPathResolver(HostPathResolver resolver) {
     std::lock_guard<std::mutex> lk(g_mu);
     g_resolver = std::move(resolver);
+}
+
+void SetHostNamespace(OpenDirectoryFn open_directory, CloseObjectFn close) {
+    g_ns_open.store(open_directory);
+    g_ns_close.store(close);
 }
 
 void Shutdown() {

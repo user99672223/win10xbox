@@ -134,6 +134,14 @@ void CloseKey(KeyId key);
 using HostPathResolver = std::function<bool(const std::wstring& nt_path, std::wstring* host_path)>;
 void SetHostPathResolver(HostPathResolver resolver);
 
+// The host's NtOpenDirectoryObject and NtClose. A name outside \Registry is answered the way Windows answers an
+// NtOpenKey on it (OBJECT_NAME_NOT_FOUND, OBJECT_PATH_NOT_FOUND, OBJECT_TYPE_MISMATCH) by asking the host's object
+// namespace, and once a guest runs the process's "ntdll.dll" is Wine's, so the dispatcher hands the host's in. Without
+// them (the unit tests) the process's own ntdll is used.
+using OpenDirectoryFn = NTSTATUS(NTAPI*)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES);
+using CloseObjectFn = NTSTATUS(NTAPI*)(HANDLE);
+void SetHostNamespace(OpenDirectoryFn open_directory, CloseObjectFn close);
+
 // Overlay persistence (machine folder\registry-overlay.bin): optional.
 NTSTATUS SaveOverlay();
 NTSTATUS LoadOverlay();
