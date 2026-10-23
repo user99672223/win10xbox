@@ -17,10 +17,9 @@
  *   os-version       RtlGetVersion, GetVersionExW (the manifest asks for Windows 10) and GetVersion say 10.0.19045
  * `info` lines are measurements that are not gated (the DOS-stub marker of the builtin DLLs, the DOS device names).
  *
- * `--shared-folder` is for the shared machine folder, where "native,builtin" maps the runner's own build-26100
- * version.dll, user32's imports (advapi32, sechost) and so on, which cannot load under Wine's ntdll (docs/TESTING.md):
- * it skips the version-<dll> checks and scans only the modules every guest has (ntdll, kernelbase, kernel32); the
- * builtin-only folder, the console's DLL set, runs all of them.
+ * It runs on the builtin-only machine folder (the console's DLL set) only: advapi32, version.dll and user32 are Wine's
+ * there. The shared folder maps the runner's own build-26100 copies of them ("native,builtin"), which cannot load under
+ * Wine's ntdll (docs/TESTING.md): a program importing advapi32 dies there on a Wine import stub before its first line.
  * Plain C for MSVC and mingw. Run through the layer; no function-local statics. */
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -31,8 +30,7 @@
 #include <string.h>
 #include <wchar.h>
 
-/* version.dll is loaded when the version checks run, not linked: on the shared machine folder the runner's native one
- * would be bound at startup, and the whole program would die on a Wine import stub before printing a line. */
+/* version.dll is loaded here, not linked, so that a failure to load it is a FAIL line and not a program that never starts. */
 typedef DWORD (WINAPI *GetFileVersionInfoSizeWFn)(LPCWSTR, LPDWORD);
 typedef BOOL (WINAPI *GetFileVersionInfoWFn)(LPCWSTR, DWORD, DWORD, LPVOID);
 typedef BOOL (WINAPI *VerQueryValueWFn)(LPCVOID, LPCWSTR, LPVOID *, PUINT);
@@ -123,9 +121,9 @@ static int allowed_wine_export(const char *dll, const char *name) {
     return 0;
 }
 
-static void scan_exports(const char *dll, int load, int *dunder_total) {
+static void scan_exports(const char *dll, int *dunder_total) {
     HMODULE mod = GetModuleHandleA(dll);
-    if (!mod && load) mod = LoadLibraryA(dll);   /* user32 (and with it win32u, gdi32) is not mapped by a console guest */
+    if (!mod) mod = LoadLibraryA(dll);   /* user32 (and with it win32u, gdi32) is not mapped by a console guest */
     if (!mod) {
         printf("FAIL exports: %s is not loadable (error %lu)\n", dll, GetLastError());
         g_fail++;
@@ -166,12 +164,10 @@ static void scan_exports(const char *dll, int load, int *dunder_total) {
 static const char *const k_scanned_dlls[] = {"ntdll.dll", "kernelbase.dll", "kernel32.dll",
                                              "win32u.dll", "user32.dll",    "gdi32.dll"};
 
-static void check_exports(int shared_folder) {
+static void check_exports(void) {
     int before = g_fail, dunder_total = 0;
-    for (size_t i = 0; i < sizeof(k_scanned_dlls) / sizeof(k_scanned_dlls[0]); i++) {
-        if (shared_folder && i >= 3) break;   /* ntdll, kernelbase, kernel32 only */
-        scan_exports(k_scanned_dlls[i], !shared_folder, &dunder_total);
-    }
+    for (size_t i = 0; i < sizeof(k_scanned_dlls) / sizeof(k_scanned_dlls[0]); i++)
+        scan_exports(k_scanned_dlls[i], &dunder_total);
     printf("notells: info __wine_ exports in total: %d (not gated)\n", dunder_total);
     if (g_fail == before) printf("notells: exports ok\n");
 }
@@ -443,26 +439,20 @@ static void info_dos_stub(const char *dll) {
     printf("notells: info %s DOS stub marker \"Wine builtin DLL\": %s\n", dll, found ? "present" : "absent");
 }
 
-int main(int argc, char **argv) {
-    int shared_folder = 0;
-    for (int i = 1; i < argc; i++)
-        if (strcmp(argv[i], "--shared-folder") == 0) shared_folder = 1;
-
+int main(void) {
     check_getprocaddress();
-    check_exports(shared_folder);
-    if (!shared_folder) {
+    check_exports();
+    {
         HMODULE ver = LoadLibraryW(L"version.dll");
         p_GetFileVersionInfoSizeW = ver ? (GetFileVersionInfoSizeWFn)GetProcAddress(ver, "GetFileVersionInfoSizeW") : NULL;
         p_GetFileVersionInfoW = ver ? (GetFileVersionInfoWFn)GetProcAddress(ver, "GetFileVersionInfoW") : NULL;
         p_VerQueryValueW = ver ? (VerQueryValueWFn)GetProcAddress(ver, "VerQueryValueW") : NULL;
         check(p_GetFileVersionInfoSizeW && p_GetFileVersionInfoW && p_VerQueryValueW, "version.dll and its exports");
     }
-    if (!shared_folder && p_VerQueryValueW) {
+    if (p_VerQueryValueW) {
         check_version(L"ntdll.dll", L"NT Layer DLL");
         check_version(L"kernel32.dll", L"Windows NT BASE API Client DLL");
         check_version(L"user32.dll", L"Multi-User Windows USER API Client DLL");
-    } else {
-        printf("notells: info version-<dll> checks and the user32 / win32u / gdi32 export scan are not run on the shared folder\n");
     }
     check_registry();
     check_environment();

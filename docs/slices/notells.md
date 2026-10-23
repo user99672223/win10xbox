@@ -3,8 +3,8 @@ status: wip
 # Slice: an ordinary program that looks for Wine does not find it
 
 Goal: the checks a Windows program makes to find out whether it runs on Wine come back empty, measured by one gated
-guest (`tests/guest/notells.c`, `integration.guest_notells` on the builtin-only machine folder and
-`integration.guest_notells_shared` on the shared one), without breaking the builtins. Scope is minimal: exports, version
+guest (`tests/guest/notells.c`, `integration.guest_notells` on the builtin-only machine folder), without breaking the
+builtins. Scope is minimal: exports, version
 resources, registry keys, environment, drives, OS version. Everything below is what this slice found and did.
 
 ## What changed
@@ -107,15 +107,17 @@ name contains "wine".
 
 ## Gate
 
-`integration.guest_notells` (builtin-only machine folder, console guest): every check below, exit 42.
-`integration.guest_notells_shared` (shared folder, `--shared-folder`): getprocaddress, exports (ntdll, kernelbase, kernel32),
-registry, environment, drives, os-version. The shared folder maps the runner's native DLLs next to the builtins, so the version
-checks (the runner's own version.dll) and the user32/win32u/gdi32 load are not run there; the builtin-only folder is the console's DLL set.
+`integration.guest_notells` (builtin-only machine folder, console guest): every check below, exit 42, `FAIL ` in the output fails it.
+Builtin-only folder only: the guest imports advapi32 and loads version.dll and user32, and the shared folder maps the
+runner's own build-26100 copies of those next to the builtins, which die on Wine's import stubs. A first shared-folder variant
+(`integration.guest_notells_shared`) did exactly that (`EXCEPTION_WINE_STUB`, `api-ms-win-core-crt-l2-1-0._initterm_e`, exit
+0x80000100, run 39958507943) and was removed rather than hollowed out: the checks that would still run there (exports of the three
+core DLLs, registry, environment, drives) run identically here.
 
 Checks: `getprocaddress` (the five names are NULL), `exports` (no `wine_` name in ntdll, kernelbase, kernel32, win32u, user32,
 gdi32 except the three above), `version-ntdll` / `version-kernel32` / `version-user32` (10.0.19045, company, description,
-product, internal / original name, no "wine" in the block), `registry`, `environment`, `drives`, `os-version`
-(`RtlGetVersion`, `GetVersionExW` with the Windows 10 manifest, `GetVersion`).
+product, internal / original name, no "wine" in the block), `registry`, `environment`, `drives` (including C: and the
+DefineDosDevice round trip), `os-version` (`RtlGetVersion`, `GetVersionExW` with the Windows 10 manifest, `GetVersion`).
 
 ## Local build evidence (llvm-mingw, `wine-pe/build.sh --only ntdll,kernelbase,kernel32,user32,shell32,gdi32,msvcrt`)
 

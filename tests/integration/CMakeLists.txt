@@ -116,9 +116,9 @@ unset(_guest_machine)
 # What a program that looks for Wine finds (tests/guest/notells.c, docs/slices/notells.md): GetProcAddress and the export
 # tables of ntdll/kernelbase/kernel32/win32u/user32/gdi32 (no wine_get_* / wine_ names, __wine_ counted), the version
 # resources of ntdll/kernel32/user32 through GetFileVersionInfoW (Windows strings, 10.0.19045, no "Wine"), the Wine
-# registry keys, WINE*/WIN10XBOX_* variables, Z: and the OS version. The builtin-only folder runs every check; the shared
-# folder (the runner's own native DLLs next to the builtins) runs the ones that do not need a DLL the runner's copy would
-# break (--shared-folder: no version.dll, no user32/win32u/gdi32 load).
+# registry keys, WINE*/WIN10XBOX_* variables, Z:, DefineDosDevice and the OS version. Builtin-only machine folder only: the
+# guest imports advapi32 and loads version.dll and user32, and the shared folder holds the runner's own build-26100 copies of
+# them, which die on Wine's import stubs (the first run of a shared-folder variant did, in _initterm_e).
 set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
 set(_guest_console ON)
 set(_guest_save_stdout ${CMAKE_BINARY_DIR}/bin/guest_notells.log)   # the measured values, uploaded by CI
@@ -130,12 +130,6 @@ set_tests_properties(integration.guest_notells PROPERTIES FAIL_REGULAR_EXPRESSIO
 unset(_guest_save_stdout)
 unset(_guest_console)
 unset(_guest_machine)
-set(_guest_args "--shared-folder")
-win10xbox_guest_test(guest_notells_shared "C:\\guest\\guest_notells.exe" 42
-  "notells: getprocaddress ok" "notells: exports ok" "notells: registry ok" "notells: environment ok"
-  "notells: drives ok" "notells: os-version ok" "notells: done")
-set_tests_properties(integration.guest_notells_shared PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL ")
-unset(_guest_args)
 
 # Regression guard for the Xbox kernel32-forwarder bug. WIN10XBOX_TEST_NO_HOST_PATHS
 # makes HostPathOfHandle fail the way GetFinalPathNameByHandleW does inside the
