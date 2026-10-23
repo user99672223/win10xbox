@@ -61,6 +61,13 @@ if(TARGET guest_closure AND WIN10XBOX_PYTHON)
   foreach(_g ${_closure_guests})
     list(APPEND _closure_files $<TARGET_FILE:${_g}>)
   endforeach()
+  # The builtins a game pulls in beyond its own imports: their OWN imports are measured too (the VC runtime, winhttp,
+  # wininet and its dhcpcsvc). Only the ones present in WIN10XBOX_BUILTIN_DIR at configure time are listed.
+  foreach(_b winhttp wininet msvcp140 msvcp140_1 vcruntime140 vcruntime140_1 dhcpcsvc)
+    if(EXISTS ${WIN10XBOX_BUILTIN_DIR}/${_b}.dll)
+      list(APPEND _closure_files ${WIN10XBOX_BUILTIN_DIR}/${_b}.dll)
+    endif()
+  endforeach()
   add_custom_target(closure_lists
     COMMAND ${WIN10XBOX_PYTHON} ${CMAKE_SOURCE_DIR}/tools/game/dump_imports.py ${_closure_files} ${CMAKE_BINARY_DIR}/bin/guest
     COMMENT "Import lists of the guests for guest_closure" VERBATIM)

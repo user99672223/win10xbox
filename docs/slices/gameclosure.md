@@ -40,3 +40,10 @@ runtime is NOT staged). xinput1_3/1_4 are our own guest-dlls copies.
 Total of that run: 9 modules, 26 dlls, 857 symbols, 7 missing dlls, 7 missing symbols. The gate's own lists (5 mingw guests,
 13 dlls, 248 symbols) resolve with 0 missing under Wine. Next: wine-pe/dlls.txt gets winhttp and dhcpcsvc (Wine-side), then
 the owner's lists decide the rest (VC runtime from the redistributable, d3d11/dxgi native).
+
+### Push 1 (ci-loop): Wine-side builtins
+Added to wine-pe/dlls.txt: winhttp, jsproxy (winhttp delay import: InternetGetProxyInfo, InternetInitializeAutoProxyDll,
+InternetDeInitializeAutoProxyDll), msvcp140, msvcp140_1, vcruntime140, vcruntime140_1, dhcpcsvc. All built locally with
+`wine-pe/build.sh --only <dll>`. closure_lists now also dumps the imports of winhttp, wininet, msvcp140(_1), vcruntime140(_1),
+dhcpcsvc from WIN10XBOX_BUILTIN_DIR (those present at configure time). Local guest_closure_builtin: 12 modules, 27 dlls,
+826 symbols, 0 missing dlls, 0 missing symbols (before jsproxy: 1 missing dll, 3 missing symbols, all jsproxy).
