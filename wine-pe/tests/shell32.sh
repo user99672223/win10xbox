@@ -144,6 +144,8 @@ do_run() {
             "$rc" "$secs" "$last" >> "$tsv"
         echo "WINETEST shell32:$unit status=$status executed=$ex todo=$todo flaky=$fl failures=$fails skipped=$sk exit=$rc time=${secs}s"
         [[ -n "$last" ]] && echo "  last test line: $last"
+        local first; first="$(grep -aoE '[A-Za-z0-9_]+\.c:[0-9]+: Test failed:[^\r]*' "$log" | head -1 | cut -c1-200)"
+        [[ -n "$first" ]] && echo "  first failure: $first"
         grep -a '^win10xbox: ' "$log" | head -3 | sed 's/^/  /'
         read -r expect max <<<"$(baseline_of "$unit")"
         if [[ $expect == run ]]; then

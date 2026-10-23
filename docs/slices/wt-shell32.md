@@ -10,4 +10,4 @@ Test IMPORTS (Makefile.in): shell32 ole32 oleaut32 user32 gdi32 advapi32 shlwapi
 so no DLL was added. The earlier commit's ci failure (run 39849670418) was integration.guest_window_input2,
 not the generic builder; build_winetest.sh was unused and is deleted.
 
-Push 1 is the measurement: every unit has baseline `run 999999`, so crashes and timeouts show as REGRESSION.
+Push 2 records the measured baseline (run 39880509318).
