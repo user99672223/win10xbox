@@ -218,7 +218,7 @@ set_target_properties(window_guest PROPERTIES OUTPUT_NAME "window")
 
 # Every other guest of the repo, so the package carries them all to the console (HANDOFF.md
 # "Standing testing rule"). Console programs; output names as in the main tree.
-foreach(_g hello cpuid sleep spawn named_objects xinput identity regpersist)
+foreach(_g hello cpuid sleep spawn named_objects xinput identity regpersist rdrand)
   add_executable(guest_${_g} "${WIN10XBOX_ROOT}/tests/guest/${_g}.c")
 endforeach()
 # Our own builtin DLLs (guest-dlls/: xinput1_4.dll and its copies xinput1_3.dll / xinput9_1_0.dll, staged into
