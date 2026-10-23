@@ -278,3 +278,6 @@ km headers: CMake finds them next to the Windows SDK (`Windows Kits\10\Include\<
 showed: `KMUTANT.Abandoned` is a bit field of `MutantFlags` (`OB()` in `layout_list.inc`), and `DEVICE_OBJECT` is
 `DECLSPEC_ALIGN(16)`, size 0x150 (mingw-w64 omits the alignment: 0x148; `SA()`).
 
+`WIN10XBOX_TEST_FORCE_RDRAND_TRAP=1` (latched in `process::Launch`): the scanner rewrites every register-form `rdrand`/`rdseed` in guest images
+to `ud2`, so the #UD emulation (D18: `BCryptGenRandom`, CF=1) runs on a CPU that has the instructions. Set by `integration.guest_rdrand` and
+`integration.guest_identity`.

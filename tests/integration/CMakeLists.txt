@@ -39,7 +39,7 @@ if(TARGET guest_hello)
                    guest_window guest_window2 guest_window_input guest_window_input2 guest_window_text guest_window_nc
                    guest_dialog guest_comctl guest_seh guest_window_scroll guest_clipboard guest_net msctf_stub
                    guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput xinput1_4 guest_identity
-                   guest_cursor guest_regpersist guest_wasapi guest_xaudio2 guest_tebframe)
+                   guest_cursor guest_regpersist guest_wasapi guest_xaudio2 guest_tebframe guest_rdrand)
   if(TARGET guest_d3d11_tri)
     add_dependencies(prepare_machine guest_d3d11_tri)
   endif()
@@ -118,7 +118,10 @@ win10xbox_guest_test(guest_identity "C:\\guest\\guest_identity.exe" 42
   "cpuid\\.brand=AMD 4700S 8-Core Processor" "registry\\.brand=AMD 4700S 8-Core Processor"
   "smbios\\.brand=AMD 4700S 8-Core Processor" "wmi\\.name=AMD 4700S 8-Core Processor"
   "version\\.KUSER_SHARED_DATA=10\\.0\\.19045" "identity=consistent")
-set_tests_properties(integration.guest_identity PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL ")
+# WIN10XBOX_TEST_FORCE_RDRAND_TRAP=1: the runners' CPUs have RDRAND, the console's does not; the rdrand sites become ud2 so the
+# emulation (the console's path) is what answers.
+set_tests_properties(integration.guest_identity PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL "
+  ENVIRONMENT "WIN10XBOX_TEST_FORCE_RDRAND_TRAP=1")
 unset(_guest_save_stdout)
 unset(_guest_machine)
 
@@ -141,6 +144,10 @@ win10xbox_guest_test(guest_sleep "C:\\guest\\guest_sleep.exe" 7 "guest slept")
 # and that ntdll does not resolve the Wine version function. Builtin-only folder: every system DLL is one of ours.
 set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
 set(_guest_console ON)
+win10xbox_guest_test(guest_rdrand "C:\\guest\\guest_rdrand.exe" 42 "rdrand: ok n=16")
+set_tests_properties(integration.guest_rdrand PROPERTIES FAIL_REGULAR_EXPRESSION "rdrand: FAIL"
+  ENVIRONMENT "WIN10XBOX_TEST_FORCE_RDRAND_TRAP=1")
+
 win10xbox_guest_test(guest_nowine "C:\\guest\\guest_nowine.exe" 42
   "nowine: ntdll.dll exports=" "nowine: kernelbase.dll exports=" "nowine: ntdll.dll does not resolve" "nowine: done modules=[0-9]+ hits=0")
 set_tests_properties(integration.guest_nowine PROPERTIES FAIL_REGULAR_EXPRESSION "nowine: HIT;nowine: FAIL")

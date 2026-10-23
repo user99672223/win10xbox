@@ -71,7 +71,23 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
           $id = $null
+          # Prefer the wine-pe run of THIS commit (wine-pe/ or wine-pe.yml changed in the push) and wait while it
+          # runs, so a new wine-pe.yml (a new artifact, a new DLL) is never paired with an older run's artifacts;
+          # that pairing is what failed run 40003374002 (no wine-pe-nls on the previous run). No run for this
+          # commit = wine-pe did not change: the newest successful run on the branch is the right one.
+          foreach ($attempt in 1..40) {
+            $own = @(gh run list --repo ${{ github.repository }} --workflow wine-pe.yml --commit ${{ github.sha }} --limit 1 --json databaseId,status,conclusion 2>$null | ConvertFrom-Json)
+            if ($own.Count -eq 0) { break }
+            if ($own[0].status -eq 'completed') {
+              if ($own[0].conclusion -eq 'success') { $id = $own[0].databaseId }
+              else { Write-Host "wine-pe run $($own[0].databaseId) for this commit ended $($own[0].conclusion); falling back to the newest successful run" }
+              break
+            }
+            Write-Host "attempt ${attempt}: wine-pe run $($own[0].databaseId) for this commit is $($own[0].status); waiting 60s"
+            Start-Sleep -Seconds 60
+          }
           foreach ($attempt in 1..3) {
+            if ($id) { break }
             foreach ($scope in @("--branch ${{ github.ref_name }}", "")) {
               $args = @('run','list','--repo','${{ github.repository }}','--workflow','wine-pe.yml',
                         '--status','success','--limit','1','--json','databaseId','--jq','.[0].databaseId')
@@ -224,7 +240,7 @@ jobs:
                         'guest_spawn.exe', 'guest_dialog.exe', 'guest_comctl.exe', 'guest_clipboard.exe',
                         'guest_seh.exe', 'guest_seh_dll.dll', 'guest_gdi_bitmap.exe', 'guest_window_menu.exe', 'guest_xinput.exe',
                         'guest_cursor.exe', 'guest_regpersist.exe', 'guest_identity.exe',
-                        'guest_net.exe', 'guest_wasapi.exe', 'guest_xaudio2.exe', 'guest_nowine.exe', 'guest_named_objects.exe')
+                        'guest_net.exe', 'guest_wasapi.exe', 'guest_xaudio2.exe', 'guest_nowine.exe', 'guest_named_objects.exe', 'guest_rdrand.exe')
           $missing = @($expected | Where-Object { -not (Test-Path "$stage/payload/guest/$_") })
           Write-Host ("bundled guests: " + (@(Get-ChildItem "$stage/payload/guest" -File | ForEach-Object { $_.Name }) -join ', '))
           if ($missing.Count -gt 0) {

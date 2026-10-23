@@ -1,6 +1,7 @@
 // Handlers for instruction sites patched by the loader's scanner (D9/D10):
 // cpuid (configured vendor, hypervisor hidden), rdtsc/rdtscp (virtual clock)
 // and raw syscall / int 2Eh in guest code (routed into the dispatcher).
+#include <atomic>
 #include "internal.h"
 #include "win10xbox/config.h"
 #if WIN10XBOX_HAVE_CLOCK
@@ -182,14 +183,23 @@ BCryptGenRandomFn g_bcrypt_gen_random = nullptr;
 PVOID g_ud_veh = nullptr;
 }  // namespace
 
-bool EmulateRandomInstruction(CONTEXT* c) {
-    if (!g_bcrypt_gen_random) return false;
-    const auto* code = reinterpret_cast<const std::uint8_t*>(c->Rip);
+namespace {
+std::atomic<bool> g_force_random_trap{false};   // WIN10XBOX_TEST_FORCE_RDRAND_TRAP, latched in Launch (namespace scope: read by the scanner options)
+
+// Fill `bytes` random bytes: BCryptGenRandom (system-preferred RNG), primed at install so that no loader work happens
+// inside the exception handler (the first call loads and initialises the RNG provider).
+bool GenerateRandom(void* out, ULONG bytes) {
+    return g_bcrypt_gen_random &&
+           g_bcrypt_gen_random(nullptr, static_cast<unsigned char*>(out), bytes, 2 /*BCRYPT_USE_SYSTEM_PREFERRED_RNG*/) >= 0;
+}
+
+// Decode `code` (the instruction at c->Rip, or its saved original bytes when the site was rewritten to ud2) and emulate it.
+bool EmulateRandomAt(CONTEXT* c, const std::uint8_t* code, std::size_t avail) {
     ZydisDecoder dec;
     ZydisDecoderInit(&dec, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
     ZydisDecodedInstruction ins;
     ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
-    if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&dec, code, 15, &ins, ops))) return false;
+    if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&dec, code, avail, &ins, ops))) return false;
     if ((ins.mnemonic != ZYDIS_MNEMONIC_RDRAND && ins.mnemonic != ZYDIS_MNEMONIC_RDSEED) || ins.operand_count_visible < 1 ||
         ops[0].type != ZYDIS_OPERAND_TYPE_REGISTER)
         return false;
@@ -199,8 +209,7 @@ bool EmulateRandomInstruction(CONTEXT* c) {
     const unsigned id = static_cast<unsigned>(ZydisRegisterGetId(reg));
     if (!bytes || id > 15) return false;
     std::uint64_t v = 0;
-    if (g_bcrypt_gen_random(nullptr, reinterpret_cast<unsigned char*>(&v), bytes, 2 /*BCRYPT_USE_SYSTEM_PREFERRED_RNG*/) < 0)
-        return false;
+    if (!GenerateRandom(&v, bytes)) return false;
     DWORD64* slot = &c->Rax + id;   // CONTEXT keeps Rax, Rcx, Rdx, Rbx, Rsp, Rbp, Rsi, Rdi, R8..R15 in hardware order
     if (bytes == 8) *slot = v;
     else if (bytes == 4) *slot = v & 0xFFFFFFFFull;
@@ -209,6 +218,18 @@ bool EmulateRandomInstruction(CONTEXT* c) {
     c->Rip += ins.length;
     return true;
 }
+}  // namespace
+
+bool EmulateRandomInstruction(CONTEXT* c) {
+    if (!g_bcrypt_gen_random) return false;
+    std::uint8_t saved[16];
+    std::uint8_t len = 0;
+    if (loader::RandomSiteBytes(c->Rip, saved, &len)) return EmulateRandomAt(c, saved, len);   // a ud2 rewrite (test mode)
+    return EmulateRandomAt(c, reinterpret_cast<const std::uint8_t*>(c->Rip), 15);
+}
+
+void SetForceRandomTrap(bool on) { g_force_random_trap.store(on); }
+bool ForceRandomTrap() { return g_force_random_trap.load(); }
 
 namespace {
 LONG CALLBACK UdVeh(PEXCEPTION_POINTERS ep) {
@@ -226,7 +247,15 @@ void InstallRandomInstructionEmulation() {
         WARN(process, "bcrypt!BCryptGenRandom unavailable: RDRAND is advertised but not emulated");
         return;
     }
-    g_ud_veh = AddVectoredExceptionHandler(1, UdVeh);
+    // Prime: the first BCryptGenRandom loads the RNG provider, which must not happen inside the handler (the guest's
+    // loader state is in place by then). A host where it fails has no emulation, and says so here, not at the fault.
+    std::uint64_t probe = 0;
+    if (!GenerateRandom(&probe, sizeof probe)) {
+        ERR(process, "BCryptGenRandom failed while priming: RDRAND is advertised but not emulated");
+        g_bcrypt_gen_random = nullptr;
+        return;
+    }
+    g_ud_veh = AddVectoredExceptionHandler(1, UdVeh);   // first-call: ahead of every crash-capture handler (order 0)
     TRACE(process, "RDRAND/RDSEED #UD emulation %s", g_ud_veh ? "installed" : "NOT installed");
 }
 
@@ -269,6 +298,8 @@ bool CpuSiteHandler(loader::SiteKind kind, loader::ScanRegs* regs, void*) {
         return true;
     case loader::SiteKind::KuserRead:
         return KuserRead(regs);
+    case loader::SiteKind::Random:   // never reaches a handler: the site is a ud2, served by UdVeh
+        return false;
     default:
         return false;
     }

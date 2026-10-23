@@ -118,7 +118,9 @@ void SetCpuPolicy(const CpuPolicy& p);
 CpuPolicy GetCpuPolicy();
 // D18: RDRAND/RDSEED are advertised; where the host lacks them the #UD is emulated (BCryptGenRandom, CF=1).
 void InstallRandomInstructionEmulation();                 // first-chance VEH, idempotent
-bool EmulateRandomInstruction(CONTEXT* context);          // the handler's core: decodes at Rip, advances it on success
+bool EmulateRandomInstruction(CONTEXT* context);
+void SetForceRandomTrap(bool on);   // WIN10XBOX_TEST_FORCE_RDRAND_TRAP: the scanner rewrites rdrand/rdseed sites to ud2
+bool ForceRandomTrap();          // the handler's core: decodes at Rip, advances it on success
 // Scanner handler (loader::SiteHandler) used for every guest image we map.
 bool CpuSiteHandler(loader::SiteKind kind, loader::ScanRegs* regs, void* ctx);
 
