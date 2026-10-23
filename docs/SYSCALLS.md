@@ -5,7 +5,7 @@ Windows 10 x64 / 22H2 NT syscall numbers) and the hand-maintained policy
 `core/dispatch/syscall_policy.inc`; win32u entries (ids 0x1000..) are Emulate when
 `core/user/user_syscalls.h` registers them. Do not edit by hand.
 
-1798 syscalls. passthrough 130, translate 59, emulate 352, todo 1257. Generated 2026-10-23.
+1798 syscalls. passthrough 129, translate 60, emulate 360, todo 1249. Generated 2026-10-23.
 
 Policy: **PassThrough** calls the host ntdll export by name; **Translate**
 rewrites arguments (paths, handles, timeouts) then passes through;
@@ -31,7 +31,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x000e | NtSetEvent | 2 | PassThrough |  |
 | 0x000f | NtClose | 1 | Translate | emulated handles (registry, token, image sections) routed to their owner |
 | 0x0010 | NtQueryObject | 5 | Translate | directory/link handles are answered here, names of named host objects are mapped back to the guest path, a file handle names the guest NT path, not the host device path |
-| 0x0011 | NtQueryInformationFile | 5 | Translate | FileNameInformation/FileNormalizedNameInformation un-translated to the guest view |
+| 0x0011 | NtQueryInformationFile | 5 | Translate | FileNameInformation/FileNormalizedNameInformation/FileAllInformation: the name is the guest view, built from a private reply |
 | 0x0012 | NtOpenKey | 3 | Emulate | registry |
 | 0x0013 | NtEnumerateValueKey | 6 | Emulate | registry |
 | 0x0014 | NtFindAtom | 3 | PassThrough |  |
@@ -65,13 +65,13 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0030 | NtOpenProcessTokenEx | 4 | Emulate | token |
 | 0x0031 | NtQueryPerformanceCounter | 2 | Emulate | clock |
 | 0x0032 | NtEnumerateKey | 6 | Emulate | registry |
-| 0x0033 | NtOpenFile | 6 | Translate | VFS path rewrite |
+| 0x0033 | NtOpenFile | 6 | Translate | VFS path rewrite (not for FILE_OPEN_BY_FILE_ID) |
 | 0x0034 | NtDelayExecution | 2 | Emulate | clock |
 | 0x0035 | NtQueryDirectoryFile | 11 | PassThrough |  |
 | 0x0036 | NtQuerySystemInformation | 4 | Translate | SystemTimeOfDayInformation from the virtual clock |
 | 0x0037 | NtOpenSection | 3 | Translate | named objects: the guest name maps onto a host object under the layer prefix (nt_object.cpp) |
 | 0x0038 | NtQueryTimer | 5 | PassThrough |  |
-| 0x0039 | NtFsControlFile | 10 | PassThrough |  |
+| 0x0039 | NtFsControlFile | 10 | Translate | FSCTL_SET_REPARSE_POINT/FSCTL_GET_REPARSE_POINT: the target of a junction or absolute symbolic link goes through the VFS (guest name to host name and back) |
 | 0x003a | NtWriteVirtualMemory | 5 | PassThrough |  |
 | 0x003b | NtCloseObjectAuditAlarm | 3 | PassThrough |  |
 | 0x003c | NtDuplicateObject | 7 | Translate | emulated handles (registry, token, image sections) routed to their owner |
@@ -99,7 +99,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0052 | NtResumeThread | 2 | PassThrough |  |
 | 0x0053 | NtTerminateThread | 2 | Translate | current thread: guest thread bookkeeping before the host call |
 | 0x0054 | NtReadRequestData | 6 | PassThrough |  |
-| 0x0055 | NtCreateFile | 11 | Translate | VFS path rewrite |
+| 0x0055 | NtCreateFile | 11 | Translate | VFS path rewrite (not for FILE_OPEN_BY_FILE_ID) |
 | 0x0056 | NtQueryEvent | 5 | PassThrough |  |
 | 0x0057 | NtWriteRequestData | 6 | PassThrough |  |
 | 0x0058 | NtOpenDirectoryObject | 3 | Translate | object manager namespace (directory objects, links) is the layer's own; names outside it go to the host (nt_object.cpp) |
@@ -1167,7 +1167,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x137c | NtUserDestroyActivationGroup | 0 | Todo |  |
 | 0x137d | NtUserDestroyActivationObject | 0 | Todo |  |
 | 0x137e | NtUserDestroyCaret | 0 | Emulate | core/user |
-| 0x137f | NtUserDestroyCursor | 2 | Todo |  |
+| 0x137f | NtUserDestroyCursor | 2 | Emulate | core/user |
 | 0x1380 | NtUserDestroyDCompositionHwndTarget | 0 | Todo |  |
 | 0x1381 | NtUserDestroyInputContext | 1 | Todo |  |
 | 0x1382 | NtUserDestroyMenu | 1 | Emulate | core/user |
@@ -1194,7 +1194,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1397 | NtUserDrawAnimatedRects | 0 | Todo |  |
 | 0x1398 | NtUserDrawCaption | 0 | Todo |  |
 | 0x1399 | NtUserDrawCaptionTemp | 7 | Todo |  |
-| 0x139a | NtUserDrawIconEx | 9 | Todo |  |
+| 0x139a | NtUserDrawIconEx | 9 | Emulate | core/user |
 | 0x139b | NtUserDrawMenuBar | 1 | Emulate | core/user |
 | 0x139c | NtUserDrawMenuBarTemp | 5 | Todo |  |
 | 0x139d | NtUserDwmGetRemoteSessionOcclusionEvent | 0 | Todo |  |
@@ -1237,7 +1237,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x13c2 | NtUserEvent | 0 | Todo |  |
 | 0x13c3 | NtUserExcludeUpdateRgn | 2 | Emulate | core/user |
 | 0x13c4 | NtUserFillWindow | 0 | Todo |  |
-| 0x13c5 | NtUserFindExistingCursorIcon | 3 | Todo |  |
+| 0x13c5 | NtUserFindExistingCursorIcon | 3 | Emulate | core/user |
 | 0x13c6 | NtUserFindWindowEx | 5 | Emulate | core/user |
 | 0x13c7 | NtUserFlashWindowEx | 1 | Emulate | core/user |
 | 0x13c8 | NtUserForceEnableNumpadTranslation | 0 | Todo |  |
@@ -1272,8 +1272,8 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x13e5 | NtUserGetCurrentDpiInfoForWindow | 0 | Todo |  |
 | 0x13e6 | NtUserGetCurrentInputMessageSource | 1 | Todo |  |
 | 0x13e7 | NtUserGetCursor | 0 | Emulate | core/user |
-| 0x13e8 | NtUserGetCursorFrameInfo | 4 | Todo |  |
-| 0x13e9 | NtUserGetCursorInfo | 1 | Todo |  |
+| 0x13e8 | NtUserGetCursorFrameInfo | 4 | Emulate | core/user |
+| 0x13e9 | NtUserGetCursorInfo | 1 | Emulate | core/user |
 | 0x13ea | NtUserGetCursorPos | 1 | Emulate | core/user |
 | 0x13eb | NtUserGetDC | 1 | Emulate | core/user |
 | 0x13ec | NtUserGetDCEx | 3 | Emulate | core/user |
@@ -1299,8 +1299,8 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1400 | NtUserGetHDevName | 0 | Todo |  |
 | 0x1401 | NtUserGetHimetricScaleFactorFromPixelLocation | 0 | Todo |  |
 | 0x1402 | NtUserGetIMEShowStatus | 0 | Todo |  |
-| 0x1403 | NtUserGetIconInfo | 6 | Todo |  |
-| 0x1404 | NtUserGetIconSize | 4 | Todo |  |
+| 0x1403 | NtUserGetIconInfo | 6 | Emulate | core/user |
+| 0x1404 | NtUserGetIconSize | 4 | Emulate | core/user |
 | 0x1405 | NtUserGetImeHotKey | 0 | Todo |  |
 | 0x1406 | NtUserGetImeInfoEx | 0 | Todo |  |
 | 0x1407 | NtUserGetInputContainerId | 0 | Todo |  |
@@ -1624,7 +1624,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1545 | NtUserSetCoveredWindowStates | 0 | Todo |  |
 | 0x1546 | NtUserSetCursor | 1 | Emulate | core/user |
 | 0x1547 | NtUserSetCursorContents | 0 | Todo |  |
-| 0x1548 | NtUserSetCursorIconData | 4 | Todo |  |
+| 0x1548 | NtUserSetCursorIconData | 4 | Emulate | core/user |
 | 0x1549 | NtUserSetCursorIconDataEx | 0 | Todo |  |
 | 0x154a | NtUserSetCursorPos | 2 | Emulate | core/user |
 | 0x154b | NtUserSetDesktopColorTransform | 0 | Todo |  |

@@ -602,10 +602,10 @@ NTSTATUS Clk_NtConvertBetweenAuxiliaryCounterAndPerformanceCounter(BOOLEAN ToPer
 }
 
 NTSTATUS Clk_NtQuerySystemInformation_TimeOfDay(PVOID Buffer, ULONG Length, PULONG ReturnLength) {
-    // Windows 10 accepts the 0x30-byte structure; older callers pass the 0x20-byte
-    // prefix. Anything shorter is a length mismatch (nothing is written).
-    constexpr ULONG kMinLen = 0x20;
-    if (Length < kMinLen) {
+    // The kernel copies as much of the 0x30-byte structure as the caller has room for (a length of 0 is a success
+    // that writes nothing; Wine's info.c:515-531 pins 0, 24 and 32 on a Windows runner) and refuses a buffer longer
+    // than the structure.
+    if (Length > sizeof(TimeOfDayInfo)) {
         probe::StoreIfPresent<ULONG>(ReturnLength, sizeof(TimeOfDayInfo));
         return kStatusInfoLengthMismatch;
     }
@@ -621,7 +621,8 @@ NTSTATUS Clk_NtQuerySystemInformation_TimeOfDay(PVOID Buffer, ULONG Length, PULO
     info.BootTimeBias = 0;
     info.SleepTimeBias = 0;
     const ULONG n = Length < sizeof(info) ? Length : static_cast<ULONG>(sizeof(info));
-    if (NTSTATUS s = probe::CopyToUser(Buffer, &info, n)) return s;
+    if (n)
+        if (NTSTATUS s = probe::CopyToUser(Buffer, &info, n)) return s;
     return ReturnLength ? probe::Store<ULONG>(ReturnLength, n) : kStatusSuccess;
 }
 

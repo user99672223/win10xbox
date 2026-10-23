@@ -16,7 +16,7 @@ win10xbox_wine_test(ntdll path      run 0)
 win10xbox_wine_test(ntdll directory run 556)
 win10xbox_wine_test(ntdll file      crash 0)
 win10xbox_wine_test(ntdll om        crash 0)
-win10xbox_wine_test(ntdll reg       timeout 0)
+win10xbox_wine_test(ntdll reg       run 1)
 win10xbox_wine_test(ntdll info      crash 0)
 win10xbox_wine_test(ntdll time      run 0)
 # --- kernel32 -----------------------------------------------------------------

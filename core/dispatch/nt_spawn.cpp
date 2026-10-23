@@ -11,6 +11,9 @@
 //                         host's own token could do
 #include "nt_spawn.h"
 #include "win10xbox/config.h"
+#if WIN10XBOX_HAVE_REGISTRY
+#include "win10xbox/registry.h"
+#endif
 #include <algorithm>
 #include <cstring>
 #include <cwctype>
@@ -583,6 +586,9 @@ NTSTATUS NTAPI Xl_NtCreateUserProcess(PHANDLE process_handle, PHANDLE thread_han
           host_cwd.empty() ? L"<host's>" : host_cwd.c_str(), req.env.size(), static_cast<unsigned long>(flags), inherit,
           use_list ? inherit_list.size() : size_t(0));
     PROCESS_INFORMATION pi{};
+#if WIN10XBOX_HAVE_REGISTRY
+    registry::PersistOverlay();   // the child's Initialize loads what the parent wrote up to here
+#endif
     const BOOL created = g_api.CreateProcessW(host_exe.c_str(), command_line.data(), nullptr, nullptr, inherit, flags,
                                               req.has_env ? env_block.data() : nullptr,
                                               host_cwd.empty() ? nullptr : host_cwd.c_str(), &si.StartupInfo, &pi);
@@ -743,6 +749,10 @@ SetSystemInfoAction ClassifySetSystemInformation(ULONG klass, const char** name,
 }
 
 NTSTATUS NTAPI Xl_NtSetSystemInformation(ULONG klass, PVOID info, ULONG length) {
+    // SystemTimeAdjustmentInformation: the kernel checks the structure's size (SYSTEM_SET_TIME_ADJUST_INFORMATION,
+    // 8 bytes) before it checks the privilege, so a wrong length is not an unprivileged caller's PRIVILEGE_NOT_HELD.
+    constexpr ULONG kSystemTimeAdjustmentInformation = 28;
+    if (klass == kSystemTimeAdjustmentInformation && length != 8) return st::InfoLengthMismatch;
     const char* name = nullptr;
     const char* privilege = nullptr;
     if (ClassifySetSystemInformation(klass, &name, &privilege) == SetSystemInfoAction::PassThrough) {

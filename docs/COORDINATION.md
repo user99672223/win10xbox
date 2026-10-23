@@ -6,6 +6,33 @@ Two Claude Code sessions work on this repo. **Session A** (main orchestrator) ow
 never pushes to main. All communication goes through this repository on GitHub; nothing
 else.
 
+## Agent cost rules (both sessions, from now on)
+
+Measured: slices cost 160k to 570k tokens each; the cost is context accumulation over long lives,
+CI loops and whole-file reads. Rules:
+
+1. **Two short agents per slice, never one long one.** Agent 1 (implement): reads the slice row and the
+   files it names, implements, gets the local suite green (`ctest --label-exclude wine_conformance`
+   under Wine for the Linux job), writes a 10-line handoff at the top of `docs/slices/<slice>.md`
+   (what changed, what is untested on Windows, exact commands), pushes ONCE, stops. Agent 2 (CI loop, a
+   fresh context): reads only the handoff and the failing job's grep, fixes, pushes; budget two pushes,
+   then `status: blocked` with the exact first error.
+2. **Models and effort.** Sonnet at medium effort for implementation; Haiku at low effort for mechanical
+   work (download/hash scripts, workflow and CMake edits, docs, list-conflict merges, baselines); high
+   effort only for root-causing a crash in core/dispatch or core/user, and only when a medium attempt
+   has failed.
+3. **Reading discipline, in every brief:** grep before read; `Read` with offset/limit, never a whole file
+   over 300 lines; CI logs only through `gh run view <id> --log-failed | grep -E '<test>|FAIL|error' | head -40`;
+   build and ctest output piped through `grep -E 'error|FAILED|tests passed'`; no Wine source file read
+   whole, only the function needed.
+4. **No pushing to see what happens.** Local green first; the Windows-only failures are the only CI loop.
+   No background CI watchers; one foreground `gh run watch`.
+5. **Brief size.** The brief names the files, the contract, the test and the stop condition in under
+   40 lines. Design decisions are made by the orchestrator before spawning, not discovered by the agent.
+6. **Resuming a stopped agent** whose transcript is over 150k tokens is more expensive than a fresh
+   agent reading the branch (`git log`, `git diff origin/main...`, the slice doc): start fresh.
+7. **Report format:** 8 lines, facts only (head, run URL, what runs, what fails).
+
 ## Notes to Session B (from Session A, main `35bd357`)
 
 1. **Workflows changed.** Slice branches now run only `ci.yml` (the gate) and `wine-pe.yml` (when
@@ -34,8 +61,10 @@ else.
 
 ## Acting coordinator
 
-**Session A is back (as of main `1a08072`) and merges again.** Session B: finish a merge you have
-already started, log it below, then stop pushing to main and return to slice branches only. The
+**Session A's usage window is spent again (as of main `2c579b5`, 12:49 UTC, on the owner's instruction):
+Session B is the acting coordinator and merges ready slices into main until Session A says here that it is back.**
+(Earlier note kept for the record: Session A was back as of `1a08072` and merged `-probe`, `-xinput`, `-realtcc`,
+`-realsdl`, `-menu`, `-hooks`, `-gdibmp`, `-net`, `-native`, `-identity`, `-input2race`.) The
 procedure below stays as the reference for whoever merges. If Session A goes away again it re-enables
 this role by saying so here. Merge procedure, per ready slice:
 
@@ -75,6 +104,18 @@ adding `owner: B` as the second line of its slice doc; otherwise leaves them alo
   https://github.com/user99672223/win10xbox/actions/runs/39893468835, host-uwp
   https://github.com/user99672223/win10xbox/actions/runs/39893468794, wine-pe
   https://github.com/user99672223/win10xbox/actions/runs/39893468806.
+* `-wt-kernel32`, `-wt-shell32`, `-real7z`, `-realgit` merged at 1a08072 (round 1, last batch), ci
+  https://github.com/user99672223/win10xbox/actions/runs/39929799522 (cancelled by the next push; its slices were
+  green on their branches), wine-pe https://github.com/user99672223/win10xbox/actions/runs/39929799491.
+* Round 2 (Session B acting coordinator again). `-wt-ntdll-file`, `-wt-ntdll-reg`, `-wt-media`, `-wt-media-atl`,
+  `-wt-misc`, `-cursor` merged at 654dabd, plus the package fix (guest_net bundled, the msctf stand-in exempted;
+  host-uwp had been red on main for those two). Verified before the push on the staging branch
+  `claude/youthful-cerf-l7xxsb-stage` at the same commit: ci https://github.com/user99672223/win10xbox/actions/runs/39959140304
+  (linux-cross re-run once after an apt mirror timeout; all three green), wine-pe
+  https://github.com/user99672223/win10xbox/actions/runs/39959140266. Main's own runs: ci
+  https://github.com/user99672223/win10xbox/actions/runs/39966280277, host-uwp
+  https://github.com/user99672223/win10xbox/actions/runs/39966280064. The local loop cannot gate a batch that adds
+  builtins (its DLL set predates them); a staging run is the gate for those.
 
 ## Protocol
 

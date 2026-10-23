@@ -50,6 +50,7 @@ if(EMULATOR AND _machine MATCHES "^/")
   set(_machine "Z:${_machine}")   # Wine: Z: is the Unix root
 endif()
 string(REPLACE "/" "\\" _machine "${_machine}")
+file(REMOVE "${MACHINE}/registry-overlay.bin")   # a test starts from the registry of the hives (persistence)
 set(_cmd ${EMULATOR} "${HOST}" --machine "${_machine}" "C:\\guest-wine\\${NAME}.exe")
 set(_cmake_timeout ${TIMEOUT})
 # Kill the whole run on timeout (cmake's own TIMEOUT only signals the launcher,

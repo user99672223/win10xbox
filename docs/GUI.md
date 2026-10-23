@@ -81,6 +81,7 @@ more. Presentation is the host's: it only needs `ComposeFrame`.
 | `win_defwnd.cpp` | the default window procedure (`NtUserMessageCall(NtUserDefWindowProc)`): text, WM_NCCALCSIZE from the style (Windows 10 frame metrics), WM_NCHITTEST, WM_NCPAINT, WM_ERASEBKGND with the class brush, WM_CTLCOLOR*, WM_CLOSE, WM_WINDOWPOSCHANGED -> WM_MOVE/WM_SIZE, WM_ACTIVATE -> focus, Alt+F4 |
 | `win_menu.cpp` | menu objects and the `NtUserThunkedMenuItemInfo` family, the menu bar (layout, paint, hit test, `WM_NCLBUTTONDOWN` -> popup), `NtUserTrackPopupMenuEx` / `NtUserEndMenu` and the shared modal loop, the `#32768` popup window procedure |
 | `win_message.cpp` | per-thread queues (posted, input, cross-thread sent), WM_PAINT and WM_TIMER pseudo-messages, `GetMessage`, `PeekMessage`, `MsgWaitForMultipleObjectsEx`, `WaitMessage`, `GetQueueStatus`, `NtUserMessageCall` codes, `DispatchMessage` (WM_PAINT / timer procs), `TranslateMessage` (US layout), timers, the input sink and the thread-side processing of mouse input (hit test, activation, `WM_SETCURSOR`, double clicks), key state, `SendInput`, cursor, caret (tracked, not drawn) |
+| `win_cursor.cpp` | cursor and icon objects (handle `(generation << 16) \| (slot + 1)`; the frame's mask / colour / premultiplied-alpha bitmaps and hotspot that user32 hands over in `NtUserSetCursorIconData`, shared-cursor cache for `FindExistingCursorIcon`), `SetCursor` / `GetCursor` per thread, `ShowCursor` count, `GetCursorInfo`, `GetIconInfo` / `GetIconSize`, `ClipCursor` / `GetClipCursor`, `DestroyCursor`, `DrawIconEx`, and `ComposeCursor`, which draws the pointer onto the frame `ComposeFrame` / `ComposeLastPaintedFrame` return (see rule 9b) |
 | `win_hook.cpp` | in-process `SetWindowsHookEx` / `UnhookWindowsHook[Ex]` / `CallNextHookEx` / `CallMsgFilter` (design: item 9a), the `CbCallWindowsHook` call-out, WH_CALLWNDPROC / WH_CALLWNDPROCRET around window procedure calls |
 | `win_paint.cpp` | update regions (bounding rectangle + erase / frame / internal-paint flags), `InvalidateRect`/`Rgn`, `ValidateRect`/`Rgn`, `RedrawWindow`, `GetUpdateRect`/`Rgn`, `BeginPaint`/`EndPaint`, `GetDC`/`GetDCEx`/`GetWindowDC`/`ReleaseDC`, `ScrollWindowEx`, the non-client frame (solid colours), window surfaces from the driver, flush, `ComposeFrame` / `ComposeLastPaintedFrame` |
 | `win_scroll.cpp` | scroll state per window (`NtUserSetScrollInfo`, `GetScrollBarInfo`, `ShowScrollBar`, `EnableScrollBar`, `GetScrollInfo` via `NtUserCallHwndParam`), the non-client WS_VSCROLL / WS_HSCROLL bars (solid colours, drawn from WM_NCPAINT, HTVSCROLL / HTHSCROLL in WM_NCHITTEST, a WM_NCLBUTTONDOWN on a bar sends WM_VSCROLL / WM_HSCROLL SB_LINEUP / SB_LINEDOWN / SB_PAGEUP / SB_PAGEDOWN then SB_ENDSCROLL), the `ScrollBar` control procedure (SBM_*), `ScrollDC` |
@@ -138,8 +139,9 @@ Not implemented yet (they stay Todo or are documented FIXMEs), roughly in the or
   mnemonics / Alt and F10 activation, accelerator tables (`NtUserTranslateAccelerator`), owner-draw and bitmap items
   (laid out empty), `GetSystemMenu` / `SetSystemMenu` (the window system menu), menu bar wrapping onto a second row,
   scrolling of tall popups, `MIM_BACKGROUND`, the class menu name of `RegisterClass`.
-  **Icons and cursors** (`NtUserSetCursorIconData`, `NtUserDrawIconEx`, `LoadImage` of
-  icons/cursors): Todo. **Scroll bars**: `win_scroll.cpp` (see the module table); thumb dragging and button auto-repeat are not implemented. **Clipboard**, **hooks** (`SetWindowsHookEx`, `SetWinEventHook`), **IME**,
+  **Icons and cursors**: `win_cursor.cpp` (rule 9b); animated cursors (`.ani`, `NtUserSetCursorIconData` with steps) fail with
+  `ERROR_CALL_NOT_IMPLEMENTED`, `CopyImage` / `LR_COPYFROMRESOURCE` of cursors and `NtUserSetIconParam` are untested.
+  **Scroll bars**: `win_scroll.cpp` (see the module table); thumb dragging and button auto-repeat are not implemented. **Clipboard**, **hooks** (`SetWindowsHookEx`, `SetWinEventHook`), **IME**,
   **raw input**, **layered windows** (`SetLayeredWindowAttributes`, `UpdateLayeredWindow`), **window regions**,
   `GradientFill` / `MaskBlt`, `PrintWindow`, `DeferWindowPos`,
   window stations / desktops: Todo.
@@ -232,6 +234,26 @@ Not implemented yet (they stay Todo or are documented FIXMEs), roughly in the or
    cursor, like Wine; input with no window of ours under the cursor / no focus is dropped (traced as `+user`).
    Not done: WM_MOUSELEAVE/HOVER, raw input, dead keys and other layouts (only the plain US layout), the
    journaling and key-repeat counts.
+9b. **The mouse cursor is drawn** (`win_cursor.cpp`, `tests/guest/cursor.c`, `integration.guest_cursor`). Wine's user32 loads
+   a cursor itself (`LoadCursorW(NULL, IDC_ARROW)` reads the resource from user32.dll, builds the bitmaps with GDI and
+   calls `NtUserSetCursorIconData` with a `struct cursoricon_desc`); the object here keeps the frame: `mask` (1 bpp; twice
+   as high as the image for a monochrome cursor, whose upper half is the AND mask and lower half the XOR bitmap), `color`
+   (null for a monochrome one) and, for 32 bpp images, `alpha` (a 32 bpp DIB section, premultiplied by user32). That needs
+   `StretchDIBits` SRCCOPY of a 32 bpp DIB onto a 32 bpp DIB section to keep the source's fourth byte (it does, as on
+   Windows; every other destination gets alpha 0xff). The shape is per thread: `NtUserSetCursor` stores the handle in the
+   calling thread's record, the default `WM_SETCURSOR` (client area, class cursor) does the same, a non-client hit goes back
+   to "never set". `ComposeFrame` and `ComposeLastPaintedFrame` (so screenshots) draw the pointer last, at the driver's
+   cursor position minus the hotspot, only while the show count (`ShowCursor`, starts at 0) is >= 0, with the cursor of the
+   thread that owns the window under the pointer; a thread that never called `SetCursor`, no window of ours under the
+   pointer, or a non-client hit shows a built-in 12x18 arrow (white with a black outline, hotspot 0,0, in the source of
+   `win_cursor.cpp`); `SetCursor(NULL)` shows nothing. Blending: alpha images source-over (premultiplied), colour images
+   `(dst AND mask) XOR colour`, monochrome images `(dst AND upper half) XOR lower half`. `NtUserDrawIconEx` uses the same
+   blender on any DC `ResolveDrawTarget` accepts (a window or a 32 bpp bitmap), with scaling to `width x height` by nearest
+   neighbour, `DI_IMAGE` / `DI_MASK` / `DI_DEFAULTSIZE` and a solid background brush (other brushes are logged); a DC
+   backed by a 1 bpp or palettised bitmap makes it fail. `ClipCursor` is remembered (and handed to the driver, which
+   clamps the pointer); `GetClipCursor` returns it. The test hooks: host-win32's inject command `shot FILE` writes the
+   frame mid-run and `run_guest.cmake` checks `WIN10XBOX_SCREENSHOT_2..4` / `WIN10XBOX_EXPECT_SCREENSHOT_PIXELS_2..4`.
+   host-uwp presents `ComposeFrame` as it is: its own system cursor over the CoreWindow is not hidden by this change.
 9a. **Hooks and timers** (`win_hook.cpp`, `tests/guest/window_hooks.c`, `integration.guest_window_hooks`).
    `SetWindowsHookEx` / `UnhookWindowsHookEx` / `UnhookWindowsHook` / `CallNextHookEx` / `CallMsgFilter` are in process:
    the layer is one process, so a hook with thread id 0 runs on whichever thread takes the message (a module handle is

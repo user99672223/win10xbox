@@ -136,6 +136,18 @@ HCURSOR WINAPI NtUserGetCursor();
 INT WINAPI NtUserShowCursor(BOOL show);
 BOOL WINAPI NtUserClipCursor(const RECT* rect);
 BOOL WINAPI NtUserGetClipCursor(RECT* rect);
+// ---- win_cursor.cpp ----
+BOOL WINAPI NtUserGetCursorInfo(CURSORINFO* info);
+BOOL WINAPI NtUserSetCursorIconData(HCURSOR cursor, UNICODE_STRING* module, UNICODE_STRING* res_name,
+                                    abi::CursorIconDesc* desc);
+HICON WINAPI NtUserFindExistingCursorIcon(UNICODE_STRING* module, UNICODE_STRING* res_name, void* desc);
+BOOL WINAPI NtUserDestroyCursor(HCURSOR cursor, ULONG arg);
+BOOL WINAPI NtUserGetIconSize(HICON handle, UINT step, LONG* width, LONG* height);
+HCURSOR WINAPI NtUserGetCursorFrameInfo(HCURSOR cursor, DWORD istep, DWORD* rate_jiffies, DWORD* num_steps);
+BOOL WINAPI NtUserGetIconInfo(HICON icon, ICONINFO* info, UNICODE_STRING* module, UNICODE_STRING* res_name, DWORD* bpp,
+                              LONG unk);
+BOOL WINAPI NtUserDrawIconEx(HDC hdc, INT x0, INT y0, HICON icon, INT width, INT height, UINT step, HBRUSH brush,
+                             UINT flags);
 HKL WINAPI NtUserGetKeyboardLayout(DWORD thread_id);
 UINT WINAPI NtUserGetKeyboardLayoutList(INT size, HKL* layouts);
 BOOL WINAPI NtUserGetKeyboardLayoutName(WCHAR* name);
@@ -373,7 +385,9 @@ BOOL WINAPI NtGdiTransparentBlt(HDC hdc, INT x_dst, INT y_dst, INT width_dst, IN
     X(NtUserGetQueueStatus) X(NtUserWaitMessage) X(NtUserMsgWaitForMultipleObjectsEx) X(NtUserWaitForInputIdle) \
     X(NtUserGetKeyState) X(NtUserGetAsyncKeyState) X(NtUserGetKeyboardState) X(NtUserSetKeyboardState) \
     X(NtUserGetCursorPos) X(NtUserSetCursorPos) X(NtUserSetCursor) X(NtUserGetCursor) X(NtUserShowCursor) \
-    X(NtUserClipCursor) X(NtUserGetClipCursor) X(NtUserGetKeyboardLayout) X(NtUserGetKeyboardLayoutList) \
+    X(NtUserClipCursor) X(NtUserGetClipCursor) X(NtUserGetCursorInfo) X(NtUserSetCursorIconData) \
+    X(NtUserFindExistingCursorIcon) X(NtUserDestroyCursor) X(NtUserGetIconSize) X(NtUserGetCursorFrameInfo) \
+    X(NtUserGetIconInfo) X(NtUserDrawIconEx) X(NtUserGetKeyboardLayout) X(NtUserGetKeyboardLayoutList) \
     X(NtUserGetKeyboardLayoutName) X(NtUserActivateKeyboardLayout) X(NtUserMapVirtualKeyEx) X(NtUserToUnicodeEx) \
     X(NtUserVkKeyScanEx) X(NtUserGetKeyNameText) X(NtUserSendInput) X(NtUserTrackMouseEvent) \
     X(NtUserGetDoubleClickTime) X(NtUserMessageBeep) X(NtUserCreateCaret) X(NtUserDestroyCaret) X(NtUserShowCaret) \
