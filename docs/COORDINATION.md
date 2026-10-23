@@ -57,7 +57,7 @@ adding `owner: B` as the second line of its slice doc; otherwise leaves them alo
    conflicts keep both sides; `docs/SYSCALLS.md` is regenerated with `python3 tools/gen_syscalls.py`,
    never hand-merged).
 2. A slice is **ready** when `ci.yml` is green on all three jobs (linux-cross, windows Debug,
-   windows RelWithDebInfo) for the branch head, the other workflows it touches are green, and
+   windows RelWithDebInfo) for the branch head, `wine-pe.yml` is green if the slice touched `wine-pe/`, and
    the branch carries `docs/slices/<slice>.md` whose first line is `status: ready` followed by:
    the run URL, what runs through the layer (program, command, first output lines), syscalls
    added or changed, DLLs added to `wine-pe/dlls.txt`, and what is still failing. While work is
