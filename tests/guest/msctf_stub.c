@@ -1,5 +1,5 @@
 /* msctf_stub: stands in for msctf.dll in the native-GUI machine folder (docs/GUI.md, Route B).
- * The genuine imm32.dll delay-loads these Ctf* entry points from msctf.dll; the genuine msctf.dll cannot be loaded
+ * The genuine imm32.dll delay-loads these Ctf*/TF_* entry points from msctf.dll; the genuine msctf.dll cannot be loaded
  * on Wine's builtins (it needs api-ms-win-core-com and the C++ EH runtime), and without any msctf.dll Wine's
  * delay-load hook raises EXCEPTION_WINE_STUB on the first IME message. Every export does nothing and returns 0
  * (FALSE / S_OK / NULL), which is "no text service framework" for the IME dispatch paths. */
@@ -58,6 +58,34 @@ CTF_STUB(CtfImmSetCiceroStartInThread)
 CTF_STUB(CtfImmSetDefaultRemoteKeyboardLayout)
 CTF_STUB(CtfImmTIMActivate)
 CTF_STUB(CtfImmTIMDeactivate)
+CTF_STUB(TF_CUASAppFix)
+CTF_STUB(TF_CheckThreadInputIdle)
+CTF_STUB(TF_CleanUpPrivateMessages)
+CTF_STUB(TF_ClearLangBarAddIns)
+CTF_STUB(TF_CreateCategoryMgr)
+CTF_STUB(TF_CreateDisplayAttributeMgr)
+CTF_STUB(TF_CreateInputProcessorProfiles)
+CTF_STUB(TF_CreateLangProfileUtil)
+CTF_STUB(TF_CreateThreadMgr)
+CTF_STUB(TF_DllDetachInOther)
+CTF_STUB(TF_GetAppCompatFlags)
+CTF_STUB(TF_GetGlobalCompartment)
+CTF_STUB(TF_GetInputScope)
+CTF_STUB(TF_GetThreadFlags)
+CTF_STUB(TF_GetThreadMgr)
+CTF_STUB(TF_InatExtractIcon)
+CTF_STUB(TF_InitSystem)
+CTF_STUB(TF_InvalidAssemblyListCache)
+CTF_STUB(TF_InvalidAssemblyListCacheIfExist)
+CTF_STUB(TF_IsCtfmonRunning)
+CTF_STUB(TF_IsInMarshaling)
+CTF_STUB(TF_MlngInfoCount)
+CTF_STUB(TF_Notify)
+CTF_STUB(TF_PostAllThreadMsg)
+CTF_STUB(TF_RunInputCPL)
+CTF_STUB(TF_SetThreadFlags)
+CTF_STUB(TF_SysTrayStateChanged)
+CTF_STUB(TF_UninitSystem)
 
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {
     (void)inst; (void)reason; (void)reserved;
