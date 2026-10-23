@@ -8,6 +8,7 @@
 // US-layout keyboard functions.
 #include "user_internal.h"
 #include "user_syscalls.h"
+#include "win_scroll.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -1002,9 +1003,10 @@ LRESULT WINAPI NtUserMessageCall(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
     case abi::McDesktopWindowProc:
         return DefWindowProcInternal(hwnd, msg, wparam, lparam, ansi != 0);
     case abi::McScrollBarWndProc:
+        return ScrollBarWndProcInternal(hwnd, msg, wparam, lparam, ansi != 0);   // win_scroll.cpp
     case abi::McPopupMenuWndProc: {
         static volatile LONG reported = 0;   // plain flag
-        if (!InterlockedExchange(&reported, 1)) FIXME(user, "scroll bar / popup menu window procedures are not implemented");
+        if (!InterlockedExchange(&reported, 1)) FIXME(user, "popup menu window procedures are not implemented");
         return DefWindowProcInternal(hwnd, msg, wparam, lparam, ansi != 0);
     }
     case abi::McCallWindowProc: {
@@ -1658,10 +1660,6 @@ BOOL WINAPI NtUserGetCaretPos(POINT* point) {
 }
 
 UINT WINAPI NtUserGetCaretBlinkTime() { return 530; }
-
-HWND WINAPI NtUserGetOpenClipboardWindow() {
-    return nullptr;   // nobody can open the clipboard (NtUserOpenClipboard is Todo)
-}
 
 }  // namespace sys
 }  // namespace win10xbox::user
