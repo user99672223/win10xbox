@@ -1,4 +1,4 @@
-status: wip
+status: ready
 
 # Slice: realtcc
 
@@ -27,4 +27,16 @@ only kernel32 and msvcrt): the test now sets NO_USER32. That version also logged
 and linux-cross (Wine host) then failed ten tests with `msvcrt.dll failed to initialize`; the override is now a plain
 wrapper with no logging.
 
-Results: to be filled in from the CI run.
+Results (green on all three jobs, head 0ed360f): https://github.com/user99672223/win10xbox/actions/runs/39893880223
+
+* Program: `C:\guest\tcc\tcc.exe` (tcc 0.9.27 win64, prebuilt zip) on the builtin-only machine folder.
+* `integration.tcc_version` passed: `tcc.exe -v`, exit 0, stdout matches `tcc version 0\.9\.27`.
+* `integration.tcc_compile` passed: `tcc.exe -o C:\Users\User\tcc_hello.exe C:\guest\tcc_hello.c`, exit 0, the exe exists.
+* `integration.tcc_hello_runs` passed: the produced exe exits 42 and prints `hello from tcc 42` and `argc=1 sizeof(void*)=8`
+  (seen in the job log of the earlier run, where only the user32 check failed); NO_USER32 is set for it because the exe
+  imports only kernel32 and msvcrt.
+* `integration.tcc_run` passed: `tcc.exe -run C:\guest\tcc_hello.c`, exit 42, same two lines.
+* Syscalls added or changed: none. Core change: RtlCreateHeap override (HEAP_GROWABLE when no maximum size), which main
+  now also carries (same name `w10x_RtlCreateHeap`), so the final merge takes main's version.
+* DLLs added to wine-pe/dlls.txt: none.
+* Still failing: nothing in this slice.
