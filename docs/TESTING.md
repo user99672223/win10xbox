@@ -7,6 +7,7 @@
 | Wine conformance subset (`wine_conformance`) | `tests/wine-tests` | linux-cross, gated on the recorded baseline; windows: not registered (MSVC cannot build Wine's tests) |
 | `drivers.unit`, `drivers.layout` (label `drivers`), `integration.driver_*` (label `driver_e2e`) | `tests/drivers` | linux-cross + windows (KMDF driver and layout check against the WDK on MSVC) |
 | every bundled guest through the host, exit code checked (`tools/ci/smoke_guests.ps1`) | `ci.yml` windows, `host-win32-smoke.yml` | windows (desktop machine folder) + windows (console conditions) |
+| real programs (Lua 5.4.7: `integration.lua_*`, smoke rows) | `tools/ci/build_lua.ps1`, `tests/guest/lua` | windows only (MSVC build; see "Real programs") |
 | kmtest subset | `tests/kmtest` | windows (M4, not yet started: `tests/drivers/kmtest.h` is a minimal in-driver harness) |
 
 ## What gates where (CI)
@@ -16,7 +17,7 @@ push to every branch; nothing is `continue-on-error` except the diagnostics step
 
 * **`ci.yml` linux-cross** (llvm-mingw, guests under Wine): `wine-pe/fetch-wine.sh` (shallow clone of the pinned Wine
   tag, a few seconds), the Wine PE builtins **and** the widl-generated headers (`wine-pe-include`, for
-  `advapi32/registry`), then the full `ctest` with nothing excluded (56 registered after merging core/user: 15 `guest_e2e`, 2
+  `advapi32/registry`), then the full `ctest` with nothing excluded (57 registered with `integration.guest_spawn`: 16 `guest_e2e`, 2
   `driver_e2e`, 2 `drivers`, 28 `wine_conformance`, ...; about 4 minutes of tests).
 * **`ci.yml` windows** (MSVC, Debug and RelWithDebInfo, machine folder with the runner's System32 DLLs and NLS
   data): the full `ctest` (the guest's stdout is captured on real Windows; see `docs/STATUS.md`), then every bundled
@@ -52,6 +53,25 @@ The one exclusion: `wine_conformance` does not run on the Windows jobs. Its gues
 build only with clang against Wine's headers; with MSVC no test is registered. (They would need llvm-mingw and the
 Wine sources on the Windows runner, and a second, real-Windows baseline.)
 
+## Real programs
+
+Programs that are not ours, built from their upstream sources in a named step of the Windows jobs and run through
+`win10xbox.exe` like every other guest. Registered only where that step exists (MSVC builds, or
+`-DWIN10XBOX_REAL_PROGRAMS=ON` with the program already in `<machine>/guest`), so linux-cross never counts them
+towards its skip floor.
+
+| Program | Build | ctest (label `guest_e2e`) | Smoke row (`tools/ci/smoke_guests.ps1 -RealPrograms`) | Also under console conditions |
+|---|---|---|---|---|
+| Lua 5.4.7 (`lua.exe`) | `tools/ci/build_lua.ps1`: tarball pinned by SHA-256 `9fbf5e28...1e30` and verified on every run (cached with `actions/cache`, key carries the hash); `cl /O2 /MT`, every `.c` except `luac.c`; output `build/bin/machine/guest/lua.exe` | `integration.lua_hello` (`-e "print('hello from lua', 6*7) os.exit(42)"`, exit 42), `integration.lua_smoke` (`tests/guest/lua/smoke.lua` with arguments `alpha "beta gamma"`: argv, string.format, sort, io.write, os.time/date/clock, USERPROFILE, file write/read/rename/remove under the guest home, tmpname, io.lines, dofile, require, pcall/error, 1 MB `string.rep`, exit 42; every section line is gated), `integration.lua_unwind_tables` (no `RtlAddFunctionTable failed` in the `+loader` trace; guards the Wine host, a no-op on Windows) | `lua_hello`, `lua_smoke` | `host-win32-smoke.yml` |
+| curl 8.11.1 (`curl.exe`) | `tools/ci/build_curl.ps1`: release tarball pinned by SHA-256 `a889ac9d...5e80`, verified on every run (cached with `actions/cache`); CMake + MSVC, libcurl and the CRT static, no TLS and no optional dependency; output `build/bin/machine/guest/curl.exe` | `integration.real_curl_version` (`--version`: banner, `Protocols:` has http and file, not https), `integration.real_curl_file` (`file:///C:/Users/User/curl_in.txt` to stdout), `integration.real_curl_file_copy` (`-o` of a 320000-byte file, `-w size=%{size_download}`, output file must exist), `integration.real_curl_file_missing` (exit 37). No network: nothing here opens a socket. The input files are written into `<machine>/Users/User` at configure time | none | none |
+
+Local reproduction under Wine (the interpreter cross-built, no MSVC): compile the tarball's `src/*.c` except `luac.c`
+with `x86_64-w64-mingw32-clang -O2 -static` into `build-mingw/bin/machine/guest/lua.exe`, configure with
+`-DWIN10XBOX_REAL_PROGRAMS=ON`, and run `ctest -R integration.lua`. Under the system Wine 9 as host the first Lua
+error (`pcall`, which is `longjmp` through `RtlUnwindEx`) ends the guest ("stack overflow" from the host ntdll; see
+`docs/STATUS.md`, "Real programs"). It does not happen on real Windows (the gate there is green), so the argv/file/os
+sections are what Wine can check.
+
 ## GUI guests (core/user)
 
 `integration.guest_window` (tests/guest/window.c: frameless popup, FillRect, GetPixel, timers) and
@@ -75,6 +95,35 @@ rpcrt4, which import ntdll exports Wine 11.9 does not have (`RtlCreateBoundaryDe
 resolves to `kernelbase.dll`, always Wine's in the guest. Wine's loader binds such imports to stubs, and the first
 call (`_initterm_e` in sechost's DllMain) raised 0x80000100 (`EXCEPTION_WINE_STUB`). The other guest tests keep the
 shared folder.
+
+## A real program: the SQLite shell
+
+The first guest this repository did not write. `tools/ci/build_sqlite.ps1` downloads the official amalgamation
+(`sqlite-amalgamation-3540100.zip`, SQLite 3.54.1, `https://www.sqlite.org/2026/`), checks it against the SHA-256 pinned
+in the script **on every run** (a cache hit is verified too; a mismatch is a hard failure, never a re-download), and
+builds `sqlite3.exe` with `cl /O2 /MT shell.c sqlite3.c` into `build/bin/machine/guest/`. The windows job of `ci.yml`
+and `host-win32-smoke.yml` each have a named step ("Build the SQLite shell (pinned, SHA-256 verified)") with an
+`actions/cache` entry keyed on the pinned hash. The pin: sqlite.org publishes the SHA3-256 of the archive; the file was
+downloaded once, its SHA3-256 matched the published one, and its SHA-256 is what the script holds. To move to a newer
+release change `$Version`, `$Archive`, `$Url`, `$Sha256` and the cache key together.
+
+| ctest (label `guest_e2e`) | what |
+|---|---|
+| `integration.sqlite_memory` | `sqlite3.exe -batch :memory: "select 6*7;"` prints `42`, exit 0 |
+| `integration.sqlite_script` | `sqlite3.exe -batch C:\Users\User\smoke.db` with `tests/guest/sqlite/smoke.sql` on stdin: create table, inserts (one journal per statement), ordered and aggregate selects, an index, `.dump`, `date('now')`, `pragma integrity_check`, `.exit 42`; every expected output line is gated and `Users/User/smoke.db` must exist in the machine folder afterwards |
+| `integration.guest_args` | `guest_args.exe one "two words" three`: argv, `GetCommandLineW()` and NUL-termination of the PEB's strings (regression for the first defect SQLite found) |
+
+`sqlite_*` are registered on MSVC builds only (where the step above produces `sqlite3.exe`); a missing `sqlite3.exe` is a
+failing test, not a skip. `-DWIN10XBOX_SQLITE_TESTS=ON` registers them elsewhere for a developer who staged a
+`sqlite3.exe` by hand (e.g. cross-built with `x86_64-w64-mingw32-clang -O2 -static shell.c sqlite3.c`). `smoke_guests.ps1`
+runs the same two command lines (plus `guest_args`) through `win10xbox.exe` on both Windows workflows.
+`run_guest.cmake` takes `-DPROGRAM_ARGS=a;b` (`@SEMI@` for a `;` inside an argument), `-DINPUT_FILE=` (stdin) and
+`-DGUEST_FILE=` (a machine-folder path deleted before the run and required afterwards).
+
+`integration.guest_lockfile` (LockFileEx/UnlockFileEx/LockFile on two handles of one file) and `integration.guest_args`
+are not MSVC-only: they run on linux-cross too, where the Wine 9.0 host and Wine 11.9 guest disagree about
+`NtUnlockFile`'s `IoStatusBlock` (core/dispatch/nt_file.cpp handles both). A scanner regression for jump tables inside
+the code section is in `unit.core` (`loader_scan_leaves_jump_tables_in_code_alone`).
 
 ## Wine test subset (M3 fidelity baseline)
 
@@ -223,19 +272,3 @@ km headers: CMake finds them next to the Windows SDK (`Windows Kits\10\Include\<
 showed: `KMUTANT.Abandoned` is a bit field of `MutantFlags` (`OB()` in `layout_list.inc`), and `DEVICE_OBJECT` is
 `DECLSPEC_ALIGN(16)`, size 0x150 (mingw-w64 omits the alignment: 0x148; `SA()`).
 
-
-## Real program: curl
-
-`tools/ci/build_curl.ps1` builds curl 8.11.1's `curl.exe` from the release tarball (SHA-256 pinned, cached by
-ci.yml) with CMake + MSVC: libcurl and the CRT linked statically, no TLS (`-DCURL_ENABLE_SSL=OFF
--DCURL_USE_SCHANNEL=OFF`), no optional dependency. ci.yml's windows job leaves it at `<machine>/guest/curl.exe`.
-
-| ctest | label | what |
-|-------|-------|------|
-| `integration.real_curl` | `guest_e2e;realcurl` | `curl --version` (banner, `Protocols:` has http and file, no https); `file://` of a guest file to stdout; a 512 KiB `file://` copy with `-o` compared by SHA-256; a missing file -> exit 37 (`tests/integration/realcurl.cmake`) |
-| `integration.real_curl_http` | `guest_e2e;realcurl` | `tests/integration/realcurl_http.py`: a host-side HTTP/1.1 server on 127.0.0.1 (ephemeral port) and GET, 1 MiB GET `-o` (SHA-256), POST `-d`, `-L` redirect, `-f` 404 -> 22, `-I`, refused port -> 7 |
-
-`integration.real_curl` is registered with MSVC or `-DWIN10XBOX_REAL_CURL=ON`. `integration.real_curl_http` needs the
-guest's ws2_32 -> AFD path through the layer and is registered only with `-DWIN10XBOX_REAL_CURL_HTTP=ON`; until that
-path lands ci.yml runs the same script as an informational step ("Probe - curl over HTTP"). Locally:
-`python -I tests/integration/realcurl_http.py --host build/bin/win10xbox.exe --machine <abs machine dir>`.

@@ -1,0 +1,4 @@
+# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/advapi32.sh; numbers in docs/WINETEST.md)
+registry crash 0
+security crash 0
+crypt run 999999

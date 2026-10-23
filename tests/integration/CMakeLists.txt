@@ -26,8 +26,8 @@ set(_prepare_args
 add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
-  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_window guest_window2 guest_window_input
-                   guest_window_input2 guest_window_text)
+  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
+                   guest_window_input guest_window_input2 guest_window_text)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -40,7 +40,9 @@ if(NOT _vendor)
   set(_vendor "[A-Za-z]+")
 endif()
 
-# The machine folder is WIN10XBOX_MACHINE_DIR unless the caller sets _guest_machine.
+# The machine folder is WIN10XBOX_MACHINE_DIR unless the caller sets _guest_machine; the guest's command-line
+# arguments (a list, one element each) are _guest_args if the caller sets it, and _guest_debug / _guest_forbid_trace
+# (a WIN10XBOX_DEBUG spec and a regex the layer's trace must not match) if it wants to assert on the trace.
 function(win10xbox_guest_test name program exit_code)
   # On the builtin-only folder, also prove from the modules trace that no native system DLL was mapped.
   set(_require_builtin OFF)
@@ -55,8 +57,13 @@ function(win10xbox_guest_test name program exit_code)
       -DMACHINE=${_guest_machine}
       -DREQUIRE_BUILTIN_DLLS=${_require_builtin}
       -DPROGRAM=${program}
+      "-DPROGRAM_ARGS=${_guest_args}"
+      "-DDEBUG_SPEC=${_guest_debug}"
+      "-DFORBID_TRACE_REGEX=${_guest_forbid_trace}"
+      "-DEXPECT_TRACE_REGEX=${_guest_expect_trace}"
       -DEXPECT_EXIT=${exit_code}
       "-DEXPECT_REGEX=${ARGN}"
+      "-DINPUT_FILE=${_guest_input}" "-DGUEST_FILE=${_guest_file}"
       -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
   set_tests_properties(integration.${name} PROPERTIES
@@ -85,6 +92,16 @@ win10xbox_guest_test(guest_cpuid "C:\\guest\\guest_cpuid.exe" 0
 # syscall stub and Clk_NtDelayExecution recursed until the stack ran out. No
 # other guest sleeps, so nothing exercised it.
 win10xbox_guest_test(guest_sleep "C:\\guest\\guest_sleep.exe" 7 "guest slept")
+
+# CreateProcess (docs/DISPATCHER.md "Child processes"): NtCreateUserProcess starts a new host process running the
+# host executable on the child's guest image. The parent (tests/guest/spawn.c) runs guest_hello.exe and waits for
+# its exit code 42 through the host handle, then runs itself with a quoted command line, a working directory and
+# an extra environment variable and checks the exit code 7; the children's stdout is the inherited pipe.
+win10xbox_guest_test(guest_spawn "C:\\guest\\guest_spawn.exe" 42
+  "hello from guest" "spawn: child exit 42"
+  "spawn-child: argc=5" "spawn-child: argv\\[1\\]=\\[child\\]" "spawn-child: argv\\[2\\]=\\[a b\\]"
+  "spawn-child: argv\\[3\\]=\\[c.d\\]" "spawn-child: argv\\[4\\]=\\[e\\]"
+  "spawn-child: cwd=C:\\\\Windows" "spawn-child: mark=mark42" "spawn: child2 exit 7" "spawn: done")
 
 # The host-uwp-lite smoke guest (built in tests/guest, MSVC only): the program
 # that ran on the console, in both subsystems. It prints facts and returns 42.
@@ -146,6 +163,75 @@ win10xbox_guest_test(guest_window_text "C:\\guest\\guest_window_text.exe" 42
 set_tests_properties(integration.guest_window_text PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_text.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=121,123,ff000000|123,123,ffffffff|131,123,ff000000")
 unset(_guest_machine)
+
+# ---- Real programs: the first guests that are not ours ----------------------------------------------------------
+# Lua 5.4.7, built from the upstream tarball with MSVC by tools/ci/build_lua.ps1 (a named step of ci.yml's windows
+# job, which leaves it at <machine>/guest/lua.exe before ctest runs). Registered only where that step exists: MSVC
+# builds, or any build configured with -DWIN10XBOX_REAL_PROGRAMS=ON after putting a lua.exe into the machine folder
+# (docs/TESTING.md, "Real programs"). Not registered on linux-cross, so its skip floor never counts them.
+option(WIN10XBOX_REAL_PROGRAMS "Register the real-program guest tests (lua.exe must be in <machine>/guest)" OFF)
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  configure_file(${CMAKE_SOURCE_DIR}/tests/guest/lua/smoke.lua ${CMAKE_BINARY_DIR}/bin/guest/lua_smoke.lua COPYONLY)
+  # (a) the command line: -e with a quoted argument, and the exit code from os.exit.
+  set(_guest_args "-e;print('hello from lua', 6*7) os.exit(42)")
+  win10xbox_guest_test(lua_hello "C:\\guest\\lua.exe" 42 "hello from lua\t42")
+  # (b) the script (tests/guest/lua/smoke.lua): every section prints "smoke: <name> ok".
+  set(_guest_args "C:\\guest\\lua_smoke.lua;alpha;beta gamma")
+  set(_lua_sections argv format format.g sort sort.words io.write os.time os.date os.date.t os.clock getenv getenv.none
+    io.open.write file.close io.open.read file.line1 file.line2 file.rest file.size os.rename os.remove file.gone
+    io.open.missing os.tmpname tmpname.open io.lines dofile require pcall pcall.table pcall.runtime xpcall string.rep string.rep.sub string.rep.sep table.concat gc)
+  set(_lua_expect "")
+  foreach(_s ${_lua_sections})
+    string(REPLACE "." "\\." _re "${_s}")
+    list(APPEND _lua_expect "smoke: ${_re} ok")
+  endforeach()
+  win10xbox_guest_test(lua_smoke "C:\\guest\\lua.exe" 42 ${_lua_expect} "smoke: done fails=0")
+  set_tests_properties(integration.lua_smoke PROPERTIES FAIL_REGULAR_EXPRESSION "smoke: [a-z.]+ FAILED")
+  # (c) the host-side unwind tables: every image the guest maps must be registered with the host's
+  # RtlAddFunctionTable (the host walks guest frames for pcall/longjmp and for SEH). Before the fix the lookup of
+  # that export failed for every image mapped after the PEB take-over (docs/STATUS.md, "Real programs").
+  set(_guest_args "-e;print(pcall(error, 'x')) os.exit(42)")
+  set(_guest_debug "-all,+loader")
+  set(_guest_forbid_trace "RtlAddFunctionTable failed")
+  win10xbox_guest_test(lua_unwind_tables "C:\\guest\\lua.exe" 42 "false\tx")
+  unset(_guest_args)
+  unset(_guest_debug)
+  unset(_guest_forbid_trace)
+endif()
+
+# ---- Real GUI programs (not ours), built from source on the Windows runner ------------------------------------------
+# tools/ci/build_realgui.ps1 (a named ci.yml step of the windows job) leaves realgui_hellowin.exe (Microsoft's LearnWin32
+# Hello World) and realgui_putty.exe (PuTTY 0.85, cmake + MSVC) in <machine>/guest before ctest runs. Registered only
+# where that step exists: MSVC builds, or -DWIN10XBOX_REAL_GUI_PROGRAMS=ON after putting the exes there. These programs
+# never exit by themselves, so the host's inject script (host-win32/main.cpp) drives the run: `waitwin` until the first
+# window is painted, `shot` (writes WIN10XBOX_SCREENSHOT and logs the distinct colour count of the frame), `quit 0`.
+# The gate: the screenshot was written and holds at least 3 distinct colours (desktop + frame + client; a blank
+# screen has 1), and the wait did not time out.
+option(WIN10XBOX_REAL_GUI_PROGRAMS "Register the real GUI program tests (realgui_*.exe must be in <machine>/guest)" OFF)
+if(MSVC OR WIN10XBOX_REAL_GUI_PROGRAMS)
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  set(_guest_expect_trace "shot: distinct=([3-9]|[1-9][0-9]+) written=1")
+  set(_guest_forbid_trace "TIMEOUT: nothing painted")
+  set(_realgui_script "waitwin 60000\\;sleep 2000\\;shot\\;quit 0")
+  win10xbox_guest_test(realgui_hellowin "C:\\guest\\realgui_hellowin.exe" 0)
+  set_tests_properties(integration.realgui_hellowin PROPERTIES
+    ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/realgui_hellowin.bmp;WIN10XBOX_TEST_INJECT_INPUT=${_realgui_script}")
+  # PuTTY: not registered by default. It builds and starts, but the loader stops at its imports (ole32.dll and
+  # SHELL32.dll are not in the Wine builtin set the machine folder gets: STATUS_DLL_NOT_FOUND c0000135); register it
+  # with -DWIN10XBOX_REAL_GUI_PUTTY=ON once they are. With a host and a protocol on the command line it skips the configuration dialog and creates the terminal.
+  option(WIN10XBOX_REAL_GUI_PUTTY "Register integration.realgui_putty" OFF)
+  if(WIN10XBOX_REAL_GUI_PUTTY)
+    set(_guest_args "-telnet;127.0.0.1;-P;9")
+    win10xbox_guest_test(realgui_putty "C:\\guest\\realgui_putty.exe" 0)
+    set_tests_properties(integration.realgui_putty PROPERTIES
+      ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/realgui_putty.bmp;WIN10XBOX_TEST_INJECT_INPUT=${_realgui_script}")
+  endif()
+  unset(_guest_args)
+  unset(_guest_expect_trace)
+  unset(_guest_forbid_trace)
+  unset(_realgui_script)
+  unset(_guest_machine)
+endif()
 
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
 set_tests_properties(integration.guest_hello_appcontainer_sim PROPERTIES
@@ -235,35 +321,37 @@ win10xbox_guest_tls_test(guest_view_violation_detected 42 "+dispatch,+modules"
   "host state reached under the guest TLS view [0-9]+ times \\(last: dispatch::ExportCache\\), [1-9][0-9]* trace lines dropped"
   "")
 
+# The SQLite shell and the regression guests its bring-up needed (tests/guest/sqlite).
+include(${CMAKE_CURRENT_LIST_DIR}/sqlite_tests.cmake)
+
 # ---- Real program: curl's curl.exe (docs/TESTING.md, "Real programs") ---------------------------------------------
 # Built from the release tarball by tools/ci/build_curl.ps1 (CMake + MSVC, no TLS; a named step of ci.yml's windows
-# job, which leaves it at <machine>/guest/curl.exe before ctest runs). Registered only where that step exists (MSVC) or
-# with -DWIN10XBOX_REAL_CURL=ON after putting a curl.exe into the machine folder; never on linux-cross's skip floor.
-# integration.real_curl: --version and the file:// handler (tests/integration/realcurl.cmake).
-# integration.real_curl_http: HTTP against a host-side server (tests/integration/realcurl_http.py); needs the guest's
-# ws2_32 -> AFD path, so it is registered only with -DWIN10XBOX_REAL_CURL_HTTP=ON until that lands.
-option(WIN10XBOX_REAL_CURL "Register integration.real_curl (curl.exe must be in <machine>/guest)" OFF)
-option(WIN10XBOX_REAL_CURL_HTTP "Register integration.real_curl_http (guest sockets through the layer)" OFF)
-if(MSVC OR WIN10XBOX_REAL_CURL)
-  add_test(NAME integration.real_curl
-    COMMAND ${CMAKE_COMMAND} -DHOST=$<TARGET_FILE:win10xbox> -DMACHINE=${WIN10XBOX_MACHINE_DIR}
-      -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR} -P ${CMAKE_CURRENT_SOURCE_DIR}/realcurl.cmake)
-  set_tests_properties(integration.real_curl PROPERTIES
-    FIXTURES_REQUIRED w10x_machine
-    LABELS "guest_e2e;realcurl"
-    TIMEOUT 900)
-  if(WIN10XBOX_REAL_CURL_HTTP)
-    find_package(Python3 COMPONENTS Interpreter REQUIRED)
-    set(_curl_emu "")
-    if(CMAKE_CROSSCOMPILING_EMULATOR)
-      set(_curl_emu --emulator ${CMAKE_CROSSCOMPILING_EMULATOR})
-    endif()
-    add_test(NAME integration.real_curl_http
-      COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/realcurl_http.py
-        --host $<TARGET_FILE:win10xbox> --machine ${WIN10XBOX_MACHINE_DIR} ${_curl_emu})
-    set_tests_properties(integration.real_curl_http PROPERTIES
-      FIXTURES_REQUIRED w10x_machine
-      LABELS "guest_e2e;realcurl"
-      TIMEOUT 1500)
-  endif()
+# job, which leaves it at <machine>/guest/curl.exe before ctest runs). Registered like the Lua tests: MSVC builds, or
+# -DWIN10XBOX_REAL_PROGRAMS=ON after putting a curl.exe into the machine folder. No network: --version, and the
+# file:// handler reading and copying files under the machine folder's guest home (C:\Users\User).
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  set(_curl_home ${WIN10XBOX_MACHINE_DIR}/Users/User)
+  file(MAKE_DIRECTORY ${_curl_home})
+  file(WRITE ${_curl_home}/curl_in.txt "hello from a guest file, read by curl\nsecond line\n")
+  string(REPEAT "0123456789abcdef" 20000 _curl_big)   # 320000 bytes
+  file(WRITE ${_curl_home}/curl_big.bin "${_curl_big}")
+  unset(_curl_big)
+  # (a) the banner and the protocol list (no TLS backend: https must not be listed).
+  set(_guest_args "--version")
+  win10xbox_guest_test(real_curl_version "C:\\guest\\curl.exe" 0
+    "curl 8\\.[0-9]+\\.[0-9]+ " "libcurl/8\\." "Protocols: [a-z0-9 ]*file" "Protocols: [a-z0-9 ]*http" "Features: ")
+  set_tests_properties(integration.real_curl_version PROPERTIES FAIL_REGULAR_EXPRESSION "Protocols: [a-z0-9 ]*https")
+  # (b) file:// of a guest file to stdout.
+  set(_guest_args "-sS;file:///C:/Users/User/curl_in.txt")
+  win10xbox_guest_test(real_curl_file "C:\\guest\\curl.exe" 0
+    "hello from a guest file, read by curl.second line")
+  # (c) file:// copied with -o (a new file under the guest home, which must exist afterwards); curl reports the size.
+  set(_guest_args "-sS;-o;C:\\Users\\User\\curl_out.bin;-w;size=%{size_download};file:///C:/Users/User/curl_big.bin")
+  set(_guest_file Users/User/curl_out.bin)
+  win10xbox_guest_test(real_curl_file_copy "C:\\guest\\curl.exe" 0 "size=320000")
+  unset(_guest_file)
+  # (d) a missing file: CURLE_FILE_COULDNT_READ_FILE, exit code 37.
+  set(_guest_args "-sS;file:///C:/Users/User/curl_missing.txt")
+  win10xbox_guest_test(real_curl_file_missing "C:\\guest\\curl.exe" 37 "")
+  unset(_guest_args)
 endif()
