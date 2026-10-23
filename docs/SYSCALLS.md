@@ -5,7 +5,7 @@ Windows 10 x64 / 22H2 NT syscall numbers) and the hand-maintained policy
 `core/dispatch/syscall_policy.inc`; win32u entries (ids 0x1000..) are Emulate when
 `core/user/user_syscalls.h` registers them. Do not edit by hand.
 
-1798 syscalls. passthrough 156, translate 31, emulate 298, todo 1313. Generated 2026-10-22.
+1798 syscalls. passthrough 155, translate 32, emulate 298, todo 1313. Generated 2026-10-23.
 
 Policy: **PassThrough** calls the host ntdll export by name; **Translate**
 rewrites arguments (paths, handles, timeouts) then passes through;
@@ -141,7 +141,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x007c | NtCreateLowBoxToken | 9 | Todo | token emulation |
 | 0x007d | NtCreateMailslotFile | 8 | PassThrough |  |
 | 0x007e | NtCreateMutant | 4 | PassThrough |  |
-| 0x007f | NtCreateNamedPipeFile | 14 | PassThrough |  |
+| 0x007f | NtCreateNamedPipeFile | 14 | Translate | default time-out 0 (Wine: use the default) becomes 50 ms; the host kernel refuses a zero interval |
 | 0x0080 | NtCreatePagingFile | 4 | Emulate | privileged: refused like Windows does for an unprivileged caller |
 | 0x0081 | NtCreatePort | 5 | PassThrough |  |
 | 0x0082 | NtCreateSectionEx | 9 | Translate | SEC_IMAGE sections are ours (E3): emulated handle + manual map |

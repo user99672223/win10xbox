@@ -280,6 +280,25 @@ NTSTATUS NTAPI Xl_NtOpenFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBU
     return Host().NtOpenFile(handle, access, t.Get(attr), io, sharing, options);
 }
 
+// Pipes live in the host's own \\Device\\NamedPipe: the name is not a file-system path and passes unchanged. What is
+// translated is the default time-out. Wine's kernelbase (CreatePipe) passes 0, its NMPWAIT_USE_DEFAULT_WAIT, meaning
+// "the pipe's default"; Windows' npfs refuses an explicit zero interval, and CreatePipe retries until the call succeeds
+// (hence an endless loop of STATUS_INVALID_PARAMETER). kernel32 passes the documented default, 50 ms, for the same case.
+// The ULONG parameters are also handed on with clean upper halves (the guest's 64-bit argument slots are not).
+static NTSTATUS NTAPI Xl_NtCreateNamedPipeFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr,
+                                               PIO_STATUS_BLOCK io, ULONG sharing, ULONG disposition, ULONG options,
+                                               ULONG pipe_type, ULONG read_mode, ULONG completion_mode,
+                                               ULONG max_instances, ULONG inbound_quota, ULONG outbound_quota,
+                                               PLARGE_INTEGER timeout) {
+    LARGE_INTEGER default_wait;
+    if (timeout && timeout->QuadPart == 0) {
+        default_wait.QuadPart = -50 * 10000;   // 50 ms, relative
+        timeout = &default_wait;
+    }
+    return Host().NtCreateNamedPipeFile(handle, access, attr, io, sharing, disposition, options, pipe_type, read_mode,
+                                        completion_mode, max_instances, inbound_quota, outbound_quota, timeout);
+}
+
 static NTSTATUS NTAPI Xl_NtQueryAttributesFile(POBJECT_ATTRIBUTES attr, PVOID info) {
     TranslatedOA t;
     if (NTSTATUS s = TranslateOA(attr, &t)) return s;
@@ -374,6 +393,7 @@ const ImplDef* FileImpls() {
     static const ImplDef k[] = {
         {"NtCreateFile", reinterpret_cast<void*>(&Xl_NtCreateFile)},
         {"NtOpenFile", reinterpret_cast<void*>(&Xl_NtOpenFile)},
+        {"NtCreateNamedPipeFile", reinterpret_cast<void*>(&Xl_NtCreateNamedPipeFile)},
         {"NtQueryAttributesFile", reinterpret_cast<void*>(&Xl_NtQueryAttributesFile)},
         {"NtQueryFullAttributesFile", reinterpret_cast<void*>(&Xl_NtQueryFullAttributesFile)},
         {"NtDeleteFile", reinterpret_cast<void*>(&Xl_NtDeleteFile)},

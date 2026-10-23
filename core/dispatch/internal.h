@@ -248,6 +248,8 @@ using PFN_NtClose = NTSTATUS(NTAPI*)(HANDLE);
 using PFN_NtCreateFile = NTSTATUS(NTAPI*)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, PLARGE_INTEGER,
                                           ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
 using PFN_NtOpenFile = NTSTATUS(NTAPI*)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, ULONG, ULONG);
+using PFN_NtCreateNamedPipeFile = NTSTATUS(NTAPI*)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, ULONG, ULONG,
+                                                   ULONG, ULONG, ULONG, ULONG, ULONG, ULONG, ULONG, PLARGE_INTEGER);
 using PFN_NtQueryAttributesFile = NTSTATUS(NTAPI*)(POBJECT_ATTRIBUTES, PVOID);
 using PFN_NtDeleteFile = NTSTATUS(NTAPI*)(POBJECT_ATTRIBUTES);
 using PFN_NtQueryInformationFile = NTSTATUS(NTAPI*)(HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, ULONG);
@@ -286,6 +288,7 @@ struct HostNt {
     PFN_NtClose NtClose;
     PFN_NtCreateFile NtCreateFile;
     PFN_NtOpenFile NtOpenFile;
+    PFN_NtCreateNamedPipeFile NtCreateNamedPipeFile;
     PFN_NtQueryAttributesFile NtQueryAttributesFile;
     PFN_NtQueryAttributesFile NtQueryFullAttributesFile;
     PFN_NtDeleteFile NtDeleteFile;
