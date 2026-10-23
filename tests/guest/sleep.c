@@ -4,17 +4,29 @@
  * take-over has pointed GetModuleHandleW(L"ntdll.dll") at the GUEST ntdll,
  * whose NtDelayExecution is a stub rewritten to jump into the dispatcher.
  * Clk_NtDelayExecution then called itself until the stack ran out. The other
- * guests never sleep, which is why nothing caught it. Exit code 7. */
+ * guests never sleep, which is why nothing caught it. The lookup then failed under Wine instead (GetProcAddress on the
+ * latched module returns NULL once the PEB is the guest's), and every Sleep() returned at once without waiting: the
+ * run must also take the time it asked for. Exit code 7, 1 when Sleep did not wait. */
 #include <stdio.h>
 #include <windows.h>
 
 int main(void) {
-    ULONGLONG t0 = GetTickCount64();
+    LARGE_INTEGER f, a, b;
+    LONGLONG ms;
     int i;
 
-    for (i = 0; i < 4; ++i) Sleep(5);
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&a);
+    for (i = 0; i < 4; ++i) Sleep(25);   /* 100 ms in all */
+    QueryPerformanceCounter(&b);
+    ms = (b.QuadPart - a.QuadPart) * 1000 / f.QuadPart;
 
-    printf("guest slept, elapsed>=%d\n", GetTickCount64() >= t0 ? 1 : 0);
+    if (ms < 90) {
+        printf("guest did not sleep: 4 x Sleep(25) took %lld ms\n", ms);
+        fflush(stdout);
+        return 1;
+    }
+    printf("guest slept, elapsed>=90 ms\n");
     fflush(stdout);
     return 7;
 }

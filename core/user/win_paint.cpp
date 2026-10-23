@@ -269,19 +269,39 @@ void PaintNonClient(HWND hwnd) {
         FillTargetRect(t, RECT{0, client.top, client.left, client.bottom}, frame);
         FillTargetRect(t, RECT{client.right, client.top, ww, client.bottom}, frame);
         if ((w->style & WS_CAPTION) == WS_CAPTION) {
-            RECT inner{0, 0, ww, wh};
-            AdjustRectForStyle(&inner, w->style & ~WS_CAPTION, false, w->ex_style & ~WS_EX_CLIENTEDGE);
-            // AdjustRectForStyle grows; the frame thickness is the negated offset
-            const int border = -inner.left;
-            const int cap = (w->ex_style & WS_EX_TOOLWINDOW) ? SystemMetric(SM_CYSMCAPTION) : SystemMetric(SM_CYCAPTION);
-            const RECT caption{border, border, ww - border, border + cap - 1};
+            const int f = FrameInset(w), cap = CaptionHeightOf(w);
+            const RECT caption{f, f, ww - f, f + cap - 1};
             FillTargetRect(t, caption, ColorToPixel(SysColor(active ? COLOR_ACTIVECAPTION : COLOR_INACTIVECAPTION)));
-            // close button: a darker square at the right of the caption
-            if (w->style & WS_SYSMENU) {
-                const int bw = SystemMetric(SM_CXSIZE);
-                FillTargetRect(t, RECT{caption.right - bw, caption.top, caption.right, caption.bottom},
-                               ColorToPixel(SysColor(COLOR_BTNFACE)));
+            FillTargetRect(t, RECT{f, f + cap - 1, ww - f, f + cap}, ColorToPixel(SysColor(COLOR_WINDOWFRAME)));
+            // the system buttons: plain rectangles (no theme), a glyph each; close red, maximize blue, minimize grey
+            int text_right = caption.right;
+            const std::uint32_t black = ColorToPixel(RGB(0, 0, 0)), white = ColorToPixel(RGB(255, 255, 255));
+            struct Button { int ht; COLORREF face; };
+            const Button buttons[] = {{HTMINBUTTON, RGB(225, 225, 225)}, {HTMAXBUTTON, RGB(200, 216, 240)}, {HTCLOSE, RGB(199, 80, 80)}};
+            for (const Button& b : buttons) {
+                RECT r;
+                if (!CaptionButtonRect(w, b.ht, &r)) continue;
+                text_right = std::min<int>(text_right, r.left);
+                FillTargetRect(t, r, ColorToPixel(b.face));
+                const int cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+                if (b.ht == HTMINBUTTON) {
+                    FillTargetRect(t, RECT{cx - 5, cy + 3, cx + 5, cy + 4}, black);
+                } else if (b.ht == HTMAXBUTTON) {
+                    FillTargetRect(t, RECT{cx - 5, cy - 5, cx + 5, cy - 4}, black);
+                    FillTargetRect(t, RECT{cx - 5, cy + 4, cx + 5, cy + 5}, black);
+                    FillTargetRect(t, RECT{cx - 5, cy - 5, cx - 4, cy + 5}, black);
+                    FillTargetRect(t, RECT{cx + 4, cy - 5, cx + 5, cy + 5}, black);
+                } else {
+                    for (int i = 0; i < 10; ++i) {
+                        FillTargetRect(t, RECT{cx - 5 + i, cy - 5 + i, cx - 4 + i, cy - 4 + i}, white);
+                        FillTargetRect(t, RECT{cx - 5 + i, cy + 4 - i, cx - 4 + i, cy + 5 - i}, white);
+                    }
+                }
             }
+            // the title, in the built-in face, between the left edge and the first button
+            const RECT text_box{caption.left + 6, caption.top, text_right - 4, caption.bottom};
+            DrawGlyphRun(t, text_box, text_box.left, caption.top + (cap - 1 - 16) / 2, w->text,
+                         ColorToPixel(SysColor(active ? COLOR_CAPTIONTEXT : COLOR_INACTIVECAPTIONTEXT)));
         }
         NoteDrawn(dc, t, RECT{0, 0, ww, wh});
     }
