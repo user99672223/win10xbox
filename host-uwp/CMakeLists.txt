@@ -218,9 +218,12 @@ set_target_properties(window_guest PROPERTIES OUTPUT_NAME "window")
 
 # Every other guest of the repo, so the package carries them all to the console (HANDOFF.md
 # "Standing testing rule"). Console programs; output names as in the main tree.
-foreach(_g hello cpuid sleep spawn named_objects xinput identity regpersist)
+foreach(_g hello cpuid sleep spawn named_objects xinput identity regpersist tebframe)
   add_executable(guest_${_g} "${WIN10XBOX_ROOT}/tests/guest/${_g}.c")
 endforeach()
+# The Direct3D 11 off-screen guest (tests/guest/d3d11_tri.c): native d3d11/dxgi loaded at run time, dxguid for the IIDs.
+add_executable(guest_d3d11_tri "${WIN10XBOX_ROOT}/tests/guest/d3d11_tri.c")
+target_link_libraries(guest_d3d11_tri PRIVATE dxguid)
 # Our own builtin DLLs (guest-dlls/: xinput1_4.dll and its copies xinput1_3.dll / xinput9_1_0.dll, staged into
 # payload\builtin next to Wine's) and the XInput guest that imports one.
 set(WIN10XBOX_GUEST_DLL_DIR ${CMAKE_BINARY_DIR}/bin/guest-dlls)
@@ -280,7 +283,7 @@ set(HOST_UWP_GUESTS window_guest hello_guest hello_guest_cui guest_hello guest_c
     smoke_guest_cui drv_client guest_window2 guest_window_input guest_window_input2 guest_window_text smoke_guest
     guest_spawn guest_window_nc guest_dialog guest_comctl guest_seh guest_seh_dll guest_window_scroll guest_clipboard
     guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput guest_identity guest_net guest_cursor
-    guest_regpersist guest_wasapi guest_xaudio2 guest_nowine guest_named_objects)
+    guest_regpersist guest_wasapi guest_xaudio2 guest_nowine guest_named_objects guest_tebframe guest_d3d11_tri)
 
 # ---------------------------------------------------------------------------
 # The selftest: the launch.json parser (launch_config.cpp has no Windows or layer
