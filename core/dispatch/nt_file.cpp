@@ -236,10 +236,71 @@ std::wstring HostPathOfHandle(HANDLE file, DWORD* error) {
     return s;
 }
 
+#if WIN10XBOX_HAVE_VFS
+namespace {
+// A name relative to a directory handle opens the file the absolute name opens, so it has to see the same machine:
+// the builtin DLL rule for C:\Windows\System32\*.dll and the name checks live in the VFS, which only sees absolute
+// names. Builds that absolute guest NT name from the directory's host path.
+//   STATUS_SUCCESS       *nt is the absolute name
+//   STATUS_NOT_SUPPORTED the host resolves the name itself, as it always did: the handle is not a directory with a
+//                        known guest path (the console's AppContainer cannot ask), or the name is rooted
+//   other                the name is invalid under a file-system directory: an empty, "." or ".." component, or "/"
+//                        (the answer of NTFS; a host that predates it says PATH_NOT_FOUND for ".\x")
+NTSTATUS RootRelativeGuestName(const OBJECT_ATTRIBUTES* in, std::wstring* nt) {
+    std::wstring_view rel = OAName(in);
+    if (rel.empty() || rel.front() == L'\\') return st::NotSupported;
+    std::wstring host = HostPathOfHandle(in->RootDirectory);
+    if (host.empty()) return st::NotSupported;
+    const DWORD attrs = GetFileAttributesW(host.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES || !(attrs & FILE_ATTRIBUTE_DIRECTORY)) return st::NotSupported;
+    std::wstring guest;
+    if (!UntranslateHostWin32Path(host, &guest) || guest.size() < 3 || guest[1] != L':') return st::NotSupported;
+    std::wstring_view rest = rel;
+    if (rest.back() == L'\\') rest.remove_suffix(1);
+    for (std::size_t b = 0; b <= rest.size();) {
+        std::size_t e = rest.find(L'\\', b);
+        if (e == std::wstring_view::npos) e = rest.size();
+        std::wstring_view c = rest.substr(b, e - b);
+        if (c.empty() || c == L"." || c == L".." || c.find(L'/') != std::wstring_view::npos)
+            return st::ObjectNameInvalid;
+        b = e + 1;
+    }
+    *nt = L"\\??\\" + guest;
+    if (nt->back() != L'\\') *nt += L'\\';
+    nt->append(rel);
+    return st::Success;
+}
+}  // namespace
+#endif
+
 NTSTATUS TranslateOA(const OBJECT_ATTRIBUTES* in, TranslatedOA* out) {
     out->attr = nullptr;
     out->keep.reset();
-    if (!in || !in->ObjectName || in->RootDirectory) return st::Success;   // relative to a host handle
+    if (!in || !in->ObjectName) return st::Success;
+#if WIN10XBOX_HAVE_VFS
+    if (in->RootDirectory) {
+        std::wstring nt;
+        if (in->Length < sizeof(OBJECT_ATTRIBUTES)) return st::Success;
+        if (NTSTATUS rs = RootRelativeGuestName(in, &nt)) return rs == st::NotSupported ? st::Success : rs;
+        UNICODE_STRING us{};
+        us.Buffer = nt.data();
+        us.Length = static_cast<USHORT>(nt.size() * sizeof(wchar_t));
+        us.MaximumLength = us.Length;
+        OBJECT_ATTRIBUTES abs = *in;
+        abs.RootDirectory = nullptr;
+        abs.ObjectName = &us;
+        auto t = std::make_shared<vfs::TranslatedAttributes>();
+        NTSTATUS s = vfs::TranslateObjectAttributes(&abs, t.get());
+        if (s) return s;
+        if (t->translated) {
+            out->attr = &t->attr;
+            out->keep = t;
+        }
+        return st::Success;
+    }
+#else
+    if (in->RootDirectory) return st::Success;   // relative to a host handle
+#endif
 #if WIN10XBOX_HAVE_VFS
     auto t = std::make_shared<vfs::TranslatedAttributes>();
     NTSTATUS s = vfs::TranslateObjectAttributes(in, t.get());
@@ -278,6 +339,25 @@ NTSTATUS NTAPI Xl_NtOpenFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBU
     TranslatedOA t;
     if (NTSTATUS s = TranslateOA(attr, &t)) return s;
     return Host().NtOpenFile(handle, access, t.Get(attr), io, sharing, options);
+}
+
+// Pipes live in the host's own \\Device\\NamedPipe: the name is not a file-system path and passes unchanged. What is
+// translated is the default time-out. Wine's kernelbase (CreatePipe) passes 0, its NMPWAIT_USE_DEFAULT_WAIT, meaning
+// "the pipe's default"; Windows' npfs refuses an explicit zero interval, and CreatePipe retries until the call succeeds
+// (hence an endless loop of STATUS_INVALID_PARAMETER). kernel32 passes the documented default, 50 ms, for the same case.
+// The ULONG parameters are also handed on with clean upper halves (the guest's 64-bit argument slots are not).
+static NTSTATUS NTAPI Xl_NtCreateNamedPipeFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr,
+                                               PIO_STATUS_BLOCK io, ULONG sharing, ULONG disposition, ULONG options,
+                                               ULONG pipe_type, ULONG read_mode, ULONG completion_mode,
+                                               ULONG max_instances, ULONG inbound_quota, ULONG outbound_quota,
+                                               PLARGE_INTEGER timeout) {
+    LARGE_INTEGER default_wait;
+    if (timeout && timeout->QuadPart == 0) {
+        default_wait.QuadPart = -50 * 10000;   // 50 ms, relative
+        timeout = &default_wait;
+    }
+    return Host().NtCreateNamedPipeFile(handle, access, attr, io, sharing, disposition, options, pipe_type, read_mode,
+                                        completion_mode, max_instances, inbound_quota, outbound_quota, timeout);
 }
 
 static NTSTATUS NTAPI Xl_NtQueryAttributesFile(POBJECT_ATTRIBUTES attr, PVOID info) {
@@ -420,6 +500,7 @@ const ImplDef* FileImpls() {
     static const ImplDef k[] = {
         {"NtCreateFile", reinterpret_cast<void*>(&Xl_NtCreateFile)},
         {"NtOpenFile", reinterpret_cast<void*>(&Xl_NtOpenFile)},
+        {"NtCreateNamedPipeFile", reinterpret_cast<void*>(&Xl_NtCreateNamedPipeFile)},
         {"NtQueryAttributesFile", reinterpret_cast<void*>(&Xl_NtQueryAttributesFile)},
         {"NtQueryFullAttributesFile", reinterpret_cast<void*>(&Xl_NtQueryFullAttributesFile)},
         {"NtDeleteFile", reinterpret_cast<void*>(&Xl_NtDeleteFile)},

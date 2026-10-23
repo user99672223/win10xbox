@@ -26,6 +26,7 @@ gdi32
 # --- base services ---------------------------------------------------------
 advapi32
 sechost
+bcrypt             # CPython's os.urandom (BCryptGenRandom -> RtlGenRandom); no unix lib needed for that
 rpcrt4
 comctl32
 shell32
@@ -34,6 +35,7 @@ version
 imm32
 ws2_32
 winmm
+bcrypt             # RtlGenRandom-backed BCryptGenRandom for curl.exe (no unix lib: hashes/ciphers need gnutls)
 
 # --- imported by the Sysinternals Coreinfo64 / PsInfo64 guests (docs/slices/sysinfo.md) ---
 comdlg32

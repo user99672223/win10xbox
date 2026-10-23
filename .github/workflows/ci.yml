@@ -51,13 +51,20 @@ jobs:
           path: ~/apt-cache
           key: apt-debs-${{ runner.os }}-noble-wine9-v1
       - name: Install Wine + ninja
-        timeout-minutes: 12
+        timeout-minutes: 25
         run: |
           mkdir -p "$HOME/apt-cache"
           sudo dpkg --add-architecture i386
           for i in 1 2 3; do sudo apt-get update -q && break; sleep 15; done
-          sudo apt-get install -y -q --no-install-recommends -o Acquire::Retries=3 -o Acquire::http::Timeout=60 \
-            -o Dir::Cache::archives="$HOME/apt-cache" wine wine64 ninja-build
+          # A throttled mirror stalls the 105 MB libwine download (run 39876423114 sat on it for the whole
+          # 12 minutes): three attempts of at most 7 minutes each, a partial download is resumed by the next.
+          ok=0
+          for i in 1 2 3; do
+            if sudo timeout 420 apt-get install -y -q --no-install-recommends -o Acquire::Retries=3 -o Acquire::http::Timeout=60 \
+                 -o Dir::Cache::archives="$HOME/apt-cache" wine wine64 ninja-build; then ok=1; break; fi
+            echo "apt-get install attempt $i failed"; sleep 10
+          done
+          [ "$ok" = 1 ]
           # Leave only the .deb files for the cache (lock and partial/ are root-owned).
           sudo rm -rf "$HOME/apt-cache/lock" "$HOME/apt-cache/partial"
           sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-cache"
@@ -117,7 +124,12 @@ jobs:
         if: always()
         with:
           name: linux-cross-bin
-          path: build-mingw/bin/
+          # Testing/Temporary holds every test's full output (ctest shows a passing test's output nowhere else);
+          # winetest/<dll>/ holds the Wine conformance suites' per-unit logs and .tsv rows (wine-pe/tests/*.sh).
+          path: |
+            build-mingw/bin/
+            build-mingw/Testing/Temporary/
+            build-mingw/winetest/
           retention-days: 3
 
   # The real Windows test machine: MSVC 2022, host-win32 runs core/ unsandboxed.
@@ -148,6 +160,46 @@ jobs:
         run: >
           python -I tools/ci/fetch_wine_pe.py --repo "${{ github.repository }}" --branch "${{ github.ref_name }}"
           --sha "${{ github.sha }}" --artifact wine-pe-builtin=wine-pe/out/builtin
+      # Wine's own ntdll conformance tests (dlls/ntdll/tests) as ONE guest, ntdll_test.exe, run through the
+      # layer by integration.winetest_ntdll on the allowlist wine-pe/tests/ntdll.allowlist (docs/slices/wt-ntdll.md).
+      # MSVC cannot build them, so llvm-mingw's Windows build does (wine-pe/tests/ntdll.sh, from Git Bash), against
+      # Wine's headers from the pinned source tree (wine-pe/fetch-wine.sh: a shallow clone, patches applied). Before
+      # Configure: the test is registered where build/winetest/ntdll/ntdll_test.exe exists.
+      - name: Install llvm-mingw (Windows build, for the Wine ntdll test guest)
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP "llvm-mingw.zip"
+          $url = "https://github.com/mstorsjo/llvm-mingw/releases/download/$env:LLVM_MINGW_VER/llvm-mingw-$env:LLVM_MINGW_VER-ucrt-x86_64.zip"
+          for ($i = 1; $i -le 3; $i++) {
+            curl.exe -sSL --fail --retry 3 -o $zip $url
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Seconds 10
+          }
+          if ($LASTEXITCODE -ne 0) { throw "llvm-mingw download failed" }
+          $dir = Join-Path $env:RUNNER_TEMP "llvm-mingw-x"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          tar.exe -xf $zip -C $dir
+          if ($LASTEXITCODE -ne 0) { throw "llvm-mingw extract failed" }
+          $root = (Get-ChildItem $dir -Directory | Select-Object -First 1).FullName
+          Write-Host "llvm-mingw at $root"
+          "LLVM_MINGW_WIN=$root" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Build Wine's ntdll conformance guest (ntdll_test.exe)
+        shell: bash
+        env:
+          # Git for Windows would check Wine out with CRLF and translate its patches' context.
+          GIT_CONFIG_COUNT: "2"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+          GIT_CONFIG_KEY_1: core.longpaths
+          GIT_CONFIG_VALUE_1: "true"
+          # clang's mingw driver does not read these, but they point at MSVC's headers.
+          INCLUDE: ""
+          LIB: ""
+        run: |
+          export LLVM_MINGW="$(cygpath -u "$LLVM_MINGW_WIN")"
+          wine-pe/fetch-wine.sh
+          wine-pe/tests/ntdll.sh build --out build/winetest/ntdll
+          ls -l build/winetest/ntdll
       # The WDK's km headers (ntddk.h), which this image does not have, from the
       # pinned NuGet package (tools/ci/fetch_wdk_km.ps1): tests/drivers builds the
       # KMDF driver, its client and drivers.layout against them with MSVC.
@@ -194,6 +246,16 @@ jobs:
       - name: Build Lua 5.4.7 (real guest program)
         shell: pwsh
         run: ./tools/ci/build_lua.ps1 -Out build/bin/machine/guest
+      # The official CPython 3.12 embeddable package from python.org (pinned SHA-256, checked on every run), unpacked
+      # unchanged into build/bin/machine/guest/python; the Test step runs it (integration.real_python_platform, integration.real_python_json).
+      - name: Cache the Python embeddable zip
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/python-embed
+          key: python-3.12.10-embed-amd64-4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3
+      - name: Fetch Python 3.12 embeddable (real guest program)
+        shell: pwsh
+        run: ./tools/ci/fetch_python.ps1 -Out build/bin/machine/guest/python
       # One more program that is not ours: Sysinternals Coreinfo64.exe, downloaded from
       # live.sysinternals.com and pinned by SHA-256 (tools/ci/fetch_sysinternals.ps1, verified on every run). Left in
       # build/bin/machine/guest for integration.coreinfo (docs/slices/sysinfo.md).
@@ -216,6 +278,17 @@ jobs:
       - name: Fetch fastfetch 2.70.0 (real guest program)
         shell: pwsh
         run: ./tools/ci/fetch_fastfetch.ps1 -Out build/bin/machine/guest
+      # The third prebuilt program: ninja 1.12.1, the project's official ninja-win.zip (tools/ci/fetch_ninja.ps1: pinned
+      # SHA-256, verified on every run), left at build/bin/machine/guest/ninja.exe for integration.ninja_*
+      # (docs/slices/realninja.md). Its build rules run the lua.exe built above.
+      - name: Cache the ninja release zip
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ninja-src
+          key: ninja-1.12.1-f550fec705b6d6ff58f2db3c374c2277a37691678d6aba463adcbb129108467a
+      - name: Fetch ninja 1.12.1 (real guest program)
+        shell: pwsh
+        run: ./tools/ci/fetch_ninja.ps1 -Out build/bin/machine/guest
       # Real GUI programs that are not ours (tools/ci/build_realgui.ps1): Microsoft's LearnWin32 Hello World and PuTTY
       # 0.85 (official tarball, cmake + cl /MT), pinned by SHA-256 and verified on every run. Left in
       # build/bin/machine/guest for integration.realgui_* (docs/TESTING.md, "Real GUI programs").
@@ -227,12 +300,24 @@ jobs:
       - name: Build real GUI programs (PuTTY, Hello World)
         shell: pwsh
         run: ./tools/ci/build_realgui.ps1 -Out build/bin/machine/guest
+      # curl 8.11.1's curl.exe from the release tarball (pinned SHA-256, checked on every run; the cache key carries
+      # it), CMake + MSVC, no TLS -> build/bin/machine/guest/curl.exe; run by integration.real_curl_* (--version and
+      # file:// reads, no network).
+      - name: Cache the curl source tarball
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/curl-src
+          key: curl-8.11.1-a889ac9dbba3644271bd9d1302b5c22a088893719b72be3487bc3d401e5c4e80
+      - name: Build curl.exe (real guest program, no TLS)
+        shell: pwsh
+        run: ./tools/ci/build_curl.ps1 -Out build/bin/machine/guest
       # The whole suite, end-to-end included. The guest's stdout IS captured on
       # real Windows: run 39818491081 (RelWithDebInfo, the one job of that run
       # that had the builtins) printed "hello from guest" and passed 11 of 13
       # guest_e2e tests; the two failures were real bugs, fixed since
       # (docs/STATUS.md). wine_conformance needs clang-built guests and the Wine
-      # sources; with MSVC its tests are not registered at all.
+      # sources; with MSVC its tests are not registered at all. The one Wine suite
+      # that does run here is ntdll's, built by the step above (winetest_ntdll).
       - name: Test
         env: { WIN10XBOX_DEBUG: "+all" }
         run: ctest --test-dir build --output-on-failure --timeout 300 --output-junit ctest-junit.xml
@@ -241,6 +326,15 @@ jobs:
         run: >
           python -I tools/ci/check_ctest_run.py --build build --junit ctest-junit.xml
           --require-label guest_e2e --require-label driver_e2e=2 --require-label drivers=2
+          --require-label winetest_ntdll
+      # What integration.winetest_ntdll measured: the allowlist gate's table, and the todo list of the units
+      # that are not on it (the same text as docs/slices/wt-ntdll.md).
+      - name: Wine ntdll conformance summary
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $f = "build/winetest/ntdll/results/summary.md"
+          if (Test-Path $f) { Get-Content $f; Get-Content $f | Add-Content $env:GITHUB_STEP_SUMMARY } else { Write-Host "no $f" }
       # Every guest the build bundles (tests/guest, the host-uwp-lite smoke guest
       # in both subsystems, the driver clients through drv_host), run through
       # the host executables with the exit code each must return, read from the
@@ -285,6 +379,7 @@ jobs:
           path: |
             build/Testing/Temporary/
             build/ctest-junit.xml
+            build/winetest/ntdll/results/
             build/guest-smoke/
             build/bin/*.log
             build/bin/crash.txt
