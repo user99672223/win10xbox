@@ -5,7 +5,7 @@ Windows 10 x64 / 22H2 NT syscall numbers) and the hand-maintained policy
 `core/dispatch/syscall_policy.inc`; win32u entries (ids 0x1000..) are Emulate when
 `core/user/user_syscalls.h` registers them. Do not edit by hand.
 
-1798 syscalls. passthrough 155, translate 35, emulate 303, todo 1305. Generated 2026-10-23.
+1798 syscalls. passthrough 155, translate 35, emulate 308, todo 1300. Generated 2026-10-23.
 
 Policy: **PassThrough** calls the host ntdll export by name; **Translate**
 rewrites arguments (paths, handles, timeouts) then passes through;
@@ -1216,7 +1216,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x13ad | NtUserEnableNonClientDpiScaling | 0 | Todo |  |
 | 0x13ae | NtUserEnablePerMonitorMenuScaling | 0 | Todo |  |
 | 0x13af | NtUserEnableResizeLayoutSynchronization | 0 | Todo |  |
-| 0x13b0 | NtUserEnableScrollBar | 3 | Todo |  |
+| 0x13b0 | NtUserEnableScrollBar | 3 | Emulate | core/user |
 | 0x13b1 | NtUserEnableSessionForMMCSS | 0 | Todo |  |
 | 0x13b2 | NtUserEnableShellWindowManagementBehavior | 0 | Todo |  |
 | 0x13b3 | NtUserEnableSoftwareCursorForScreenCapture | 0 | Todo |  |
@@ -1365,7 +1365,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1442 | NtUserGetRegisteredRawInputDevices | 3 | Todo |  |
 | 0x1443 | NtUserGetRequiredCursorSizes | 0 | Todo |  |
 | 0x1444 | NtUserGetResizeDCompositionSynchronizationObject | 0 | Todo |  |
-| 0x1445 | NtUserGetScrollBarInfo | 3 | Todo |  |
+| 0x1445 | NtUserGetScrollBarInfo | 3 | Emulate | core/user |
 | 0x1446 | NtUserGetSendMessageReceiver | 0 | Todo |  |
 | 0x1447 | NtUserGetSharedWindowData | 0 | Todo |  |
 | 0x1448 | NtUserGetSuppressedWindowActions | 0 | Todo |  |
@@ -1594,7 +1594,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1527 | NtUserSBGetParms | 0 | Todo |  |
 | 0x1528 | NtUserScaleSystemMetricForDPIWithoutCache | 0 | Todo |  |
 | 0x1529 | NtUserScheduleDispatchNotification | 1 | Todo |  |
-| 0x152a | NtUserScrollDC | 7 | Todo |  |
+| 0x152a | NtUserScrollDC | 7 | Emulate | core/user |
 | 0x152b | NtUserScrollWindowEx | 8 | Emulate | core/user |
 | 0x152c | NtUserSelectPalette | 3 | Emulate | core/user |
 | 0x152d | NtUserSendEventMessage | 0 | Todo |  |
@@ -1681,7 +1681,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x157e | NtUserSetProgmanWindow | 1 | Todo |  |
 | 0x157f | NtUserSetProp | 3 | Emulate | core/user |
 | 0x1580 | NtUserSetProp2 | 0 | Todo |  |
-| 0x1581 | NtUserSetScrollInfo | 4 | Todo |  |
+| 0x1581 | NtUserSetScrollInfo | 4 | Emulate | core/user |
 | 0x1582 | NtUserSetSensorPresence | 0 | Todo |  |
 | 0x1583 | NtUserSetSharedWindowData | 0 | Todo |  |
 | 0x1584 | NtUserSetShellChangeNotifyHWND | 0 | Todo |  |
@@ -1738,7 +1738,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x15b7 | NtUserShowCaret | 1 | Emulate | core/user |
 | 0x15b8 | NtUserShowCursor | 1 | Emulate | core/user |
 | 0x15b9 | NtUserShowOwnedPopups | 2 | Emulate | core/user |
-| 0x15ba | NtUserShowScrollBar | 3 | Todo |  |
+| 0x15ba | NtUserShowScrollBar | 3 | Emulate | core/user |
 | 0x15bb | NtUserShowStartGlass | 0 | Todo |  |
 | 0x15bc | NtUserShowSystemCursor | 0 | Todo |  |
 | 0x15bd | NtUserShowWindow | 2 | Emulate | core/user |
