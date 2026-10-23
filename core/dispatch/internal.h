@@ -40,6 +40,7 @@ constexpr NTSTATUS ConflictingAddresses   = (NTSTATUS)0xC0000018;
 constexpr NTSTATUS AccessDenied           = (NTSTATUS)0xC0000022;
 constexpr NTSTATUS BufferTooSmall         = (NTSTATUS)0xC0000023;
 constexpr NTSTATUS ObjectTypeMismatch     = (NTSTATUS)0xC0000024;
+constexpr NTSTATUS ObjectNameInvalid      = (NTSTATUS)0xC0000033;
 constexpr NTSTATUS ObjectNameNotFound     = (NTSTATUS)0xC0000034;
 constexpr NTSTATUS ObjectPathNotFound     = (NTSTATUS)0xC000003A;
 constexpr NTSTATUS PrivilegeNotHeld       = (NTSTATUS)0xC0000061;
