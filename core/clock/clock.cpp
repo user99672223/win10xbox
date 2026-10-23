@@ -545,6 +545,12 @@ NTSTATUS Clk_NtDelayExecution(BOOLEAN Alertable, PLARGE_INTEGER Timeout) {
     LARGE_INTEGER requested, tmp;
     if (Timeout)
         if (NTSTATUS s = probe::Load<LARGE_INTEGER>(Timeout, &requested)) return s;
+    // Wine's SleepEx(INFINITE) passes a NULL interval, which Wine's own NtDelayExecution reads as "forever" and the
+    // Windows kernel rejects with an access violation (the sleeper then spins): hand the host the infinite interval.
+    if (!Timeout) {
+        tmp.QuadPart = INT64_MIN;
+        return host(Alertable, &tmp);
+    }
     PLARGE_INTEGER t = TranslateTimeout(Timeout ? &requested : nullptr, &tmp);
     return host(Alertable, t);
 }

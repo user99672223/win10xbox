@@ -1,5 +1,24 @@
 # Status
 
+## On the console (Xbox Series S, OS 26100.9445, package 1.0.0.333 = run 39981119649, commit bff86c8)
+
+First GUI run on hardware, reported by the owner's local session from the TV and Device Portal:
+
+| Program | Result |
+|---|---|
+| `window.exe` | **Painted on the TV**: blue 400x300 window at (100,100), red 50x50 square, cursor in the middle; no crash (no exit code recorded: the app was suspended before the 30 s stay ended) |
+| `guest_xinput.exe` | Exit 42: the real controller read through the layer's XInput (`caps ok type=1 subtype=1`, packet change 83 -> 84, stick values), users 1-3 not connected (1167) |
+| `guest_spawn.exe` | Exit 1, `CreateProcessW` error 50 (NOT_SUPPORTED): the UWP host's D1 answer; whether the sandbox itself allows process creation is still unmeasured (`-uwpchild` probe) |
+| `guest_identity.exe` | 0xc000001d at `rdrand eax`: the console has no RDRAND and the #UD emulation did not catch it in the UWP host (`-rdrand`) |
+| `guest_window_scroll.exe` | Exit 3 (its 8 s timeout): it waits for a click the CI harness injects; not a defect |
+
+Defects found: (1) the package carried no NLS files and the console's System32 has none, so every guest crashed in
+`RtlInitNlsTables` until `l_intl.nls` and `c_10000.nls` were uploaded by hand (`-nlspkg` bundles Wine's set and the
+package assert requires it); (2) one guest per app run (D1): a second pick fails with 0xc0000001 (`-relaunch`
+restarts the app into the picker after each run); (3) RDRAND as above. Device Portal crash dumps were enabled on the
+console; four ~194 MB dumps exist there, not downloaded. An earlier package 1.0.0.8 (3ae7804) had shipped without
+the Wine builtins; the package assert added since prevents that.
+
 ## Real programs: Lua 5.4.7, the first guest that is not ours (2026-10-22)
 
 `lua.exe` (upstream tarball, SHA-256 pinned and checked every run, `cl /O2 /MT`, `tools/ci/build_lua.ps1`) runs through

@@ -121,9 +121,9 @@ bool PatchJump(void* from, const void* to) {
 ForwardResult ApplyRtlForwarding(const loader::MappedImage& img) {
     ForwardResult r;
     auto* base = static_cast<std::uint8_t*>(img.base);
-    auto patch = [&](const char* name, const void* target, const char* what) {
+    auto patch_export = [&](const char* name, std::uint16_t ordinal, const void* target, const char* what) {
         std::string fwd;
-        void* guest = loader::FindExport(img.base, name, &fwd);
+        void* guest = ordinal ? loader::FindExportByOrdinal(img.base, ordinal, &fwd) : loader::FindExport(img.base, name, &fwd);
         if (!guest) {
             WARN(dispatch, "forward %s: no guest export%s%s%s", name, fwd.empty() ? "" : " (forwarder ", fwd.c_str(),
                  fwd.empty() ? "" : ")");
@@ -148,8 +148,10 @@ ForwardResult ApplyRtlForwarding(const loader::MappedImage& img) {
         }
         ++r.forwarded;
     };
+    auto patch = [&](const char* name, const void* target, const char* what) { patch_export(name, 0, target, what); };
 #define RTL_FORWARD(name) patch(#name, HostExport(#name), "the host ntdll");
 #define WINE_OVERRIDE(name, fn) patch(#name, reinterpret_cast<const void*>(&fn), "core");
+#define WINE_OVERRIDE_ORD(ordinal, what, fn) patch_export(what, ordinal, reinterpret_cast<const void*>(&fn), "core");
 #include "rtl_forward.inc"
     if (NativeGuiActive()) {
         // Route B: what the native user32 needs from ntdll and Wine's does not provide in a form it accepts

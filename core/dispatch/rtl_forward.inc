@@ -6,6 +6,8 @@
 //   RTL_FORWARD(name)            -> the same-named host ntdll export. If the
 //                                   host lacks it, WARN and leave Wine's own.
 //   WINE_OVERRIDE(name, ourfn)   -> a core/dispatch function (unix_calls.cpp).
+//   WINE_OVERRIDE_ORD(ordinal, what, ourfn)
+//                                -> the same for an export that has no name (wine-pe patch 0006).
 //
 // Rule: anything that owns a process-wide structure which host code also
 // touches gets ONE implementation, the host's. Everything else stays Wine.
@@ -14,6 +16,9 @@
 #endif
 #ifndef WINE_OVERRIDE
 #define WINE_OVERRIDE(name, fn)
+#endif
+#ifndef WINE_OVERRIDE_ORD
+#define WINE_OVERRIDE_ORD(ordinal, what, fn)
 #endif
 
 // ---- Heap ---------------------------------------------------------------------
@@ -92,7 +97,9 @@ RTL_FORWARD(RtlAddFunctionTable)
 RTL_FORWARD(RtlDeleteFunctionTable)
 RTL_FORWARD(RtlInstallFunctionTableCallback)
 RTL_FORWARD(RtlLookupFunctionEntry)
-RTL_FORWARD(RtlUnwind)
+// RtlUnwind: ours; targets that are Wine TEB frames are unwound here, every other target goes to the host's RtlUnwind
+// (teb_frames.cpp).
+WINE_OVERRIDE(RtlUnwind, w10x_RtlUnwind)
 RTL_FORWARD(RtlUnwindEx)
 RTL_FORWARD(RtlVirtualUnwind)
 RTL_FORWARD(RtlCaptureContext)
@@ -115,10 +122,13 @@ RTL_FORWARD(RtlCaptureStackBackTrace)
 //   only reached through the host's copies.
 
 // ---- Wine debug channels (Wine keeps their state past the end of PEB/TEB) ----------
-WINE_OVERRIDE(__wine_dbg_get_channel_flags, w10x_wine_dbg_get_channel_flags)
-WINE_OVERRIDE(__wine_dbg_header, w10x_wine_dbg_header)
-WINE_OVERRIDE(__wine_dbg_output, w10x_wine_dbg_output)
-WINE_OVERRIDE(__wine_dbg_strdup, w10x_wine_dbg_strdup)
+// (The builtins are built without debug output, so nothing in them calls these; they stay patched for modules
+// that were not built that way.)
+WINE_OVERRIDE_ORD(wine_ordinal::kDbgGetChannelFlags, "dbg_get_channel_flags", w10x_wine_dbg_get_channel_flags)
+WINE_OVERRIDE_ORD(wine_ordinal::kDbgHeader, "dbg_header", w10x_wine_dbg_header)
+WINE_OVERRIDE_ORD(wine_ordinal::kDbgOutput, "dbg_output", w10x_wine_dbg_output)
+WINE_OVERRIDE_ORD(wine_ordinal::kDbgStrdup, "dbg_strdup", w10x_wine_dbg_strdup)
 
 #undef RTL_FORWARD
 #undef WINE_OVERRIDE
+#undef WINE_OVERRIDE_ORD

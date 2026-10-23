@@ -1,0 +1,104 @@
+# FileDescription of the Windows 10 22H2 x64 file of the same name, one line per
+# module built by build.sh (dlls.txt). Format:
+#
+#   <file name> | <status> | <FileDescription>
+#
+# status "recalled": the string as shipped by Windows 10, written down from
+# memory of the file's Properties dialog; no Windows file was available to
+# compare while this was written, so a wrong character is possible.
+# status "module": the Windows string is not known, the module's file name is
+# used (what Explorer shows for a file without a description).
+#
+# FileVersion and ProductVersion (10.0.19045.3803), ProductName ("Microsoft
+# (R) Windows (R) Operating System"), CompanyName and LegalCopyright are the
+# same for every module and are set in patches/0007, not here.
+# The file is UTF-8 (the registered-trademark sign U+00AE). gen-nowine.py
+# applies it to wine-src; the result is patches/0007-windows-version-resources.patch.
+ntdll.dll        | recalled | NT Layer DLL
+kernelbase.dll   | recalled | Windows NT BASE API Client DLL
+kernel32.dll     | recalled | Windows NT BASE API Client DLL
+msvcrt.dll       | recalled | Windows NT CRT DLL
+ucrtbase.dll     | recalled | Microsoft® C Runtime Library
+apisetschema.dll | recalled | ApiSet Schema DLL
+win32u.dll       | recalled | Win32u
+user32.dll       | recalled | Multi-User Windows USER API Client DLL
+gdi32.dll        | recalled | GDI Client DLL
+advapi32.dll     | recalled | Advanced Windows 32 Base API
+cryptbase.dll    | recalled | Base cryptographic API DLL
+sechost.dll      | recalled | Host for SCM/SDDL/LSA Lookup APIs
+bcrypt.dll       | recalled | Windows Cryptographic Primitives Library
+rpcrt4.dll       | recalled | Remote Procedure Call Runtime
+comctl32.dll     | recalled | User Experience Controls Library
+shell32.dll      | recalled | Windows Shell Common Dll
+shlwapi.dll      | recalled | Shell Light-weight Utility Library
+version.dll      | recalled | Version Checking and File Installation Libraries
+imm32.dll        | recalled | Multi-User Windows IMM32 API Client DLL
+ws2_32.dll       | recalled | Windows Socket 2.0 32-Bit DLL
+winmm.dll        | recalled | MCI API DLL
+comdlg32.dll     | recalled | Common Dialogs DLL
+pdh.dll          | recalled | Windows Performance Data Helper DLL
+mpr.dll          | recalled | Multiple Provider Router DLL
+netapi32.dll     | recalled | Net Win32 API DLL
+netutils.dll     | recalled | Net Win32 API Helpers DLL
+iphlpapi.dll     | recalled | IP Helper API
+dnsapi.dll       | recalled | DNS Client API DLL
+nsi.dll          | recalled | NSI User-mode interface DLL
+shcore.dll       | recalled | SHCORE
+coml2.dll        | module   | coml2.dll
+cfgmgr32.dll     | recalled | Configuration Manager DLL
+hid.dll          | recalled | Hid User Library
+secur32.dll      | recalled | Security Support Provider Interface
+winbrand.dll     | recalled | Windows Branding Resources
+wtsapi32.dll     | recalled | Windows Remote Desktop Session Host Server SDK APIs
+ole32.dll        | recalled | Microsoft OLE for Windows
+oleaut32.dll     | recalled | OLEAUT32.DLL
+combase.dll      | recalled | Microsoft COM for Windows
+wbemprox.dll     | module   | wbemprox.dll
+services.exe     | recalled | Services and Controller app
+wineboot.exe     | module   | wineboot.exe
+xcopy.exe        | module   | xcopy.exe
+findstr.exe      | module   | findstr.exe
+sort.exe         | module   | sort.exe
+where.exe        | module   | where.exe
+attrib.exe       | module   | attrib.exe
+reg.exe          | recalled | Registry Console Tool
+hostname.exe     | module   | hostname.exe
+whoami.exe       | module   | whoami.exe
+chcp.com         | module   | chcp.com
+more.com         | module   | more.com
+fc.exe           | module   | fc.exe
+timeout.exe      | module   | timeout.exe
+choice.exe       | module   | choice.exe
+expand.exe       | module   | expand.exe
+icacls.exe       | module   | icacls.exe
+cacls.exe        | module   | cacls.exe
+explorer.exe     | recalled | Windows Explorer
+conhost.exe      | recalled | Console Window Host
+msimg32.dll      | recalled | GDIEXT Client DLL
+setupapi.dll     | recalled | Windows Setup API
+msacm32.dll      | recalled | Microsoft ACM Audio Filter
+winspool.drv     | recalled | Windows Spooler Driver
+compstui.dll     | recalled | Common Property Sheet User Interface DLL
+propsys.dll      | recalled | Microsoft Property System
+windowscodecs.dll | recalled | Microsoft Windows Codecs Library
+mlang.dll        | recalled | Multi Language Support DLL
+gdiplus.dll      | recalled | Microsoft GDI+
+dwrite.dll       | recalled | Microsoft DirectX Typography Services
+atl100.dll       | module   | atl100.dll
+cabinet.dll      | recalled | Microsoft® Cabinet File API
+psapi.dll        | recalled | Process Status Helper
+xmllite.dll      | recalled | Microsoft XmlLite Library
+dbghelp.dll      | recalled | Windows Image Helper
+msxml3.dll       | module   | msxml3.dll
+urlmon.dll       | recalled | OLE32 Extensions for Win32
+wininet.dll      | recalled | Internet Extensions for Win32
+iertutil.dll     | recalled | Run time utility for Internet Explorer
+crypt32.dll      | recalled | Crypto API32
+ncrypt.dll       | recalled | Windows NCrypt Router
+wintrust.dll     | recalled | Microsoft Trust Verification APIs
+cryptnet.dll     | recalled | Crypto Network Related API
+cryptui.dll      | recalled | Microsoft Trust UI Provider
+imagehlp.dll     | recalled | Windows NT Image Helper
+chcp.exe         | recalled | Change CodePage Utility
+more.exe         | recalled | More Utility
+cmd.exe          | recalled | Windows Command Processor

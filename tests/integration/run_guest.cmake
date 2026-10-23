@@ -2,6 +2,7 @@
 # code (cmake -P; ctest's PASS_REGULAR_EXPRESSION alone ignores exit codes).
 #   -DHOST=<win10xbox.exe> -DMACHINE=<machine dir> -DPROGRAM=<C:\guest\x.exe>
 #   -DEXPECT_EXIT=<n> -DEXPECT_REGEX=<regex;regex...> [-DEMULATOR=<wine>]
+#   [-DRUN_TIMEOUT=<seconds>]       the guest's run-time limit (default 120)
 #   [-DPROGRAM_ARGS=<arg;arg...>]   the guest's own command-line arguments, one list element each ("\;" inside one)
 #   [-DFORBID_REGEX=<regex>] [-DDEBUG_SPEC=<WIN10XBOX_DEBUG spec>]
 # EXPECT_REGEX/FORBID_REGEX match the guest's stdout. The layer's own trace
@@ -10,11 +11,11 @@
 #   [-DEXPECT_TRACE_REGEX=<regex;regex...>] [-DFORBID_TRACE_REGEX=<regex>]
 #   [-DKEEP_REGISTRY_OVERLAY=ON]  keep <machine>\registry-overlay.bin (the registry a previous run left, docs/DISPATCHER.md
 #   "Registry persistence"); without it the file is deleted first, so no test sees another's registry writes.
-#   [-DREQUIRE=<path relative to the machine folder>]: SKIP (77) when that file is absent, e.g. the native
-#   Windows DLLs a test needs (machine/import_windows_dlls.ps1 stages them on a Windows host only).
 # ('@SEMI@' in PROGRAM_ARGS stands for a ';' inside one argument.)
 # -DINPUT_FILE=<host file> is its stdin;
 # -DGUEST_FILE=<path under the machine folder, '/' separated> is deleted before the run and must exist after it.
+#   [-DREQUIRE=<path relative to the machine folder>]: SKIP (77) when that file is absent, e.g. the native
+#   Windows DLLs a test needs (machine/import_windows_dlls.ps1 stages them on a Windows host only).
 # -DREQUIRE_BUILTIN_DLLS=ON adds +modules to WIN10XBOX_DEBUG and fails unless every system DLL the guest
 # mapped (C:\Windows\System32\<x>.dll in the modules trace) came from <machine>\Windows\builtin, with
 # user32.dll among them (unless -DNO_USER32=ON: a console program that never loads it); the list is printed either way.
@@ -75,12 +76,23 @@ if(REQUIRE_BUILTIN_DLLS)
     set(ENV{WIN10XBOX_DEBUG} "$ENV{WIN10XBOX_DEBUG},+modules")
   endif()
 endif()
+# -DRUN_TIMEOUT=<seconds>: how long the guest may run (default 120).
+set(_timeout 120)
+if(RUN_TIMEOUT)
+  set(_timeout "${RUN_TIMEOUT}")
+endif()
 # ${_args} is expanded right here, not through an intermediate list variable: set() joins the expanded elements
 # without their "\;" escape, so an argument that holds a ';' would be split in two.
 execute_process(COMMAND ${EMULATOR} "${HOST}" --machine "${_machine}" "${_program}" ${_args} ${_stdin}
-                RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 120)
+                RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT ${_timeout})
 # Before the guest's output: ctest keeps only the first 1024 bytes of a passing test's output.
 set(_builtin_fail "")
+# What the trace checks matched, first: ctest keeps only the first 1024 bytes of a passing test's output.
+foreach(re ${EXPECT_TRACE_REGEX})
+  if(err MATCHES "${re}")
+    message("trace: ${CMAKE_MATCH_0}")
+  endif()
+endforeach()
 if(REQUIRE_BUILTIN_DLLS)
   # trace:modules:Xl_NtCreateSection section <h>: C:\Windows\System32\x.dll (<n> bytes, host path <path>)
   string(REGEX MATCHALL "C:\\\\Windows\\\\System32\\\\[^ \\\\]+ \\([0-9]+ bytes, host path [^)\n]+\\)" _maps "${err}")
@@ -121,7 +133,14 @@ if(err)
   message("--- stderr ---\n${err}")
 endif()
 set(_fail "${_builtin_fail}")
-if(NOT "${rc}" STREQUAL "${EXPECT_EXIT}")
+# exit(-1) is the process exit code 0xFFFFFFFF; the runner's cmake reports it as -1, 255 (a Wine host) or 4294967295.
+set(_exit_ok OFF)
+if("${rc}" STREQUAL "${EXPECT_EXIT}")
+  set(_exit_ok ON)
+elseif("${EXPECT_EXIT}" STREQUAL "-1" AND ("${rc}" STREQUAL "255" OR "${rc}" STREQUAL "4294967295"))
+  set(_exit_ok ON)
+endif()
+if(NOT _exit_ok)
   string(APPEND _fail "exit code ${rc}, expected ${EXPECT_EXIT}\n")
   # host-win32 (MSVC) writes crash.txt next to win10xbox.exe on a fatal exception: show it, a later test
   # run would overwrite it before the CI artifact upload.
@@ -186,6 +205,70 @@ if(DEFINED ENV{WIN10XBOX_SCREENSHOT${_sfx}} AND DEFINED ENV{WIN10XBOX_EXPECT_SCR
   endif()
 endif()
 endforeach()
+# WIN10XBOX_EXPECT_SCREENSHOT_VARIED="x0,y0,x1,y1,step,min_colours[,aarrggbb]": the screenshot's pixels on a grid
+# (x0..x1 by step, y0..y1 by step, clipped to the image) must hold at least min_colours distinct values, and the
+# optional colour among them: the region is not uniform (e.g. a 3D-rendered window, not a black or blank one).
+if(DEFINED ENV{WIN10XBOX_SCREENSHOT} AND DEFINED ENV{WIN10XBOX_EXPECT_SCREENSHOT_VARIED})
+  set(_bmp "$ENV{WIN10XBOX_SCREENSHOT}")
+  if(NOT EXISTS "${_bmp}")
+    string(APPEND _fail "screenshot ${_bmp} was not written\n")
+  else()
+    # Read only the header and the sampled pixels (OFFSET/LIMIT): a whole 3 MB frame as a CMake string is slow.
+    file(READ "${_bmp}" _hex OFFSET 0 LIMIT 54 HEX)
+    string(SUBSTRING "${_hex}" 36 8 _w_le)
+    string(REGEX REPLACE "(..)(..)(..)(..)" "\\4\\3\\2\\1" _w_be "${_w_le}")
+    math(EXPR _w "0x${_w_be}")
+    string(SUBSTRING "${_hex}" 44 8 _h_le)
+    string(REGEX REPLACE "(..)(..)(..)(..)" "\\4\\3\\2\\1" _h_be "${_h_le}")
+    math(EXPR _h "0x${_h_be}")
+    if(_h GREATER 2147483647)
+      math(EXPR _h "4294967296 - ${_h}")   # top-down
+    endif()
+    string(REPLACE "," ";" _v "$ENV{WIN10XBOX_EXPECT_SCREENSHOT_VARIED}")
+    list(GET _v 0 _x0)
+    list(GET _v 1 _y0)
+    list(GET _v 2 _x1)
+    list(GET _v 3 _y1)
+    list(GET _v 4 _step)
+    list(GET _v 5 _min)
+    set(_want "")
+    list(LENGTH _v _n)
+    if(_n GREATER 6)
+      list(GET _v 6 _want)
+    endif()
+    if(_x1 GREATER_EQUAL _w)
+      math(EXPR _x1 "${_w} - 1")
+    endif()
+    if(_y1 GREATER_EQUAL _h)
+      math(EXPR _y1 "${_h} - 1")
+    endif()
+    set(_colours "")
+    set(_samples 0)
+    foreach(_y RANGE ${_y0} ${_y1} ${_step})
+      foreach(_x RANGE ${_x0} ${_x1} ${_step})
+        math(EXPR _off "54 + (${_y} * ${_w} + ${_x}) * 4")
+        file(READ "${_bmp}" _le OFFSET ${_off} LIMIT 4 HEX)
+        string(REGEX REPLACE "(..)(..)(..)(..)" "\\4\\3\\2\\1" _got "${_le}")
+        list(APPEND _colours "${_got}")
+        math(EXPR _samples "${_samples} + 1")
+      endforeach()
+    endforeach()
+    list(REMOVE_DUPLICATES _colours)
+    list(LENGTH _colours _distinct)
+    list(SUBLIST _colours 0 12 _first)
+    string(REPLACE ";" " " _first "${_first}")
+    message("screenshot ${_w}x${_h}: ${_distinct} distinct colours in ${_samples} samples of (${_x0},${_y0})-(${_x1},${_y1}): ${_first}")
+    if(_distinct LESS _min)
+      string(APPEND _fail "screenshot region (${_x0},${_y0})-(${_x1},${_y1}) has ${_distinct} colour(s), expected at least ${_min} (${_bmp})\n")
+    endif()
+    if(_want)
+      list(FIND _colours "${_want}" _hit)
+      if(_hit LESS 0)
+        string(APPEND _fail "screenshot region (${_x0},${_y0})-(${_x1},${_y1}) lacks colour ${_want} (${_bmp})\n")
+      endif()
+    endif()
+  endif()
+endif()
 if(_fail)
   message(FATAL_ERROR "${PROGRAM}:\n${_fail}")
 endif()

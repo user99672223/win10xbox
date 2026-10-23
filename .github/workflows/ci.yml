@@ -61,8 +61,13 @@ jobs:
           ok=0
           for i in 1 2 3; do
             if sudo timeout 420 apt-get install -y -q --no-install-recommends -o Acquire::Retries=3 -o Acquire::http::Timeout=60 \
-                 -o Dir::Cache::archives="$HOME/apt-cache" wine wine64 ninja-build; then ok=1; break; fi
-            echo "apt-get install attempt $i failed"; sleep 10
+                 -o Dir::Cache::archives="$HOME/apt-cache" wine wine64 ninja-build pulseaudio; then ok=1; break; fi
+            echo "apt-get install attempt $i failed"
+            # The Azure mirror is the usual culprit (run 39982478666 lost the 105 MB libwine twice): switch every
+            # apt source to the main archive before the next attempt and refresh the index once.
+            sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true
+            sudo apt-get update -q || true
+            sleep 10
           done
           [ "$ok" = 1 ]
           # Leave only the .deb files for the cache (lock and partial/ are root-owned).
@@ -95,6 +100,19 @@ jobs:
         run: |
           wineboot --init
           wineserver -w
+      # A virtual audio device for the Wine host (docs/slices/audio.md): PulseAudio with a null sink, which Wine's winepulse
+      # driver turns into the default render endpoint. The layer's audio tests compare the layer with the host, so with
+      # this the host plays the sound and so must the layer; if the daemon does not come up the host has no endpoint and
+      # the same tests assert the exact no-endpoint path.
+      - name: Start a virtual audio device (PulseAudio null sink) for the Wine host
+        run: |
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          sudo mkdir -p "$XDG_RUNTIME_DIR" && sudo chown "$(id -u):$(id -g)" "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          pulseaudio --start --exit-idle-time=-1 --disallow-exit --load="module-null-sink sink_name=virtual" || true
+          sleep 2
+          pactl info || true
+          pactl list short sinks || true
       - name: Stage Wine NLS data into the machine folder (for the guest e2e tests)
         env: { WINEPREFIX: "${{ runner.temp }}/wineprefix" }
         run: |
@@ -211,6 +229,20 @@ jobs:
       - name: Fetch the WDK km headers (required)
         shell: pwsh
         run: ./tools/ci/fetch_wdk_km.ps1
+      # Dear ImGui's release source for guest_imgui_d3d11 (tests/guest/imgui_d3d11.cpp wraps its unmodified
+      # example_win32_directx11; docs/DECISIONS.md G1). Not vendored; CMake reads WIN10XBOX_IMGUI_DIR at configure.
+      - name: Fetch Dear ImGui (guest_imgui_d3d11)
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'imgui'
+          for ($i = 1; $i -le 4; $i++) {
+            if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
+            git clone -q --depth 1 --branch v1.93.0 https://github.com/ocornut/imgui $dir
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Seconds (5 * $i)
+          }
+          if (-not (Test-Path "$dir/examples/example_win32_directx11/main.cpp")) { throw "Dear ImGui v1.93.0 not fetched" }
+          "WIN10XBOX_IMGUI_DIR=$dir" >> $env:GITHUB_ENV
       - name: Configure
         env: { SCCACHE_GHA_ENABLED: "true" }
         run: >
@@ -224,6 +256,10 @@ jobs:
       - name: Populate machine folder from the runner's System32 (never committed)
         shell: pwsh
         run: ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine -CI
+      # The natives only the Direct3D machine folder gets (machine/guest_dlls_d3d.txt), kept out of the shared machine folder.
+      - name: Stage the Direct3D machine's extra natives
+        shell: pwsh
+        run: ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine-d3d-extra -CI -ListFile machine/guest_dlls_d3d.txt
       # A real program that is not ours: 7-Zip 24.09's 7zr.exe from the official source tarball (pinned SHA-256, the
       # cache key carries it), nmake in CPP/7zip/Bundles/Alone7z -> build/bin/machine/guest/7zr.exe; run by
       # integration.real7z (tests/integration/real7z.cmake).
@@ -312,6 +348,18 @@ jobs:
       - name: Fetch ninja 1.12.1 (real guest program)
         shell: pwsh
         run: ./tools/ci/fetch_ninja.ps1 -Out build/bin/machine/guest
+      # The first game that is not ours: Chocolate Doom 3.1.1 (the project's official win64 zip: chocolate-doom.exe and the
+      # SDL2 DLLs) with the shareware doom1.wad, both pinned by SHA-256 and verified on every run (tools/ci/fetch_doom.ps1).
+      # Left in build/bin/machine/guest for integration.doom_timedemo (docs/slices/doom.md); its screenshot,
+      # build/bin/doom_timedemo.bmp, is uploaded with the other *.bmp files.
+      - name: Cache Chocolate Doom and doom1.wad
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/doom-src
+          key: doom-3.1.1-58c34c61ae954493fce5ff01fd553898240a0de25658aa97b43ac9510c49581f-wad-1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771
+      - name: Fetch Chocolate Doom 3.1.1 and doom1.wad (real guest program)
+        shell: pwsh
+        run: ./tools/ci/fetch_doom.ps1 -Out build/bin/machine/guest
       # Real GUI programs that are not ours (tools/ci/build_realgui.ps1): Microsoft's LearnWin32 Hello World and PuTTY
       # 0.85 (official tarball, cmake + cl /MT), pinned by SHA-256 and verified on every run. Left in
       # build/bin/machine/guest for integration.realgui_* (docs/TESTING.md, "Real GUI programs").
@@ -355,6 +403,32 @@ jobs:
       - name: Fetch MinGit (real guest program, pinned SHA-256 verified)
         shell: pwsh
         run: ./tools/ci/fetch_mingit.ps1 -Out build/bin/machine/guest/mingit
+      # What audio the runner has (docs/slices/audio.md): the services, the endpoint devices, and the verdict of the two
+      # audio guests run directly on the host (42 = a device played the sound, 43 = no render endpoint, with the
+      # HRESULT). integration.guest_wasapi / guest_xaudio2 require the layer to answer exactly as the host does, so
+      # whichever the runner has, this step is the evidence of which one the gate checked. If the Windows Audio service
+      # is stopped it is started once and the probe repeated (a normal service start, no device is added).
+      - name: Probe - the runner's audio endpoints
+        shell: pwsh
+        run: |
+          function Show-Audio($title) {
+            Write-Host "=== $title ==="
+            Get-Service Audiosrv, AudioEndpointBuilder -ErrorAction Continue | Format-Table Name, Status, StartType | Out-String | Write-Host
+            Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.Class -in 'AudioEndpoint', 'MEDIA' } |
+              Format-Table Status, Class, FriendlyName | Out-String | Write-Host
+            Get-CimInstance Win32_SoundDevice -ErrorAction Continue | Format-List Name, Status | Out-String | Write-Host
+            foreach ($g in 'guest_wasapi', 'guest_xaudio2') {
+              $out = & "build/bin/guest/$g.exe" 2>&1 | Out-String
+              Write-Host ("{0} run directly on the host: exit {1}`n{2}" -f $g, $LASTEXITCODE, $out)
+            }
+          }
+          Show-Audio 'audio before'
+          $svc = Get-Service Audiosrv -ErrorAction SilentlyContinue
+          if ($svc -and $svc.Status -ne 'Running') {
+            try { Start-Service Audiosrv -ErrorAction Stop; Start-Sleep -Seconds 3 } catch { Write-Host "Start-Service Audiosrv: $_" }
+            Show-Audio 'audio after Start-Service Audiosrv'
+          }
+          exit 0   # the probe reports; the gates are integration.guest_wasapi / guest_xaudio2 and the fastfetch Sound module
       # The whole suite, end-to-end included. The guest's stdout IS captured on
       # real Windows: run 39818491081 (RelWithDebInfo, the one job of that run
       # that had the builtins) printed "hello from guest" and passed 11 of 13
@@ -387,16 +461,47 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: ./tools/ci/smoke_guests.ps1 -Bin build/bin -Machine build/bin/machine -LogDir build/guest-smoke -RealPrograms -Sysinternals
+      # Native or builtin xaudio2_9 (docs/slices/audio.md)? The gate above runs Wine's builtin. This measures the runner's
+      # own xaudio2_9.dll on the layer (dll_overrides "xaudio2_9": "native" on a copy of the builtin-only folder), with
+      # Wine's mmdevapi under it: the guest's exit code and the layer's err:/fixme: lines are printed, nothing gates.
+      - name: Measure - native xaudio2_9 from the runner's System32 on the layer (informational)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $m = (Resolve-Path build/bin/machine-builtin).Path
+          $x = Join-Path $env:RUNNER_TEMP 'machine-native-xa'
+          robocopy $m $x /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+          Copy-Item (Join-Path $env:SystemRoot 'System32\xaudio2_9.dll') (Join-Path $x 'Windows\System32\xaudio2_9.dll') -Force
+          $j = Get-Content (Join-Path $x 'machine.json') -Raw | ConvertFrom-Json
+          $j.dll_overrides | Add-Member -NotePropertyName 'xaudio2_9' -NotePropertyValue 'native' -Force
+          $j | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $x 'machine.json')
+          $env:WIN10XBOX_DEBUG = '+audio,+modules'
+          $p = Start-Process build/bin/win10xbox.exe -ArgumentList '--machine', $x, 'C:\guest\guest_xaudio2.exe' `
+                 -RedirectStandardOutput nx.out -RedirectStandardError nx.err -PassThru -NoNewWindow
+          $null = $p.Handle
+          if (-not $p.WaitForExit(120000)) { $p.Kill(); $p.WaitForExit(); Write-Host 'native xaudio2_9: killed after 120 s' }
+          Write-Host ("guest_xaudio2 with the native xaudio2_9: exit {0}" -f $p.ExitCode)
+          Get-Content nx.out | Write-Host
+          Select-String -Path nx.err -Pattern 'xaudio2_9|err:|fixme:|unresolved|EXCEPTION_WINE_STUB|c0000135' | Select-Object -First 30 | ForEach-Object { Write-Host "    $($_.Line)" }
+          exit 0
       # fastfetch module by module on the console's DLL set, gating: one process per module, so a module that stops the
       # guest fails by name. Each module that works must exit 0 and print its line. The ones that do not yet (Display,
-      # Sound, GPU, Packages, LocalIp, Battery, Bluetooth) are the todo list of docs/slices/fastfetch.md.
+      # GPU, Packages, LocalIp, Battery, Bluetooth) are the todo list of docs/slices/fastfetch.md; Sound is gated here since
+      # the audio slice (docs/slices/audio.md).
       - name: Gate - fastfetch, each working module prints its line
         if: ${{ !cancelled() }}
         shell: pwsh
         run: |
-          $expect = [ordered]@{ OS = '^OS: '; Host = '^Host: '; Kernel = '^Kernel: '; Uptime = '^Uptime: '; Shell = '^Shell: ';
+          # Sound lists the active render endpoints: a line when the runner has one (what guest_wasapi run directly on the
+          # host says, docs/slices/audio.md), and exit 0 with none otherwise; before the layer had mmdevapi it died
+          # with 1722 (the MMDeviceEnumerator class was not registered).
+          $null = & build/bin/guest/guest_wasapi.exe 2>&1
+          $hostAudio = ($LASTEXITCODE -eq 42)
+          Write-Host "host audio endpoint: $hostAudio (guest_wasapi exit $LASTEXITCODE)"
+          $expect = [ordered]@{ OS = '^OS: '; Host = '^Host: '; Kernel = '^Kernel: WIN32_NT 10\.0\.19045'; Uptime = '^Uptime: '; Shell = '^Shell: ';
                                 Terminal = '^Terminal: '; CPU = '^CPU: '; Memory = '^Memory: '; Swap = '^Swap: ';
-                                Disk = '^Disk \(.*\): '; Locale = '^Locale: ' }
+                                Disk = '^Disk \(.*\): '; Locale = '^Locale: '; Sound = $(if ($hostAudio) { '^Sound' } else { '' }) }
           $machine = (Resolve-Path build/bin/machine-builtin).Path
           $fail = 0
           foreach ($m in $expect.Keys) {
@@ -413,7 +518,12 @@ jobs:
               $fail = 1
             }
           }
+          # no endpoint on the host: Sound must print nothing (the layer answers E_NOTFOUND, fastfetch skips the module)
+          if (-not $hostAudio -and (Get-Content ff-Sound.out -Raw) -match '(?m)^Sound') { Write-Host "::error::fastfetch[Sound]: a Sound line without a host endpoint"; $fail = 1 }
+          # guest_wasapi's 43 (no endpoint) must not leak out as the step's exit code
+          $global:LASTEXITCODE = 0
           if ($fail) { exit 1 }
+          exit 0
       # crash.txt / crash.dmp / entry-reached.txt: what host-win32/crash.cpp writes into build/bin when a guest run
       # (ctest or the smoke step) dies; *.bmp: the GUI tests' screenshots (WIN10XBOX_SCREENSHOT).
       - uses: actions/upload-artifact@v4
