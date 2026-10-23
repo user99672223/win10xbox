@@ -1,4 +1,4 @@
-status: wip
+status: ready
 
 # Slice wt-ntdll-file: Wine's ntdll `file` unit through the layer
 
@@ -53,6 +53,48 @@ with a trailing separator (file.c:6751). So the unit cannot reach 0 failures her
 when the unit does not complete, executes less than the floor, or fails (in both layer runs) a source line the native
 run passes. Through the layer the unit printed `file: 2722 tests executed (0 marked as todo, 0 as flaky, 26 failures),
 3 skipped.` in both configurations, all 26 being lines the native run fails too.
+
+## Run
+
+* ci.yml on `a257d8e` (the code of this slice; the later commits only merge main and edit this file):
+  https://github.com/user99672223/win10xbox/actions/runs/39944856100 - linux-cross, windows (Debug) and windows
+  (RelWithDebInfo) green, `integration.cmd_builtin` and `integration.winetest_ntdll` passed on both Windows configs
+  (87/87 tests each, nothing skipped). wine-pe.yml for the same head (patch 0005, `programs/cmd`):
+  https://github.com/user99672223/win10xbox/actions/runs/39944855992 (green).
+* First run with `programs/cmd` and the file-name/reparse/by-file-id changes (`6fb640f`):
+  https://github.com/user99672223/win10xbox/actions/runs/39933901886, `file: 2867 tests executed (0 marked as todo,
+  0 as flaky, 29 failures), 2 skipped.` on both configs (29 = 26 + the three symbolic-link lines 6705, 6751, 7116).
+* What `cmd.exe` printed through the layer (`win10xbox.exe C:\Windows\System32\cmd.exe /c echo cmd runs through the
+  layer`, exit 0): `cmd runs through the layer`.
+* host-uwp.yml was red on `a257d8e` because main's host-uwp/CMakeLists.txt carried a duplicate `foreach` from the hooks
+  and menu merges (Configure error, "Flow control statements are not properly nested"); main fixed it in b9bc38c and
+  469293c, which this branch merged afterwards. Main now runs host-uwp, uwp-lite and the host-win32 smoke jobs on main only.
+
+## Syscalls added or changed
+
+* `NtFsControlFile`: new Translate (PassThrough before): `FSCTL_SET_REPARSE_POINT` / `FSCTL_GET_REPARSE_POINT` map the
+  target of a junction or absolute symbolic link between the guest's and the host's name.
+* `NtQueryInformationFile`: `FileNameInformation`, `FileNormalizedNameInformation`, now also `FileAllInformation`;
+  the name is the guest view and the reply follows the caller's buffer (private host reply).
+* `NtCreateFile`, `NtOpenFile`: `FILE_OPEN_BY_FILE_ID` names are not translated; the create options reach the VFS
+  (`file\` on an existing file with `FILE_DIRECTORY_FILE` is `STATUS_NOT_A_DIRECTORY`).
+
+## DLLs and programs added to wine-pe/dlls.txt
+
+`programs/cmd` (cmd.exe, imports shell32, user32, advapi32, kernelbase: all already built). wine-pe/patches: 0005 (names
+of the privileges past SeCreateGlobalPrivilege).
+
+## What still fails
+
+* Through the layer the unit fails 26 assertions on the runners, all of them also failing natively (the 14 lines of the
+  `io.Status` group above). Nothing the layer does fixes them; the unit stays out of the allowlist and is gated by
+  parity.
+* The unit executes 2722 assertions through the layer and 2868 natively: the 146 fewer are the symbolic-link tests
+  (the guest's token is a standard user's and skips them, the runner's native token runs them). Symbolic links (`FSCTL_SET_REPARSE_POINT` with a relative target) therefore have
+  no gate here; one of them, a relative link that climbs past the drive root (file.c:7116), cannot be answered the way
+  Windows does while the guest's C: is a directory of the host (the host resolves `..` against its own volume root).
+* `NtWriteFile` / `NtReadFile` on an overlapped handle answer what the host answers (immediate completion for a
+  cached write on this runner image); the unit accepts it through `broken()` when run as Windows.
 
 ## Files
 
