@@ -51,13 +51,20 @@ jobs:
           path: ~/apt-cache
           key: apt-debs-${{ runner.os }}-noble-wine9-v1
       - name: Install Wine + ninja
-        timeout-minutes: 12
+        timeout-minutes: 25
         run: |
           mkdir -p "$HOME/apt-cache"
           sudo dpkg --add-architecture i386
           for i in 1 2 3; do sudo apt-get update -q && break; sleep 15; done
-          sudo apt-get install -y -q --no-install-recommends -o Acquire::Retries=3 -o Acquire::http::Timeout=60 \
-            -o Dir::Cache::archives="$HOME/apt-cache" wine wine64 ninja-build
+          # A throttled mirror stalls the 105 MB libwine download (run 39876423114 sat on it for the whole
+          # 12 minutes): three attempts of at most 7 minutes each, a partial download is resumed by the next.
+          ok=0
+          for i in 1 2 3; do
+            if sudo timeout 420 apt-get install -y -q --no-install-recommends -o Acquire::Retries=3 -o Acquire::http::Timeout=60 \
+                 -o Dir::Cache::archives="$HOME/apt-cache" wine wine64 ninja-build; then ok=1; break; fi
+            echo "apt-get install attempt $i failed"; sleep 10
+          done
+          [ "$ok" = 1 ]
           # Leave only the .deb files for the cache (lock and partial/ are root-owned).
           sudo rm -rf "$HOME/apt-cache/lock" "$HOME/apt-cache/partial"
           sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-cache"
