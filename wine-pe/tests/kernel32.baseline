@@ -1,6 +1,8 @@
 # <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/kernel32.sh --baseline)
 # Measured on the linux-cross CI job (WINETEST kernel32:<unit> lines). 0-failure run units are the allowlist;
 # a unit may only move up: fewer failures, or crash/timeout -> run. Never raise a number to make a run pass.
+# crash and timeout gate the same (the unit must not complete); a unit near the 30 s cap flips between them.
+# file: 191 and 222 failures were both observed on identical code, so the larger one is the budget.
 actctx crash 0
 atom run 0
 change crash 0
@@ -21,7 +23,7 @@ locale run 297
 mailslot run 15
 module crash 0
 path run 0
-pipe timeout 0
+pipe crash 0
 power run 0
 process crash 0
 profile run 4
@@ -30,7 +32,7 @@ sync crash 0
 thread crash 0
 time run 34
 timer crash 0
-toolhelp timeout 0
+toolhelp crash 0
 version run 8
-virtual timeout 0
+virtual crash 0
 volume run 35

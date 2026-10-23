@@ -126,12 +126,19 @@ do_run() {
         rc=$?
         local secs=$(( $(date +%s) - t0 ))
         local summary; summary="$(grep -aE "^[0-9a-f]+:$unit:.*$re" "$log" | tail -1)"
-        # Only the unit's own summary counts: the child processes some units start print summaries too.
+        # Only the unit's own summary counts: the child processes some units start print summaries too
+        # (checked against the exit code below).
         if [[ $rc -eq 124 || $rc -eq 137 ]]; then
             status=timeout
         elif [[ -n "$summary" && "$summary" =~ $re ]]; then
             status=ok; ex=${BASH_REMATCH[1]}; todo=${BASH_REMATCH[2]}; fl=${BASH_REMATCH[3]}
             fails=${BASH_REMATCH[4]}; sk=${BASH_REMATCH[5]}
+            # Wine's harness exits with the failure count (capped at 255); a unit that re-runs itself as a
+            # child prints a summary under the same name, so a different exit code means the process
+            # that ran the unit did not reach its own summary.
+            if (( rc != (fails > 255 ? 255 : fails) )); then
+                status=crashed; ex=0; todo=0; fl=0; fails=0; sk=0
+            fi
         fi
         if [[ $status != ok ]]; then
             last="$(grep -aoE '[A-Za-z0-9_]+\.c:[0-9]+:[^\r]*' "$log" | tail -1 | cut -c1-160)"
