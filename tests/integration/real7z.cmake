@@ -1,12 +1,35 @@
 # Real program: 7-Zip's console 7zr.exe (built by tools/ci/build_7zip.ps1 into <machine>/guest) through win10xbox.
-#   cmake -DHOST=<win10xbox.exe> -DMACHINE=<machine dir> [-DEMULATOR=<wine>] -P real7z.cmake
-# Generates a ~4 MB file set under <machine>/work7z/in, then through the layer:
+#   cmake -DHOST=<win10xbox.exe> -DMACHINE=<machine dir> [-DEMULATOR=<wine>] [-DMODE=roundtrip|bench] -P real7z.cmake
+# MODE=roundtrip (default): generates a ~4 MB file set under <machine>/work7z/in, then through the layer:
 #   7zr a  (LZMA2, -mmt=4, 64 KiB dictionary so the 4 MB are split into 1 MiB blocks compressed on 4 threads)
 #   7zr a  (LZMA, -mmt=4: the multithreaded match finder)
 #   7zr t / 7zr l / 7zr x  of both archives, and compares SHA-256 of every extracted file with the original.
-# WIN10XBOX_DEBUG is "-all" unless REAL7Z_DEBUG is set (a 4 MB compression under +all is gigabytes of trace).
-if(NOT EXISTS "${MACHINE}/Windows/builtin/ntdll.dll" OR NOT EXISTS "${MACHINE}/Windows/System32/c_1252.nls")
-  message(FATAL_ERROR "real7z: machine folder ${MACHINE} has no Wine builtins / NLS data")
+# MODE=bench: 7zr b -mmt1 (the built-in LZMA benchmark; it must finish and print its Avr:/Tot: rating lines).
+# WIN10XBOX_DEBUG is "-all,+wine" unless REAL7Z_DEBUG is set (a 4 MB compression under +all is gigabytes of trace);
+# Wine's own err/fixme lines and the DLL loads come through WIN10XBOX_WINEDEBUG (REAL7Z_WINEDEBUG overrides it).
+# Like run_guest.cmake: "SKIP:" and exit 77 when the machine folder has no Wine builtins / NLS data. A missing host or
+# a missing 7zr.exe is a failure, never a skip.
+if(NOT MODE)
+  set(MODE roundtrip)
+endif()
+if(NOT EXISTS "${HOST}")
+  message(FATAL_ERROR "real7z: host ${HOST} does not exist")
+endif()
+if(NOT EXISTS "${MACHINE}/Windows/builtin/ntdll.dll")
+  message("SKIP: ${MACHINE}/Windows/builtin/ntdll.dll missing: build Wine's PE DLLs (wine-pe/build.sh) "
+          "or download the wine-pe artifact into the machine folder")
+  if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.29)
+    cmake_language(EXIT 77)
+  endif()
+  return()
+endif()
+if(NOT EXISTS "${MACHINE}/Windows/System32/c_1252.nls")
+  message("SKIP: ${MACHINE}/Windows/System32/c_1252.nls missing: the guest's ntdll needs the Windows NLS data "
+          "(machine/import_windows_dlls.ps1 stages it from a Windows install; not available on Linux)")
+  if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.29)
+    cmake_language(EXIT 77)
+  endif()
+  return()
 endif()
 if(NOT EXISTS "${MACHINE}/guest/7zr.exe")
   message(FATAL_ERROR "real7z: ${MACHINE}/guest/7zr.exe missing (tools/ci/build_7zip.ps1)")
@@ -20,7 +43,48 @@ string(REPLACE "/" "\\" _machine "${_machine}")
 if(DEFINED ENV{REAL7Z_DEBUG})
   set(ENV{WIN10XBOX_DEBUG} "$ENV{REAL7Z_DEBUG}")
 else()
-  set(ENV{WIN10XBOX_DEBUG} "-all")
+  set(ENV{WIN10XBOX_DEBUG} "-all,+wine")
+endif()
+if(DEFINED ENV{REAL7Z_WINEDEBUG})
+  set(ENV{WIN10XBOX_WINEDEBUG} "$ENV{REAL7Z_WINEDEBUG}")
+else()
+  set(ENV{WIN10XBOX_WINEDEBUG} "err+all,fixme+all,+loaddll")
+endif()
+
+# The layer's trace goes to stderr: print it without the host-module inventory, the first and last 6000 characters.
+function(show_stderr text)
+  string(REGEX REPLACE "host-win32: host module [^\n]*\n" "" text "${text}")
+  string(LENGTH "${text}" _el)
+  if(_el GREATER 12000)
+    string(SUBSTRING "${text}" 0 6000 _head)
+    math(EXPR _from "${_el} - 6000")
+    string(SUBSTRING "${text}" ${_from} 6000 _tail)
+    set(text "${_head}\n[... ${_el} characters of trace, middle left out ...]\n${_tail}")
+  endif()
+  message("--- stderr ---\n${text}")
+endfunction()
+
+if(MODE STREQUAL "bench")
+  execute_process(COMMAND ${EMULATOR} "${HOST}" --machine "${_machine}" "C:\\guest\\7zr.exe" b -mmt1
+    RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 800)
+  string(REPLACE "\r\n" "\n" out "${out}")
+  message("=== 7zr b -mmt1 -> exit ${rc}\n${out}")
+  if(err)
+    show_stderr("${err}")
+  endif()
+  if(NOT "${rc}" STREQUAL "0")
+    message(SEND_ERROR "7zr b -mmt1: exit code ${rc}, expected 0")
+  endif()
+  foreach(re "Avr:" "Tot:" "Compressing" "Decompressing")
+    if(NOT out MATCHES "${re}")
+      message(SEND_ERROR "7zr b -mmt1: stdout does not match '${re}'")
+    endif()
+  endforeach()
+  if(out MATCHES "[Ee][Rr][Rr][Oo][Rr]")
+    message(SEND_ERROR "7zr b -mmt1 printed an error")
+  endif()
+  message("real7z: bench done")
+  return()
 endif()
 
 # ---- the file set ------------------------------------------------------------------------------------------
@@ -63,11 +127,7 @@ function(run7z label expect_rc expect_regex)
     RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 500)
   message("=== 7zr ${ARGN} -> exit ${rc}\n${out}")
   if(err)
-    string(LENGTH "${err}" _el)
-    if(_el GREATER 4000)
-      string(SUBSTRING "${err}" 0 4000 err)
-    endif()
-    message("--- stderr ---\n${err}")
+    show_stderr("${err}")
   endif()
   if(NOT "${rc}" STREQUAL "${expect_rc}")
     message(SEND_ERROR "${label}: exit code ${rc}, expected ${expect_rc}")
