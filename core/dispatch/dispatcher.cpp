@@ -398,11 +398,18 @@ NTSTATUS UseHostWin32u(HMODULE win32u) {
 // NtGdiDdDDI*. Those (and only those) win32u syscalls pass through to the host's win32u by name; every window call
 // stays with core/user.
 HostD3dModules g_d3d_mods;   // trivially initialised; set once before the guest starts
+// The host user32's PEB.KernelCallbackTable (captured when it is loaded, before the guest's Wine user32 replaces the
+// PEB's). The host kernel calls back through it during a passed-through NtGdiDdDDI* (thread setup, library loads: Windows
+// indices, up to ~0x70), which Wine's much shorter table cannot serve (entry 0x54 was NULL: call to rip=0).
+void* g_d3d_host_callbacks = nullptr;
 
 const HostD3dModules& HostD3dMods() { return g_d3d_mods; }
 
 NTSTATUS UseHostD3dkmt(HMODULE win32u, HMODULE user32, HMODULE gdi32, HMODULE gdi32full) {
     g_d3d_mods = HostD3dModules{win32u, user32, gdi32, gdi32full};
+    g_d3d_host_callbacks = PebField<void*>(peb::KernelCallbackTable);
+    TRACE(dispatch, "d3d native: host KernelCallbackTable %p serves the kernel's callbacks during D3DKMT calls",
+          g_d3d_host_callbacks);
     State& s = S();
     if (!s.initialized || !win32u) return st::Unsuccessful;
     AcquireSRWLockExclusive(&s.lock);
@@ -1040,7 +1047,12 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
     switch (e->policy) {
     case Policy::PassThrough:
         if (win32u && e->host_fn) {   // d3dkmt_host: the NtGdiDdDDI* of the host's win32u
+            // The host kernel may call back into user mode during this syscall: through the HOST user32's table.
+            void* const guest_table = PebField<void*>(peb::KernelCallbackTable);
+            const bool swap_table = g_state.d3dkmt_host && g_d3d_host_callbacks && guest_table != g_d3d_host_callbacks;
+            if (swap_table) PebField<void*>(peb::KernelCallbackTable) = g_d3d_host_callbacks;
             result64 = CallWithArgs64(e->host_fn, f->args, e->nargs);
+            if (swap_table) PebField<void*>(peb::KernelCallbackTable) = guest_table;
             status = static_cast<NTSTATUS>(result64);
         } else {
             status = e->host_fn ? CallWithArgs(e->host_fn, f->args, e->nargs) : st::NotImplemented;

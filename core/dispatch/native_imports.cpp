@@ -147,7 +147,11 @@ std::size_t ExtendExports(const loader::MappedImage& img, const wchar_t* label, 
         } else if (ddi || resolve_forwarders) {   // a forwarder: the function the host's loader resolves it to
             target = reinterpret_cast<const void*>(GetProcAddress(host_kb, name));
         }
-        if (!target) continue;
+        if (!target) {
+            if (fn >= 0)   // keeps Wine's export (it raises EXCEPTION_WINE_STUB when called)
+                ERR(dispatch, "stub-export: %ls!%s has no host function", label, name);
+            continue;
+        }
         if (from_w) ++from_wine;
         (fn >= 0 ? rep : add).push_back({name, target, from_w, fn});
     }
