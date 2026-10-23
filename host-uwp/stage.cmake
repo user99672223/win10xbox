@@ -12,6 +12,7 @@
 #   AppxManifest.xml  win10xbox-uwp.exe  Win10XboxUwp.winmd  Assets\*.png
 #   payload\machine.json  payload\launch.json  payload\launch.example.json
 #   payload\guest\* (every file of GUESTS: window.exe, hello.exe, ...)
+#   payload\nls\*.nls (Wine NLS data, -DNLS_DIR=<wine-pe/out/nls>)
 #   payload\builtin\*.dll (+ LICENSE.wine, MANIFEST.txt)
 # At run time host_stage.cpp (StageMachineFiles) copies payload\builtin and payload\guest into
 # LocalState\machine, StageMachineJson copies payload\machine.json (never over an existing one),
@@ -148,4 +149,24 @@ if(_nw EQUAL 0)
 else()
   message(STATUS "stage.cmake: bundled ${_nw} Wine PE builtin DLLs from ${BUILTIN_DIR}")
 endif()
+# Wine NLS data (LGPL-2.1+; the wine-pe-nls CI artifact): payload\nls\*.nls. The host copies it into
+# LocalState\machine\Windows\System32 (sortdefault.nls into ...\Globalization\Sorting) at first run, where the
+# emulated NtGetNlsSectionPtr reads it. Without it the package depends on the console's own System32 (it has none).
+set(_nn 0)
+if(NOT "${NLS_DIR}" STREQUAL "" AND IS_DIRECTORY "${NLS_DIR}")
+  file(MAKE_DIRECTORY "${STAGE}/payload/nls")
+  file(GLOB _nls "${NLS_DIR}/*.nls")
+  foreach(_f IN LISTS _nls)
+    get_filename_component(_n "${_f}" NAME)
+    file(COPY_FILE "${_f}" "${STAGE}/payload/nls/${_n}")
+    math(EXPR _nn "${_nn} + 1")
+  endforeach()
+endif()
+if(_nn EQUAL 0)
+  message(WARNING "stage.cmake: no NLS files in '${NLS_DIR}'. The package is produced without payload/nls and every "
+                  "guest crashes in RtlInitNlsTables on a console whose System32 lacks l_intl.nls/c_10000.nls.")
+else()
+  message(STATUS "stage.cmake: bundled ${_nn} NLS files from ${NLS_DIR}")
+endif()
+
 message(STATUS "stage.cmake: AppX layout ready in ${STAGE}")

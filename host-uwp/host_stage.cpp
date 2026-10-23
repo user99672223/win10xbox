@@ -233,8 +233,17 @@ StageResult StageMachineFiles(const StagePlan& plan)
         r.have_ntdll = FileSize(plan.c_root + L"\\Windows\\builtin\\ntdll.dll", &sz) && sz != 0;
     }
 
-    // Genuine NLS data, by name; copied only when missing.
     const std::wstring dst_sys32 = plan.c_root + L"\\Windows\\System32\\";
+    // NLS data bundled in the package (payload\\nls, Wine's own files): package-owned, so the package is self-contained
+    // and never depends on the console's System32. sortdefault.nls goes to Globalization\\Sorting, the rest to System32.
+    for (const std::wstring& f : ListFiles(plan.payload_dir + L"\\nls"))
+    {
+        const bool sort = _wcsicmp(f.c_str(), L"sortdefault.nls") == 0;
+        const std::wstring dst = sort ? plan.c_root + L"\\Windows\\Globalization\\Sorting\\" + f : dst_sys32 + f;
+        StageOne(r.nls, "nls-pkg", plan.payload_dir + L"\\nls\\" + f, dst, f, r.refreshed);
+    }
+
+    // Genuine NLS data from the host's own System32, by name; fallback only, copied when still missing.
     for (const wchar_t* name : kNlsRequired)
     {
         const Copy c = StageOne(r.nls, "nls", plan.system32 + L"\\" + name, dst_sys32 + name, name, false);
