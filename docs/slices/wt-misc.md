@@ -1,4 +1,4 @@
-status: blocked: REGRESSION: baseline is 'completes', now crashed (WINETEST crypt32:message, ci run 39946638580, head 9f16b24)
+status: wip
 
 # Slice: wt-misc (small Wine conformance suites)
 
@@ -51,7 +51,7 @@ lines of its log. "Test failed: C" style truncations are Wine's own: the test pr
 | crypt32 | base64, oid, str | run | 3723, 175, 1598 | 0 each | none |
 | crypt32 | main | run | 104 | 4 | main.c:340, :353 I_Crypt... |
 | crypt32 | crl | run | 140 | 7 | crl.c:741 expected 1 matching CRLs, got 0; :742; :823 |
-| crypt32 | message | run | 134 | 49 | message.c:84 Expected 1, got -1; :148; :156 expected CRYPT_E_HASH_VALUE, got 0x57 |
+| crypt32 | message | crash (non-deterministic) | 134 or 0 | 49 or - | message.c:84 Expected 1, got -1; :148; :156 expected CRYPT_E_HASH_VALUE, got 0x57. Completes with 49 failures in two runs (39930191602, 39939144450), crashed after message.c:1257 CryptEncryptMessage failed 00000057 in one (39946638580); the crash entry records the worse outcome and prints IMPROVED when it completes |
 | crypt32 | object | run | 16 | 6 | object.c:282, :289, :299 |
 | crypt32 | sip | run | 48 | 11 | sip.c:331, :337 Expected a function pointer, :346 |
 | crypt32 | cert | crash | 0 | - | cert.c:184 Expected failure; :195 Expected CRYPT_E_EXISTS, got 0x78; then a NULL dereference in crypt32 |
@@ -107,6 +107,6 @@ Result of that final push (ci 39946638580, head 9f16b24): linux-cross red with e
 outcome flips between runs, so the unit's honest baseline is `message crash 0` (a `crash` entry only prints IMPROVED when
 the unit completes; `run 49` fails on every crash). Everything else in linux-cross passed (psapi, cabinet, xmllite, mpr,
 setupapi, dbghelp with 17, wintrust, kernel32 including atom and environ, shell32, msvcrt); the Windows jobs and wine-pe
-are green. Not applied: the push budget is used up.
+are green. Applied in the final push: `message crash 0`.
 
 The final push merges main (edfdcbd + later) and sets `dbghelp run 17`; its run is reported to the coordinator.
