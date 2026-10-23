@@ -1,4 +1,12 @@
 status: wip
+HANDOFF (build side finished, CI not yet run):
+1. Done: build.sh applies -DWINE_NO_TRACE_MSGS -DWINE_NO_DEBUG_MSGS (+ patches/0005 for ERR), no -g, file-prefix-map, and now llvm-strip --strip-all at staging (the COFF symbol table named every __wine_spec_*/wine_* symbol). Both runners use build.sh.
+2. Patches 0006/0007/0008 regenerated with gen-nowine.py after merging main: dlls.txt now also holds dbghelp (wine_get_module_information) and iertutil (wine_get_canonicalized_uri), both -noname; 28 FileDescription lines added to version_strings.txt (status recalled/module, unverified).
+3. Exports kept named: none. 19+2 wine_* exports are ordinal-only; the four by-name lookups (winecrt0 unix_lib, win32u, user32 IME, include/wine/test.h) use ordinals.
+4. Local check: iertutil and psapi built with build.sh, no export name and no string containing "wine" in either file; the layer, nowine.exe and winetest were NOT run here.
+5. CI must show: wine-pe.yml green for all 86 modules (watch dbghelp/iertutil/urlmon/winedbg-free programs, strip must not break any module load); ci.yml integration.guest_nowine passes on all three jobs; fastfetch Kernel gate "WIN32_NT 10.0.19045"; wine-pe baselines/winetest (ntdll rtlstr, kernel32 path, msvcrt) unchanged; dbghelp-based gates (psapi/dbghelp tests) still pass after ordinal change.
+6. Check dbghelp.dll's other consumers: nothing in the layer looks up wine_get_module_information by name (grep clean).
+7. Merge note: origin/main edited uwp-host/main.cpp, which this branch had moved to tools/probe/uwp-host/; that edit did not apply and was dropped (tools/probe/results/* took main's version).
 
 # Slice: no trace of Wine in the builtins
 

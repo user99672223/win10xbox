@@ -74,3 +74,31 @@ icacls.exe       | module   | icacls.exe
 cacls.exe        | module   | cacls.exe
 explorer.exe     | recalled | Windows Explorer
 conhost.exe      | recalled | Console Window Host
+msimg32.dll      | recalled | GDIEXT Client DLL
+setupapi.dll     | recalled | Windows Setup API
+msacm32.dll      | recalled | Microsoft ACM Audio Filter
+winspool.drv     | recalled | Windows Spooler Driver
+compstui.dll     | recalled | Common Property Sheet User Interface DLL
+propsys.dll      | recalled | Microsoft Property System
+windowscodecs.dll | recalled | Microsoft Windows Codecs Library
+mlang.dll        | recalled | Multi Language Support DLL
+gdiplus.dll      | recalled | Microsoft GDI+
+dwrite.dll       | recalled | Microsoft DirectX Typography Services
+atl100.dll       | module   | atl100.dll
+cabinet.dll      | recalled | Microsoft® Cabinet File API
+psapi.dll        | recalled | Process Status Helper
+xmllite.dll      | recalled | Microsoft XmlLite Library
+dbghelp.dll      | recalled | Windows Image Helper
+msxml3.dll       | module   | msxml3.dll
+urlmon.dll       | recalled | OLE32 Extensions for Win32
+wininet.dll      | recalled | Internet Extensions for Win32
+iertutil.dll     | recalled | Run time utility for Internet Explorer
+crypt32.dll      | recalled | Crypto API32
+ncrypt.dll       | recalled | Windows NCrypt Router
+wintrust.dll     | recalled | Microsoft Trust Verification APIs
+cryptnet.dll     | recalled | Crypto Network Related API
+cryptui.dll      | recalled | Microsoft Trust UI Provider
+imagehlp.dll     | recalled | Windows NT Image Helper
+chcp.exe         | recalled | Change CodePage Utility
+more.exe         | recalled | More Utility
+cmd.exe          | recalled | Windows Command Processor

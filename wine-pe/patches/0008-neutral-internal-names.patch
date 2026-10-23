@@ -128,6 +128,16 @@ index 5c97e2e..b9a48bb 100644
  
      if (state)
      {
+diff --git a/dlls/mlang/mlang.rc b/dlls/mlang/mlang.rc
+index 61e7cd3..92ca407 100644
+--- a/dlls/mlang/mlang.rc
++++ b/dlls/mlang/mlang.rc
+@@ -17,4 +17,4 @@
+  */
+ 
+ /* @makedep: mlang.rgs */
+-2 WINE_REGISTRY mlang.rgs
++2 REGISTRY mlang.rgs
 diff --git a/dlls/msvcrt/exit.c b/dlls/msvcrt/exit.c
 index 4f3a481..1fb112f 100644
 --- a/dlls/msvcrt/exit.c
@@ -305,6 +315,19 @@ index fe80339..8a06979 100644
  
  shv_accel ACCELERATORS
  BEGIN
+diff --git a/dlls/urlmon/urlmon.rc b/dlls/urlmon/urlmon.rc
+index 09478bb..3bbb48e 100644
+--- a/dlls/urlmon/urlmon.rc
++++ b/dlls/urlmon/urlmon.rc
+@@ -67,7 +67,7 @@ STRINGTABLE
+ LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL
+ 
+ /* @makedep: urlmon.rgs */
+-1 WINE_REGISTRY urlmon.rgs
++1 REGISTRY urlmon.rgs
+ 
+ /* @makedep: urlmon.inf */
+ REGINST REGINST urlmon.inf
 diff --git a/libs/winecrt0/register.c b/libs/winecrt0/register.c
 index 73a5e72..6bd65fd 100644
 --- a/libs/winecrt0/register.c

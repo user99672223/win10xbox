@@ -212,6 +212,10 @@ for i in "${!DIRS[@]}"; do
     f="${FILES[$i]}"
     [[ "${STATUS[$f]}" == built ]] || continue
     cp -f "$BUILD/${targets[$i]}" "$OUT/builtin/$f"
+    # The COFF symbol table is not mapped at run time but is part of the file:
+    # it names every __wine_spec_* / wine_* symbol. Exports, relocations and
+    # the .pdata unwind data do not depend on it.
+    "$LLVM_MINGW/bin/llvm-strip" --strip-all "$OUT/builtin/$f"
 done
 # Manifest covers everything staged (also modules from earlier --only runs).
 for f in "$OUT/builtin/"*.dll "$OUT/builtin/"*.exe; do
