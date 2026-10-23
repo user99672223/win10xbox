@@ -109,9 +109,16 @@ private:
 struct CpuPolicy {
     std::string vendor;            // 12 chars ("AuthenticAMD"); empty = the real vendor
     bool hide_hypervisor = true;   // clear CPUID.1:ECX[31], zero leaves 0x40000000..0x400000FF
+    // D18: the machine identity. brand[0] == 0 / family == 0 / !advertise_rdrand leave the host's values.
+    char brand[48] = {};           // leaves 0x80000002..0x80000004, NUL padded (AMD style)
+    std::uint32_t family = 0, model = 0, stepping = 0;   // leaf 1 and 0x80000001 EAX signature
+    bool advertise_rdrand = false; // leaf 1 ECX[30]
 };
 void SetCpuPolicy(const CpuPolicy& p);
 CpuPolicy GetCpuPolicy();
+// D18: RDRAND/RDSEED are advertised; where the host lacks them the #UD is emulated (BCryptGenRandom, CF=1).
+void InstallRandomInstructionEmulation();                 // first-chance VEH, idempotent
+bool EmulateRandomInstruction(CONTEXT* context);          // the handler's core: decodes at Rip, advances it on success
 // Scanner handler (loader::SiteHandler) used for every guest image we map.
 bool CpuSiteHandler(loader::SiteKind kind, loader::ScanRegs* regs, void* ctx);
 
