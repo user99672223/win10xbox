@@ -949,7 +949,9 @@ BOOL WINAPI NtGdiGetCharWidthW(HDC hdc, UINT first_char, UINT last_char, WCHAR* 
     DcObj* dc = DcGet(hdc);
     if (!dc || !buffer) return FALSE;
     const int w = TextCellOf(dc).width;
-    const UINT n = chars ? last_char : last_char - first_char + 1;
+    // With an explicit list of characters or glyph indices (NTGDI_GETCHARWIDTH_INDICES: GetCharWidthI with no list
+    // means glyphs first..first+count-1) `last_char` is the count, as in Wine's win32u.
+    const UINT n = (chars || (flags & 0x08 /* NTGDI_GETCHARWIDTH_INDICES */)) ? last_char : last_char - first_char + 1;
     for (UINT i = 0; i < n; ++i) {
         if (flags & 0x02 /* NTGDI_GETCHARWIDTH_INT */) static_cast<INT*>(buffer)[i] = w;
         else static_cast<FLOAT*>(buffer)[i] = static_cast<FLOAT>(w);
@@ -969,7 +971,7 @@ BOOL WINAPI NtGdiGetCharABCWidthsW(HDC hdc, UINT first, UINT last, WCHAR* chars,
     DcObj* dc = DcGet(hdc);
     if (!dc || !buffer) return FALSE;
     const int w = TextCellOf(dc).width;
-    const UINT n = chars ? last : last - first + 1;
+    const UINT n = (chars || (flags & 0x02 /* NTGDI_GETCHARABCWIDTHS_INDICES */)) ? last : last - first + 1;
     for (UINT i = 0; i < n; ++i) {
         if (flags & 0x01 /* NTGDI_GETCHARABCWIDTHS_INT */) static_cast<ABC*>(buffer)[i] = ABC{0, static_cast<UINT>(w), 0};
         else static_cast<ABCFLOAT*>(buffer)[i] = ABCFLOAT{0.0f, static_cast<FLOAT>(w), 0.0f};

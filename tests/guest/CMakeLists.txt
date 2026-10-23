@@ -47,6 +47,11 @@ win10xbox_add_guest(guest_window2)
 add_executable(guest_window_input window_input.c)
 target_link_libraries(guest_window_input PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window_input)
+# The non-client guest (tests/guest/window_nc.c): frame geometry, hit testing, caption drag and the close button,
+# driven by the host's injected input.
+add_executable(guest_window_nc window_nc.c)
+target_link_libraries(guest_window_nc PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_window_nc)
 # Input semantics beyond the plain sequence (tests/guest/window_input2.c): hit test / cursor / activation
 # sequencing, double clicks, capture, children, the keyboard state and the US layout. Host-injected (the same hook) plus
 # SendInput from the guest.
@@ -58,6 +63,12 @@ win10xbox_add_guest(guest_window_input2)
 add_executable(guest_window_text window_text.c)
 target_link_libraries(guest_window_text PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window_text)
+
+# The dialog guest: DialogBoxParamW with a DIALOG resource (dialog.rc); the host clicks OK (tests/guest/dialog.c).
+enable_language(RC)
+add_executable(guest_dialog dialog.c dialog.rc)
+target_link_libraries(guest_dialog PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_dialog)
 
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
 add_test(NAME guest.hello COMMAND guest_hello)
