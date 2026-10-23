@@ -27,7 +27,8 @@ add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
-                   guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_comctl)
+                   guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog guest_comctl
+                   guest_seh)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -56,6 +57,7 @@ function(win10xbox_guest_test name program exit_code)
       -DHOST=$<TARGET_FILE:win10xbox>
       -DMACHINE=${_guest_machine}
       -DREQUIRE_BUILTIN_DLLS=${_require_builtin}
+      "-DNO_USER32=${_guest_no_user32}"
       -DPROGRAM=${program}
       "-DPROGRAM_ARGS=${_guest_args}"
       "-DDEBUG_SPEC=${_guest_debug}"
@@ -102,6 +104,14 @@ win10xbox_guest_test(guest_spawn "C:\\guest\\guest_spawn.exe" 42
   "spawn-child: argc=5" "spawn-child: argv\\[1\\]=\\[child\\]" "spawn-child: argv\\[2\\]=\\[a b\\]"
   "spawn-child: argv\\[3\\]=\\[c.d\\]" "spawn-child: argv\\[4\\]=\\[e\\]"
   "spawn-child: cwd=C:\\\\Windows" "spawn-child: mark=mark42" "spawn: child2 exit 7" "spawn: done")
+
+# Exception handling (tests/guest/seh.cpp): C++ throw/catch across frames and a DLL boundary, SEH __try/__except
+# around an access violation / divide by zero / RaiseException / a fault in a DLL frame, vectored handlers, the
+# unhandled-exception filter. Exceptions are delivered by the host kernel to the host ntdll and unwound with the
+# guest's .pdata (docs/DECISIONS.md E2). A failed section prints "seh: <name> FAILED".
+win10xbox_guest_test(guest_seh "C:\\guest\\guest_seh.exe" 42
+  "seh: throw_catch ok" "seh: dll_boundary ok" "seh: seh ok" "seh: veh ok" "seh: uef ok" "seh: done failures=0")
+set_tests_properties(integration.guest_seh PROPERTIES FAIL_REGULAR_EXPRESSION "seh: [a-z_.]+ FAILED;seh: FAIL line")
 
 # The host-uwp-lite smoke guest (built in tests/guest, MSVC only): the program
 # that ran on the console, in both subsystems. It prints facts and returns 42.
@@ -173,6 +183,16 @@ win10xbox_guest_test(guest_window_text "C:\\guest\\guest_window_text.exe" 42
   "text: done")
 set_tests_properties(integration.guest_window_text PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_text.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=121,123,ff000000|123,123,ffffffff|131,123,ff000000")
+# The dialog manager (tests/guest/dialog.c): DialogBoxParamW with a DIALOG resource, WM_INITDIALOG, GetDlgItem,
+# Set/GetDlgItemText, tab order, WM_CTLCOLORSTATIC, a click on the OK button injected by the host (screen (160,163) =
+# the button's centre once the program placed the dialog at (100,100) and the button at client (10,50) 100x26),
+# EndDialog(7). The screenshot is the last painted frame: the button's frame (110,150) and face (118,158), the static's
+# light yellow (160,114) and the edit's white (240,136), all in screen coordinates.
+win10xbox_guest_test(guest_dialog "C:\\guest\\guest_dialog.exe" 42
+  "dialog: init edit=100 button=1" "dialog: text=hello dialog" "dialog: class=#32770 edit=Edit button=Button static=Static"
+  "dialog: ok clicked" "dialog: result=7" "dialog: done")
+set_tests_properties(integration.guest_dialog PROPERTIES
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_dialog.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=110,150,ff646464|118,158,fff0f0f0|160,114,ffffffc0|240,136,ffffffff;WIN10XBOX_TEST_INJECT_INPUT=sleep 2500\\;move 160,163\\;ldown\\;lup")
 # comctl32 (Wine's builtin, v5 classes: no manifest) through the layer: a report-view ListView (2 columns, 3 items) with its
 # header, a TreeView and a smooth progress bar (bar colour RGB(0,160,0), background RGB(230,230,230), position 50 of
 # 100) as children of a 400x300 popup at (100,100). The guest reads the pixels back with GetPixel (tests/guest/comctl.c);
@@ -377,3 +397,42 @@ win10xbox_guest_tls_test(guest_view_violation_detected 42 "+dispatch,+modules"
 
 # The SQLite shell and the regression guests its bring-up needed (tests/guest/sqlite).
 include(${CMAKE_CURRENT_LIST_DIR}/sqlite_tests.cmake)
+
+# ---- Real program: curl's curl.exe (docs/TESTING.md, "Real programs") ---------------------------------------------
+# Built from the release tarball by tools/ci/build_curl.ps1 (CMake + MSVC, no TLS; a named step of ci.yml's windows
+# job, which leaves it at <machine>/guest/curl.exe before ctest runs). Registered like the Lua tests: MSVC builds, or
+# -DWIN10XBOX_REAL_PROGRAMS=ON after putting a curl.exe into the machine folder. No network: --version, and the
+# file:// handler reading and copying files under the machine folder's guest home (C:\Users\User).
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  # curl links ws2_32, which on the shared folder is the runner's native one (its advapi32/sechost/rpcrt4 chain dies
+  # on Wine's 0x80000100 import stub, docs/TESTING.md "GUI guests"): run on the builtin-only folder, where it is Wine's.
+  # curl never loads user32, which that folder's trace check otherwise demands.
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  set(_guest_no_user32 ON)
+  set(_curl_home ${WIN10XBOX_BUILTIN_MACHINE_DIR}/Users/User)
+  file(MAKE_DIRECTORY ${_curl_home})
+  file(WRITE ${_curl_home}/curl_in.txt "hello from a guest file, read by curl\nsecond line\n")
+  string(REPEAT "0123456789abcdef" 20000 _curl_big)   # 320000 bytes
+  file(WRITE ${_curl_home}/curl_big.bin "${_curl_big}")
+  unset(_curl_big)
+  # (a) the banner and the protocol list (no TLS backend: https must not be listed).
+  set(_guest_args "--version")
+  win10xbox_guest_test(real_curl_version "C:\\guest\\curl.exe" 0
+    "curl 8\\.[0-9]+\\.[0-9]+ " "libcurl/8\\." "Protocols: [a-z0-9 ]*file" "Protocols: [a-z0-9 ]*http" "Features: ")
+  set_tests_properties(integration.real_curl_version PROPERTIES FAIL_REGULAR_EXPRESSION "Protocols: [a-z0-9 ]*https")
+  # (b) file:// of a guest file to stdout.
+  set(_guest_args "-sS;file:///C:/Users/User/curl_in.txt")
+  win10xbox_guest_test(real_curl_file "C:\\guest\\curl.exe" 0
+    "hello from a guest file, read by curl.second line")
+  # (c) file:// copied with -o (a new file under the guest home, which must exist afterwards); curl reports the size.
+  set(_guest_args "-sS;-o;C:\\Users\\User\\curl_out.bin;-w;size=%{size_download};file:///C:/Users/User/curl_big.bin")
+  set(_guest_file Users/User/curl_out.bin)
+  win10xbox_guest_test(real_curl_file_copy "C:\\guest\\curl.exe" 0 "size=320000")
+  unset(_guest_file)
+  # (d) a missing file: CURLE_FILE_COULDNT_READ_FILE, exit code 37.
+  set(_guest_args "-sS;file:///C:/Users/User/curl_missing.txt")
+  win10xbox_guest_test(real_curl_file_missing "C:\\guest\\curl.exe" 37 "")
+  unset(_guest_args)
+  unset(_guest_machine)
+  unset(_guest_no_user32)
+endif()

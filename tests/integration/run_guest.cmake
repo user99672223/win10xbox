@@ -12,7 +12,7 @@
 # -DGUEST_FILE=<path under the machine folder, '/' separated> is deleted before the run and must exist after it.
 # -DREQUIRE_BUILTIN_DLLS=ON adds +modules to WIN10XBOX_DEBUG and fails unless every system DLL the guest
 # mapped (C:\Windows\System32\<x>.dll in the modules trace) came from <machine>\Windows\builtin, with
-# user32.dll among them; the list is printed either way.
+# user32.dll among them (unless -DNO_USER32=ON: a console program that never loads it); the list is printed either way.
 # Prints "SKIP: ..." and exits 77 (cmake >= 3.29) when the machine folder has
 # no Wine builtins or no Windows NLS data (c_1252.nls, staged by
 # machine/import_windows_dlls.ps1); the test sets both SKIP_RETURN_CODE 77 and
@@ -85,7 +85,7 @@ if(REQUIRE_BUILTIN_DLLS)
   endif()
   string(TOLOWER "${_builtin}" _builtin_lc)
   list(FIND _builtin_lc "user32.dll" _u32)
-  if(_u32 LESS 0)
+  if(_u32 LESS 0 AND NOT NO_USER32)
     string(APPEND _builtin_fail "no builtin user32.dll in the modules trace (is +modules on?)\n")
   endif()
 endif()
