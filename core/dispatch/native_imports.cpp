@@ -87,14 +87,17 @@ bool EndsWithI(const std::wstring& s, const wchar_t* tail) {
     return s.size() >= n && !_wcsicmp(s.c_str() + s.size() - n, tail);
 }
 
-std::size_t ExtendKernelbase(const loader::MappedImage& img) {
+// Adds every code export of the host module `host_name` that the guest builtin `img` lacks (kernelbase: preferring
+// Wine's kernel32; user32/gdi32 under "d3dkmt": "host": the native dxgi/d3d11 import Windows 10 exports such as
+// user32!GetProcessUIContextInformation that Wine's user32 does not have).
+std::size_t ExtendExports(const loader::MappedImage& img, const wchar_t* host_name, bool prefer_k32) {
     Exports guest, host, k32;
-    const HMODULE host_kb = GetModuleHandleW(L"kernelbase.dll");
+    const HMODULE host_kb = GetModuleHandleW(host_name);
     if (!guest.Open(img.base) || !host.Open(host_kb)) {
-        WARN(dispatch, "gui native: guest kernelbase exports not extended (no export directory)");
+        WARN(dispatch, "gui native: guest %ls exports not extended (no export directory)", host_name);
         return 0;
     }
-    const bool have_k32 = k32.Open(g_guest_kernel32);
+    const bool have_k32 = prefer_k32 && k32.Open(g_guest_kernel32);
     struct Add { const char* name; const void* target; bool wine; };
     std::vector<Add> add;
     std::size_t from_wine = 0;
@@ -134,7 +137,7 @@ std::size_t ExtendKernelbase(const loader::MappedImage& img) {
                                                       PAGE_READWRITE));
     }
     if (!mem) {
-        WARN(dispatch, "gui native: no room within 4 GiB of the guest kernelbase for %zu more exports", add.size());
+        WARN(dispatch, "gui native: no room within 4 GiB of the guest %ls for %zu more exports", host_name, add.size());
         return 0;
     }
     auto rva_of = [&](const void* p) { return static_cast<DWORD>(reinterpret_cast<std::uintptr_t>(p) - base); };
@@ -213,9 +216,9 @@ std::size_t ExtendKernelbase(const loader::MappedImage& img) {
         std::size_t& n = a.wine ? nw : nh;
         if (n++ < 12) (s += s.empty() ? "" : ", ") += a.name;
     }
-    TRACE(dispatch, "gui native: guest kernelbase: %zu exports added, %zu as jumps to Wine's kernel32 (%s%s), %zu to "
+    TRACE(dispatch, "gui native: guest %ls: %zu exports added, %zu as jumps to Wine's kernel32 (%s%s), %zu to "
                     "the host kernelbase (%s%s); %zu forwarders moved",
-          add.size(), from_wine, wine_names.c_str(), nw > 12 ? ", ..." : "", add.size() - from_wine,
+          host_name, add.size(), from_wine, wine_names.c_str(), nw > 12 ? ", ..." : "", add.size() - from_wine,
           host_names.c_str(), nh > 12 ? ", ..." : "", old_forwarders);
     return add.size();
 }
@@ -224,7 +227,7 @@ std::size_t ExtendKernelbase(const loader::MappedImage& img) {
 
 void NoteNativeGuestImage(const loader::MappedImage& img, const std::wstring& host_path,
                           const std::wstring& export_name) {
-    if (!NativeGuiActive()) return;
+    if (!NativeGuiActive() && !HostD3dkmtActive()) return;
     // ntdll, kernelbase and kernel32 are always Wine's builtins (docs/DECISIONS.md E1), so the name identifies them.
     // The host path is the better source where it exists; in an AppContainer GetFinalPathNameByHandleW is refused
     // (the host path is empty) and the image's own export-directory name is all there is.
@@ -237,7 +240,13 @@ void NoteNativeGuestImage(const loader::MappedImage& img, const std::wstring& ho
         g_guest_kernel32 = img.base;
     else if (EndsWithI(id, L"kernelbase.dll") &&
              (id.size() == 14 || id[id.size() - 15] == L'\\' || id[id.size() - 15] == L'/'))
-        ExtendKernelbase(img);
+        ExtendExports(img, L"kernelbase.dll", true);
+    else if (HostD3dkmtActive() && EndsWithI(id, L"user32.dll") &&
+             (id.size() == 10 || id[id.size() - 11] == L'\\' || id[id.size() - 11] == L'/'))
+        ExtendExports(img, L"user32.dll", false);
+    else if (HostD3dkmtActive() && EndsWithI(id, L"gdi32.dll") &&
+             (id.size() == 9 || id[id.size() - 10] == L'\\' || id[id.size() - 10] == L'/'))
+        ExtendExports(img, L"gdi32.dll", false);
 }
 
 }  // namespace win10xbox::dispatch::detail
