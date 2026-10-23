@@ -13,6 +13,9 @@ bool IsAfdDeviceName(const OBJECT_ATTRIBUTES* attr);
 // Creates the (still unconfigured) socket handle; IOCTL_AFD_WINE_CREATE then picks family/type/protocol.
 NTSTATUS Open(PHANDLE handle, PIO_STATUS_BLOCK io);
 
+// WSAStartup on the host Winsock, once per process (ws2_32's unix calls need it before any socket exists).
+void EnsureWinsock();
+
 bool IsSocketHandle(HANDLE h);
 NTSTATUS Close(HANDLE h);   // closes the host socket and the emulated handle
 

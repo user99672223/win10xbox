@@ -12,7 +12,7 @@
 # -DGUEST_FILE=<path under the machine folder, '/' separated> is deleted before the run and must exist after it.
 # -DREQUIRE_BUILTIN_DLLS=ON adds +modules to WIN10XBOX_DEBUG and fails unless every system DLL the guest
 # mapped (C:\Windows\System32\<x>.dll in the modules trace) came from <machine>\Windows\builtin, with
-# user32.dll among them; the list is printed either way.
+# user32.dll (or -DREQUIRE_BUILTIN_DLL=<name> for a non-GUI guest) among them; the list is printed either way.
 # Prints "SKIP: ..." and exits 77 (cmake >= 3.29) when the machine folder has
 # no Wine builtins or no Windows NLS data (c_1252.nls, staged by
 # machine/import_windows_dlls.ps1); the test sets both SKIP_RETURN_CODE 77 and
@@ -84,9 +84,12 @@ if(REQUIRE_BUILTIN_DLLS)
     string(APPEND _builtin_fail "guest mapped system DLLs from outside Windows\\builtin: ${_n}\n")
   endif()
   string(TOLOWER "${_builtin}" _builtin_lc)
-  list(FIND _builtin_lc "user32.dll" _u32)
-  if(_u32 LESS 0)
-    string(APPEND _builtin_fail "no builtin user32.dll in the modules trace (is +modules on?)\n")
+  if(NOT REQUIRE_BUILTIN_DLL)
+    set(REQUIRE_BUILTIN_DLL "user32.dll")
+  endif()
+  list(FIND _builtin_lc "${REQUIRE_BUILTIN_DLL}" _req)
+  if(_req LESS 0)
+    string(APPEND _builtin_fail "no builtin ${REQUIRE_BUILTIN_DLL} in the modules trace (is +modules on?)\n")
   endif()
 endif()
 string(REPLACE "\r\n" "\n" out "${out}")   # text-mode stdout of a Windows console program

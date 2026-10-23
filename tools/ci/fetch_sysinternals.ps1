@@ -1,23 +1,22 @@
-# Downloads the Sysinternals system-information tool Coreinfo64.exe (a program that is not ours; docs/slices/sysinfo.md)
-# into the machine folder's guest directory, where integration.coreinfo and tools/ci/smoke_guests.ps1 run it through
-# the layer. -IncludePsInfo also fetches PsInfo64.exe, which no test runs yet (it needs ws2_32, see the slice notes).
+# Downloads the Sysinternals system-information tools Coreinfo64.exe and PsInfo64.exe (programs that are not ours;
+# docs/slices/sysinfo.md) into the machine folder's guest directory, where integration.coreinfo / integration.psinfo
+# and tools/ci/smoke_guests.ps1 run them through the layer.
 #
-#   tools/ci/fetch_sysinternals.ps1 [-Out build/bin/machine/guest] [-Work <dir>] [-IncludePsInfo]
+#   tools/ci/fetch_sysinternals.ps1 [-Out build/bin/machine/guest] [-Work <dir>]
 #
-# The files come from https://live.sysinternals.com/ and are pinned by SHA-256, verified on EVERY run, including
-# when ci.yml restored them from the cache (the cache key carries the same hash), so the bytes run are always
+# Both files come from https://live.sysinternals.com/ and are pinned by SHA-256, verified on EVERY run, including
+# when ci.yml restored them from the cache (the cache key carries the same hashes), so the bytes run are always
 # the ones this was measured with. live.sysinternals.com serves the current release: when Microsoft publishes a new
 # one the hash check fails loudly here (re-pin deliberately: new hash here and in the ci.yml cache key).
 param(
-  [switch] $IncludePsInfo,   # also fetch PsInfo64.exe (not gated by any test yet: docs/slices/sysinfo.md)
   [string] $Out = 'build/bin/machine/guest',
   [string] $Work = (Join-Path $env:RUNNER_TEMP 'sysinternals')
 )
 $ErrorActionPreference = 'Stop'
 $files = [ordered]@{
   'Coreinfo64.exe' = '4be1e87e17499e1237d0a444aae8e775ca876f983862c5fe27e376cd4bce4030'
+  'PsInfo64.exe'   = '983270daa5a2ffa9c5c0c0a8d0f572bc5b6e68e5151ae84bdea7cf76a1d711b9'
 }
-if ($IncludePsInfo) { $files['PsInfo64.exe'] = '983270daa5a2ffa9c5c0c0a8d0f572bc5b6e68e5151ae84bdea7cf76a1d711b9' }
 New-Item -ItemType Directory -Force -Path $Work | Out-Null
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 

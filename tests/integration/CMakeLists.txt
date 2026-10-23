@@ -27,7 +27,7 @@ add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
-                   guest_window_input guest_window_input2 guest_window_text guest_tcp_echo)
+                   guest_window_input guest_window_input2 guest_window_text guest_net)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -55,7 +55,7 @@ function(win10xbox_guest_test name program exit_code)
     COMMAND ${CMAKE_COMMAND}
       -DHOST=$<TARGET_FILE:win10xbox>
       -DMACHINE=${_guest_machine}
-      -DREQUIRE_BUILTIN_DLLS=${_require_builtin}
+      -DREQUIRE_BUILTIN_DLLS=${_require_builtin} "-DREQUIRE_BUILTIN_DLL=${_guest_require_dll}"
       -DPROGRAM=${program}
       "-DPROGRAM_ARGS=${_guest_args}"
       "-DDEBUG_SPEC=${_guest_debug}"
@@ -165,26 +165,17 @@ set_tests_properties(integration.guest_window_text PROPERTIES
 unset(_guest_machine)
 
 # ---- Networking: Wine's ws2_32 over core/afd (host Winsock) -----------------------------------------------------
-# tcp_echo_runner is the host-side echo server (plain Win32 + Winsock, no Python needed); it starts the host with
-# the guest (tests/guest/tcp_echo.c), which connects to 127.0.0.1:<port>, sends a string and reads it back.
-# Builtin-only machine folder: a native ws2_32 would talk to the real AFD and bypass the code under test.
-add_executable(tcp_echo_runner tcp_echo_runner.c)
-target_link_libraries(tcp_echo_runner PRIVATE ws2_32)
-set_target_properties(tcp_echo_runner PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-add_test(NAME integration.guest_tcp_echo
-  COMMAND ${CMAKE_COMMAND}
-    -DRUNNER=$<TARGET_FILE:tcp_echo_runner>
-    -DHOST=$<TARGET_FILE:win10xbox>
-    -DMACHINE=${WIN10XBOX_BUILTIN_MACHINE_DIR}
-    -DEXPECT_EXIT=42
-    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
-    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_tcp_echo.cmake)
-set_tests_properties(integration.guest_tcp_echo PROPERTIES
-  FIXTURES_REQUIRED w10x_machine
-  SKIP_RETURN_CODE 77
-  SKIP_REGULAR_EXPRESSION "SKIP:"
-  LABELS "guest_e2e"
-  TIMEOUT 180)
+# tests/guest/net.c runs an echo server thread and a client over TCP loopback. Builtin-only machine folder: a native
+# ws2_32 would talk to the real AFD and bypass the code under test.
+set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+set(_guest_require_dll "ws2_32.dll")
+win10xbox_guest_test(guest_net "C:\\guest\\guest_net.exe" 42
+  "net: WSAStartup ok" "net: gethostname ok" "net: getaddrinfo localhost -> 127\\.0\\.0\\.1" "net: listening"
+  "net: connected" "net: FIONBIO ok" "net: sent 35 bytes" "net: received 35 bytes: hello from the guest over loopback"
+  "net: done")
+set_tests_properties(integration.guest_net PROPERTIES FAIL_REGULAR_EXPRESSION "net: FAILED")
+unset(_guest_require_dll)
+unset(_guest_machine)
 
 # ---- Real programs: the first guests that are not ours ----------------------------------------------------------
 # Lua 5.4.7, built from the upstream tarball with MSVC by tools/ci/build_lua.ps1 (a named step of ci.yml's windows
@@ -221,7 +212,8 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   unset(_guest_forbid_trace)
 
   # Sysinternals Coreinfo64.exe (tools/ci/fetch_sysinternals.ps1, pinned by SHA-256), a system-information program:
-  # it reads the CPU topology through NtQuerySystemInformation. PsInfo64 is not gated here (docs/slices/sysinfo.md).
+  # it reads the CPU topology through NtQuerySystemInformation. PsInfo64 (also pinned) reports the system's name, uptime
+  # and kernel version; it needs Wine's ws2_32 (core/afd, docs/slices/net.md).
   # The anchors are lines every runner prints whatever its CPU vendor is (docs/slices/sysinfo.md).
   # It imports comdlg32/shell32, whose native copies cannot load on the shared
   # machine folder (docs/slices/sysinfo.md), so they run on the builtin-only one, like the GUI guests below.
@@ -230,6 +222,10 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   win10xbox_guest_test(coreinfo "C:\\guest\\Coreinfo64.exe" 0
     "Logical to Physical Processor Map:"
     "Logical Processor to Socket Map:")
+  win10xbox_guest_test(psinfo "C:\\guest\\PsInfo64.exe" 0
+    "System information for "
+    "Uptime:"
+    "Kernel version:")
   unset(_guest_args)
   unset(_guest_machine)
 endif()

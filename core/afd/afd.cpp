@@ -110,18 +110,6 @@ HANDLE Register(std::shared_ptr<Sock> s) {
     return h;
 }
 
-void EnsureWinsock() {
-    static volatile LONG state = 0;   // 0 none, 1 starting, 2 ready
-    if (state == 2) return;
-    if (InterlockedCompareExchange(&state, 1, 0) == 0) {
-        WSADATA d;
-        WSAStartup(MAKEWORD(2, 2), &d);
-        InterlockedExchange(&state, 2);
-    } else {
-        while (state != 2) Sleep(1);
-    }
-}
-
 // Winsock error -> the NTSTATUS Wine's server would have produced (the reverse of ws2_32's NtStatusToWSAError).
 NTSTATUS_ FromWsa(int e) {
     switch (e) {
@@ -411,7 +399,17 @@ NTSTATUS_ DoIoctl(Sock& s, std::uint32_t code, void* in, ULONG in_len, void* out
 
 }  // namespace
 
-void EnsureWinsockForUnix() { EnsureWinsock(); }
+void EnsureWinsock() {
+    static volatile LONG state = 0;   // 0 none, 1 starting, 2 ready
+    if (state == 2) return;
+    if (InterlockedCompareExchange(&state, 1, 0) == 0) {
+        WSADATA d;
+        WSAStartup(MAKEWORD(2, 2), &d);
+        InterlockedExchange(&state, 2);
+    } else {
+        while (state != 2) Sleep(1);
+    }
+}
 
 bool IsAfdDeviceName(const OBJECT_ATTRIBUTES* attr) {
     if (!attr || !attr->ObjectName || !attr->ObjectName->Buffer) return false;
@@ -481,83 +479,3 @@ NTSTATUS NTAPI Afd_NtDeviceIoControlFile(HANDLE file, HANDLE event, PIO_APC_ROUT
 }
 
 }  // namespace win10xbox::afd
-
-// ---- Wine unix calls of ws2_32 (dlls/ws2_32/ws2_32_private.h: ws_unix_*) -----------------------------------------
-namespace win10xbox::afd { void EnsureWinsockForUnix(); }
-namespace {
-
-using namespace win10xbox;
-
-struct GetAddrInfoParams {
-    const char* node; const char* service; const addrinfo* hints; addrinfo* info; unsigned* size;
-};
-struct GetHostnameParams { char* name; unsigned size; };
-struct GetNameInfoParams {
-    const sockaddr* addr; int addr_len; char* host; DWORD host_len; char* serv; DWORD serv_len; int flags;
-};
-
-NTSTATUS WINAPI U_getaddrinfo(void* args) {
-    auto* p = static_cast<GetAddrInfoParams*>(args);
-    afd::EnsureWinsockForUnix();
-    addrinfo hints{};
-    if (p->hints) { hints = *p->hints; hints.ai_canonname = nullptr; hints.ai_addr = nullptr; hints.ai_next = nullptr; }
-    const char* service = p->service && !p->service[0] ? "0" : p->service;
-    addrinfo* res = nullptr;
-    int rc = ::getaddrinfo(p->node, service, p->hints ? &hints : nullptr, &res);
-    if (rc) return rc;
-    size_t need = 0;
-    for (addrinfo* a = res; a; a = a->ai_next)
-        need += sizeof(addrinfo) + (a->ai_canonname ? strlen(a->ai_canonname) + 1 : 0) + a->ai_addrlen;
-    if (*p->size < need) { *p->size = static_cast<unsigned>(need); ::freeaddrinfo(res); return ERROR_INSUFFICIENT_BUFFER; }
-    std::memset(p->info, 0, need);
-    addrinfo* dst = p->info;
-    addrinfo* prev = nullptr;
-    for (addrinfo* a = res; a; a = a->ai_next) {
-        char* next = reinterpret_cast<char*>(dst + 1);
-        dst->ai_flags = a->ai_flags;
-        dst->ai_family = a->ai_family;
-        dst->ai_socktype = p->hints ? p->hints->ai_socktype : a->ai_socktype;
-        dst->ai_protocol = p->hints ? p->hints->ai_protocol : a->ai_protocol;
-        if (a->ai_canonname) {
-            const size_t l = strlen(a->ai_canonname) + 1;
-            dst->ai_canonname = next;
-            std::memcpy(next, a->ai_canonname, l);
-            next += l;
-        }
-        dst->ai_addrlen = a->ai_addrlen;
-        dst->ai_addr = reinterpret_cast<sockaddr*>(next);
-        std::memcpy(next, a->ai_addr, a->ai_addrlen);
-        next += a->ai_addrlen;
-        if (prev) prev->ai_next = dst;
-        prev = dst;
-        dst = reinterpret_cast<addrinfo*>(next);
-    }
-    ::freeaddrinfo(res);
-    return 0;
-}
-
-NTSTATUS WINAPI U_gethostname(void* args) {
-    auto* p = static_cast<GetHostnameParams*>(args);
-    afd::EnsureWinsockForUnix();
-    return ::gethostname(p->name, static_cast<int>(p->size)) == 0 ? 0 : WSAGetLastError();
-}
-
-NTSTATUS WINAPI U_getnameinfo(void* args) {
-    auto* p = static_cast<GetNameInfoParams*>(args);
-    afd::EnsureWinsockForUnix();
-    return ::getnameinfo(p->addr, p->addr_len, p->host, p->host_len, p->serv, p->serv_len, p->flags);
-}
-
-NTSTATUS WINAPI U_unsupported(void*) {
-    FIXME(dispatch, "ws2_32 gethostbyname/gethostbyaddr are not implemented");
-    return WSAHOST_NOT_FOUND;
-}
-
-const dispatch::UnixCallFn kWs2Funcs[] = {&U_getaddrinfo, &U_unsupported, &U_unsupported, &U_gethostname,
-                                          &U_getnameinfo};
-
-struct RegisterWs2 {
-    RegisterWs2() { dispatch::RegisterUnixLib(L"ws2_32", kWs2Funcs, std::size(kWs2Funcs)); }
-} g_register_ws2;
-
-}  // namespace
