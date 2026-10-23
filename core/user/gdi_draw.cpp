@@ -475,6 +475,24 @@ RECT Normalized(RECT r) {
 }
 
 }  // namespace
+
+// Caption text: the built-in face at (x, y) (device coordinates, top-left of the first cell), no background, clipped
+// to `limit` and the target's clip.
+void DrawGlyphRun(const DrawTarget& t, RECT limit, int x, int y, const std::wstring& text, std::uint32_t fg) {
+    const int cw = font8x16::kCellWidth, ch = font8x16::kCellHeight;
+    int gx = x;
+    for (wchar_t c : text) {
+        const RECT g{gx, y, gx + cw, y + ch};
+        gx += cw;
+        const RECT vis = RectIntersect(g, limit);
+        if (RectEmpty(vis)) continue;
+        const std::uint8_t* rows = font8x16::GlyphRows(static_cast<char32_t>(c));
+        ForEachPixel(t, vis, [&](int px, int py, std::uint32_t& dst) {
+            if (font8x16::GlyphPixel(rows, px - g.left, py - g.top)) dst = fg;
+        });
+    }
+}
+
 }  // namespace detail
 
 namespace sys {

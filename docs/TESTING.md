@@ -49,9 +49,14 @@ The guests the smoke step runs, with their exit codes, are the table in `tools/c
 `drv_kmdf_client` through `drv_host` 0); a guest in the machine folder that is not in the table is listed and stays
 gated by its ctest entry. `guest_dll.dll` is a DLL, exercised by `unit.core` (`test_loader.cpp`).
 
-The one exclusion: `wine_conformance` does not run on the Windows jobs. Its guests are Wine's own test sources, which
-build only with clang against Wine's headers; with MSVC no test is registered. (They would need llvm-mingw and the
-Wine sources on the Windows runner, and a second, real-Windows baseline.)
+The exclusion: `wine_conformance` (`tests/wine-tests`) does not run on the Windows jobs. Its guests are Wine's own test
+sources, which build only with clang against Wine's headers; with MSVC no test is registered. The one Wine suite that
+does run there is ntdll's, as `integration.winetest_ntdll` (label `winetest_ntdll`, required by the gate above): a ci.yml
+step installs llvm-mingw's Windows build, fetches the Wine sources and builds all of `dlls/ntdll/tests` as one guest
+(`wine-pe/tests/ntdll.sh build`); `tests/winetest/run_ntdll.cmake` then runs every unit through `win10xbox.exe`. The
+gate is `wine-pe/tests/ntdll.allowlist`: each listed unit must complete with 0 failures and at least its floor of
+assertions (grow it, never shrink it). Units not on it are measured, never gating; their outcome and first failing
+assertions are the "Wine ntdll conformance summary" step of each run and `docs/slices/wt-ntdll.md`.
 
 ## Real programs
 
@@ -153,7 +158,7 @@ code (Wine's tests exit with `min(failures, 255)`, so 255 means "255 or more").
 | ntdll/rtlbitmap | ok | 378 | 0 | **0** | 0 | 0 | |
 | ntdll/error | ok | 1448 | 0 | **0** | 0 | 0 | |
 | ntdll/env | ok | 600 | 0 | **0** | 0 | 0 | |
-| ntdll/path | ok | 989 | 0 | 21 | 0 | 21 | |
+| ntdll/path | ok | 989 | 0 | **0** | 0 | 0 | |
 | ntdll/directory | ok | 6336 | 5 | 556 | 1 | 255 | |
 | ntdll/file | crashed | - | - | - | - | 0 | file.c:413 (`C:\windows\SYSTEM32\cmd.exe` not found, STATUS_OBJECT_NAME_NOT_FOUND) |
 | ntdll/om | crashed | - | - | - | - | 5 | om.c:2942 (`\Sessions\1\BaseNamedObjects` missing) |
