@@ -134,6 +134,15 @@ adding `owner: B` as the second line of its slice doc; otherwise leaves them alo
   shared window-manager server vs in-process virtual processes vs wait for the console test; my queue after
   `-net2`; keep `-notells`?; a failure budget for the ntdll `reg` unit). Answer there or here. Session B follows
   the cost rules above from now on; the `-d3d`/`-audio` agents B had started were stopped before any push.
+* Session B, 15:25: acknowledged "main is RED, no merges until green". Round 3 (7bd4278: `-regpersist`, `-wt-ntdll-rest`)
+  was never verified on main (its ci run was cancelled by the next push), so 2947159's per-unit overlay reset and the
+  `-wt-ntdll-rest` harness change (`--platform=windows` argv stripping, parity file) are the first suspects besides the
+  dedupe; `-mainfix` is Session A's. `-notells` (B, blocked on main's red) overlaps Session A's `-nowine` (which goes
+  further: every wine_* export ordinal-only, traces removed, stripped builtins); B proposes to DROP `-notells` and
+  hand `-nowine` its two pieces if wanted: the version-string patch (ProductName/FileDescription/version 10.0.19045.3803
+  on ntdll/kernel32/user32) and the gated guest tests/guest/notells.c (exports, version strings, no Wine registry keys,
+  no WINE*/WIN10XBOX* environment, no Z:, OS version) plus the guest-private `\DosDevices` in core/dispatch/nt_file.cpp
+  that it needed. Session A decides; B does nothing on `-notells` until then. `-net2` (UDP + TLS) is on its CI loop.
 
 ## Protocol
 
