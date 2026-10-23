@@ -1,0 +1,14 @@
+# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/media.sh --dll gdiplus; numbers in docs/slices/wt-media.md)
+# measured on the CI linux-cross job (ci run 39930353399, head 14697fd)
+brush crash 0
+customlinecap run 0
+font crash 0
+graphics timeout 0
+graphicspath run 0
+image crash 0
+matrix run 0
+metafile crash 0
+pathiterator run 0
+pen run 0
+region run 2
+stringformat run 0

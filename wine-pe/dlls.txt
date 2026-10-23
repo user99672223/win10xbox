@@ -74,6 +74,13 @@ programs/services
 wbemprox
 programs/wineboot
 
+# --- imaging / text (wine-pe/tests: windowscodecs, gdiplus, dwrite tests) ---
+propsys
+windowscodecs
+mlang
+gdiplus
+dwrite
+
 # --- console programs (wine-pe/programs/*.sh, ctest integration.wineprog_*) --
 programs/xcopy
 programs/findstr
