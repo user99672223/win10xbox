@@ -2,10 +2,11 @@
 // display driver, memory-DC bitmaps, 32 bpp DIB sections). Every primitive
 // clips to the DC's region (DrawTarget::clip, device coordinates) and writes
 // the alpha byte as 0xFF. Ternary raster operations are evaluated bitwise on
-// the 24 colour bits, with fast paths for the common ones. No font engine yet:
-// ExtTextOut fills its opaque rectangle and draws no glyphs.
+// the 24 colour bits, with fast paths for the common ones. Text is the built-in
+// 8x16 bitmap face (font8x16.h), scaled by whole factors for tall LOGFONTs.
 #include "user_internal.h"
 #include "user_syscalls.h"
+#include "font8x16.h"
 
 #include <algorithm>
 #include <cmath>
@@ -473,11 +474,6 @@ RECT Normalized(RECT r) {
     return RECT{std::min(r.left, r.right), std::min(r.top, r.bottom), std::max(r.left, r.right), std::max(r.top, r.bottom)};
 }
 
-void NoteNoText() {
-    static volatile LONG reported = 0;   // plain flag
-    if (!InterlockedExchange(&reported, 1)) FIXME(gdi, "ExtTextOut: no font engine, glyphs are not drawn");
-}
-
 }  // namespace
 }  // namespace detail
 
@@ -779,29 +775,86 @@ BOOL WINAPI NtGdiInvertRgn(HDC hdc, HRGN hrgn) {
 BOOL WINAPI NtGdiExtTextOutW(HDC hdc, INT x, INT y, UINT flags, const RECT* rect, const WCHAR* str, UINT count,
                              const INT* dx, DWORD cp) {
     LockGuard lock;
-    (void)dx; (void)cp;
+    (void)cp;
     DcObj* dc = DcGet(hdc);
     if (!dc) return FALSE;
+    abi::DcAttr* a = dc->attr;
+    const UINT align = a->text_align;
+    if (align & TA_UPDATECP) {
+        x = a->cur_pos.x;
+        y = a->cur_pos.y;
+    }
+    if (!str) count = 0;
     DrawTarget t;
     const bool ok = ResolveDrawTarget(dc, &t);
-    if (rect && (flags & ETO_OPAQUE) && ok) {
-        const RECT r = Normalized(LogicalRect(dc, rect->left, rect->top, rect->right - rect->left, rect->bottom - rect->top));
+    RECT rect_dev{};
+    const bool have_rect = rect && (flags & (ETO_OPAQUE | ETO_CLIPPED));
+    if (have_rect) rect_dev = Normalized(LogicalRect(dc, rect->left, rect->top, rect->right - rect->left, rect->bottom - rect->top));
+    if (ok && rect && (flags & ETO_OPAQUE)) {
         BrushPaint b;
         b.null = false;
-        b.color = ColorToPixel(dc->attr->background_color);
-        PaintRect(dc, t, r, b);
+        b.color = ColorToPixel(a->background_color);
+        PaintRect(dc, t, rect_dev, b);
     }
-    if (count && str) {
-        NoteNoText();
-        TRACE(gdi, "%p (%d,%d) %.*ls (not drawn)", hdc, x, y, static_cast<int>(count), str);
+
+    // Advance of every character, in device units, and the total.
+    const TextCell cell = TextCellOf(dc);
+    const int stride = (flags & ETO_PDY) ? 2 : 1;
+    auto advance = [&](UINT i) {
+        return dx ? LogicalToDeviceDx(dc, dx[i * stride]) : cell.width + a->char_extra;
+    };
+    long long total = 0;
+    long long total_logical = 0;
+    for (UINT i = 0; i < count; ++i) {
+        total += advance(i);
+        total_logical += dx ? dx[i * stride] : cell.width + a->char_extra;
     }
-    if (dc->attr->text_align & TA_UPDATECP) {
-        auto* f = GdiGetT<FontObj>(dc->font, abi::kObjFont);
-        int h = f ? f->lf.lfHeight : 16;
-        if (h < 0) h = -h;
-        if (!h) h = 16;
-        dc->attr->cur_pos.x += static_cast<LONG>(count) * ((h * 7 + 8) / 16);
+
+    if (count && ok) {
+        const POINT p = LogicalToDevice(dc, x, y);
+        long left = p.x;
+        switch (align & (TA_LEFT | TA_RIGHT | TA_CENTER)) {
+        case TA_CENTER: left -= static_cast<long>(total / 2); break;
+        case TA_RIGHT: left -= static_cast<long>(total); break;
+        default: break;
+        }
+        long top = p.y;
+        switch (align & TA_BASELINE) {
+        case TA_BASELINE: top -= cell.ascent; break;
+        case TA_BOTTOM: top -= cell.height; break;
+        default: break;
+        }
+        const RECT box{left, top, left + static_cast<long>(total), top + cell.height};
+        RECT limit = t.clip.Box();
+        if (flags & ETO_CLIPPED) limit = RectIntersect(limit, rect_dev);
+        TRACE(gdi, "%p (%d,%d) align %#x %.*ls -> device (%ld,%ld) +%lld", hdc, x, y, align, static_cast<int>(count), str,
+              left, top, total);
+        if (a->background_mode == OPAQUE) {
+            DrawTarget bt = t;   // ETO_CLIPPED limits the text background as well
+            if (flags & ETO_CLIPPED) {
+                Rgn lim;
+                lim.Set(rect_dev);
+                bt.clip = CombineRgns(t.clip, lim, RGN_AND);
+            }
+            FillTargetRect(bt, box, ColorToPixel(a->background_color));
+        }
+        const std::uint32_t fg = ColorToPixel(a->text_color);
+        const int s = cell.scale;
+        long gx = left;
+        for (UINT i = 0; i < count; ++i) {
+            const RECT g{gx, top, gx + cell.width, top + cell.height};
+            gx += advance(i);
+            const RECT vis = RectIntersect(g, limit);
+            if (RectEmpty(vis)) continue;
+            const std::uint8_t* rows = font8x16::GlyphRows(str[i]);
+            ForEachPixel(t, vis, [&](int px, int py, std::uint32_t& dst) {
+                if (font8x16::GlyphPixel(rows, (px - g.left) / s, (py - g.top) / s)) dst = fg;
+            });
+        }
+        NoteDrawn(dc, t, RectIntersect(box, limit));
     }
+    if ((align & TA_UPDATECP) && (align & (TA_LEFT | TA_RIGHT | TA_CENTER)) == TA_LEFT)
+        a->cur_pos.x = static_cast<LONG>(x + total_logical);
     return TRUE;
 }
 

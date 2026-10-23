@@ -24,6 +24,7 @@ namespace win10xbox::dispatch::detail {
 // ---- NTSTATUS values (own names: windows.h defines some STATUS_* as DWORD) --
 namespace st {
 constexpr NTSTATUS Success                = 0x00000000;
+constexpr NTSTATUS Pending                = 0x00000103;
 constexpr NTSTATUS ImageNotAtBase         = 0x40000003;
 constexpr NTSTATUS BufferOverflow         = (NTSTATUS)0x80000005;
 constexpr NTSTATUS NoMoreEntries          = (NTSTATUS)0x8000001A;
@@ -39,6 +40,7 @@ constexpr NTSTATUS ConflictingAddresses   = (NTSTATUS)0xC0000018;
 constexpr NTSTATUS AccessDenied           = (NTSTATUS)0xC0000022;
 constexpr NTSTATUS BufferTooSmall         = (NTSTATUS)0xC0000023;
 constexpr NTSTATUS ObjectTypeMismatch     = (NTSTATUS)0xC0000024;
+constexpr NTSTATUS ObjectNameInvalid      = (NTSTATUS)0xC0000033;
 constexpr NTSTATUS ObjectNameNotFound     = (NTSTATUS)0xC0000034;
 constexpr NTSTATUS ObjectPathNotFound     = (NTSTATUS)0xC000003A;
 constexpr NTSTATUS PrivilegeNotHeld       = (NTSTATUS)0xC0000061;
@@ -251,6 +253,7 @@ using PFN_NtOpenFile = NTSTATUS(NTAPI*)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES
 using PFN_NtQueryAttributesFile = NTSTATUS(NTAPI*)(POBJECT_ATTRIBUTES, PVOID);
 using PFN_NtDeleteFile = NTSTATUS(NTAPI*)(POBJECT_ATTRIBUTES);
 using PFN_NtQueryInformationFile = NTSTATUS(NTAPI*)(HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, ULONG);
+using PFN_NtSetInformationFile = PFN_NtQueryInformationFile;
 using PFN_NtOpenObject = NTSTATUS(NTAPI*)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES);
 using PFN_NtCreateSection = NTSTATUS(NTAPI*)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PLARGE_INTEGER, ULONG, ULONG, HANDLE);
 using PFN_NtCreateSectionEx = NTSTATUS(NTAPI*)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PLARGE_INTEGER, ULONG, ULONG,
@@ -289,6 +292,7 @@ struct HostNt {
     PFN_NtQueryAttributesFile NtQueryFullAttributesFile;
     PFN_NtDeleteFile NtDeleteFile;
     PFN_NtQueryInformationFile NtQueryInformationFile;
+    PFN_NtSetInformationFile NtSetInformationFile;
     PFN_NtOpenObject NtOpenDirectoryObject;
     PFN_NtOpenObject NtOpenSymbolicLinkObject;
     PFN_NtCreateSection NtCreateSection;

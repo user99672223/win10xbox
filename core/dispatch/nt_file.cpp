@@ -126,6 +126,14 @@ NTSTATUS FallbackTranslateNt(std::wstring_view guest, std::wstring* host) {
 
 constexpr ULONG kFileNameInformation = 9;
 constexpr ULONG kFileNormalizedNameInformation = 48;
+constexpr ULONG kFileRenameInformation = 10;
+constexpr ULONG kFileLinkInformation = 11;
+constexpr ULONG kFileRenameInformationBypassAccessCheck = 56;
+constexpr ULONG kFileLinkInformationBypassAccessCheck = 57;
+constexpr ULONG kFileRenameInformationEx = 65;
+constexpr ULONG kFileRenameInformationExBypassAccessCheck = 66;
+constexpr ULONG kFileLinkInformationEx = 72;
+constexpr ULONG kFileLinkInformationExBypassAccessCheck = 73;
 
 bool IsKnownDllsName(const OBJECT_ATTRIBUTES* oa) {
     if (!oa || oa->RootDirectory) return false;
@@ -228,10 +236,71 @@ std::wstring HostPathOfHandle(HANDLE file, DWORD* error) {
     return s;
 }
 
+#if WIN10XBOX_HAVE_VFS
+namespace {
+// A name relative to a directory handle opens the file the absolute name opens, so it has to see the same machine:
+// the builtin DLL rule for C:\Windows\System32\*.dll and the name checks live in the VFS, which only sees absolute
+// names. Builds that absolute guest NT name from the directory's host path.
+//   STATUS_SUCCESS       *nt is the absolute name
+//   STATUS_NOT_SUPPORTED the host resolves the name itself, as it always did: the handle is not a directory with a
+//                        known guest path (the console's AppContainer cannot ask), or the name is rooted
+//   other                the name is invalid under a file-system directory: an empty, "." or ".." component, or "/"
+//                        (the answer of NTFS; a host that predates it says PATH_NOT_FOUND for ".\x")
+NTSTATUS RootRelativeGuestName(const OBJECT_ATTRIBUTES* in, std::wstring* nt) {
+    std::wstring_view rel = OAName(in);
+    if (rel.empty() || rel.front() == L'\\') return st::NotSupported;
+    std::wstring host = HostPathOfHandle(in->RootDirectory);
+    if (host.empty()) return st::NotSupported;
+    const DWORD attrs = GetFileAttributesW(host.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES || !(attrs & FILE_ATTRIBUTE_DIRECTORY)) return st::NotSupported;
+    std::wstring guest;
+    if (!UntranslateHostWin32Path(host, &guest) || guest.size() < 3 || guest[1] != L':') return st::NotSupported;
+    std::wstring_view rest = rel;
+    if (rest.back() == L'\\') rest.remove_suffix(1);
+    for (std::size_t b = 0; b <= rest.size();) {
+        std::size_t e = rest.find(L'\\', b);
+        if (e == std::wstring_view::npos) e = rest.size();
+        std::wstring_view c = rest.substr(b, e - b);
+        if (c.empty() || c == L"." || c == L".." || c.find(L'/') != std::wstring_view::npos)
+            return st::ObjectNameInvalid;
+        b = e + 1;
+    }
+    *nt = L"\\??\\" + guest;
+    if (nt->back() != L'\\') *nt += L'\\';
+    nt->append(rel);
+    return st::Success;
+}
+}  // namespace
+#endif
+
 NTSTATUS TranslateOA(const OBJECT_ATTRIBUTES* in, TranslatedOA* out) {
     out->attr = nullptr;
     out->keep.reset();
-    if (!in || !in->ObjectName || in->RootDirectory) return st::Success;   // relative to a host handle
+    if (!in || !in->ObjectName) return st::Success;
+#if WIN10XBOX_HAVE_VFS
+    if (in->RootDirectory) {
+        std::wstring nt;
+        if (in->Length < sizeof(OBJECT_ATTRIBUTES)) return st::Success;
+        if (NTSTATUS rs = RootRelativeGuestName(in, &nt)) return rs == st::NotSupported ? st::Success : rs;
+        UNICODE_STRING us{};
+        us.Buffer = nt.data();
+        us.Length = static_cast<USHORT>(nt.size() * sizeof(wchar_t));
+        us.MaximumLength = us.Length;
+        OBJECT_ATTRIBUTES abs = *in;
+        abs.RootDirectory = nullptr;
+        abs.ObjectName = &us;
+        auto t = std::make_shared<vfs::TranslatedAttributes>();
+        NTSTATUS s = vfs::TranslateObjectAttributes(&abs, t.get());
+        if (s) return s;
+        if (t->translated) {
+            out->attr = &t->attr;
+            out->keep = t;
+        }
+        return st::Success;
+    }
+#else
+    if (in->RootDirectory) return st::Success;   // relative to a host handle
+#endif
 #if WIN10XBOX_HAVE_VFS
     auto t = std::make_shared<vfs::TranslatedAttributes>();
     NTSTATUS s = vfs::TranslateObjectAttributes(in, t.get());
@@ -314,6 +383,43 @@ static NTSTATUS NTAPI Xl_NtQueryInformationFile(HANDLE file, PIO_STATUS_BLOCK io
     return s;
 }
 
+// FILE_RENAME_INFORMATION / FILE_LINK_INFORMATION carry the target as an NT path inside the buffer (Wine's
+// MoveFileExW and CreateHardLinkW send "\??\C:\..."), so the host would look for it on its own C: drive. Same
+// layout for both: { BOOLEAN/ULONG Flags; HANDLE RootDirectory; ULONG FileNameLength; WCHAR FileName[] }.
+static NTSTATUS NTAPI Xl_NtSetInformationFile(HANDLE file, PIO_STATUS_BLOCK io, PVOID buffer, ULONG length,
+                                              ULONG klass) {
+    switch (klass) {
+    case kFileRenameInformation: case kFileLinkInformation:
+    case kFileRenameInformationBypassAccessCheck: case kFileLinkInformationBypassAccessCheck:
+    case kFileRenameInformationEx: case kFileRenameInformationExBypassAccessCheck:
+    case kFileLinkInformationEx: case kFileLinkInformationExBypassAccessCheck:
+        break;
+    default:
+        return Host().NtSetInformationFile(file, io, buffer, length, klass);
+    }
+    constexpr ULONG kHeader = 20;   // offsetof(FILE_RENAME_INFORMATION, FileName) on x64
+    if (!buffer || length < kHeader) return Host().NtSetInformationFile(file, io, buffer, length, klass);
+    auto* in = static_cast<const std::uint8_t*>(buffer);
+    HANDLE root;
+    ULONG name_bytes;
+    std::memcpy(&root, in + 8, sizeof root);
+    std::memcpy(&name_bytes, in + 16, sizeof name_bytes);
+    if (root || name_bytes > length - kHeader)   // relative to a host handle, or malformed: the host decides
+        return Host().NtSetInformationFile(file, io, buffer, length, klass);
+    std::wstring host;
+    NTSTATUS s = TranslateGuestNtPath(std::wstring_view(reinterpret_cast<const wchar_t*>(in + kHeader), name_bytes / 2), &host);
+    if (s == st::NotSupported) return Host().NtSetInformationFile(file, io, buffer, length, klass);
+    if (s) return s;
+    const ULONG new_bytes = static_cast<ULONG>(host.size() * sizeof(wchar_t));
+    std::vector<std::uint8_t> out(kHeader + new_bytes + sizeof(wchar_t), 0);
+    std::memcpy(out.data(), in, 16);   // flags + RootDirectory (padding included)
+    std::memcpy(out.data() + 16, &new_bytes, sizeof new_bytes);
+    std::memcpy(out.data() + kHeader, host.data(), new_bytes);
+    TRACE(dispatch, "NtSetInformationFile class %lu: target '%.*ls' -> '%ls'", static_cast<unsigned long>(klass),
+          static_cast<int>(name_bytes / 2), reinterpret_cast<const wchar_t*>(in + kHeader), host.c_str());
+    return Host().NtSetInformationFile(file, io, out.data(), static_cast<ULONG>(out.size()), klass);
+}
+
 static NTSTATUS NTAPI Xl_NtOpenDirectoryObject(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr) {
     // E3: no KnownDlls, so Wine's loader searches the file system through the VFS.
     if (IsKnownDllsName(attr)) return st::ObjectNameNotFound;
@@ -325,6 +431,52 @@ static NTSTATUS NTAPI Xl_NtOpenSymbolicLinkObject(PHANDLE handle, ACCESS_MASK ac
     return Host().NtOpenSymbolicLinkObject(handle, access, attr);
 }
 
+// ---- Byte-range locks -------------------------------------------------------
+// Wine's kernelbase (LockFile/LockFileEx) calls NtLockFile with IoStatusBlock == NULL, which Wine's own ntdll accepts
+// and Windows' does not: the I/O manager probes the pointer and answers STATUS_ACCESS_VIOLATION. SQLite's win32 VFS
+// takes its locks with LockFileEx, so on real Windows every lock failed and it reported "database is locked".
+// Windows hosts therefore get a block of ours (heap, because a lock still PENDING on an overlapped handle completes into
+// it later; it is released unless the call came back pending). A Wine host is the reverse: Wine's unix NtLockFile
+// answers STATUS_NOT_IMPLEMENTED to any non-NULL IoStatusBlock, and Wine 9's NtUnlockFile does the same while Wine
+// 11's dereferences it unconditionally, so on a Wine host NtLockFile is called with NULL and the guest's block is
+// filled in afterwards, and NtUnlockFile tries the block first and falls back to NULL.
+using PFN_NtLockFile = NTSTATUS(NTAPI*)(HANDLE, HANDLE, PVOID, PVOID, PIO_STATUS_BLOCK, PLARGE_INTEGER, PLARGE_INTEGER,
+                                        PULONG, BOOLEAN, BOOLEAN);
+using PFN_NtUnlockFile = NTSTATUS(NTAPI*)(HANDLE, PIO_STATUS_BLOCK, PLARGE_INTEGER, PLARGE_INTEGER, PULONG);
+
+static bool HostIsWine() { return HostExport("wine_get_version") != nullptr; }
+
+static NTSTATUS NTAPI Xl_NtLockFile(HANDLE file, HANDLE event, PVOID apc, PVOID apc_context, PIO_STATUS_BLOCK io,
+                                    PLARGE_INTEGER offset, PLARGE_INTEGER length, PULONG key, BOOLEAN fail_immediately,
+                                    BOOLEAN exclusive) {
+    auto host = reinterpret_cast<PFN_NtLockFile>(HostExport("NtLockFile"));
+    if (!host) return st::NotImplemented;
+    if (HostIsWine()) {
+        NTSTATUS s = host(file, event, apc, apc_context, nullptr, offset, length, key, fail_immediately, exclusive);
+        if (io) { io->Status = s; io->Information = 0; }
+        return s;
+    }
+    if (io) return host(file, event, apc, apc_context, io, offset, length, key, fail_immediately, exclusive);
+    auto* ours = new IO_STATUS_BLOCK{};
+    NTSTATUS s = host(file, event, apc, apc_context, ours, offset, length, key, fail_immediately, exclusive);
+    if (s == st::Pending) WARN(dispatch, "NtLockFile without an IoStatusBlock is pending; the lock completes asynchronously");
+    else delete ours;
+    return s;
+}
+
+static NTSTATUS NTAPI Xl_NtUnlockFile(HANDLE file, PIO_STATUS_BLOCK io, PLARGE_INTEGER offset, PLARGE_INTEGER length,
+                                      PULONG key) {
+    auto host = reinterpret_cast<PFN_NtUnlockFile>(HostExport("NtUnlockFile"));
+    if (!host) return st::NotImplemented;
+    NTSTATUS s = host(file, io, offset, length, key);
+    if (s == st::NotImplemented && io && HostIsWine()) {
+        s = host(file, nullptr, offset, length, key);
+        io->Status = s;
+        io->Information = 0;
+    }
+    return s;
+}
+
 const ImplDef* FileImpls() {
     static const ImplDef k[] = {
         {"NtCreateFile", reinterpret_cast<void*>(&Xl_NtCreateFile)},
@@ -333,8 +485,11 @@ const ImplDef* FileImpls() {
         {"NtQueryFullAttributesFile", reinterpret_cast<void*>(&Xl_NtQueryFullAttributesFile)},
         {"NtDeleteFile", reinterpret_cast<void*>(&Xl_NtDeleteFile)},
         {"NtQueryInformationFile", reinterpret_cast<void*>(&Xl_NtQueryInformationFile)},
+        {"NtSetInformationFile", reinterpret_cast<void*>(&Xl_NtSetInformationFile)},
         {"NtOpenDirectoryObject", reinterpret_cast<void*>(&Xl_NtOpenDirectoryObject)},
         {"NtOpenSymbolicLinkObject", reinterpret_cast<void*>(&Xl_NtOpenSymbolicLinkObject)},
+        {"NtLockFile", reinterpret_cast<void*>(&Xl_NtLockFile)},
+        {"NtUnlockFile", reinterpret_cast<void*>(&Xl_NtUnlockFile)},
         {nullptr, nullptr},
     };
     return k;

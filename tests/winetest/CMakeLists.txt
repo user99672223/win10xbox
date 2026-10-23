@@ -1,0 +1,62 @@
+# Wine's conformance units through the layer, as gated ctest entries (docs/TESTING.md).
+#
+# integration.winetest_advapi32: wine-pe/tests/advapi32.sh builds dlls/advapi32/tests from
+# wine-pe/wine-src into <build>/winetest/advapi32 and runs the units against the baseline in
+# wine-pe/tests/advapi32.baseline: a unit above its failure budget, a recorded "completes" unit that
+# no longer completes, or zero executed assertions fail the test. With MSVC the guest cannot be
+# built at all, so the test is not registered (as tests/wine-tests does).
+#
+# integration.winetest_ntdll: ntdll_test.exe (all of dlls/ntdll/tests as one guest) run by
+# run_ntdll.cmake against wine-pe/tests/ntdll.allowlist. The guest is built OUTSIDE cmake
+# (wine-pe/tests/ntdll.sh build --out <build>/winetest/ntdll: a ci.yml step of the Windows jobs, whose
+# MSVC cannot build it) and the test is registered where it exists, as the real programs are. It runs on
+# the builtin-only machine folder (the console's DLL set, as the GUI tests do): on a Windows runner the
+# shared one holds the runner's own advapi32/sechost/rpcrt4/ucrtbase, which the guest's imports pull in
+# and which die on Wine's 0x80000100 import stubs.
+set(_ntdll_exe ${CMAKE_BINARY_DIR}/winetest/ntdll/ntdll_test.exe)
+if(EXISTS ${_ntdll_exe})
+  set(_emu "")
+  if(CMAKE_CROSSCOMPILING_EMULATOR)
+    list(GET CMAKE_CROSSCOMPILING_EMULATOR 0 _emu)
+  endif()
+  add_test(NAME integration.winetest_ntdll
+    COMMAND ${CMAKE_COMMAND}
+      -DHOST=$<TARGET_FILE:win10xbox> -DMACHINE=${CMAKE_BINARY_DIR}/bin/machine-builtin -DEXE=${_ntdll_exe}
+      -DALLOWLIST=${CMAKE_SOURCE_DIR}/wine-pe/tests/ntdll.allowlist
+      -DRESULTS_DIR=${CMAKE_BINARY_DIR}/winetest/ntdll/results
+      "-DEMULATOR=${_emu}"
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/run_ntdll.cmake)
+  set_tests_properties(integration.winetest_ntdll PROPERTIES
+    FIXTURES_REQUIRED w10x_machine
+    SKIP_RETURN_CODE 77
+    SKIP_REGULAR_EXPRESSION "SKIP:"
+    LABELS "winetest_ntdll"
+    TIMEOUT 1500)
+endif()
+
+if(MSVC OR NOT CMAKE_HOST_UNIX)
+  return()
+endif()
+find_program(WIN10XBOX_BASH bash)
+if(NOT WIN10XBOX_BASH)
+  return()
+endif()
+set(_out ${CMAKE_BINARY_DIR}/winetest/advapi32)
+set(_emu "")
+if(CMAKE_CROSSCOMPILING_EMULATOR)
+  list(GET CMAKE_CROSSCOMPILING_EMULATOR 0 _emu)
+endif()
+add_test(NAME integration.winetest_advapi32
+  COMMAND ${WIN10XBOX_BASH} ${CMAKE_SOURCE_DIR}/wine-pe/tests/advapi32.sh all
+    --out ${_out}
+    --gen-include ${WIN10XBOX_WINE_GEN_INCLUDE_DIR}
+    --host $<TARGET_FILE:win10xbox>
+    --machine ${WIN10XBOX_MACHINE_DIR}
+    --emulator "${_emu}"
+    --timeout 120)
+set_tests_properties(integration.winetest_advapi32 PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "wine_conformance"
+  TIMEOUT 600)

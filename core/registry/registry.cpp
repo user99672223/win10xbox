@@ -822,6 +822,20 @@ void SetDword(State& st, Node* base, std::wstring_view key, const wchar_t* name,
     if (Node* k = EnsureKey(st, base, key)) { auto d = DwordData(v); StoreValue(st, k, name, 4, d.data(), d.size()); }
 }
 
+// The host's own base clock of logical processor 0, in MHz: the value Windows keeps at
+// HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0\~MHz (under Wine the host registry carries the same value, taken
+// from /proc/cpuinfo). 0 when the host does not answer; the caller then leaves ~MHz out rather than invent one.
+ULONG HostBaseMhz() {
+    HKEY k = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", 0, KEY_QUERY_VALUE, &k) !=
+        ERROR_SUCCESS)
+        return 0;
+    DWORD type = 0, v = 0, size = sizeof v;
+    const LONG r = RegQueryValueExW(k, L"~MHz", nullptr, &type, reinterpret_cast<BYTE*>(&v), &size);
+    RegCloseKey(k);
+    return r == ERROR_SUCCESS && type == REG_DWORD ? v : 0;
+}
+
 void ApplySoftwareFidelity(State& st, Node* sw) {
     const Fidelity& f = st.fid;
     const std::wstring cv = L"Microsoft\\Windows NT\\CurrentVersion";
@@ -991,6 +1005,16 @@ NTSTATUS Initialize(const std::wstring& machine_root) {
         EnsureKey(st, st.system, L"ControlSet001\\Control");
     }
     SetStr(st, hw, L"DESCRIPTION\\System\\CentralProcessor\\0", L"VendorIdentifier", Widen(st.fid.cpu_vendor));
+    {
+        // D18: the one CPU identity (brand, family/model/stepping) is the machine identity's; the clock is the host's.
+        const auto& id = config::Current().machine_identity;
+        const wchar_t* cpu0 = L"DESCRIPTION\\System\\CentralProcessor\\0";
+        SetStr(st, hw, cpu0, L"ProcessorNameString", id.cpu_brand);
+        SetStr(st, hw, cpu0, L"Identifier",
+               L"AMD64 Family " + std::to_wstring(id.cpu_family) + L" Model " + std::to_wstring(id.cpu_model) +
+                   L" Stepping " + std::to_wstring(id.cpu_stepping));
+        if (const ULONG mhz = HostBaseMhz()) SetDword(st, hw, cpu0, L"~MHz", mhz);
+    }
     EnsureKey(st, hw, L"DEVICEMAP");
     EnsureKey(st, hw, L"RESOURCEMAP");
     // Keys created above are baseline, not user changes: nothing to record.
