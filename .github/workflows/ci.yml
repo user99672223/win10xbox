@@ -61,7 +61,7 @@ jobs:
           ok=0
           for i in 1 2 3; do
             if sudo timeout 420 apt-get install -y -q --no-install-recommends -o Acquire::Retries=3 -o Acquire::http::Timeout=60 \
-                 -o Dir::Cache::archives="$HOME/apt-cache" wine wine64 ninja-build; then ok=1; break; fi
+                 -o Dir::Cache::archives="$HOME/apt-cache" wine wine64 ninja-build pulseaudio; then ok=1; break; fi
             echo "apt-get install attempt $i failed"; sleep 10
           done
           [ "$ok" = 1 ]
@@ -95,6 +95,19 @@ jobs:
         run: |
           wineboot --init
           wineserver -w
+      # A virtual audio device for the Wine host (docs/slices/audio.md): PulseAudio with a null sink, which Wine's winepulse
+      # driver turns into the default render endpoint. The layer's audio tests compare the layer with the host, so with
+      # this the host plays the sound and so must the layer; if the daemon does not come up the host has no endpoint and
+      # the same tests assert the exact no-endpoint path.
+      - name: Start a virtual audio device (PulseAudio null sink) for the Wine host
+        run: |
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          sudo mkdir -p "$XDG_RUNTIME_DIR" && sudo chown "$(id -u):$(id -g)" "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          pulseaudio --start --exit-idle-time=-1 --disallow-exit --load="module-null-sink sink_name=virtual" || true
+          sleep 2
+          pactl info || true
+          pactl list short sinks || true
       - name: Stage Wine NLS data into the machine folder (for the guest e2e tests)
         env: { WINEPREFIX: "${{ runner.temp }}/wineprefix" }
         run: |
@@ -366,7 +379,8 @@ jobs:
           function Show-Audio($title) {
             Write-Host "=== $title ==="
             Get-Service Audiosrv, AudioEndpointBuilder -ErrorAction Continue | Format-Table Name, Status, StartType | Out-String | Write-Host
-            Get-PnpDevice -Class AudioEndpoint, MEDIA -ErrorAction Continue | Format-Table Status, Class, FriendlyName | Out-String | Write-Host
+            Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.Class -in 'AudioEndpoint', 'MEDIA' } |
+              Format-Table Status, Class, FriendlyName | Out-String | Write-Host
             Get-CimInstance Win32_SoundDevice -ErrorAction Continue | Format-List Name, Status | Out-String | Write-Host
             foreach ($g in 'guest_wasapi', 'guest_xaudio2') {
               $out = & "build/bin/guest/$g.exe" 2>&1 | Out-String
@@ -379,6 +393,7 @@ jobs:
             try { Start-Service Audiosrv -ErrorAction Stop; Start-Sleep -Seconds 3 } catch { Write-Host "Start-Service Audiosrv: $_" }
             Show-Audio 'audio after Start-Service Audiosrv'
           }
+          exit 0   # the probe reports; the gates are integration.guest_wasapi / guest_xaudio2 and the fastfetch Sound module
       # The whole suite, end-to-end included. The guest's stdout IS captured on
       # real Windows: run 39818491081 (RelWithDebInfo, the one job of that run
       # that had the builtins) printed "hello from guest" and passed 11 of 13
@@ -411,6 +426,30 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: ./tools/ci/smoke_guests.ps1 -Bin build/bin -Machine build/bin/machine -LogDir build/guest-smoke -RealPrograms -Sysinternals
+      # Native or builtin xaudio2_9 (docs/slices/audio.md)? The gate above runs Wine's builtin. This measures the runner's
+      # own xaudio2_9.dll on the layer (dll_overrides "xaudio2_9": "native" on a copy of the builtin-only folder), with
+      # Wine's mmdevapi under it: the guest's exit code and the layer's err:/fixme: lines are printed, nothing gates.
+      - name: Measure - native xaudio2_9 from the runner's System32 on the layer (informational)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $m = (Resolve-Path build/bin/machine-builtin).Path
+          $x = Join-Path $env:RUNNER_TEMP 'machine-native-xa'
+          robocopy $m $x /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+          Copy-Item (Join-Path $env:SystemRoot 'System32\xaudio2_9.dll') (Join-Path $x 'Windows\System32\xaudio2_9.dll') -Force
+          $j = Get-Content (Join-Path $x 'machine.json') -Raw | ConvertFrom-Json
+          $j.dll_overrides | Add-Member -NotePropertyName 'xaudio2_9' -NotePropertyValue 'native' -Force
+          $j | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $x 'machine.json')
+          $env:WIN10XBOX_DEBUG = '+audio,+modules'
+          $p = Start-Process build/bin/win10xbox.exe -ArgumentList '--machine', $x, 'C:\guest\guest_xaudio2.exe' `
+                 -RedirectStandardOutput nx.out -RedirectStandardError nx.err -PassThru -NoNewWindow
+          $null = $p.Handle
+          if (-not $p.WaitForExit(120000)) { $p.Kill(); $p.WaitForExit(); Write-Host 'native xaudio2_9: killed after 120 s' }
+          Write-Host ("guest_xaudio2 with the native xaudio2_9: exit {0}" -f $p.ExitCode)
+          Get-Content nx.out | Write-Host
+          Select-String -Path nx.err -Pattern 'xaudio2_9|err:|fixme:|unresolved|EXCEPTION_WINE_STUB|c0000135' | Select-Object -First 30 | ForEach-Object { Write-Host "    $($_.Line)" }
+          exit 0
       # fastfetch module by module on the console's DLL set, gating: one process per module, so a module that stops the
       # guest fails by name. Each module that works must exit 0 and print its line. The ones that do not yet (Display,
       # GPU, Packages, LocalIp, Battery, Bluetooth) are the todo list of docs/slices/fastfetch.md; Sound is gated here since
