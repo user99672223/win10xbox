@@ -126,6 +126,7 @@ NTSTATUS FallbackTranslateNt(std::wstring_view guest, std::wstring* host) {
 
 constexpr ULONG kFileNameInformation = 9;
 constexpr ULONG kFileNormalizedNameInformation = 48;
+constexpr ULONG kFileBasicInformation = 4;
 constexpr ULONG kFileRenameInformation = 10;
 constexpr ULONG kFileLinkInformation = 11;
 constexpr ULONG kFileRenameInformationBypassAccessCheck = 56;
@@ -356,7 +357,34 @@ NTSTATUS NTAPI Xl_NtOpenFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBU
                              ULONG sharing, ULONG options) {
     TranslatedOA t;
     if (NTSTATUS s = TranslateOA(attr, &t)) return s;
+    // Wine's SetFileAttributesW (git hides ".git" with it) opens with SYNCHRONIZE alone and then sets
+    // FileBasicInformation, which Wine's server allows; Windows demands FILE_WRITE_ATTRIBUTES for that. Ask for it,
+    // and fall back to the caller's access when the file will not grant it (a read-only ACL).
+    if (access == SYNCHRONIZE) {
+        constexpr ACCESS_MASK kFileWriteAttributes = 0x100;
+        NTSTATUS s = Host().NtOpenFile(handle, access | kFileWriteAttributes, t.Get(attr), io, sharing, options);
+        if (s != st::AccessDenied) return s;
+    }
     return Host().NtOpenFile(handle, access, t.Get(attr), io, sharing, options);
+}
+
+// Pipes live in the host's own \\Device\\NamedPipe: the name is not a file-system path and passes unchanged. What is
+// translated is the default time-out. Wine's kernelbase (CreatePipe) passes 0, its NMPWAIT_USE_DEFAULT_WAIT, meaning
+// "the pipe's default"; Windows' npfs refuses an explicit zero interval, and CreatePipe retries until the call succeeds
+// (hence an endless loop of STATUS_INVALID_PARAMETER). kernel32 passes the documented default, 50 ms, for the same case.
+// The ULONG parameters are also handed on with clean upper halves (the guest's 64-bit argument slots are not).
+static NTSTATUS NTAPI Xl_NtCreateNamedPipeFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr,
+                                               PIO_STATUS_BLOCK io, ULONG sharing, ULONG disposition, ULONG options,
+                                               ULONG pipe_type, ULONG read_mode, ULONG completion_mode,
+                                               ULONG max_instances, ULONG inbound_quota, ULONG outbound_quota,
+                                               PLARGE_INTEGER timeout) {
+    LARGE_INTEGER default_wait;
+    if (timeout && timeout->QuadPart == 0) {
+        default_wait.QuadPart = -50 * 10000;   // 50 ms, relative
+        timeout = &default_wait;
+    }
+    return Host().NtCreateNamedPipeFile(handle, access, attr, io, sharing, disposition, options, pipe_type, read_mode,
+                                        completion_mode, max_instances, inbound_quota, outbound_quota, timeout);
 }
 
 static NTSTATUS NTAPI Xl_NtQueryAttributesFile(POBJECT_ATTRIBUTES attr, PVOID info) {
@@ -406,6 +434,40 @@ static NTSTATUS NTAPI Xl_NtQueryInformationFile(HANDLE file, PIO_STATUS_BLOCK io
     return s;
 }
 
+// Wine's GetFinalPathNameByHandleW (git's getcwd and realpath) asks for ObjectNameInformation and only accepts an
+// NT path in the "\\??\\C:\\..." form, which is what Wine's own ntdll answers for a file handle. The host answers
+// "\\Device\\HarddiskVolumeN\\<host path>"; give a file handle the guest's name instead. Other objects, and files
+// outside every guest drive, keep the host's answer.
+static NTSTATUS NTAPI Xl_NtQueryObject(HANDLE h, ULONG klass, PVOID buffer, ULONG length, PULONG ret_len) {
+    constexpr ULONG kObjectNameInformation = 1;
+    if (klass == kObjectNameInformation) {
+        alignas(8) std::uint8_t probe[4096];
+        ULONG probe_len = 0;
+        if (Host().NtQueryObject(h, klass, probe, sizeof probe, &probe_len) == st::Success) {
+            const auto* us = reinterpret_cast<const UNICODE_STRING*>(probe);
+            const std::wstring_view name(us->Buffer ? us->Buffer : L"", us->Buffer ? us->Length / sizeof(wchar_t) : 0);
+            if (IStartsWith(name, L"\\Device\\HarddiskVolume") || IStartsWith(name, L"\\Device\\Mup")) {
+                std::wstring host = HostPathOfHandle(h), guest;
+                if (!host.empty() && UntranslateHostWin32Path(host, &guest) && guest.size() >= 2) {
+                    const std::wstring nt = L"\\??\\" + guest;
+                    const ULONG bytes = static_cast<ULONG>(nt.size() * sizeof(wchar_t));
+                    const ULONG need = static_cast<ULONG>(sizeof(UNICODE_STRING)) + bytes + sizeof(wchar_t);
+                    if (ret_len) *ret_len = need;
+                    if (length < need) return st::BufferOverflow;
+                    auto* out = static_cast<UNICODE_STRING*>(buffer);
+                    auto* text = reinterpret_cast<wchar_t*>(out + 1);
+                    std::memcpy(text, nt.c_str(), bytes + sizeof(wchar_t));
+                    out->Buffer = text;
+                    out->Length = static_cast<USHORT>(bytes);
+                    out->MaximumLength = static_cast<USHORT>(bytes + sizeof(wchar_t));
+                    return st::Success;
+                }
+            }
+        }
+    }
+    return Host().NtQueryObject(h, klass, buffer, length, ret_len);
+}
+
 // FILE_RENAME_INFORMATION / FILE_LINK_INFORMATION carry the target as an NT path inside the buffer (Wine's
 // MoveFileExW and CreateHardLinkW send "\??\C:\..."), so the host would look for it on its own C: drive. Same
 // layout for both: { BOOLEAN/ULONG Flags; HANDLE RootDirectory; ULONG FileNameLength; WCHAR FileName[] }.
@@ -417,6 +479,29 @@ static NTSTATUS NTAPI Xl_NtSetInformationFile(HANDLE file, PIO_STATUS_BLOCK io, 
     case kFileRenameInformationEx: case kFileRenameInformationExBypassAccessCheck:
     case kFileLinkInformationEx: case kFileLinkInformationExBypassAccessCheck:
         break;
+    case kFileBasicInformation: {
+        // Wine's SetFileAttributesW opens the file with SYNCHRONIZE only and sets FileBasicInformation on that handle
+        // (its server checks no access there); Windows wants FILE_WRITE_ATTRIBUTES on the handle. When the host
+        // refuses, set the information through a handle of the same file that has it (what ReOpenFile does).
+        NTSTATUS s = Host().NtSetInformationFile(file, io, buffer, length, klass);
+        if (s != st::AccessDenied) return s;
+        UNICODE_STRING empty = {};
+        OBJECT_ATTRIBUTES oa = {};
+        oa.Length = sizeof oa;
+        oa.RootDirectory = file;
+        oa.ObjectName = &empty;
+        oa.Attributes = 0x40;   // OBJ_CASE_INSENSITIVE
+        HANDLE again = nullptr;
+        IO_STATUS_BLOCK open_io = {};
+        constexpr ULONG kShareAll = 7, kOpenReparsePoint = 0x200000, kSynchronousIoNonalert = 0x20,
+                        kBackupIntent = 0x4000;
+        if (Host().NtOpenFile(&again, FILE_WRITE_ATTRIBUTES | SYNCHRONIZE, &oa, &open_io, kShareAll,
+                              kOpenReparsePoint | kSynchronousIoNonalert | kBackupIntent) != st::Success)
+            return s;
+        s = Host().NtSetInformationFile(again, io, buffer, length, klass);
+        Host().NtClose(again);
+        return s;
+    }
     default:
         return Host().NtSetInformationFile(file, io, buffer, length, klass);
     }
@@ -520,11 +605,13 @@ const ImplDef* FileImpls() {
     static const ImplDef k[] = {
         {"NtCreateFile", reinterpret_cast<void*>(&Xl_NtCreateFile)},
         {"NtOpenFile", reinterpret_cast<void*>(&Xl_NtOpenFile)},
+        {"NtCreateNamedPipeFile", reinterpret_cast<void*>(&Xl_NtCreateNamedPipeFile)},
         {"NtQueryAttributesFile", reinterpret_cast<void*>(&Xl_NtQueryAttributesFile)},
         {"NtQueryFullAttributesFile", reinterpret_cast<void*>(&Xl_NtQueryFullAttributesFile)},
         {"NtDeleteFile", reinterpret_cast<void*>(&Xl_NtDeleteFile)},
         {"NtQueryInformationFile", reinterpret_cast<void*>(&Xl_NtQueryInformationFile)},
         {"NtSetInformationFile", reinterpret_cast<void*>(&Xl_NtSetInformationFile)},
+        {"NtQueryObject", reinterpret_cast<void*>(&Xl_NtQueryObject)},
         {"NtOpenDirectoryObject", reinterpret_cast<void*>(&Xl_NtOpenDirectoryObject)},
         {"NtOpenSymbolicLinkObject", reinterpret_cast<void*>(&Xl_NtOpenSymbolicLinkObject)},
         {"NtLockFile", reinterpret_cast<void*>(&Xl_NtLockFile)},

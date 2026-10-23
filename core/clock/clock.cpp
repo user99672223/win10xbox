@@ -260,6 +260,13 @@ FARPROC HostNtdllExport(const char* name) {
     return m ? GetProcAddress(m, name) : nullptr;
 }
 
+// The host exports the clock forwards to, resolved by Initialize() with the host PEB still in place. Latching the
+// module handle is not enough: under Wine, GetProcAddress on that handle returns NULL once the PEB loader list is
+// the guest's, so a lookup made on the first guest call found nothing and every guest Sleep() returned at once
+// (STATUS_INSUFFICIENT_RESOURCES) instead of waiting. The pointers are written once, before any guest thread runs.
+NtDelayExecutionFn g_host_delay = nullptr;
+NtSetTimerResolutionFn g_host_set_timer_res = nullptr;
+
 // SYSTEM_TIMEOFDAY_INFORMATION as of Windows 10 (0x30 bytes). winternl.h only
 // has an opaque version of it.
 struct TimeOfDayInfo {
@@ -336,6 +343,8 @@ NTSTATUS Initialize(const Settings& s) {
     // calls us before it maps the guest ntdll and takes the PEB over, and after
     // that GetModuleHandleW(L"ntdll.dll") answers with the guest's.
     HostNtdll();
+    g_host_delay = reinterpret_cast<NtDelayExecutionFn>(HostNtdllExport("NtDelayExecution"));
+    g_host_set_timer_res = reinterpret_cast<NtSetTimerResolutionFn>(HostNtdllExport("NtSetTimerResolution"));
     const std::uint64_t tf = HostTscFrequency();
     {
         WriteLock w;
@@ -528,7 +537,9 @@ NTSTATUS Clk_NtGetTickCount(ULONG* Out) {
 }
 
 NTSTATUS Clk_NtDelayExecution(BOOLEAN Alertable, PLARGE_INTEGER Timeout) {
-    static const NtDelayExecutionFn host = reinterpret_cast<NtDelayExecutionFn>(HostNtdllExport("NtDelayExecution"));
+    // Unit tests call this without Initialize(): their PEB is the host's, so the lazy lookup works there.
+    NtDelayExecutionFn host = g_host_delay;
+    if (!host) host = reinterpret_cast<NtDelayExecutionFn>(HostNtdllExport("NtDelayExecution"));
     if (!host) return kStatusInsufficientResources;
     // The timeout is optional (NULL waits forever). Read it once, here: the host then sees our copy.
     LARGE_INTEGER requested, tmp;
@@ -551,7 +562,8 @@ NTSTATUS Clk_NtSetTimerResolution(ULONG Requested, BOOLEAN Set, PULONG Actual) {
     // The reported resolution is emulated (stable, independent of the host); the
     // request is also forwarded best-effort so the host kernel's real sleeps get
     // the same accuracy the guest asked for. A host refusal is ignored.
-    static const NtSetTimerResolutionFn host = reinterpret_cast<NtSetTimerResolutionFn>(HostNtdllExport("NtSetTimerResolution"));
+    NtSetTimerResolutionFn host = g_host_set_timer_res;
+    if (!host) host = reinterpret_cast<NtSetTimerResolutionFn>(HostNtdllExport("NtSetTimerResolution"));
     if (NTSTATUS s = probe::ProbeWrite(Actual, sizeof(ULONG), sizeof(ULONG))) return s;   // required, as on Windows
     ULONG cur;
     if (Set) {
