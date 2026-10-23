@@ -269,8 +269,8 @@ jobs:
           # Direct3D 11 off-screen through the layer (non-gating): the host's native d3d11/dxgi as guest code, plain and in the container.
           d3d11() {
             local label="$1" mode="$2"
-            XARGS=(--env WIN10XBOX_GUI=native --env WIN10XBOX_DEBUG=+dispatch,+process,+user,+modules
-                   --env 'WIN10XBOX_WINEDEBUG=+loaddll,warn+module' --env "WIN10XBOX_CRASH_DIR=$OUTW\\crash-$label")
+            XARGS=(--env WIN10XBOX_GUI=native --env WIN10XBOX_DEBUG=+dispatch,+process,+user,+modules,+relay
+                   --env 'WIN10XBOX_WINEDEBUG=+loaddll,warn+module,+rpc,+seh,+service' --env "WIN10XBOX_CRASH_DIR=$OUTW\\crash-$label")
             run "$label" "$mode" 240 "$HOST" --machine "$MACHINE" 'C:\guest\guest_d3d11_tri.exe'
             if [ -f "$OUT/$label.log" ]; then grep -a -E '^d3d11:|native d3d|NtGdiDdDDI|gui native|host path [^)]*(d3d|dxgi|umd|warp|dxcore)' "$OUT/$label.log" | tr -d '\r' | cut -c1-300 | head -150; fi
           }

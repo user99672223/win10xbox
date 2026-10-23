@@ -254,7 +254,10 @@ static NTSTATUS NTAPI Xl_NtQueryInformationThread(HANDLE thread, ULONG klass, PV
         ThreadState* self = CurrentThreadState();
         if (self && (self->flags & kThreadGuest)) {
             if (length != sizeof(ULONG)) return st::InfoLengthMismatch;
-            *static_cast<ULONG*>(buffer) = GuestThreads().size() <= 1 ? 1 : 0;
+            const std::size_t guests = GuestThreads().size();
+            *static_cast<ULONG*>(buffer) = guests <= 1 ? 1 : 0;
+            TRACE(process, "thread %04lx: ThreadAmILastThread -> %lu (%zu guest threads)", GetCurrentThreadId(),
+                  *static_cast<ULONG*>(buffer), guests);
             if (ret_len) *ret_len = sizeof(ULONG);
             return st::Success;
         }
@@ -288,6 +291,8 @@ static NTSTATUS NTAPI Xl_NtQuerySecurityObject(HANDLE h, ULONG info, PVOID sd, U
 // ---- Termination ---------------------------------------------------------------------------
 
 static NTSTATUS NTAPI Xl_NtTerminateProcess(HANDLE process, NTSTATUS code) {
+    TRACE(process, "thread %04lx: NtTerminateProcess(%p, %08lx)", GetCurrentThreadId(), process,
+          static_cast<unsigned long>(code));
     if (!process) {
         // Wine's RtlExitUserProcess: kill every other thread of the (guest) process.
         TerminateOtherGuestThreads(code);
@@ -298,6 +303,8 @@ static NTSTATUS NTAPI Xl_NtTerminateProcess(HANDLE process, NTSTATUS code) {
 }
 
 static NTSTATUS NTAPI Xl_NtTerminateThread(HANDLE thread, NTSTATUS code) {
+    TRACE(process, "thread %04lx: NtTerminateThread(%p, %08lx)", GetCurrentThreadId(), thread,
+          static_cast<unsigned long>(code));
     if (!thread || IsCurrentThreadHandle(thread)) {
         ThreadState* self = CurrentThreadState();
         if (self && (self->flags & kThreadGuest)) GuestThreadExit(code);
