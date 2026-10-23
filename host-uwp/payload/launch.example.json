@@ -75,6 +75,21 @@
   // guest_d3d11_tri.exe. In the picker, a guest's <name>.machine file (payload\guest) chooses it instead.
   // "machine": "machine",
 
+  // The display mode: "auto" keeps the console's current mode; "WxH@Hz" asks the console for that mode when it is in
+  // its supported list (otherwise the supported list is logged and the current mode stays). The guest sees whatever
+  // mode results.
+  // "display_mode": "auto",
+
+  // The screen the GUEST sees, independent of the console's output mode: "auto" (the output mode) or "WxH@Hz". Every display
+  // answer (GetSystemMetrics, EnumDisplaySettings, GetDeviceCaps, DXGI output) reports it and the guest's frame is that size.
+  // A single program can choose its own with <name>.display (one line) or display=WxH@Hz in a .launch file.
+  // "guest_display": "auto",
+
+  // Who scales the guest's screen to the output mode: "system" (default) creates the CoreWindow swap chain at the guest's size
+  // and lets the console's compositor scale it; if the console refuses it falls back to "layer" (status.txt records
+  // output_scaling=layer (system refused: ...)). "layer" creates it at the output size and scales in the presenter.
+  // "output_scaling": "system",
+
   // Forward CoreWindow keyboard and pointer (and gamepad-as-keys) input to the winexbox
   // display backend.
   "input_pump": true,

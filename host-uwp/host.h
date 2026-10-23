@@ -19,17 +19,48 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace w10x_uwp
 {
     class Launcher;
 
+    // The display mode of this run: what the console (or, on the runner, DisplayInformation / the CoreWindow) provides
+    // after launch.json "display_mode" has been applied. It is the one mode the guest sees (winexbox backend, core/user,
+    // DXGI output) and the size of the presenter's swap chain.
     struct DisplayInfo
     {
         std::uint32_t width = 1920;
         std::uint32_t height = 1080;
         std::uint32_t refresh_hz = 60;
+        bool hdr = false;                 // HDR10 (BT.2020) is the console's active colour space
+        unsigned supported = 0;           // modes in HdmiDisplayInformation::GetSupportedDisplayModes (0 off the console)
+        std::string source = "default";   // hdmi | displayinformation | corewindow | default
+        // The guest's screen (launch.json "guest_display"; a program's own .display is applied at its launch): what core/user and
+        // DXGI report and the size of the composed frame. "auto" = the output mode above.
+        std::uint32_t guest_width = 1920;
+        std::uint32_t guest_height = 1080;
+        std::uint32_t guest_refresh_hz = 60;
+        std::string guest_requested = "auto";
+        std::string output_scaling = "system";   // launch.json "output_scaling" as asked; the presenter's outcome goes through NoteOutputScaling
+        std::string requested = "auto";   // launch.json "display_mode"
+        std::string result = "kept";      // what the request came to
+        std::vector<std::string> notes;   // lines for trace.log ("display: ..."), supported list included
     };
+
+    inline std::string DescribeGuestDisplay(const DisplayInfo& d)
+    {
+        return std::to_string(d.guest_width) + "x" + std::to_string(d.guest_height) + "@" + std::to_string(d.guest_refresh_hz) +
+               " requested=" + d.guest_requested;
+    }
+
+    // "display=2560x1440@120 hdr=0 supported=12 requested=2560x1440@120 result=set": status.txt and the report header.
+    inline std::string DescribeDisplay(const DisplayInfo& d)
+    {
+        return std::to_string(d.width) + "x" + std::to_string(d.height) + "@" + std::to_string(d.refresh_hz) +
+               " hdr=" + (d.hdr ? "1" : "0") + " supported=" + std::to_string(d.supported) + " requested=" + d.requested +
+               " result=" + d.result;
+    }
 
     // Facts the shell collects with WinRT on the UI thread before the worker exists.
     struct HostInfo
@@ -41,6 +72,11 @@ namespace w10x_uwp
         DisplayInfo display;             // size of the virtual monitor handed to the winexbox backend, in
                                          // physical pixels (the swap chain and ComposeFrame use the same)
     };
+
+    // launch.json "display_mode" ("auto" or "WxH@Hz") as the Host will read it later (LocalState first, then the packaged
+    // default); "auto" when there is none or it does not parse (the Host reports that error itself). UI thread, start-up.
+    void ReadDisplaySettings(const std::wstring& local_state, const std::wstring& package_dir, std::string* display_mode,
+                             std::string* guest_display, std::string* scaling);
 
     class Host
     {
@@ -96,6 +132,8 @@ namespace w10x_uwp
         // The presenter's state (presenter.h) as "display.presenter" in status.txt. Any thread
         // (status.txt is rewritten through its held handle while the guest runs).
         void NoteDisplay(const std::string& presenter_state);
+        // "system" or "layer (system refused: 0x...)": the outcome of launch.json "output_scaling" (status.txt, report header).
+        void NoteOutputScaling(const std::string& state);
 
     private:
         struct Impl;

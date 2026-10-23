@@ -39,7 +39,7 @@ if(TARGET guest_hello)
                    guest_window guest_window2 guest_window_input guest_window_input2 guest_window_text guest_window_nc
                    guest_dialog guest_comctl guest_seh guest_window_scroll guest_clipboard guest_net msctf_stub
                    guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput xinput1_4 guest_identity
-                   guest_cursor guest_regpersist guest_wasapi guest_xaudio2 guest_tebframe guest_rdrand)
+                   guest_cursor guest_regpersist guest_wasapi guest_xaudio2 guest_tebframe guest_rdrand guest_display_mode)
   if(TARGET guest_d3d11_tri)
     add_dependencies(prepare_machine guest_d3d11_tri)
   endif()
@@ -350,6 +350,26 @@ win10xbox_guest_test(guest_xinput "C:\\guest\\guest_xinput.exe" 42
 set_tests_properties(integration.guest_xinput PROPERTIES
   ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=pad 0 0 0 0 0 0 0\\;padwait 30000\\;sleep 300\\;pad 1000 1000 -2000 3000 -4000 128 255"
   FAIL_REGULAR_EXPRESSION "xinput: FAIL")
+# Display mode (tests/guest/display_mode.c): the host's one mode (here 1280x720@75 through WIN10XBOX_DISPLAY_MODE) is what
+# GetSystemMetrics, GetDeviceCaps (HORZRES/VERTRES/VREFRESH/BITSPIXEL), EnumDisplaySettings and the monitor rectangle report.
+set(_guest_args "1280x720@75")
+win10xbox_guest_test(guest_display_mode "C:\\guest\\guest_display_mode.exe" 42
+  "display: GetSystemMetrics=1280x720" "display: GetDeviceCaps=1280x720 vrefresh=75 bitspixel=32"
+  "display: EnumDisplaySettings=1280x720@75 bpp=32" "display: monitor=1280x720" "display: done")
+unset(_guest_args)
+set_tests_properties(integration.guest_display_mode PROPERTIES
+  ENVIRONMENT "WIN10XBOX_DISPLAY_MODE=1280x720@75" FAIL_REGULAR_EXPRESSION "display: FAIL")
+# The guest's screen (guest_display) differs from the console output: the guest sees 1920x1080@120, the output is a
+# headless 800x600@60 (WIN10XBOX_OUTPUT_MODE); the composed frame stays 1920x1080 and the presenter's scaler runs
+# over it (host-uwp prints the same "scale=" in status.txt).
+set(_guest_args "1920x1080@120")
+win10xbox_guest_test(guest_display_mode_scaled "C:\\guest\\guest_display_mode.exe" 42
+  "display: GetSystemMetrics=1920x1080" "display: GetDeviceCaps=1920x1080 vrefresh=120 bitspixel=32"
+  "display: EnumDisplaySettings=1920x1080@120 bpp=32" "display: monitor=1920x1080" "display: done"
+  "host-win32: composed=1920x1080 scale=1920x1080->800x600")
+unset(_guest_args)
+set_tests_properties(integration.guest_display_mode_scaled PROPERTIES
+  ENVIRONMENT "WIN10XBOX_DISPLAY_MODE=1920x1080@120;WIN10XBOX_OUTPUT_MODE=800x600@60" FAIL_REGULAR_EXPRESSION "display: FAIL")
 # Scroll bars (tests/guest/window_scroll.c, core/user/win_scroll.cpp): range/position round trip, HTVSCROLL hit test,
 # ScrollWindowEx / ScrollDC pixels, and a host-injected click on the vertical bar's down arrow that must arrive as
 # WM_VSCROLL SB_LINEDOWN + SB_ENDSCROLL. The screenshot shows the bar's track colour (COLOR_SCROLLBAR, ffc8c8c8) at

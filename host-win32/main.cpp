@@ -27,6 +27,7 @@
 // list before that happens and attributes addresses against both.
 #include "win10xbox/core.h"
 #include "win10xbox/dispatch.h"
+#include "win10xbox/frame_scale.h"
 #include "win10xbox/gamepad.h"
 #include "win10xbox/trace.h"
 #include "win10xbox/user.h"
@@ -675,7 +676,22 @@ static int HostMain(int argc, wchar_t** argv) {
     // core/user allocates window surfaces from it and composes the desktop; WIN10XBOX_SCREENSHOT=<file.bmp> writes
     // what was on that virtual screen when the guest exited (the only way to see a GUI guest on a CI runner).
     // Leaked on purpose like everything else the guest may still reference at EndProcess.
-    winexbox::IWinexboxDriver* const display = winexbox::SelectBackend(winexbox::BackendConfig{}).release();
+    // The virtual monitor is the mode the guest sees everywhere (GetSystemMetrics, EnumDisplaySettings, GetDeviceCaps).
+    // WIN10XBOX_DISPLAY_MODE=<W>x<H>[@<Hz>] overrides the 1920x1080@60 default (tests/guest/display_mode.c).
+    winexbox::BackendConfig display_cfg;
+    {
+        wchar_t mode_env[64];
+        const DWORD mode_len = GetEnvironmentVariableW(L"WIN10XBOX_DISPLAY_MODE", mode_env, 64);
+        char mode_ascii[64] = {};
+        for (DWORD i = 0; mode_len && mode_len < 64 && i < mode_len; ++i) mode_ascii[i] = static_cast<char>(mode_env[i]);
+        winexbox::DisplayMode dm;
+        if (mode_len && mode_len < 64 && winexbox::ParseDisplayMode(mode_ascii, &dm)) {
+            display_cfg.width = dm.width;
+            display_cfg.height = dm.height;
+            display_cfg.refresh_hz = dm.refresh_hz;
+        }
+    }
+    winexbox::IWinexboxDriver* const display = winexbox::SelectBackend(display_cfg).release();
     win10xbox::user::SetDisplayDriver(display);
     display->SetEventSink(win10xbox::user::InputSink());   // driver input -> the guest's message queues
     wchar_t screenshot[MAX_PATH * 2] = {};
@@ -701,6 +717,26 @@ static int HostMain(int argc, wchar_t** argv) {
         rc = win10xbox::process::WaitForGuest(INFINITE);   // the second half of Launch(wait = true)
     }
     actctx.Check();
+    {
+        // WIN10XBOX_OUTPUT_MODE=<W>x<H>[@<Hz>]: the console output a host-uwp presenter would scale the guest's screen to.
+        // Runs the same CPU scaler (win10xbox/frame_scale.h) over the composed frame and reports it, so the
+        // integration tests cover the downscale path (tests/integration: guest_display_mode_scaled).
+        wchar_t out_env[64];
+        const DWORD out_len = GetEnvironmentVariableW(L"WIN10XBOX_OUTPUT_MODE", out_env, 64);
+        char out_ascii[64] = {};
+        for (DWORD i = 0; out_len && out_len < 64 && i < out_len; ++i) out_ascii[i] = static_cast<char>(out_env[i]);
+        winexbox::DisplayMode om;
+        std::int32_t sw = 0, sh = 0;
+        win10xbox::user::ScreenSize(&sw, &sh);
+        if (out_len && out_len < 64 && winexbox::ParseDisplayMode(out_ascii, &om) && sw > 0 && sh > 0) {
+            std::vector<std::uint32_t> src(static_cast<std::size_t>(sw) * sh, 0xFF000000u), dst(static_cast<std::size_t>(om.width) * om.height);
+            win10xbox::user::ComposeFrame(src.data(), sw, sh, sw * 4);
+            const bool nearest = win10xbox::ScaleFrame(src.data(), sw, sh, dst.data(), static_cast<int>(om.width), static_cast<int>(om.height));
+            std::printf("host-win32: composed=%dx%d scale=%dx%d->%ux%u (%s filter)\n", sw, sh, sw, sh, om.width, om.height,
+                        nearest ? "nearest" : "linear");
+            std::fflush(stdout);
+        }
+    }
     if (rc < 0) std::fprintf(stderr, "win10xbox: could not start %ls: status %08x\n", opts.image_path.c_str(), rc);
     if (screenshot_len && screenshot_len < MAX_PATH * 2) {
         const bool ok = win10xbox::user::WriteScreenshot(screenshot);

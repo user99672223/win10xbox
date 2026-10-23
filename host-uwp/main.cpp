@@ -159,8 +159,142 @@ namespace
         float scale = 1.0f;
     };
 
+    std::uint32_t RoundHz(double hz) { return hz >= 1.0 ? static_cast<std::uint32_t>(hz + 0.5) : 60u; }
+
+    std::string ModeText(winrt::Windows::Graphics::Display::Core::HdmiDisplayMode const& m)
+    {
+        return Fmt("%ux%u@%u/%.3f %ubpp", static_cast<unsigned>(m.ResolutionWidthInRawPixels()),
+                   static_cast<unsigned>(m.ResolutionHeightInRawPixels()), RoundHz(m.RefreshRate()), m.RefreshRate(),
+                   static_cast<unsigned>(m.BitsPerPixel()));
+    }
+
+    // The console's real display mode (Windows.Graphics.Display.Core.HdmiDisplayInformation), with launch.json
+    // "display_mode" applied. Fills info->display. Where HdmiDisplayInformation is absent (the CI runner) the mode comes
+    // from DisplayInformation, then the CoreWindow bounds, refresh 60. Never throws.
+    void ProbeDisplay(wui::CoreDispatcher const& dispatcher, const std::string& wanted, HostInfo* info)
+    {
+        namespace wgdc = winrt::Windows::Graphics::Display::Core;
+        DisplayInfo& d = info->display;
+        d.requested = wanted.empty() ? std::string("auto") : wanted;
+        winexbox::DisplayMode want;
+        const bool has_want = d.requested != "auto" && winexbox::ParseDisplayMode(d.requested, &want);
+        bool hdmi_present = false;
+        try
+        {
+            hdmi_present = winrt::Windows::Foundation::Metadata::ApiInformation::IsTypePresent(
+                L"Windows.Graphics.Display.Core.HdmiDisplayInformation");
+        }
+        catch (...)
+        {
+        }
+        if (hdmi_present)
+        {
+            try
+            {
+                const wgdc::HdmiDisplayInformation hdmi = wgdc::HdmiDisplayInformation::GetForCurrentView();
+                wgdc::HdmiDisplayMode cur = hdmi.GetCurrentDisplayMode();
+                const auto modes = hdmi.GetSupportedDisplayModes();
+                d.supported = static_cast<unsigned>(modes.Size());
+                d.notes.push_back("HdmiDisplayInformation current mode " + ModeText(cur));
+                {
+                    std::string list = "supported display modes:";
+                    for (auto const& m : modes) list += " " + ModeText(m) + ";";
+                    d.notes.push_back(list);
+                }
+                d.result = "kept";
+                if (has_want)
+                {
+                    wgdc::HdmiDisplayMode pick{nullptr};
+                    double best = 1e9;
+                    for (auto const& m : modes)
+                    {
+                        if (m.ResolutionWidthInRawPixels() != want.width || m.ResolutionHeightInRawPixels() != want.height) continue;
+                        const double diff = m.RefreshRate() > want.refresh_hz ? m.RefreshRate() - want.refresh_hz
+                                                                              : want.refresh_hz - m.RefreshRate();
+                        if (RoundHz(m.RefreshRate()) != want.refresh_hz) continue;
+                        if (diff < best || !pick)
+                        {
+                            best = diff;
+                            pick = m;
+                        }
+                    }
+                    if (!pick)
+                    {
+                        d.result = "unsupported (kept the current mode)";
+                        d.notes.push_back("display_mode " + d.requested + " is not in the supported list above: the current mode stays");
+                    }
+                    else
+                    {
+                        auto op = hdmi.RequestSetCurrentDisplayModeAsync(pick);
+                        const ULONGLONG t0 = GetTickCount64();
+                        while (op.Status() == winrt::Windows::Foundation::AsyncStatus::Started && GetTickCount64() - t0 < 20000)
+                        {
+                            try
+                            {
+                                dispatcher.ProcessEvents(wui::CoreProcessEventsOption::ProcessAllIfPresent);
+                            }
+                            catch (...)
+                            {
+                            }
+                            Sleep(20);
+                        }
+                        const auto st = op.Status();
+                        if (st == winrt::Windows::Foundation::AsyncStatus::Completed)
+                            d.result = op.GetResults() ? "set" : "refused (kept the current mode)";
+                        else if (st == winrt::Windows::Foundation::AsyncStatus::Started)
+                            d.result = "timeout (kept whatever the console shows)";
+                        else
+                            d.result = Fmt("failed (HRESULT 0x%08x)", static_cast<unsigned>(op.ErrorCode().value));
+                        d.notes.push_back("RequestSetCurrentDisplayModeAsync(" + ModeText(pick) + ") -> " + d.result);
+                        cur = hdmi.GetCurrentDisplayMode();
+                        d.notes.push_back("mode after the request " + ModeText(cur));
+                    }
+                }
+                d.width = cur.ResolutionWidthInRawPixels();
+                d.height = cur.ResolutionHeightInRawPixels();
+                d.refresh_hz = RoundHz(cur.RefreshRate());
+                d.hdr = cur.ColorSpace() == wgdc::HdmiDisplayColorSpace::BT2020;
+                d.source = "hdmi";
+                return;
+            }
+            catch (winrt::hresult_error const& e)
+            {
+                d.notes.push_back(Fmt("HdmiDisplayInformation failed (HRESULT 0x%08x): falling back to DisplayInformation",
+                                      static_cast<unsigned>(e.code().value)));
+            }
+            catch (...)
+            {
+                d.notes.push_back("HdmiDisplayInformation threw: falling back to DisplayInformation");
+            }
+        }
+        else
+        {
+            d.notes.push_back("HdmiDisplayInformation is not present (not a console)");
+        }
+        if (has_want) d.result = "unavailable (no HdmiDisplayInformation: nothing to request)";
+        else d.result = "kept";
+        try
+        {
+            const winrt::Windows::Graphics::Display::DisplayInformation di =
+                winrt::Windows::Graphics::Display::DisplayInformation::GetForCurrentView();
+            const std::uint32_t w = di.ScreenWidthInRawPixels(), h = di.ScreenHeightInRawPixels();
+            if (w >= 64 && h >= 64)
+            {
+                d.width = w;
+                d.height = h;
+                d.refresh_hz = 60;
+                d.source = "displayinformation";
+                return;
+            }
+        }
+        catch (...)
+        {
+        }
+        d.source = "corewindow";   // CollectHostInfo overwrites width/height with the CoreWindow bounds when it has them
+    }
+
     // All WinRT calls the Host needs happen here, on the UI thread, before the worker exists.
-    HostInfo CollectHostInfo(wui::CoreWindow const& window, WindowPixels* px)
+    HostInfo CollectHostInfo(wui::CoreWindow const& window, wui::CoreDispatcher const& dispatcher, WindowPixels* px)
     {
         HostInfo info;
         info.package_dir = ExeDirectory();
@@ -202,12 +336,51 @@ namespace
             {
                 px->width = static_cast<int>(b.Width * px->scale + 0.5f);
                 px->height = static_cast<int>(b.Height * px->scale + 0.5f);
+                // The real mode wins over the window size (below); the window size only stands in when neither
+                // HdmiDisplayInformation nor DisplayInformation answered.
                 info.display.width = static_cast<std::uint32_t>(px->width);
                 info.display.height = static_cast<std::uint32_t>(px->height);
             }
         }
         catch (...)
         {
+        }
+        // The display mode the guest sees: the console's (launch.json "display_mode" applied).
+        const std::uint32_t win_w = info.display.width, win_h = info.display.height;
+        std::string want_mode, want_guest, want_scaling;
+        ReadDisplaySettings(info.local_state, info.package_dir, &want_mode, &want_guest, &want_scaling);
+        info.display.output_scaling = want_scaling;
+        ProbeDisplay(dispatcher, want_mode, &info);
+        if (info.display.source == "corewindow")
+        {
+            info.display.width = win_w;   // may still be the default 1920x1080 when the window has no size yet
+            info.display.height = win_h;
+            info.display.refresh_hz = 60;
+        }
+        // The guest's screen: launch.json "guest_display", else the output mode.
+        DisplayInfo& d = info.display;
+        d.guest_width = d.width;
+        d.guest_height = d.height;
+        d.guest_refresh_hz = d.refresh_hz;
+        d.guest_requested = want_guest;
+        winexbox::DisplayMode gm;
+        if (want_guest != "auto" && winexbox::ParseDisplayMode(want_guest, &gm))
+        {
+            d.guest_width = gm.width;
+            d.guest_height = gm.height;
+            d.guest_refresh_hz = gm.refresh_hz;
+        }
+        if (px->width > 0 && px->height > 0 && d.source != "corewindow")
+        {
+            // Pointer positions arrive in view pixels and go to the guest: scale them to the guest's screen.
+            try
+            {
+                const wf::Rect b = window.Bounds();
+                if (b.Width >= 1.0f) px->scale = static_cast<float>(d.guest_width) / b.Width;
+            }
+            catch (...)
+            {
+            }
         }
         return info;
     }
@@ -369,8 +542,10 @@ namespace
         bool StartHost(wui::CoreWindow const& window, wui::CoreDispatcher const& dispatcher)
         {
             WindowPixels px;
-            const HostInfo info = CollectHostInfo(window, &px);
+            const HostInfo info = CollectHostInfo(window, dispatcher, &px);
             pointer_scale_ = px.scale;
+            Note("display=" + DescribeDisplay(info.display) + " (source " + info.display.source + ")");
+            for (const std::string& n : info.display.notes) Note("display: " + n);
             try
             {
                 PublishExampleConfig(info.package_dir, info.local_state);
@@ -384,6 +559,7 @@ namespace
 
                 StartPresenter(window, dispatcher, info, px);
                 host->NoteDisplay(presenter_.Describe());
+                host->NoteOutputScaling(presenter_.OutputScaling());
 
                 // Before the worker exists, hence before the guest can: from process::Launch on
                 // the PEB loader lists are the guest's and the report would describe its modules.
@@ -415,7 +591,9 @@ namespace
             {
                 std::int32_t sw = 0, sh = 0;
                 win10xbox::user::ScreenSize(&sw, &sh);   // the backend's monitor: info.display after the Host's clamp
-                presenter_.Configure(static_cast<IUnknown*>(winrt::get_unknown(window)), px.width, px.height, sw, sh);
+                presenter_.Configure(static_cast<IUnknown*>(winrt::get_unknown(window)), px.width, px.height, sw, sh,
+                                     static_cast<int>(info.display.width), static_cast<int>(info.display.height),
+                                     info.display.output_scaling != "layer");
                 presenter_.OpenScreenshot(info.local_state + L"\\screen.bmp");
                 presenter_.StartDevice();
                 const ULONGLONG t0 = GetTickCount64();
@@ -453,7 +631,11 @@ namespace
             const std::vector<std::string> notes = presenter_.TakeNotes();
             if (notes.empty()) return;
             for (const std::string& n : notes) Note("display: " + n);
-            if (Host* const host = host_.load()) host->NoteDisplay(presenter_.Describe());
+            if (Host* const host = host_.load())
+            {
+                host->NoteDisplay(presenter_.Describe());
+                host->NoteOutputScaling(presenter_.OutputScaling());
+            }
         }
 
         // Pumps until the worker has ended (and, with "exit_when_done": false, until the window
