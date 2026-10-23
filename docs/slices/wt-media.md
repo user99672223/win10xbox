@@ -1,4 +1,7 @@
-status: wip
+status: ready
+
+Run: https://github.com/user99672223/win10xbox/actions/runs/39942595360 (head 3e56299): ci linux-cross, windows (Debug) and windows (RelWithDebInfo) green, "ctest gate: PASS (nothing skipped, nothing missing)", 79 registered / 79 ran; wine-pe run 39942595471 green.
+The five `integration.winetest_<dll>` entries pass on the measured baselines (propsys 7 s, windowscodecs 68 s, mlang 4 s, gdiplus 100 s, dwrite 14 s). Syscalls added or changed: none. DLLs added to wine-pe/dlls.txt: propsys windowscodecs mlang gdiplus dwrite (commit 9ae3275). Where the tables below say "ci run 39939220417", the baselines were measured there and reproduced on this head.
 
 # Slice: wt-media
 
