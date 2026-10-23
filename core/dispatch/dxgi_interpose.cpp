@@ -458,7 +458,8 @@ HRESULT WINAPI W10x_CreateDXGIFactory(REFIID riid, void** pp) {
     if (CalledFromInternal(W10X_RETADDR())) return g_real_create_factory(riid, pp);
     if (!pp || !IsWrappedFactoryIid(riid)) W10X_TRACE_HR("CreateDXGIFactory (not wrapped)", g_real_create_factory(riid, pp));
     IUnknown* u = nullptr;
-    const HRESULT hr = CreateWrappedFactory(g_real_create_factory(__uuidof(IDXGIFactory), reinterpret_cast<void**>(&u)), u, riid, pp);
+    const HRESULT real_hr = g_real_create_factory(__uuidof(IDXGIFactory), reinterpret_cast<void**>(&u));
+    const HRESULT hr = CreateWrappedFactory(real_hr, u, riid, pp);
     W10X_TRACE_HR("CreateDXGIFactory", hr);
 }
 
@@ -467,7 +468,8 @@ HRESULT WINAPI W10x_CreateDXGIFactory1(REFIID riid, void** pp) {
     if (CalledFromInternal(W10X_RETADDR())) return g_real_create_factory1(riid, pp);
     if (!pp || !IsWrappedFactoryIid(riid)) W10X_TRACE_HR("CreateDXGIFactory1 (not wrapped)", g_real_create_factory1(riid, pp));
     IUnknown* u = nullptr;
-    const HRESULT hr = CreateWrappedFactory(g_real_create_factory1(__uuidof(IDXGIFactory), reinterpret_cast<void**>(&u)), u, riid, pp);
+    const HRESULT real_hr = g_real_create_factory1(__uuidof(IDXGIFactory), reinterpret_cast<void**>(&u));
+    const HRESULT hr = CreateWrappedFactory(real_hr, u, riid, pp);
     W10X_TRACE_HR("CreateDXGIFactory1", hr);
 }
 
@@ -476,7 +478,8 @@ HRESULT WINAPI W10x_CreateDXGIFactory2(UINT flags, REFIID riid, void** pp) {
     if (CalledFromInternal(W10X_RETADDR())) return g_real_create_factory2(flags, riid, pp);
     if (!pp || !IsWrappedFactoryIid(riid)) W10X_TRACE_HR("CreateDXGIFactory2 (not wrapped)", g_real_create_factory2(flags, riid, pp));
     IUnknown* u = nullptr;
-    const HRESULT hr = CreateWrappedFactory(g_real_create_factory2(flags, __uuidof(IDXGIFactory), reinterpret_cast<void**>(&u)), u, riid, pp);
+    const HRESULT real_hr = g_real_create_factory2(flags, __uuidof(IDXGIFactory), reinterpret_cast<void**>(&u));
+    const HRESULT hr = CreateWrappedFactory(real_hr, u, riid, pp);
     W10X_TRACE_HR("CreateDXGIFactory2", hr);
 }
 
