@@ -19,13 +19,28 @@
 #include <wincrypt.h>
 #include "internal.h"
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
 
+WIN10XBOX_DECLARE_CHANNEL(schannel);
+
 namespace win10xbox::dispatch::detail {
 namespace {
+
+// "type/len type/len ..." of the TLS records in a buffer (the last one may be cut), for the +schannel trace.
+void DescribeRecords(const unsigned char* d, size_t n, char* out, size_t cap) {
+    size_t o = 0, i = 0;
+    out[0] = 0;
+    while (i + 5 <= n && o + 20 < cap) {
+        size_t len = (static_cast<size_t>(d[i + 3]) << 8) | d[i + 4];
+        o += static_cast<size_t>(std::snprintf(out + o, cap - o, "%02x/%zu%s ", d[i], len, i + 5 + len > n ? "(cut)" : ""));
+        i += 5 + len;
+    }
+    if (i < n && o + 20 < cap) std::snprintf(out + o, cap - o, "+%zu", n - i);
+}
 
 using Session64 = std::uint64_t;
 constexpr NTSTATUS STATUS_INTERNAL_ERROR = static_cast<NTSTATUS>(0xC00000E5);
@@ -38,6 +53,7 @@ struct Session {
     HostCred* cred = nullptr;
     CtxtHandle ctx{};
     bool have_ctx = false;
+    int calls = 0;                     // handshake steps so far, for the +schannel trace
     std::wstring target;
     std::vector<unsigned char> alpn;   // SEC_APPLICATION_PROTOCOLS bytes, sent with the first token
     // A handshake step whose output did not fit the caller's buffer: Wine's PE side grows the buffer and repeats the
@@ -203,6 +219,16 @@ NTSTATUS WINAPI U_schan_handshake(void* args) {
                                             s->target.empty() ? nullptr : s->target.data(), kIscFlags, 0, 0,
                                             in_desc.cBuffers ? &in_desc : nullptr, 0, &s->ctx, &out_desc, &attr, &ts);
             if (!FAILED(ss)) s->have_ctx = true;
+            {
+                char rin[160], rout[160];
+                DescribeRecords(data.data(), data.size(), rin, sizeof rin);
+                DescribeRecords(static_cast<const unsigned char*>(out_buf.pvBuffer), out_buf.pvBuffer ? out_buf.cbBuffer : 0,
+                                rout, sizeof rout);
+                TRACE(schannel, "step %d: ss %08lx in %lu [%s] (caller input_size %lu) extra %lu(type %lu) out %lu [%s]",
+                      ++s->calls, static_cast<unsigned long>(ss), static_cast<unsigned long>(used), rin,
+                      static_cast<unsigned long>(p->input_size), static_cast<unsigned long>(in[1].cbBuffer),
+                      static_cast<unsigned long>(in[1].BufferType), static_cast<unsigned long>(out_buf.cbBuffer), rout);
+            }
             if (ss != SEC_E_INCOMPLETE_MESSAGE && in_desc.cBuffers >= 2 && used) {
                 ULONG extra = (in[1].BufferType == SECBUFFER_EXTRA) ? in[1].cbBuffer : 0;
                 *p->input_offset = used - extra;

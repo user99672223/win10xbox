@@ -424,12 +424,14 @@ add_test(NAME integration.net2_tls_server_stop
 set_tests_properties(integration.net2_tls_server_start PROPERTIES FIXTURES_SETUP w10x_net2_server TIMEOUT 120)
 set_tests_properties(integration.net2_tls_server_stop PROPERTIES FIXTURES_CLEANUP w10x_net2_server TIMEOUT 60)
 set(_guest_args ${_net2_port})
+set(_guest_debug "-all,+schannel")   # TEMP: per-step handshake trace in the Windows job log
 win10xbox_guest_test(guest_net2 "C:\\guest\\guest_net2.exe" 42
   "net2: udp ok" "net2: tls handshake ok, protocol TLS 1\\.[23]" "net2: tls sent 14 bytes"
   "net2: tls received 14 bytes: hello over tls" "net2: tls ok \\(TLS 1\\.[23]\\)" "net2: done")
 set_tests_properties(integration.guest_net2 PROPERTIES FAIL_REGULAR_EXPRESSION "net2: FAILED"
   FIXTURES_REQUIRED "w10x_machine;w10x_net2_server")
 unset(_guest_args)
+unset(_guest_debug)
 unset(_guest_no_user32)
 unset(_guest_machine)
 
