@@ -1,5 +1,19 @@
-status: blocked
+status: ready
 
+READY (head 00b2ec1): ci.yml green on all three jobs, https://github.com/user99672223/win10xbox/actions/runs/40004020788 (wine-pe.yml green too:
+/40004021006). Cause: the PEB take-over. The host's SChannel loads providers lazily during a handshake and LoadLibrary reads PEB.Ldr / LoaderLock /
+ActivationContextData / ProcessParameters, which are the guest's for the whole run; every SSPI call now runs on one dedicated worker thread (never in
+the guest view) with the host's PEB fields swapped back in (core/dispatch/unix_schannel.cpp RunOnWorker, process.cpp SwapHostPebFields). Whether the worker
+or the PEB swap alone is sufficient was not separated (the worker alone failed in run 39998984615 with the identical error).
+Runs through the layer (windows job, junit artifact windows-Debug-logs): `C:\guest\guest_net2.exe` prints
+  net2: udp ok / net2: tls handshake ok, protocol TLS 1.2, peer certificate 781 bytes / net2: tls sent 14 bytes /
+  net2: tls received 14 bytes: hello over tls / net2: tls ok (TLS 1.2) / net2: done; the native control integration.net2_native passes too.
+Server relay (integration.net2_tls_server_stop): layer and control both see c2s 143 -> s2c 1213 -> c2s 126 -> s2c 242 (16/186,14/1,16/40) -> 43/43 application data.
+Syscalls: none changed. DLL added: schannel (wine-pe/dlls.txt). Still failing / unsupported (answered with an error): server credentials, client
+certificates, DTLS, unique channel bindings. Follow-up (session A): the curl-https gate on top of this. TEMP left in: `_guest_debug "-all,+schannel"` on
+guest_net2 and the hex/image trace in the handshake (remove with the follow-up).
+
+--- history of the blocked loops (kept) ---
 HANDOFF (implement agent, net2: UDP + TLS for guests). Head: see `git log -1`; first and only push so far; ci.yml not yet run.
 1. UDP: core/afd/afd.cpp - an overlapped IOCTL_AFD_WINE_RECVMSG (force_async) on a socket with nothing to read now returns
    STATUS_PENDING and a host thread completes it (iosb, event, APC) once the socket is readable; before it blocked in the host recv.
