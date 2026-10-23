@@ -222,14 +222,21 @@ std::size_t ExtendKernelbase(const loader::MappedImage& img) {
 
 }  // namespace
 
-void NoteNativeGuestImage(const loader::MappedImage& img, const std::wstring& host_path) {
+void NoteNativeGuestImage(const loader::MappedImage& img, const std::wstring& host_path,
+                          const std::wstring& export_name) {
     if (!NativeGuiActive()) return;
-    const bool builtin = host_path.find(L"\\builtin\\") != std::wstring::npos ||
-                         host_path.find(L"/builtin/") != std::wstring::npos;
-    if (!builtin) return;
-    if (EndsWithI(host_path, L"\\kernel32.dll") || EndsWithI(host_path, L"/kernel32.dll"))
+    // ntdll, kernelbase and kernel32 are always Wine's builtins (docs/DECISIONS.md E1), so the name identifies them.
+    // The host path is the better source where it exists; in an AppContainer GetFinalPathNameByHandleW is refused
+    // (the host path is empty) and the image's own export-directory name is all there is.
+    const std::wstring& id = host_path.empty() ? export_name : host_path;
+    if (id.empty()) return;
+    if (!host_path.empty() && host_path.find(L"\\builtin\\") == std::wstring::npos &&
+        host_path.find(L"/builtin/") == std::wstring::npos)
+        return;
+    if (EndsWithI(id, L"kernel32.dll") && (id.size() == 12 || id[id.size() - 13] == L'\\' || id[id.size() - 13] == L'/'))
         g_guest_kernel32 = img.base;
-    else if (EndsWithI(host_path, L"\\kernelbase.dll") || EndsWithI(host_path, L"/kernelbase.dll"))
+    else if (EndsWithI(id, L"kernelbase.dll") &&
+             (id.size() == 14 || id[id.size() - 15] == L'\\' || id[id.size() - 15] == L'/'))
         ExtendKernelbase(img);
 }
 
