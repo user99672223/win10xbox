@@ -27,7 +27,7 @@ add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
-                   guest_window_input guest_window_input2 guest_window_text)
+                   guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -56,6 +56,7 @@ function(win10xbox_guest_test name program exit_code)
       -DHOST=$<TARGET_FILE:win10xbox>
       -DMACHINE=${_guest_machine}
       -DREQUIRE_BUILTIN_DLLS=${_require_builtin}
+      "-DNO_USER32=${_guest_no_user32}"
       -DPROGRAM=${program}
       "-DPROGRAM_ARGS=${_guest_args}"
       "-DDEBUG_SPEC=${_guest_debug}"
@@ -142,6 +143,17 @@ win10xbox_guest_test(guest_window_input "C:\\guest\\guest_window_input.exe" 42
   "input: WM_LBUTTONDOWN x=50 y=50" "input: WM_CHAR ch=a" "input: WM_MOUSEWHEEL delta=120")
 set_tests_properties(integration.guest_window_input PROPERTIES
   ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=sleep 1500\\;move 150,150\\;ldown\\;lup\\;key 0x41\\;wheel 120")
+# The non-client area (tests/guest/window_nc.c): frame metrics, hit testing, a caption drag (+50,+40), a bottom-right
+# corner drag (+30,+20) and a click on the close button, injected by the host; the guest reads the frame's pixels back
+# with GetPixel and exits 42 once the window was moved and resized and WM_CLOSE/WM_DESTROY arrived. The screenshot (the
+# last frame painted: window at 150,140, 430x320) is checked too: active caption (153,180,209) at (420,152), border
+# (180,180,180) at (153,300), the close button (199,80,80) at (538,150), the client (64,64,64) at (300,300).
+win10xbox_guest_test(guest_window_nc "C:\\guest\\guest_window_nc.exe" 42
+  "window_nc: frame ok" "window_nc: hit caption=2 close=20 max=9 min=8 client=1 top=12 topleft=13 left=10 bottomright=17"
+  "window_nc: dragged to 150,140 size=400x300" "window_nc: resized to 150,140 size=430x320" "window_nc: pixels ok"
+  "window_nc: WM_SYSCOMMAND SC_CLOSE" "window_nc: WM_CLOSE" "window_nc: WM_DESTROY" "window_nc: done")
+set_tests_properties(integration.guest_window_nc PROPERTIES
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_nc.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=420,152,ff99b4d1|153,300,ffb4b4b4|538,150,ffc75050|300,300,ff404040;WIN10XBOX_TEST_INJECT_INPUT=sleep 4000\\;move 300,115\\;sleep 300\\;ldown\\;sleep 300\\;move 320,130\\;sleep 300\\;move 350,155\\;sleep 300\\;lup\\;sleep 1000\\;move 548,438\\;sleep 300\\;ldown\\;sleep 300\\;move 560,450\\;sleep 300\\;move 578,458\\;sleep 300\\;lup\\;sleep 1000\\;move 555,155\\;sleep 300\\;ldown\\;sleep 300\\;lup")
 # Input semantics (tests/guest/window_input2.c): the host script covers the driver path (move, double click, right
 # click, wheel, key; the guest compares every message with its hit test / WM_SETCURSOR companions), the guest the rest with
 # SendInput. It prints PASS/FAIL per case and exits 42 only when every case passed.
@@ -162,6 +174,16 @@ win10xbox_guest_test(guest_window_text "C:\\guest\\guest_window_text.exe" 42
   "text: done")
 set_tests_properties(integration.guest_window_text PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_text.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=121,123,ff000000|123,123,ffffffff|131,123,ff000000")
+# The dialog manager (tests/guest/dialog.c): DialogBoxParamW with a DIALOG resource, WM_INITDIALOG, GetDlgItem,
+# Set/GetDlgItemText, tab order, WM_CTLCOLORSTATIC, a click on the OK button injected by the host (screen (160,163) =
+# the button's centre once the program placed the dialog at (100,100) and the button at client (10,50) 100x26),
+# EndDialog(7). The screenshot is the last painted frame: the button's frame (110,150) and face (118,158), the static's
+# light yellow (160,114) and the edit's white (240,136), all in screen coordinates.
+win10xbox_guest_test(guest_dialog "C:\\guest\\guest_dialog.exe" 42
+  "dialog: init edit=100 button=1" "dialog: text=hello dialog" "dialog: class=#32770 edit=Edit button=Button static=Static"
+  "dialog: ok clicked" "dialog: result=7" "dialog: done")
+set_tests_properties(integration.guest_dialog PROPERTIES
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_dialog.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=110,150,ff646464|118,158,fff0f0f0|160,114,ffffffc0|240,136,ffffffff;WIN10XBOX_TEST_INJECT_INPUT=sleep 2500\\;move 160,163\\;ldown\\;lup")
 unset(_guest_machine)
 
 # ---- Real programs: the first guests that are not ours ----------------------------------------------------------
@@ -376,3 +398,42 @@ win10xbox_guest_tls_test(guest_view_violation_detected 42 "+dispatch,+modules"
 
 # The SQLite shell and the regression guests its bring-up needed (tests/guest/sqlite).
 include(${CMAKE_CURRENT_LIST_DIR}/sqlite_tests.cmake)
+
+# ---- Real program: curl's curl.exe (docs/TESTING.md, "Real programs") ---------------------------------------------
+# Built from the release tarball by tools/ci/build_curl.ps1 (CMake + MSVC, no TLS; a named step of ci.yml's windows
+# job, which leaves it at <machine>/guest/curl.exe before ctest runs). Registered like the Lua tests: MSVC builds, or
+# -DWIN10XBOX_REAL_PROGRAMS=ON after putting a curl.exe into the machine folder. No network: --version, and the
+# file:// handler reading and copying files under the machine folder's guest home (C:\Users\User).
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  # curl links ws2_32, which on the shared folder is the runner's native one (its advapi32/sechost/rpcrt4 chain dies
+  # on Wine's 0x80000100 import stub, docs/TESTING.md "GUI guests"): run on the builtin-only folder, where it is Wine's.
+  # curl never loads user32, which that folder's trace check otherwise demands.
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  set(_guest_no_user32 ON)
+  set(_curl_home ${WIN10XBOX_BUILTIN_MACHINE_DIR}/Users/User)
+  file(MAKE_DIRECTORY ${_curl_home})
+  file(WRITE ${_curl_home}/curl_in.txt "hello from a guest file, read by curl\nsecond line\n")
+  string(REPEAT "0123456789abcdef" 20000 _curl_big)   # 320000 bytes
+  file(WRITE ${_curl_home}/curl_big.bin "${_curl_big}")
+  unset(_curl_big)
+  # (a) the banner and the protocol list (no TLS backend: https must not be listed).
+  set(_guest_args "--version")
+  win10xbox_guest_test(real_curl_version "C:\\guest\\curl.exe" 0
+    "curl 8\\.[0-9]+\\.[0-9]+ " "libcurl/8\\." "Protocols: [a-z0-9 ]*file" "Protocols: [a-z0-9 ]*http" "Features: ")
+  set_tests_properties(integration.real_curl_version PROPERTIES FAIL_REGULAR_EXPRESSION "Protocols: [a-z0-9 ]*https")
+  # (b) file:// of a guest file to stdout.
+  set(_guest_args "-sS;file:///C:/Users/User/curl_in.txt")
+  win10xbox_guest_test(real_curl_file "C:\\guest\\curl.exe" 0
+    "hello from a guest file, read by curl.second line")
+  # (c) file:// copied with -o (a new file under the guest home, which must exist afterwards); curl reports the size.
+  set(_guest_args "-sS;-o;C:\\Users\\User\\curl_out.bin;-w;size=%{size_download};file:///C:/Users/User/curl_big.bin")
+  set(_guest_file Users/User/curl_out.bin)
+  win10xbox_guest_test(real_curl_file_copy "C:\\guest\\curl.exe" 0 "size=320000")
+  unset(_guest_file)
+  # (d) a missing file: CURLE_FILE_COULDNT_READ_FILE, exit code 37.
+  set(_guest_args "-sS;file:///C:/Users/User/curl_missing.txt")
+  win10xbox_guest_test(real_curl_file_missing "C:\\guest\\curl.exe" 37 "")
+  unset(_guest_args)
+  unset(_guest_machine)
+  unset(_guest_no_user32)
+endif()
