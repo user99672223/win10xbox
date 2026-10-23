@@ -1,4 +1,4 @@
-status: wip
+status: ready
 
 ## Handoff (implement agent 2 of 2: virtual processes under the desktop; for the CI-loop agent)
 Half 1 kept explorer.exe as the desktop (the table row); half 2 implements Session A's option (b) under it.
@@ -14,6 +14,12 @@ Half 1 kept explorer.exe as the desktop (the table row); half 2 implements Sessi
 10. Commands: `cmake --build build-mingw -j4; ctest --test-dir build-mingw -R 'integration.shell'` (shell_desktop, shell_desktop_hook, shell_launch).
 
 Half 1 verified: ci.yml https://github.com/user99672223/win10xbox/actions/runs/40004553209 (linux-cross, windows Debug, windows RelWithDebInfo all green) and wine-pe.yml https://github.com/user99672223/win10xbox/actions/runs/40004553359 (user32 rebuilt with patch 0021) at 4bee0d4. integration.shell_desktop and integration.shell_desktop_hook pass on Windows. Printed lines: `shellhook: registered, message=49152`, `shellhook: message code=1/2/4/6 window=0000000000010022`, `shellhook: created ok`, `shellhook: activated ok`, `shellhook: destroyed ok`; The first push failed seven later GUI guests because the added tests' `unset(_guest_machine)` ended the builtin-only block that continues to guest_gdi_bitmap; fixed in 4bee0d4. Half 2 (child processes) pending; status stays wip.
+
+## CI result for d838cf5 (CI-loop agent)
+ci.yml https://github.com/user99672223/win10xbox/actions/runs/40011471499: linux-cross, windows (Debug), windows (RelWithDebInfo) all green; integration.shell_desktop, shell_desktop_hook and shell_launch pass on both MSVC configs and under Wine. wine-pe.yml did not run for this head (no wine-pe/ change in the merge); last wine-pe run https://github.com/user99672223/win10xbox/actions/runs/40004553359 (4bee0d4) green.
+Runs: explorer /desktop=shell,1920x1080 hosts guest_shell_launch.exe, which opens its window and CreateProcess-es guest_window.exe as a virtual process (pid 1000+4n) in the same host; the gate checks pixels for both windows, the desktop and the taskbar buttons. The job log shows only ctest pass lines, not the `shell_launch: own pid ... / child pid ... window ok` lines (ctest output is quiet); those were seen in the local Wine run.
+Syscalls changed (policy lines): NtCreateUserProcess (Translate: virtual process while a shell runs), NtQueryInformationProcess (Translate: ProcessBasicInformation and image per virtual process), NtTerminateProcess (Emulate: ends a virtual process), NtClose (Translate: forgets virtual process handles), NtDuplicateObject (Translate: follows virtual process handles). DLLs added: none.
+Still untested or failing: Start menu, tray icons, NtOpenProcess/GetProcessTimes of a virtual pid (fail), a virtual process crashing (no isolation), process killed from outside runs no DLL detach, two processes registering one class name with one hInstance.
 
 # Slice: shell (desktop) — design question for Session A before any code
 
