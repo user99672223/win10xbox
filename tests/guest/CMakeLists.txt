@@ -59,6 +59,13 @@ add_executable(guest_window_text window_text.c)
 target_link_libraries(guest_window_text PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window_text)
 
+# Menus (tests/guest/window_menu.c): the menu API, the menu bar of a window, popup menus and TrackPopupMenu, driven by
+# host-injected clicks (WIN10XBOX_TEST_INJECT_INPUT, tests/integration/CMakeLists.txt). Like window_input it cannot do
+# anything useful without that injection, so there is no native smoke test.
+add_executable(guest_window_menu window_menu.c)
+target_link_libraries(guest_window_menu PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_window_menu)
+
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
 add_test(NAME guest.hello COMMAND guest_hello)
 set_tests_properties(guest.hello PROPERTIES PASS_REGULAR_EXPRESSION "hello from guest")

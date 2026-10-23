@@ -942,10 +942,11 @@ LRESULT WINAPI NtUserMessageCall(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
     case abi::McDefWindowProc:
     case abi::McDesktopWindowProc:
         return DefWindowProcInternal(hwnd, msg, wparam, lparam, ansi != 0);
-    case abi::McScrollBarWndProc:
-    case abi::McPopupMenuWndProc: {
+    case abi::McPopupMenuWndProc:
+        return MenuPopupWndProc(hwnd, msg, wparam, lparam, ansi != 0);
+    case abi::McScrollBarWndProc: {
         static volatile LONG reported = 0;   // plain flag
-        if (!InterlockedExchange(&reported, 1)) FIXME(user, "scroll bar / popup menu window procedures are not implemented");
+        if (!InterlockedExchange(&reported, 1)) FIXME(user, "scroll bar window procedure is not implemented");
         return DefWindowProcInternal(hwnd, msg, wparam, lparam, ansi != 0);
     }
     case abi::McCallWindowProc: {

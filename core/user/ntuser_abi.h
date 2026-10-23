@@ -258,4 +258,12 @@ static_assert(offsetof(DcAttr, vport_ext) == 124);
 static_assert(offsetof(DcAttr, emf) == 168);
 static_assert(sizeof(DcAttr) == 192);
 
+// The menu structures user32 passes to NtUserThunkedMenuItemInfo / NtUserThunkedMenuInfo / NtUserGetMenuBarInfo.
+static_assert(sizeof(MENUITEMINFOW) == 80);
+static_assert(offsetof(MENUITEMINFOW, dwTypeData) == 56);
+static_assert(offsetof(MENUITEMINFOW, cch) == 64);
+static_assert(offsetof(MENUITEMINFOW, hbmpItem) == 72);
+static_assert(sizeof(MENUINFO) == 40);
+static_assert(sizeof(MENUBARINFO) == 48);
+
 }  // namespace win10xbox::user::abi

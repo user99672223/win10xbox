@@ -224,6 +224,7 @@ void PaintNonClient(HWND hwnd) {
                                ColorToPixel(SysColor(COLOR_BTNFACE)));
             }
         }
+        MenuPaintBar(w, dc, t);   // win_menu.cpp: the menu bar, if any
         NoteDrawn(dc, t, RECT{0, 0, ww, wh});
     }
     ReleaseDCInternal(hwnd, hdc);

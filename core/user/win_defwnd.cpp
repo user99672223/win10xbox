@@ -31,6 +31,7 @@ RECT NcInsets(const WindowObj* w) {
     RECT r{0, 0, 0, 0};
     AdjustRectForStyle(&r, w->style, false, w->ex_style);
     RECT insets{-r.left, -r.top, r.right, r.bottom};
+    insets.top += MenuBarHeight(w);   // win_menu.cpp: SM_CYMENU below the caption when the window has a menu
     if (w->style & WS_VSCROLL) insets.right += SystemMetric(SM_CXVSCROLL);
     if (w->style & WS_HSCROLL) insets.bottom += SystemMetric(SM_CYHSCROLL);
     return insets;
@@ -79,6 +80,7 @@ LRESULT HitTest(WindowObj* w, POINT pt) {
     const RECT wr = WindowRectScreen(w), cr = ClientRectScreen(w);
     if (!PtInRectangle(wr, pt.x, pt.y)) return HTNOWHERE;
     if (PtInRectangle(cr, pt.x, pt.y)) return HTCLIENT;
+    if (MenuBarHitTest(w, pt)) return HTMENU;
     if ((w->style & WS_CAPTION) == WS_CAPTION && pt.y < cr.top && pt.x >= cr.left && pt.x < cr.right) {
         if ((w->style & WS_SYSMENU) && pt.x >= cr.right - SystemMetric(SM_CXSIZE)) return HTCLOSE;
         return HTCAPTION;
@@ -241,9 +243,11 @@ LRESULT DefWindowProcInternal(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, bool an
         return 0;
     case WM_NCDESTROY:
         w->text.clear();
+        MenuDestroyWindowMenu(w);
         return 0;
     case WM_NCLBUTTONDOWN:
         if (IsTopLevel(w) && FindUserThread() && FindUserThread()->active != hwnd) SetActiveWindowInternal(hwnd, true);
+        if (wp == HTMENU) MenuBarClick(hwnd, POINT{static_cast<short>(LOWORD(lp)), static_cast<short>(HIWORD(lp))});
         return 0;
     case WM_NCLBUTTONUP:
         if (wp == HTCLOSE) PostMessageInternal(hwnd, WM_SYSCOMMAND, SC_CLOSE, lp);
