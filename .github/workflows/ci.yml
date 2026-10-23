@@ -124,7 +124,12 @@ jobs:
         if: always()
         with:
           name: linux-cross-bin
-          path: build-mingw/bin/
+          # Testing/Temporary holds every test's full output (ctest shows a passing test's output nowhere else);
+          # winetest/<dll>/ holds the Wine conformance suites' per-unit logs and .tsv rows (wine-pe/tests/*.sh).
+          path: |
+            build-mingw/bin/
+            build-mingw/Testing/Temporary/
+            build-mingw/winetest/
           retention-days: 3
 
   # The real Windows test machine: MSVC 2022, host-win32 runs core/ unsandboxed.
@@ -219,6 +224,18 @@ jobs:
       - name: Populate machine folder from the runner's System32 (never committed)
         shell: pwsh
         run: ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine -CI
+      # A real program that is not ours: 7-Zip 24.09's 7zr.exe from the official source tarball (pinned SHA-256, the
+      # cache key carries it), nmake in CPP/7zip/Bundles/Alone7z -> build/bin/machine/guest/7zr.exe; run by
+      # integration.real7z (tests/integration/real7z.cmake).
+      - name: Cache the 7-Zip source tarball
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/sevenzip-src
+          key: sevenzip-24.09-49c05169f49572c1128453579af1632a952409ced028259381dac30726b6133a
+      - name: Build 7-Zip 7zr.exe (real guest program)
+        shell: pwsh
+        run: ./tools/ci/build_7zip.ps1 -Out build/bin/machine/guest
+
       # A real program that is not ours: the SQLite command-line shell, from the official amalgamation pinned by URL and
       # SHA-256 (verified on every run, cached or not), compiled with cl /O2 /MT into the machine folder's guest
       # directory. integration.sqlite_* and the smoke step below run it; the build fails if the archive changes.
@@ -306,6 +323,16 @@ jobs:
       - name: Build curl.exe (real guest program, no TLS)
         shell: pwsh
         run: ./tools/ci/build_curl.ps1 -Out build/bin/machine/guest
+      # Git for Windows (MinGit 2.47.1 x64 zip, pinned by SHA-256, verified on every run, cached or not), unpacked into
+      # build/bin/machine/guest/mingit for integration.real_git* (tools/ci/fetch_mingit.ps1).
+      - name: Cache the MinGit zip
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/mingit-download
+          key: mingit-2.47.1-50b04b55425b5c465d076cdb184f63a0cd0f86f6ec8bb4d5860114a713d2c29a
+      - name: Fetch MinGit (real guest program, pinned SHA-256 verified)
+        shell: pwsh
+        run: ./tools/ci/fetch_mingit.ps1 -Out build/bin/machine/guest/mingit
       # The whole suite, end-to-end included. The guest's stdout IS captured on
       # real Windows: run 39818491081 (RelWithDebInfo, the one job of that run
       # that had the builtins) printed "hello from guest" and passed 11 of 13
