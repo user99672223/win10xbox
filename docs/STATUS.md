@@ -59,6 +59,35 @@ process (`io.popen` / `os.execute`: `NtCreateUserProcess` is Todo), one that sle
 (`NtCreateThreadEx`, waits are pass-through but untested with real programs), and anything that loads a native DLL
 beyond the Wine builtins. SQLite (`tools/ci/build_sqlite.ps1`, another branch) adds locking and `FlushFileBuffers`.
 
+## CreateProcess works: NtCreateUserProcess starts a real host child (2026-10-22)
+
+`NtCreateUserProcess` is implemented (`core/dispatch/nt_spawn.cpp`, design and the argument mapping in docs/DISPATCHER.md
+"Child processes", decisions E6-E8 in docs/DECISIONS.md): a new host process running the host executable on the child's
+guest image, with command line, current directory, environment and standard handles carried over, and the host child's
+process/thread handles, client id and image information returned. Waiting on the handle and `GetExitCodeProcess` work
+through the pass-through because the host child's exit code is the guest's. host-win32 turns it on
+(`config::Config::child_processes`); the UWP host leaves it off and gets `STATUS_NOT_SUPPORTED` with a warning, so the
+console-side "can a Game-bucket app resume its child" question (probe-v2 item 1) is still open. Also in this change:
+`NtCreateProcessEx`, `NtCreateThread`, `NtCreateDebugObject`, `NtDebugActiveProcess`, `NtCreateLowBoxToken` ->
+`STATUS_NOT_SUPPORTED` + FIXME; `NtSetSystemInformation` -> `STATUS_PRIVILEGE_NOT_HELD` except `SystemComPlusPackage`;
+`NtMakePermanentObject` -> pass-through.
+
+* Tests: `integration.guest_spawn` (tests/guest/spawn.c: `CreateProcessW("C:\\guest\\guest_hello.exe")`, wait, exit code
+  42, prints `spawn: child exit 42`; then itself with a quoted command line, a working directory and an environment
+  variable, exit 7) and 12 unit tests in `tests/unit/test_syscalls_process.cpp` (policies, refusals, privilege split,
+  quoting/command line/environment helpers, and a real suspended spawn -> resume -> wait -> exit 42 through the asm
+  entry with a non-inheritable stdout pipe). Local: `100% tests passed, 0 tests failed out of 32`.
+* `ci.yml` run [39869487010](https://github.com/user99672223/win10xbox/actions/runs/39869487010) on `503d3a0`: linux-cross
+  (61/61, `ctest gate: PASS`), windows (Debug) and windows (RelWithDebInfo) (41/41 each, gate PASS), `integration.guest_spawn`
+  passed on both Windows configs (real `CreateProcessW` of the host). linux-cross failed once on
+  `integration.guest_window_input2` ("another thread's window: delivered on that thread", core/user input, not this
+  change) and passed on the re-run of the same commit (the run before, 39867793207 on `a9bcd14`; on `503d3a0` linux-cross's first attempt died in an apt mirror timeout and passed on re-run); run [39847437801](https://github.com/user99672223/win10xbox/actions/runs/39847437801)
+  (`ae63311`) was green on all three jobs as well (its linux-cross first attempt died in an apt mirror timeout).
+* Found by the test and fixed on the way: a command line passed through `process::Launch` was not NUL-terminated in the
+  parameter block (also fixed independently on main; the merged version is main's). First Windows run failed to build
+  because MSVC's `winternl.h` has no `PCLIENT_ID`.
+* Not available: `cmd.exe` is not in the wine-pe builtin set, so `CreateProcess("cmd.exe ...")` and `system()` find no
+  program until one is staged; a child does not know drives mapped at run time by `process::MapHostDirectory`.
 
 ## Current state of main (2026-10-22)
 
@@ -125,6 +154,54 @@ Named for the next slices but **no remote branch found at this writing**: `-ncfr
 `-menu`, `-dialog`, `-clipboard`, `-hooks` (timers and hooks), `-guiapp` (a real GUI program), `-net` (ws2_32/AFD),
 `-audio`, `-uwpchild` (child processes in UWP), `-d3d` (ImGui on d3d11 via route B). Check `git ls-remote` before
 relying on them.
+
+## Real programs: the SQLite shell (2026-10-22)
+
+`sqlite3.exe` (SQLite 3.54.1, the official amalgamation, `cl /O2 /MT shell.c sqlite3.c`; `tools/ci/build_sqlite.ps1`,
+pinned by URL and SHA-256 and verified on every run) runs unmodified through the layer on both Windows configs:
+`integration.sqlite_memory` (`-batch :memory: "select 6*7;"` prints `42`), `integration.sqlite_script`
+(`tests/guest/sqlite/smoke.sql` on stdin against `C:\Users\User\smoke.db`: table, inserts with one rollback journal
+each, ordered and aggregate selects, an index, `.dump`, `date('now')`, `pragma integrity_check`, `.exit 42`; every
+output line gated, the `.db` file must exist in the machine folder) and the smoke rows. `ci.yml` run
+[39871612881](https://github.com/user99672223/win10xbox/actions/runs/39871612881) on `05953b0` (the merge of main with all three fixes; later commits only change docs). That run: linux-cross green; windows (RelWithDebInfo) green; windows (Debug) green after one re-run, the first attempt having hung in `integration.driver_kmdf_ioctl` (150 s, no guest output; it passed in the run before and in the re-run, so a flake of the driver host, not of this slice). The first attempt on the commit before the last merge had `integration.guest_window_input2` ("another thread's window: delivered on that thread") fail once on linux-cross; also not this slice: windows (Debug) and windows (RelWithDebInfo) green, `43 tests, 0 failures, 0 skipped` in each
+job's `ctest-junit.xml`; `host-win32-smoke` (console conditions), `host-win32-appcontainer`, `uwp-lite`, `host-uwp`
+green on the same commit. The script's stdout (identical in both configs and under Wine):
+
+```
+plum|7        pear|5        apple|3       fig|2
+4|17|2.0      pear|3.75     plum|1.75     apple|1.5      indexed|1
+PRAGMA foreign_keys=OFF; BEGIN TRANSACTION; CREATE TABLE fruit(...); INSERT INTO fruit VALUES(1,'apple',3,0.5); ...
+CREATE INDEX fruit_name on fruit(name); COMMIT;
+date|10|1|1      ok
+```
+
+Three defects, all found by running it, none visible to our own test programs; each has a regression test that runs
+without SQLite:
+
+1. **The command line ran into the next string.** `RtlCreateProcessParametersEx` packs the block's strings by
+   `MaximumLength`, which was `Length`, so `GetCommandLineW()` returned `select 6*7;C:\guest\sqlite3.exeWinSta0\Default`
+   (a "near C: syntax error"). Fixed in `core/dispatch/process.cpp` (the Lua bring-up found the same defect on its
+   branch and made the same change; the merge keeps one). `integration.guest_args`.
+2. **Every file lock failed on real Windows.** Wine's kernelbase calls `NtLockFile` with `IoStatusBlock == NULL`; Windows
+   answers `STATUS_ACCESS_VIOLATION` (10 microseconds, in the trace), SQLite reported "database is locked" on its first
+   statement. `NtLockFile`/`NtUnlockFile` are now `Translate` (`core/dispatch/nt_file.cpp`, `docs/DISPATCHER.md`): a
+   Windows host gets a block of the layer's, a Wine host (which refuses any block in `NtLockFile`, and where `NtUnlockFile`
+   wants NULL on Wine 9 and a block on Wine 11) gets what it accepts. `integration.guest_lockfile`, which passes on
+   linux-cross, Debug and RelWithDebInfo.
+3. **The scanner patched a jump table.** MSVC without optimisation (the Debug configuration) puts a switch's jump table
+   inside `.text`; the sweep decoded its bytes, found a `syscall` in them and wrote an INT3 over the low byte of an entry
+   (`0x5c1c5` became `0x5c1cc`), so `printf("%lu")` jumped into the middle of a `call` and died with an access violation. Only
+   `guest_lockfile` in Debug showed it (sqlite3.exe is Release); the crash record's `rax = rip - 2`, `rcx` = image
+   base and the `7c fa` at the target gave it away, and the CI artifact carrying the guest's exe and pdb confirmed the table.
+   `core/loader/scanner.cpp` now finds such tables from the `mov eax,[base+idx*4+TABLE]` that reads them, keeps them out of
+   the sweep and takes their entries as branch targets. `unit.core` `loader_scan_leaves_jump_tables_in_code_alone`.
+
+Not defects of the layer, worth knowing: the Linux reproduction's host is Wine 9.0 while the guest's DLLs are Wine 11.9,
+which disagree about `NtUnlockFile` (handled above); `sqlite_*` are registered on MSVC builds only (the Linux job has no
+`sqlite3.exe`), so they cannot skip there. What `sqlite3.exe` did not need, and the next program might: memory-mapped
+files (`PRAGMA mmap_size`), `LockFileEx` with a pending wait on an overlapped handle (returns `STATUS_PENDING` into a
+block the layer keeps alive, never completed), WAL's shared memory (`CreateFileMapping` over the `-shm` file), the
+console (`.mode` with a terminal, `isatty`), and `GetFileAttributesEx` on directories other than the machine folder.
 
 ## Install the package on the console
 

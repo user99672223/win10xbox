@@ -24,6 +24,7 @@ namespace win10xbox::dispatch::detail {
 // ---- NTSTATUS values (own names: windows.h defines some STATUS_* as DWORD) --
 namespace st {
 constexpr NTSTATUS Success                = 0x00000000;
+constexpr NTSTATUS Pending                = 0x00000103;
 constexpr NTSTATUS ImageNotAtBase         = 0x40000003;
 constexpr NTSTATUS BufferOverflow         = (NTSTATUS)0x80000005;
 constexpr NTSTATUS NoMoreEntries          = (NTSTATUS)0x8000001A;

@@ -7,6 +7,9 @@
 # EXPECT_REGEX/FORBID_REGEX match the guest's stdout. The layer's own trace
 # output goes to stderr, so assertions about it use the TRACE variants:
 #   [-DEXPECT_TRACE_REGEX=<regex;regex...>] [-DFORBID_TRACE_REGEX=<regex>]
+# ('@SEMI@' in PROGRAM_ARGS stands for a ';' inside one argument.)
+# -DINPUT_FILE=<host file> is its stdin;
+# -DGUEST_FILE=<path under the machine folder, '/' separated> is deleted before the run and must exist after it.
 # -DREQUIRE_BUILTIN_DLLS=ON adds +modules to WIN10XBOX_DEBUG and fails unless every system DLL the guest
 # mapped (C:\Windows\System32\<x>.dll in the modules trace) came from <machine>\Windows\builtin, with
 # user32.dll among them (unless -DREQUIRE_USER32=OFF: a console program); the list is printed either way.
@@ -37,6 +40,14 @@ if(EMULATOR AND _machine MATCHES "^/")
   set(_machine "Z:${_machine}")
 endif()
 string(REPLACE "/" "\\" _machine "${_machine}")
+string(REPLACE "@SEMI@" "\\;" _args "${PROGRAM_ARGS}")   # '@SEMI@' stands for a ';' inside one argument
+if(GUEST_FILE)
+  file(REMOVE "${MACHINE}/${GUEST_FILE}")
+endif()
+set(_stdin "")
+if(INPUT_FILE)
+  set(_stdin INPUT_FILE "${INPUT_FILE}")
+endif()
 if(DEBUG_SPEC)
   set(ENV{WIN10XBOX_DEBUG} "${DEBUG_SPEC}")
 endif()
@@ -47,9 +58,9 @@ if(REQUIRE_BUILTIN_DLLS)
     set(ENV{WIN10XBOX_DEBUG} "$ENV{WIN10XBOX_DEBUG},+modules")
   endif()
 endif()
-# PROGRAM_ARGS is expanded right here, not through an intermediate list variable: an argument that holds a ';' is
-# written with the escape "\;" in the list and loses it when set() joins and re-splits the elements.
-execute_process(COMMAND ${EMULATOR} "${HOST}" --machine "${_machine}" "${_program}" ${PROGRAM_ARGS}
+# ${_args} is expanded right here, not through an intermediate list variable: set() joins the expanded elements
+# without their "\;" escape, so an argument that holds a ';' would be split in two.
+execute_process(COMMAND ${EMULATOR} "${HOST}" --machine "${_machine}" "${_program}" ${_args} ${_stdin}
                 RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 120)
 # Before the guest's output: ctest keeps only the first 1024 bytes of a passing test's output.
 set(_builtin_fail "")
@@ -82,6 +93,7 @@ if(REQUIRE_BUILTIN_DLLS)
     endif()
   endif()
 endif()
+string(REPLACE "\r\n" "\n" out "${out}")   # text-mode stdout of a Windows console program
 message("${out}")
 if(err)
   message("--- stderr ---\n${err}")
@@ -107,6 +119,9 @@ foreach(re ${EXPECT_REGEX})
     string(APPEND _fail "stdout does not match '${re}'\n")
   endif()
 endforeach()
+if(GUEST_FILE AND NOT EXISTS "${MACHINE}/${GUEST_FILE}")
+  string(APPEND _fail "${MACHINE}/${GUEST_FILE} was not created\n")
+endif()
 if(FORBID_REGEX AND out MATCHES "${FORBID_REGEX}")
   string(APPEND _fail "stdout matches forbidden '${FORBID_REGEX}'\n")
 endif()

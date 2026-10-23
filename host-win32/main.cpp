@@ -47,7 +47,8 @@ namespace {
 
 void Usage() {
     std::fputs("usage: win10xbox [--machine <dir>] [--debug <spec>] [--cwd <guestdir>] [--version] <program.exe> [args...]\n"
-               "  program: guest path (C:\\dir\\app.exe), or a host path; see docs/DISPATCHER.md\n",
+               "  program: guest path (C:\\dir\\app.exe), or a host path; see docs/DISPATCHER.md\n"
+               "  (set by the layer when a guest starts a child: --cmdline <raw guest command line>, --guest-env)\n",
                stderr);
 }
 
@@ -549,13 +550,15 @@ static int HostMain(int argc, wchar_t** argv) {
     HostCrash crash;
     win10xbox::config::Config cfg;
     std::vector<std::wstring> rest;
-    std::wstring cwd;
-    bool version_only = false;
+    std::wstring cwd, cmdline;
+    bool guest_env = false, version_only = false;
     for (int i = 1; i < argc; ++i) {
         std::wstring a = argv[i];
         if (a == L"--machine" && i + 1 < argc) cfg.machine_root = argv[++i];
         else if (a == L"--debug" && i + 1 < argc) SetEnvironmentVariableW(L"WIN10XBOX_DEBUG", argv[++i]);
         else if (a == L"--cwd" && i + 1 < argc) cwd = argv[++i];
+        else if (a == L"--cmdline" && i + 1 < argc) cmdline = argv[++i];   // the layer: a child started by a guest
+        else if (a == L"--guest-env") guest_env = true;                    // the layer: environment is the guest's
         else if (a == L"--version") version_only = true;
         else if (a == L"--help" || a == L"-h") { Usage(); return 0; }
         else { for (; i < argc; ++i) rest.emplace_back(argv[i]); }
@@ -569,6 +572,7 @@ static int HostMain(int argc, wchar_t** argv) {
         cfg.machine_root = exe.substr(0, exe.find_last_of(L"\\/")) + L"\\machine";
     }
     cfg.machine_root = FullPath(cfg.machine_root);
+    cfg.child_processes = true;   // a plain Win32 program can start the host executable again (D1)
     // A guest will run: trace sink for the entry marker, +modules, the startup lines on stderr (before Initialize,
     // which reads WIN10XBOX_DEBUG; not for --version / --help / hello).
     if (!rest.empty()) crash.BeforeInitialize();
@@ -584,6 +588,8 @@ static int HostMain(int argc, wchar_t** argv) {
     if (opts.image_path.empty()) { win10xbox::Shutdown(); return 3; }
     opts.command_line = QuoteArg(opts.image_path);
     for (size_t i = 1; i < rest.size(); ++i) opts.command_line += L" " + QuoteArg(rest[i]);
+    if (!cmdline.empty()) opts.command_line = cmdline;   // raw, as the parent guest wrote it
+    if (guest_env) opts.environment = win10xbox::process::InheritedGuestEnvironment();
     opts.current_directory = cwd;
     opts.run_on_new_thread = true;
     opts.wait = false;   // Launch returns once the guest runs; HostMain waits for it itself (below)

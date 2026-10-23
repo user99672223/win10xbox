@@ -175,6 +175,10 @@ bool IsGuestThread();   // true on threads running guest code (TLS flag set by L
 int WaitForGuest(DWORD timeout_ms = INFINITE);
 // Guest path of the main image ("C:\\..."), empty before Launch.
 std::wstring GuestImagePath();
+// A child started by a guest (NtCreateUserProcess) is this same host program with `--guest-env`: its guest
+// environment arrives as its own process environment, behind the WIN10XBOX_* / WINE* variables that configure the
+// host process. Returns the entries for LaunchOptions::environment, host-owned variables removed.
+std::vector<std::wstring> InheritedGuestEnvironment();
 // Makes host directory `host_dir` visible to the guest as drive `letter`
 // for this run (e.g. host-win32 running an EXE outside the machine folder).
 // Returns false when the VFS module owns drive mappings and has no runtime

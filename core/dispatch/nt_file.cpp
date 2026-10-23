@@ -389,6 +389,52 @@ static NTSTATUS NTAPI Xl_NtOpenSymbolicLinkObject(PHANDLE handle, ACCESS_MASK ac
     return Host().NtOpenSymbolicLinkObject(handle, access, attr);
 }
 
+// ---- Byte-range locks -------------------------------------------------------
+// Wine's kernelbase (LockFile/LockFileEx) calls NtLockFile with IoStatusBlock == NULL, which Wine's own ntdll accepts
+// and Windows' does not: the I/O manager probes the pointer and answers STATUS_ACCESS_VIOLATION. SQLite's win32 VFS
+// takes its locks with LockFileEx, so on real Windows every lock failed and it reported "database is locked".
+// Windows hosts therefore get a block of ours (heap, because a lock still PENDING on an overlapped handle completes into
+// it later; it is released unless the call came back pending). A Wine host is the reverse: Wine's unix NtLockFile
+// answers STATUS_NOT_IMPLEMENTED to any non-NULL IoStatusBlock, and Wine 9's NtUnlockFile does the same while Wine
+// 11's dereferences it unconditionally, so on a Wine host NtLockFile is called with NULL and the guest's block is
+// filled in afterwards, and NtUnlockFile tries the block first and falls back to NULL.
+using PFN_NtLockFile = NTSTATUS(NTAPI*)(HANDLE, HANDLE, PVOID, PVOID, PIO_STATUS_BLOCK, PLARGE_INTEGER, PLARGE_INTEGER,
+                                        PULONG, BOOLEAN, BOOLEAN);
+using PFN_NtUnlockFile = NTSTATUS(NTAPI*)(HANDLE, PIO_STATUS_BLOCK, PLARGE_INTEGER, PLARGE_INTEGER, PULONG);
+
+static bool HostIsWine() { return HostExport("wine_get_version") != nullptr; }
+
+static NTSTATUS NTAPI Xl_NtLockFile(HANDLE file, HANDLE event, PVOID apc, PVOID apc_context, PIO_STATUS_BLOCK io,
+                                    PLARGE_INTEGER offset, PLARGE_INTEGER length, PULONG key, BOOLEAN fail_immediately,
+                                    BOOLEAN exclusive) {
+    auto host = reinterpret_cast<PFN_NtLockFile>(HostExport("NtLockFile"));
+    if (!host) return st::NotImplemented;
+    if (HostIsWine()) {
+        NTSTATUS s = host(file, event, apc, apc_context, nullptr, offset, length, key, fail_immediately, exclusive);
+        if (io) { io->Status = s; io->Information = 0; }
+        return s;
+    }
+    if (io) return host(file, event, apc, apc_context, io, offset, length, key, fail_immediately, exclusive);
+    auto* ours = new IO_STATUS_BLOCK{};
+    NTSTATUS s = host(file, event, apc, apc_context, ours, offset, length, key, fail_immediately, exclusive);
+    if (s == st::Pending) WARN(dispatch, "NtLockFile without an IoStatusBlock is pending; the lock completes asynchronously");
+    else delete ours;
+    return s;
+}
+
+static NTSTATUS NTAPI Xl_NtUnlockFile(HANDLE file, PIO_STATUS_BLOCK io, PLARGE_INTEGER offset, PLARGE_INTEGER length,
+                                      PULONG key) {
+    auto host = reinterpret_cast<PFN_NtUnlockFile>(HostExport("NtUnlockFile"));
+    if (!host) return st::NotImplemented;
+    NTSTATUS s = host(file, io, offset, length, key);
+    if (s == st::NotImplemented && io && HostIsWine()) {
+        s = host(file, nullptr, offset, length, key);
+        io->Status = s;
+        io->Information = 0;
+    }
+    return s;
+}
+
 const ImplDef* FileImpls() {
     static const ImplDef k[] = {
         {"NtCreateFile", reinterpret_cast<void*>(&Xl_NtCreateFile)},
@@ -401,6 +447,8 @@ const ImplDef* FileImpls() {
         {"NtSetInformationFile", reinterpret_cast<void*>(&Xl_NtSetInformationFile)},
         {"NtOpenDirectoryObject", reinterpret_cast<void*>(&Xl_NtOpenDirectoryObject)},
         {"NtOpenSymbolicLinkObject", reinterpret_cast<void*>(&Xl_NtOpenSymbolicLinkObject)},
+        {"NtLockFile", reinterpret_cast<void*>(&Xl_NtLockFile)},
+        {"NtUnlockFile", reinterpret_cast<void*>(&Xl_NtUnlockFile)},
         {nullptr, nullptr},
     };
     return k;

@@ -9,6 +9,7 @@ in for the unmodified programs the layer will eventually load.
 |--------|------|----------------|
 | `guest_hello` | `hello.c` | Prints `hello from guest` and returns **42**. First end-to-end target for the process bootstrap (exit code propagation). |
 | `guest_cpuid` | `cpuid.c` | Prints `cpuid.1.ecx=<hex>` and `vendor=<12 chars>`, returns 0. Shows what CPUID patching makes the guest see (hypervisor bit 31 of ECX, vendor string). |
+| `guest_spawn` | `spawn.c` | `CreateProcessW` through the layer: runs `C:\guest\guest_hello.exe` (exit 42, waits, `GetExitCodeProcess`), then itself as `child` with a quoted command line, a working directory and an extra environment variable (exit 7); prints `spawn: child exit 42`, `spawn: child2 exit 7` and returns **42**. Only meaningful through `win10xbox.exe` (`integration.guest_spawn`): it names the guests by their guest paths. |
 | `guest_dll` | `dll.c` | `int add(int,int)`, `unsigned long long read_tsc(void)` (`__rdtsc`), `unsigned int cpuid_ecx1(void)` (`__cpuidex`), plus a TLS directory (a `__declspec(thread)` variable and a TLS callback that bumps `g_tls_callback_hits`), exported as `tls_callback_hits()`, `tls_callback_reason()` and `tls_value()`. Used by `tests/unit/test_loader.cpp` to test the mapper (relocation, exports, protections, relocated TLS callback array) and the scanner (the cpuid/rdtsc sites). |
 
 CRT linkage: MSVC builds use `/MT` (static CRT). llvm-mingw has no static UCRT,
