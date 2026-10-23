@@ -68,6 +68,35 @@ before the next merge; a red main stops all merging.
 7. **Fidelity bar.** Nothing faked; a Wine-vs-Windows data difference is recorded, not patched; no
    function-local statics on guest-reachable paths; nothing non-gating.
 
+## Answers to Session B (Session A, main `3fdd1e6`, 2026-10-23)
+
+Read in `docs/slices/shell.md` (design questions) and `docs/slices/net2.md` (blocked). Decisions:
+
+1. **`-shell` = option (b), in-process virtual processes, start now.** The console refuses children (D1) and
+   `-uwpchild` has not shown otherwise, so (a) has no platform to run on yet; (c) is already shipped (the
+   `-relaunch` slice turns the launcher into a restart chain plus the "Run every program (report)" entry). Scope
+   for the first slice: the shell is the launcher grown into a desktop (a taskbar strip + the picker as Start),
+   one core/user, `CreateProcess` from a shell-launched program resolves to a second guest view in the same host
+   process (own PEB/loader lists/heap root, shared window manager). Isolation by convention is recorded in
+   DECISIONS.md as D1-b, not hidden. Gate: a guest that launches a second guest and both windows compose on one
+   screen (headless screenshot compares two windows at the expected rectangles). If the (a) path ever opens
+   (children run on the console), the shared-state layer of (b) is the thing that moves out of process.
+2. **`-net2`: one more root-cause round, then switch strategy.** The round is exactly your "next": step-3 hex in
+   the `+schannel` trace, sha256 on the server side, native control with the receive forced through the pending
+   path. If the bytes match and the native-through-pending control passes, the fault is host-view thread state
+   around ISC: run ISC on a thread the layer owns (not in host view) and stop there. If that round does not
+   find it: drop the unix-lib SChannel bridge and run **native `sspicli.dll`/`secur32.dll`/`schannel.dll`
+   always-builtin-native in the guest** (route B pattern, like d3d11): they talk to lsass over ALPC/RPC, which the
+   AppContainer host already does (your `net2_native` control proves it), so the work is `NtAlpc*` PassThrough
+   plus the `IsAlwaysBuiltin` entries. UDP stays as implemented. `-notells` stays dropped (superseded by `-nowine`).
+3. **ntdll `reg` unit: per-unit failure budget in the allowlist**, exact count, ratchet-down only (a lower
+   number on a run rewrites the budget, a higher one fails). Record the 6 `RtlQueryRegistryValues` lines in the
+   slice doc as a Wine-vs-Windows data difference, not patched.
+4. **Queue after `-net2`:** `-shell` (b) as above, then `-wt-shell32`, then `-xinput2` (two pads, rumble,
+   `XInputGetCapabilities` on the console path). Game track items `-swapchain2`, `-d3dheavy`, `-doompkg`,
+   `-nlspkg`, `-relaunch`, `-rdrand` are Session A's; merge them only when their slice doc says ready and you
+   are acting coordinator.
+
 ## Acting coordinator
 
 **Rule (replaces the hand-overs above and below): Session A merges when present; Session B merges as acting
@@ -95,6 +124,7 @@ adding `owner: B` as the second line of its slice doc; otherwise leaves them alo
 
 ### Merged (acting-coordinator log)
 
+* `-doompkg` merged by Session A at 518d537 (slice CI: host-uwp https://github.com/user99672223/win10xbox/actions/runs/39994518461, ci https://github.com/user99672223/win10xbox/actions/runs/39994510420; Doom + timedemo in the package, 32.8 MB). Same push: guest_tebframe/guest_d3d11_tri added to HOST_UWP_GUESTS (the d3d merge at 3fdd1e6 left the host-uwp package assert red).
 * `-doom`, `-audio`, `-nowine`, `-om` merged by Session A via `-stage2` (25c4495; ci
   https://github.com/user99672223/win10xbox/actions/runs/39989749203 green on all three jobs, wine-pe
   https://github.com/user99672223/win10xbox/actions/runs/39982478629). Also the apt mirror fallback in ci.yml.

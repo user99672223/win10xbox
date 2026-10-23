@@ -52,5 +52,19 @@ userenv.dll
 netapi32.dll
 psapi.dll
 dbghelp.dll
+# -- Direct3D 11 for route B (docs/DECISIONS.md G1): the native runtime, the shader compiler, WARP (the user-mode
+#    driver of "Microsoft Basic Render Driver" and of D3D_DRIVER_TYPE_WARP) and what they load
+d3d11.dll
+dxgi.dll
+d3dcompiler_47.dll
+d3d10warp.dll
+dxcore.dll
+dwmapi.dll
+#    Direct3D 12 and the shader cache the D3D runtimes load by name (docs/slices/d3d.md). dxgi/d3d11/d3d12 reach the
+#    kernel through D3DKMT (gdi32 -> win32u NtGdiDdDDI*), forwarded to the host's win32u. The GPU user-mode driver
+#    (*umd*.dll, nvwgf2*, atidxx*, DriverStore\...) is NOT copied: the loader resolves it in the host's System32.
+d3d12.dll
+D3D12Core.dll
+D3DSCache.dll
 # -- apiset schema (needed by the loader to resolve api-ms-win-* names)
 apisetschema.dll

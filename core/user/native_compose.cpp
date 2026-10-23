@@ -78,6 +78,39 @@ bool ComposeLive(const HostGui& h, std::uint32_t* out, std::int32_t w, std::int3
             if (!wdc) continue;
             h.BitBlt(mem, r.left, r.top, r.right - r.left, r.bottom - r.top, wdc, 0, 0, SRCCOPY);
             h.ReleaseDC(*it, wdc);
+            // A Direct3D swap chain is presented to the compositor, not into the window's GDI surface: BitBlt of the
+            // window DC then reads nothing. When the blit left the whole rectangle black, ask the compositor for the
+            // window's content (PW_RENDERFULLCONTENT) into a private DIB and copy that over.
+            const int rw = r.right - r.left, rh = r.bottom - r.top;
+            if (h.PrintWindow && rw <= 16384 && rh <= 16384) {
+                h.GdiFlush();
+                bool blank = true;
+                const auto* px = static_cast<const std::uint32_t*>(bits);
+                for (int y = r.top < 0 ? 0 : r.top; blank && y < r.bottom && y < h_px; ++y)
+                    for (int x = r.left < 0 ? 0 : r.left; x < r.right && x < w; ++x)
+                        if (px[static_cast<std::size_t>(y) * w + x] & 0x00FFFFFFu) { blank = false; break; }
+                if (blank) {
+                    BITMAPINFO wi{};
+                    wi.bmiHeader.biSize = sizeof wi.bmiHeader;
+                    wi.bmiHeader.biWidth = rw;
+                    wi.bmiHeader.biHeight = -rh;
+                    wi.bmiHeader.biPlanes = 1;
+                    wi.bmiHeader.biBitCount = 32;
+                    void* wbits = nullptr;
+                    HDC wmem = h.CreateCompatibleDC(nullptr);
+                    HBITMAP wbmp = wmem ? h.CreateDIBSection(wmem, &wi, DIB_RGB_COLORS, &wbits, nullptr, 0) : nullptr;
+                    if (wbmp && wbits) {
+                        HGDIOBJ wold = h.SelectObject(wmem, wbmp);
+                        if (h.PrintWindow(*it, wmem, 2 /* PW_RENDERFULLCONTENT */)) {
+                            h.GdiFlush();
+                            h.BitBlt(mem, r.left, r.top, rw, rh, wmem, 0, 0, SRCCOPY);
+                        }
+                        h.SelectObject(wmem, wold);
+                    }
+                    if (wbmp) h.DeleteObject(wbmp);
+                    if (wmem) h.DeleteDC(wmem);
+                }
+            }
         }
         h.GdiFlush();
         std::memcpy(out, bits, static_cast<std::size_t>(w) * h_px * 4);

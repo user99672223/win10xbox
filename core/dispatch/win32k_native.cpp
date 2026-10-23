@@ -184,6 +184,7 @@ NTSTATUS ConfigureNativeGui() {
     R(gdi32, CreateCompatibleDC); R(gdi32, CreateDIBSection); R(gdi32, SelectObject); R(gdi32, BitBlt);
     R(gdi32, DeleteDC); R(gdi32, DeleteObject); R(gdi32, GdiFlush);
 #undef R
+    h.PrintWindow = reinterpret_cast<decltype(h.PrintWindow)>(GetProcAddress(user32, "PrintWindow"));
     auto get_desktop = reinterpret_cast<HWND(WINAPI*)()>(GetProcAddress(user32, "GetDesktopWindow"));
     if (!ok || !get_desktop) {
         ERR(dispatch, "gui native: the host's user32/gdi32 lack an export the composer needs");

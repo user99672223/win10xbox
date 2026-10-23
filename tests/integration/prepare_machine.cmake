@@ -177,3 +177,75 @@ if(NATIVE_GUI_MACHINE)
   endif()
   message(STATUS "prepare_machine: ${NATIVE_GUI_MACHINE}: native-GUI machine, ${_copied} files")
 endif()
+
+# -DD3D_MACHINE=<dir>: route B + Direct3D 11 (docs/DECISIONS.md G1, integration.guest_imgui_d3d11): the folder
+# NATIVE_GUI_MACHINE describes (builtins, NLS, guests, the native GUI DLLs, "gui": "native") plus the NATIVE Direct3D
+# runtime: d3d11/dxgi/d3dcompiler_47 run as guest code, and their D3DKMT calls (gdi32 -> the native win32u's
+# NtGdiDdDDI* thunks) pass through by name to the host's win32u like every other route-B syscall, i.e. to the host's
+# dxgkrnl. d3d10warp is the user-mode driver d3d11 loads for the runner's "Microsoft Basic Render Driver" (and for
+# D3D_DRIVER_TYPE_WARP). Wine's d3d11/dxgi are not an option here (they are wined3d front ends over GL/Vulkan in
+# Wine's unix libraries, which this project does not have).
+if(D3D_MACHINE)
+  foreach(d Windows/builtin Windows/System32 Windows/System32/config Windows/Globalization/Sorting Windows/Temp
+            Users/User/AppData/Local/Temp Users/User/AppData/Roaming Users/Public
+            ProgramData "Program Files" "Program Files (x86)" guest)
+    file(MAKE_DIRECTORY "${D3D_MACHINE}/${d}")
+  endforeach()
+  set(_d3d_native user32.dll win32u.dll gdi32.dll gdi32full.dll msvcp_win.dll imm32.dll
+                  d3d11.dll dxgi.dll d3dcompiler_47.dll d3d10warp.dll dxcore.dll dwmapi.dll
+                  d3d12.dll D3D12Core.dll D3DSCache.dll
+                  powrprof.dll umpdc.dll)   # api-ms-win-power-setting-* (dxgi)
+  file(GLOB _files "${MACHINE}/Windows/builtin/*" "${MACHINE}/guest/*" "${MACHINE}/Windows/System32/*.nls"
+                   "${MACHINE}/Windows/Globalization/Sorting/*.nls")
+  foreach(n ${_d3d_native})
+    if(EXISTS "${MACHINE}/Windows/System32/${n}")
+      list(APPEND _files "${MACHINE}/Windows/System32/${n}")
+    endif()
+  endforeach()
+  # -DD3D_EXTRA_DIR=<dir>: machine/guest_dlls_d3d.txt staged by import_windows_dlls.ps1 into <dir>\Windows\System32
+  # (natives only this folder gets; CI: build/bin/machine-d3d-extra). Absent elsewhere.
+  set(_d3d_extra "")
+  if(D3D_EXTRA_DIR AND IS_DIRECTORY "${D3D_EXTRA_DIR}/Windows/System32")
+    file(GLOB _extra "${D3D_EXTRA_DIR}/Windows/System32/*.dll")
+    foreach(f ${_extra})
+      get_filename_component(n "${f}" NAME)
+      list(APPEND _files "${f}")
+      list(APPEND _d3d_extra "${n}")
+    endforeach()
+  endif()
+  set(_copied 0)
+  foreach(f ${_files})
+    set(_from "${MACHINE}")
+    if(D3D_EXTRA_DIR)
+      string(FIND "${f}" "${D3D_EXTRA_DIR}/" _at)
+      if(_at EQUAL 0)
+        set(_from "${D3D_EXTRA_DIR}")
+      endif()
+    endif()
+    file(RELATIVE_PATH _rel "${_from}" "${f}")
+    if(NOT IS_DIRECTORY "${f}")
+      file(COPY_FILE "${f}" "${D3D_MACHINE}/${_rel}" ONLY_IF_DIFFERENT)
+      math(EXPR _copied "${_copied} + 1")
+    endif()
+  endforeach()
+  # imm32 delay-loads msctf.dll (see the native-GUI machine above): the same stand-in, for the imgui guest.
+  if(MSCTF_STUB AND EXISTS "${MSCTF_STUB}" AND EXISTS "${D3D_MACHINE}/Windows/System32/imm32.dll")
+    file(COPY_FILE "${MSCTF_STUB}" "${D3D_MACHINE}/Windows/System32/msctf.dll" ONLY_IF_DIFFERENT)
+  endif()
+  list(APPEND _d3d_native ${_d3d_extra})
+  if(DEFAULT_JSON AND EXISTS "${DEFAULT_JSON}")
+    file(READ "${DEFAULT_JSON}" _json)
+    set(_ov "\"*\": \"builtin,native\"")
+    foreach(n ${_d3d_native})
+      string(REPLACE ".dll" "" _b "${n}")
+      string(APPEND _ov ", \"${_b}\": \"native\"")
+    endforeach()
+    string(REGEX REPLACE "\"\\*\"[ \t]*:[ \t]*\"[^\"]*\"" "${_ov}" _json "${_json}")
+    string(REGEX REPLACE "\"version\"[ \t]*:[ \t]*1[ \t]*," "\"version\": 1,\n  \"gui\": \"native\"," _json "${_json}")
+    if(NOT _json MATCHES "\"gui\": \"native\"" OR NOT _json MATCHES "\"d3d11\": \"native\"")
+      message(FATAL_ERROR "prepare_machine: could not derive the D3D machine.json from ${DEFAULT_JSON}")
+    endif()
+    file(CONFIGURE OUTPUT "${D3D_MACHINE}/machine.json" CONTENT "${_json}" @ONLY)
+  endif()
+  message(STATUS "prepare_machine: ${D3D_MACHINE}: route B + Direct3D 11 machine, ${_copied} files")
+endif()

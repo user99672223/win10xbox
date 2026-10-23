@@ -101,6 +101,9 @@ endif()
 
 set(HOST_UWP_PACKAGE_VERSION "1.0.0.0" CACHE STRING
     "Identity Version of the package, a.b.c.d (CI passes 1.0.0.<run number> so each build installs over the last)")
+# Extra files copied flat into payload\guest (e.g. the output of tools/ci/fetch_doom.ps1: chocolate-doom.exe, SDL2 DLLs,
+# doom1.wad). Empty = none. The sidecars in host-uwp/payload/guest/ are always staged.
+set(HOST_UWP_EXTRA_GUEST_DIR "" CACHE PATH "Directory whose files are staged into payload\\guest")
 set(HOST_UWP_BUILTIN_DIR "${WIN10XBOX_ROOT}/wine-pe/out/builtin" CACHE PATH
     "Wine PE builtin DLLs to bundle in the package (the wine-pe-builtin artifact). Optional: without them the package is still produced and the owner drops the DLLs into LocalState\\machine\\Windows\\builtin")
 option(HOST_UWP_SKIP_WINMD "Skip midl (the package then lacks the WinRT metadata the Xbox launcher wants; CI debugging only)" OFF)
@@ -150,6 +153,7 @@ add_executable(host_uwp WIN32
   host_util.cpp
   host_shell.cpp
   launch_config.cpp
+  guest_sidecar.cpp
   crash.cpp
   presenter.cpp
   blit.cpp
@@ -161,6 +165,7 @@ add_executable(host_uwp WIN32
   host_stage.h
   host_util.h
   launch_config.h
+  guest_sidecar.h
   crash.h
   presenter.h
   blit.h
@@ -218,9 +223,12 @@ set_target_properties(window_guest PROPERTIES OUTPUT_NAME "window")
 
 # Every other guest of the repo, so the package carries them all to the console (HANDOFF.md
 # "Standing testing rule"). Console programs; output names as in the main tree.
-foreach(_g hello cpuid sleep spawn named_objects xinput identity regpersist)
+foreach(_g hello cpuid sleep spawn named_objects xinput identity regpersist tebframe)
   add_executable(guest_${_g} "${WIN10XBOX_ROOT}/tests/guest/${_g}.c")
 endforeach()
+# The Direct3D 11 off-screen guest (tests/guest/d3d11_tri.c): native d3d11/dxgi loaded at run time, dxguid for the IIDs.
+add_executable(guest_d3d11_tri "${WIN10XBOX_ROOT}/tests/guest/d3d11_tri.c")
+target_link_libraries(guest_d3d11_tri PRIVATE dxguid)
 # Our own builtin DLLs (guest-dlls/: xinput1_4.dll and its copies xinput1_3.dll / xinput9_1_0.dll, staged into
 # payload\builtin next to Wine's) and the XInput guest that imports one.
 set(WIN10XBOX_GUEST_DLL_DIR ${CMAKE_BINARY_DIR}/bin/guest-dlls)
@@ -280,7 +288,7 @@ set(HOST_UWP_GUESTS window_guest hello_guest hello_guest_cui guest_hello guest_c
     smoke_guest_cui drv_client guest_window2 guest_window_input guest_window_input2 guest_window_text smoke_guest
     guest_spawn guest_window_nc guest_dialog guest_comctl guest_seh guest_seh_dll guest_window_scroll guest_clipboard
     guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput guest_identity guest_net guest_cursor
-    guest_regpersist guest_wasapi guest_xaudio2 guest_nowine guest_named_objects guest_shellhook)
+    guest_regpersist guest_wasapi guest_xaudio2 guest_nowine guest_named_objects guest_tebframe guest_d3d11_tri guest_shellhook)
 
 # ---------------------------------------------------------------------------
 # The selftest: the launch.json parser (launch_config.cpp has no Windows or layer
@@ -289,7 +297,8 @@ set(HOST_UWP_GUESTS window_guest hello_guest hello_guest_cui guest_hello guest_c
 # enable_testing() comes after the add_subdirectory() calls on purpose: the tests of the
 # third-party projects are not registered here, only this one.
 # ---------------------------------------------------------------------------
-add_executable(host_uwp_selftest selftest/selftest.cpp launch_config.cpp launch_config.h)
+add_executable(host_uwp_selftest selftest/selftest.cpp launch_config.cpp launch_config.h guest_sidecar.cpp guest_sidecar.h)
+target_include_directories(host_uwp_selftest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # The presenter's frame path (blit.cpp, the exact code the console runs) on a WARP device.
 add_executable(host_uwp_blittest selftest/blit_test.cpp blit.cpp blit.h)
 target_include_directories(host_uwp_blittest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -392,6 +401,7 @@ add_custom_target(stage_appx ALL
           "-DASSETS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/assets"
           "-DPAYLOAD_DIR=${CMAKE_CURRENT_SOURCE_DIR}/payload"
           "-DBUILTIN_DIR=${HOST_UWP_BUILTIN_DIR}"
+          "-DEXTRA_GUEST_DIR=${HOST_UWP_EXTRA_GUEST_DIR}"
           "-DGUEST_DLL_DIR=${WIN10XBOX_GUEST_DLL_DIR}"
           "-DMACHINE_JSON=${WIN10XBOX_ROOT}/machine/machine.default.json"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/stage.cmake"

@@ -187,6 +187,11 @@ add_executable(guest_comctl comctl.c)
 target_link_libraries(guest_comctl PRIVATE user32 gdi32 comctl32)
 win10xbox_add_guest(guest_comctl)
 
+# Wine __TRY frames (TEB.NtTib.ExceptionList) reached by an exception on the main thread and on worker threads
+# (tests/guest/tebframe.c; core/dispatch/teb_frames.cpp).
+add_executable(guest_tebframe tebframe.c)
+win10xbox_add_guest(guest_tebframe)
+
 # The networking guest (tests/guest/net.c): Wine's ws2_32 -> \\Device\\Afd -> core/afd -> host Winsock, over loopback.
 add_executable(guest_net net.c)
 target_link_libraries(guest_net PRIVATE ws2_32)
@@ -207,6 +212,9 @@ win10xbox_add_guest(guest_xaudio2)
 add_test(NAME guest.seh COMMAND guest_seh)
 set_tests_properties(guest.seh PROPERTIES PASS_REGULAR_EXPRESSION "seh: done failures=0"
   FAIL_REGULAR_EXPRESSION "seh: [a-z_.]+ FAILED;seh: FAIL line")
+add_test(NAME guest.tebframe COMMAND guest_tebframe)
+set_tests_properties(guest.tebframe PROPERTIES PASS_REGULAR_EXPRESSION "tebframe: done failures=0"
+  FAIL_REGULAR_EXPRESSION "tebframe: FAIL line")
 add_test(NAME guest.hello COMMAND guest_hello)
 set_tests_properties(guest.hello PROPERTIES PASS_REGULAR_EXPRESSION "hello from guest")
 add_test(NAME guest.cpuid COMMAND guest_cpuid)
@@ -241,3 +249,38 @@ endif()
 
 # Guests from the SQLite shell bring-up (tests/guest/sqlite).
 add_subdirectory(sqlite)
+# Direct3D 11 off-screen (tests/guest/d3d11_tri.c, docs/slices/d3d.md): the guest loads the NATIVE d3d11/dxgi/d3dcompiler_47
+# at run time (LoadLibrary), renders a triangle into a render-target texture and reads the pixels back. MSVC only (the
+# Windows SDK's d3d11.h/dxguid.lib); run on the route-B + D3D machine folder (integration.guest_d3d11).
+if(MSVC)
+  add_executable(guest_d3d11_tri d3d11_tri.c)
+  target_link_libraries(guest_d3d11_tri PRIVATE dxguid)
+  win10xbox_add_guest(guest_d3d11_tri)
+  # The control: the same program run natively on the runner, outside the layer (exit 42 = it renders). Not for the
+  # emulator build; its stdout also lists the runner's modules, i.e. the DLL closure of d3d11 (docs/slices/d3d.md).
+  if(NOT CMAKE_CROSSCOMPILING_EMULATOR)
+    add_test(NAME guest.d3d11 COMMAND guest_d3d11_tri)
+    set_tests_properties(guest.d3d11 PROPERTIES PASS_REGULAR_EXPRESSION "d3d11: done" TIMEOUT 120)
+  endif()
+endif()
+
+# Dear ImGui's example_win32_directx11, unmodified, as a guest of route B + Direct3D 11 (tests/guest/imgui_d3d11.cpp
+# wraps it; docs/DECISIONS.md G1). The Dear ImGui release source is not vendored: CI fetches it on the Windows runner
+# (ci.yml, "Fetch Dear ImGui") and passes its root as WIN10XBOX_IMGUI_DIR (environment or cache). MSVC only, like
+# the example's own build_win32.bat; without the source the target and its test do not exist.
+set(WIN10XBOX_IMGUI_DIR "$ENV{WIN10XBOX_IMGUI_DIR}" CACHE PATH "Dear ImGui release source root (guest_imgui_d3d11)")
+if(MSVC AND WIN10XBOX_IMGUI_DIR AND EXISTS "${WIN10XBOX_IMGUI_DIR}/examples/example_win32_directx11/main.cpp")
+  set(_im "${WIN10XBOX_IMGUI_DIR}")
+  add_executable(guest_imgui_d3d11 imgui_d3d11.cpp
+    ${_im}/imgui.cpp ${_im}/imgui_demo.cpp ${_im}/imgui_draw.cpp ${_im}/imgui_tables.cpp ${_im}/imgui_widgets.cpp
+    ${_im}/backends/imgui_impl_dx11.cpp ${_im}/backends/imgui_impl_win32.cpp)
+  target_include_directories(guest_imgui_d3d11 PRIVATE ${_im} ${_im}/backends)
+  target_compile_definitions(guest_imgui_d3d11 PRIVATE UNICODE _UNICODE)
+  target_compile_options(guest_imgui_d3d11 PRIVATE /W3)   # third-party code: not held to the project's /W4
+  target_link_libraries(guest_imgui_d3d11 PRIVATE d3d11 dxgi d3dcompiler user32 gdi32 imm32)
+  win10xbox_add_guest(guest_imgui_d3d11)
+  set(WIN10XBOX_HAVE_IMGUI_GUEST ON CACHE INTERNAL "guest_imgui_d3d11 is built")
+  message(STATUS "guest_imgui_d3d11: Dear ImGui from ${_im}")
+else()
+  set(WIN10XBOX_HAVE_IMGUI_GUEST OFF CACHE INTERNAL "guest_imgui_d3d11 is built")
+endif()

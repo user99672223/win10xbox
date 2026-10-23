@@ -88,6 +88,18 @@ blocks (0xC0000374 on Windows as soon as a guest imported user32 -> native
 advapi32 -> msvcrt). For the same reason `NtGetNextThread` enumerates guest
 threads only.
 
+The same loop meets a guest thread that is *blocked in a system call*: it is
+inside the dispatcher, so its TEB shows the host's vector and the guest's is
+parked in `ThreadState::guest_tls`. Loading a DLL with a TLS directory after
+startup (dxcore.dll, once d3d11 had made thread-pool and timer-queue threads)
+therefore replaced and freed slots of the host's vector: 0xC0000374 in the host
+heap. wine-pe patch 0005 makes `alloc_tls_slot` ask the dispatcher, with the
+private `NtQueryInformationThread` class `0x10020`, where each thread's guest
+vector is: the address of `ThreadState::guest_tls` for another thread whose
+`depth > 0`, the TEB field itself otherwise (the calling thread is back in the
+guest view when it reads the answer). Any other kernel rejects the class and
+Wine uses the TEB field, as before.
+
 ### The guest-view window (no host code in here)
 
 `LeaveToGuestView()` installs the **guest's** `ThreadLocalStoragePointer`, and

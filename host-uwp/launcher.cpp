@@ -401,7 +401,7 @@ void Launcher::Draw(std::uint32_t* bgra, int width, int height)
         {
             const bool on = i == sel_;
             if (on) c.Fill(margin / 2, y - c.scale * 2, width - margin, lh, kBar);
-            c.Text(margin, y, entries_[i].name + (entries_[i].from_localstate ? "   (LocalState\\guests)" : ""), on ? kText : kDim);
+            c.Text(margin, y, (entries_[i].title.empty() ? entries_[i].name : entries_[i].title) + (entries_[i].from_localstate ? "   (LocalState\\guests)" : ""), on ? kText : kDim);
         }
         c.Text(margin, footer, "Up/Down: select    Enter or A: launch", kDim);
     }

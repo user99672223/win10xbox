@@ -1,0 +1,63 @@
+win10xbox: alloc_tls_slot asks the dispatcher where another thread's guest TLS vector is
+
+alloc_tls_slot (loader.c) runs when a DLL with a TLS directory is loaded after startup and gives every
+thread a block for it: it replaces slot i of the vector found in each thread's TEB. A guest thread that is
+blocked in a system call is inside the host dispatcher, which parks the guest's vector in its per-thread
+state and shows the HOST's vector (sized for the host image) in the TEB, so the replacement and the
+RtlFreeHeap of the old slot content hit the host's array: heap corruption (0xC0000374) as soon as a guest
+that had created a thread-pool or timer-queue thread loaded dxcore.dll. The dispatcher answers a private
+NtQueryInformationThread class (0x10020) with the address of the location of that thread's guest vector;
+every other kernel answers with an error and the TEB field is used, as stock Wine does.
+
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 57da3d4..a199272 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -1368,6 +1368,7 @@ static BOOL alloc_tls_slot( LDR_DATA_TABLE_ENTRY *mod )
+     {
+         THREAD_BASIC_INFORMATION tbi;
+         TEB *teb;
++        void **tls_slot, **guest_slot = NULL;
+ 
+         if (thread) NtClose( thread );
+         thread = next;
+@@ -1377,7 +1378,14 @@ static BOOL alloc_tls_slot( LDR_DATA_TABLE_ENTRY *mod )
+             continue;
+         }
+         teb = tbi.TebBaseAddress;
+-        if (!teb->ThreadLocalStoragePointer)
++        tls_slot = &teb->ThreadLocalStoragePointer;
++        /* win10xbox: a thread that is inside the host dispatcher (blocked in a system call) shows the HOST's
++         * static-TLS vector in its TEB while the guest's is parked in the dispatcher's per-thread state. Ask the
++         * dispatcher where the guest's vector of that thread lives; any other host answers with an error. */
++        if (!NtQueryInformationThread( thread, (THREADINFOCLASS)0x10020, &guest_slot, sizeof(guest_slot), NULL ) &&
++            guest_slot)
++            tls_slot = guest_slot;
++        if (!*tls_slot)
+         {
+             /* Thread is not initialized by loader yet or already teared down. */
+             TRACE( "thread %04lx NULL tls block.\n", HandleToULong(tbi.ClientId.UniqueThread) );
+@@ -1386,12 +1394,12 @@ static BOOL alloc_tls_slot( LDR_DATA_TABLE_ENTRY *mod )
+ 
+         if (old_module_count < tls_module_count)
+         {
+-            void **old = teb->ThreadLocalStoragePointer;
++            void **old = *tls_slot;
+             void **new = RtlAllocateHeap( GetProcessHeap(), HEAP_ZERO_MEMORY, tls_module_count * sizeof(*new));
+ 
+             if (!new) return FALSE;
+             if (old) memcpy( new, old, old_module_count * sizeof(*new) );
+-            teb->ThreadLocalStoragePointer = new;
++            *tls_slot = new;
+             TRACE( "thread %04lx tls block %p -> %p\n", HandleToULong(teb->ClientId.UniqueThread), old, new );
+             /* FIXME: can't free old block here, should be freed at thread exit */
+         }
+@@ -1404,7 +1412,7 @@ static BOOL alloc_tls_slot( LDR_DATA_TABLE_ENTRY *mod )
+                HandleToULong(teb->ClientId.UniqueThread), i, size, dir->SizeOfZeroFill, new_ptr );
+ 
+         RtlFreeHeap( GetProcessHeap(), 0,
+-                     InterlockedExchangePointer( (void **)teb->ThreadLocalStoragePointer + i, new_ptr ));
++                     InterlockedExchangePointer( (void **)*tls_slot + i, new_ptr ));
+     }
+     if (thread) NtClose( thread );
+ 
