@@ -1,36 +1,36 @@
-# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/kernel32.sh; numbers in docs/WINETEST.md)
-# First registration: every unit is a generous "run" budget so the first CI run prints WINETEST lines
-# for every unit; the measured numbers replace these.
-actctx run 999999
-atom run 999999
-change run 999999
-codepage run 999999
-comm run 999999
-console run 999999
-debugger run 999999
-directory run 999999
-drive run 999999
-environ run 999999
-fiber run 999999
-file run 999999
-format_msg run 999999
-generated run 999999
-heap run 999999
-loader run 999999
-locale run 999999
-mailslot run 999999
-module run 999999
-path run 999999
-pipe run 999999
-power run 999999
-process run 999999
-profile run 999999
-resource run 999999
-sync run 999999
-thread run 999999
-time run 999999
-timer run 999999
-toolhelp run 999999
-version run 999999
-virtual run 999999
-volume run 999999
+# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/kernel32.sh --baseline)
+# Measured on the linux-cross CI job (WINETEST kernel32:<unit> lines). 0-failure run units are the allowlist;
+# a unit may only move up: fewer failures, or crash/timeout -> run. Never raise a number to make a run pass.
+actctx crash 0
+atom run 0
+change crash 0
+codepage run 0
+comm run 0
+console run 1
+debugger timeout 0
+directory run 0
+drive run 2
+environ run 10
+fiber crash 0
+file run 222
+format_msg run 0
+generated run 0
+heap crash 0
+loader crash 0
+locale run 297
+mailslot run 15
+module crash 0
+path run 0
+pipe timeout 0
+power run 0
+process crash 0
+profile run 4
+resource run 7
+sync crash 0
+thread crash 0
+time run 34
+timer crash 0
+toolhelp timeout 0
+version run 8
+virtual timeout 0
+volume run 35

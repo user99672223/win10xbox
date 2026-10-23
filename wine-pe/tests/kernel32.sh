@@ -126,7 +126,7 @@ do_run() {
         rc=$?
         local secs=$(( $(date +%s) - t0 ))
         local summary; summary="$(grep -aE "^[0-9a-f]+:$unit:.*$re" "$log" | tail -1)"
-        [[ -z "$summary" ]] && summary="$(grep -aE "$re" "$log" | tail -1)"
+        # Only the unit's own summary counts: the child processes some units start print summaries too.
         if [[ $rc -eq 124 || $rc -eq 137 ]]; then
             status=timeout
         elif [[ -n "$summary" && "$summary" =~ $re ]]; then
@@ -143,6 +143,9 @@ do_run() {
             "$rc" "$secs" "$last" >> "$tsv"
         echo "WINETEST kernel32:$unit status=$status executed=$ex todo=$todo flaky=$fl failures=$fails skipped=$sk exit=$rc time=${secs}s"
         [[ -n "$last" ]] && echo "  last test line: $last"
+        if (( fails > 0 )); then
+            grep -aoE '[A-Za-z0-9_]+\.c:[0-9]+: Test failed: [^\r]*' "$log" | head -3 | cut -c1-200 | sed 's/^/  first failing: /'
+        fi
         grep -a '^win10xbox: ' "$log" | head -3 | sed 's/^/  /'
         read -r expect max <<<"$(baseline_of "$unit")"
         if [[ $expect == run ]]; then
