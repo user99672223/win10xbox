@@ -19,6 +19,9 @@
 #include <cstring>
 #include <cwctype>
 #include <map>
+#if WIN10XBOX_HAVE_TOKEN
+#include "win10xbox/token.h"
+#endif
 
 namespace win10xbox::dispatch {
 namespace detail {
@@ -85,6 +88,37 @@ NTSTATUS WINAPI U_system_time_precise(void* args) {
 const UnixCallFn kNtdllFuncs[] = {
     &U_load_so_dll, &U_unwind_builtin_dll, &U_wine_dbg_write, &U_wine_server_call,
     &U_fd_to_handle, &U_handle_to_fd, &U_spawnvp, &U_system_time_precise,
+};
+
+// ---- ws2_32's unix functions (dlls/ws2_32/ws2_32_private.h, enum ws_unix_funcs) -------------------------------
+// Wine's ws2_32 DllMain fails (and with it the load of every program that imports ws2_32, directly or through
+// iphlpapi) unless this library is registered; sockets themselves go through ntdll's \Device\Afd ioctls, not here.
+// The five functions are the host-resolver entry points. The return value is a WSA error code (0 = success).
+// Only the host name is answered (the layer's computer name, as GetComputerNameW gives it); name resolution has
+// no implementation behind it yet and says so.
+constexpr NTSTATUS kWsaEFault = 10014, kWsaEOpNotSupp = 10045;
+struct WsGetHostnameParams { char* name; unsigned int size; };
+
+NTSTATUS WINAPI U_ws_gethostname(void* args) {
+    auto* p = static_cast<WsGetHostnameParams*>(args);
+#if WIN10XBOX_HAVE_TOKEN
+    const std::wstring computer = token::ComputerName();
+#else
+    const std::wstring computer = L"DESKTOP-XBOX";
+#endif
+    if (!p->name || computer.size() >= p->size) return kWsaEFault;
+    for (std::size_t i = 0; i < computer.size(); ++i) p->name[i] = static_cast<char>(computer[i]);
+    p->name[computer.size()] = 0;
+    return 0;
+}
+NTSTATUS WINAPI U_ws_not_implemented(void*) { return kWsaEOpNotSupp; }
+
+const UnixCallFn kWs2Funcs[] = {
+    &U_ws_not_implemented,   // getaddrinfo
+    &U_ws_not_implemented,   // gethostbyaddr
+    &U_ws_not_implemented,   // gethostbyname
+    &U_ws_gethostname,
+    &U_ws_not_implemented,   // getnameinfo
 };
 
 // ---- Wine debug channels ---------------------------------------------------------
@@ -154,6 +188,7 @@ std::uint64_t NtdllUnixLibHandle() { return g_ntdll_handle; }
 void RegisterNtdllUnixLib() {
     LoadWineDebugSpec();
     if (!g_ntdll_handle) RegisterUnixLib(L"ntdll", kNtdllFuncs, std::size(kNtdllFuncs));
+    RegisterUnixLib(L"ws2_32", kWs2Funcs, std::size(kWs2Funcs));
 }
 
 std::uint64_t UnixLibHandleByName(std::wstring_view module_name) {

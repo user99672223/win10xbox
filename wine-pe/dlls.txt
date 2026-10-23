@@ -47,6 +47,12 @@ nsi
 shcore      # shlwapi
 coml2       # ole32
 cryptbase   # advapi32's SystemFunction036 forward
+# --- imports of fastfetch.exe (docs/slices/fastfetch.md) and what they pull in ---
+cfgmgr32
+hid
+secur32
+winbrand
+wtsapi32
 
 # --- COM -------------------------------------------------------------------
 ole32
