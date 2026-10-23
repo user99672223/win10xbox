@@ -116,9 +116,11 @@ NTSTATUS NTAPI Xl_NtClose(HANDLE h) {
     EmulatedObject o;
     if (LookupEmulatedObject(h, &o)) {
         if (o.kind == ObjectKind::ImageSection) CloseImageSection(o);
+        if (o.kind == ObjectKind::Directory || o.kind == ObjectKind::SymbolicLink) CloseEmulatedDirectory(o);
         UnregisterEmulatedObject(h);
         return st::Success;
     }
+    ForgetNamedHandle(h);
     return Host().NtClose(h);
 }
 
@@ -132,8 +134,21 @@ static NTSTATUS NTAPI Xl_NtDuplicateObject(HANDLE src_process, HANDLE src, HANDL
 #if WIN10XBOX_HAVE_TOKEN
     emulated = emulated || (IsCurrentProcess(src_process) && token::IsTokenHandle(src));
 #endif
-    if (!emulated)
-        return Host().NtDuplicateObject(src_process, src, dst_process, dst, access, attributes, options);
+    if (!emulated) {
+        NTSTATUS s = Host().NtDuplicateObject(src_process, src, dst_process, dst, access, attributes, options);
+        if (NtSuccess(s) && IsCurrentProcess(src_process) && IsCurrentProcess(dst_process) && dst) {
+            NoteDuplicatedNamedHandle(src, *dst);
+            if (options & DUPLICATE_CLOSE_SOURCE) ForgetNamedHandle(src);
+        }
+        return s;
+    }
+    if (IsCurrentProcess(dst_process) && o.extra && (o.kind == ObjectKind::Directory || o.kind == ObjectKind::SymbolicLink)) {
+        HANDLE h = DuplicateEmulatedDirectory(o, access, options);
+        if (!h) return st::NoMemory;
+        if (dst) *dst = h;
+        if (options & DUPLICATE_CLOSE_SOURCE) Xl_NtClose(src);
+        return st::Success;
+    }
     if (!IsCurrentProcess(dst_process) || o.kind != ObjectKind::ImageSection || !o.extra) {
         FIXME(dispatch, "duplicating emulated handle %p (kind %d)", src, static_cast<int>(o.kind));
         return st::NotImplemented;

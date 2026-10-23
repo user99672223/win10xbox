@@ -157,7 +157,7 @@ bool IEquals(const char* a, const char* b) {
 
 void* FindImpl(const char* name) {
     for (auto list : {FileImpls(), SectionImpls(), ProcessImpls(), NlsImpls(), SubsystemImpls(), UserImpls(),
-                      PrivilegedImpls()})
+                      PrivilegedImpls(), ObjectImpls()})
         for (const ImplDef* d = list; d && d->name; ++d)
             if (!std::strcmp(d->name, name)) return d->fn;
     return nullptr;
@@ -709,6 +709,7 @@ NTSTATUS Initialize() {
     if (!HostNtdll()) { ReleaseSRWLockExclusive(&s.lock); return st::DllNotFound; }
     ResolveHost(s.host);
     PrimeChildProcesses();   // host kernel32 entry points and executable path, before the PEB take-over
+    InitializeObjectNamespace();   // the host's named-object directory and this program tree's layer, before the take-over
     QueryPerformanceFrequency(&s.qpf);
 
     s.entries.clear();

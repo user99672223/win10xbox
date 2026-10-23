@@ -413,6 +413,58 @@ TEST(dispatch_rdrand_emulation) {
     CHECK(!EmulateRandomInstruction(&c));
 }
 
+// The decoder on the three operand sizes: rdrand r16 (66 0F C7 /6), r32 (0F C7 /6), r64 (REX.W 0F C7 /6), and REX.B (r15).
+TEST(dispatch_rdrand_decoder_sizes) {
+    InstallRandomInstructionEmulation();
+    const std::uint8_t code[] = {0x66, 0x0F, 0xC7, 0xF0,          // rdrand ax
+                                 0x0F, 0xC7, 0xF2,                // rdrand edx
+                                 0x49, 0x0F, 0xC7, 0xF7,          // rdrand r15
+                                 0x90, 0, 0, 0, 0, 0, 0, 0, 0};
+    CONTEXT c{};
+    c.Rax = 0x1122334455667788ull;
+    c.Rdx = 0xFFFFFFFFFFFFFFFFull;
+    c.EFlags = 0x8D4;
+    c.Rip = reinterpret_cast<DWORD64>(code);
+    CHECK(EmulateRandomInstruction(&c));   // r16: only the low 16 bits change
+    CHECK_EQ(c.Rip, reinterpret_cast<DWORD64>(code) + 4);
+    CHECK_EQ(c.Rax & ~0xFFFFull, 0x1122334455660000ull);
+    CHECK((c.EFlags & 0x8D5u) == 1u);
+    CHECK(EmulateRandomInstruction(&c));   // r32: the upper half is cleared
+    CHECK_EQ(c.Rip, reinterpret_cast<DWORD64>(code) + 7);
+    CHECK((c.Rdx >> 32) == 0);
+    CHECK(EmulateRandomInstruction(&c));   // r64 with REX.B: r15
+    CHECK_EQ(c.Rip, reinterpret_cast<DWORD64>(code) + 11);
+    CHECK((c.EFlags & 1u) == 1u);
+}
+
+// End to end through the scanner's test mode: an `rdrand eax` site becomes a ud2, the #UD handler (first in the list)
+// finds the original bytes, answers with random bytes and CF=1, and execution continues after the original instruction.
+TEST(dispatch_rdrand_forced_trap) {
+    InstallRandomInstructionEmulation();
+    auto* p = static_cast<std::uint8_t*>(VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    CHECK(p != nullptr);
+    if (!p) return;
+    // xor eax,eax ; rdrand ecx ; setc al ; shl rax,32 ; mov edx,ecx ; or rax,rdx ; ret   => (CF << 32) | value
+    const std::uint8_t body[] = {0x31, 0xC0, 0x0F, 0xC7, 0xF1, 0x0F, 0x92, 0xC0, 0x48, 0xC1, 0xE0, 0x20,
+                                 0x89, 0xCA, 0x48, 0x09, 0xD0, 0xC3};
+    std::memcpy(p, body, sizeof body);
+    DWORD old;
+    VirtualProtect(p, 4096, PAGE_EXECUTE_READWRITE, &old);
+    loader::ScanOptions so;
+    so.patch_cpuid = false; so.patch_rdtsc = false; so.patch_syscall = false;
+    so.trap_random = true;
+    so.handler = &CpuSiteHandler;
+    loader::ScanResult sr;
+    CHECK(loader::ScanAndPatchRange(p, sizeof body, so, &sr) == 0);
+    CHECK_EQ(sr.trapped, static_cast<std::size_t>(1));
+    CHECK(p[2] == 0x0F && p[3] == 0x0B);   // ud2
+    using Fn = std::uint64_t (*)();
+    std::uint64_t r = reinterpret_cast<Fn>(p)();
+    CHECK_EQ(r >> 32, static_cast<std::uint64_t>(1));   // CF set, and execution resumed after the 3-byte site
+    loader::ReleaseScanSites(p, sizeof body);
+    VirtualFree(p, 0, MEM_RELEASE);
+}
+
 // D18: the synthetic SMBIOS table parses the way wbemprox and Windows tools parse it, and the NtQuerySystemInformation
 // answer follows the SYSTEM_FIRMWARE_TABLE_INFORMATION protocol (too small -> the needed size, then the table).
 TEST(dispatch_smbios_table) {

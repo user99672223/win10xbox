@@ -358,6 +358,7 @@ NTSTATUS MapImageView(const std::shared_ptr<ImageSection>& sec, const MapOptions
     loader::ScanOptions so;
     so.patch_cpuid = config::Current().patch_cpuid;
     so.patch_rdtsc = true;
+    so.trap_random = ForceRandomTrap();
     so.patch_syscall = !view->stubs_rewritten;   // rewritten thunks no longer hold `syscall`
 #if WIN10XBOX_HAVE_CLOCK
     if (clock::VirtualSharedData()) {   // D18: the version block of KUSER_SHARED_DATA says 10.0.19045, not the host's build
@@ -442,7 +443,9 @@ const std::uint8_t* MainImageInfo() { return g_main_image ? g_main_image->info :
 NTSTATUS NTAPI Xl_NtCreateSection(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr, PLARGE_INTEGER size,
                                   ULONG protect, ULONG attributes, HANDLE file) {
     if (!(attributes & kSecImage) || !file)
-        return Host().NtCreateSection(handle, access, attr, size, protect, attributes, file);
+        return CreateNamedHostObject(L"Section", handle, attr, [&](POBJECT_ATTRIBUTES o, PHANDLE out) {
+            return Host().NtCreateSection(out, access, o, size, protect, attributes, file);
+        });
     // The attributes are optional, the handle is not; both are caller memory.
     if (NTSTATUS ps = probe::ProbeWrite(handle, sizeof(HANDLE))) return ps;
     probe::ObjectAttributes cap;
@@ -469,7 +472,9 @@ static NTSTATUS NTAPI Xl_NtCreateSectionEx(PHANDLE handle, ACCESS_MASK access, P
                                            PLARGE_INTEGER size, ULONG protect, ULONG attributes, HANDLE file,
                                            PVOID ext, ULONG ext_count) {
     if (!(attributes & kSecImage) || !file)
-        return Host().NtCreateSectionEx(handle, access, attr, size, protect, attributes, file, ext, ext_count);
+        return CreateNamedHostObject(L"Section", handle, attr, [&](POBJECT_ATTRIBUTES o, PHANDLE out) {
+            return Host().NtCreateSectionEx(out, access, o, size, protect, attributes, file, ext, ext_count);
+        });
     if (ext_count) FIXME(dispatch, "image section extended parameters ignored (%lu)", ext_count);
     return Xl_NtCreateSection(handle, access, attr, size, protect, attributes, file);
 }

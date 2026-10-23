@@ -43,8 +43,15 @@ for p in "${patches[@]}"; do
         git -C "$SRC" apply "$p"
         echo "fetch-wine: applied $name"
     else
-        echo "fetch-wine: ERROR $name neither applies nor is already applied" >&2
-        exit 1
+        # A restored cache can hold an older revision of a patch. Reset the tracked files to the tag and
+        # reapply the whole series in order.
+        echo "fetch-wine: $name neither applies nor is applied; resetting wine-src to $WINE_TAG and reapplying" >&2
+        git -C "$SRC" checkout -- .
+        for q in "${patches[@]}"; do
+            git -C "$SRC" apply "$q" || { echo "fetch-wine: ERROR $(basename "$q") does not apply to $WINE_TAG" >&2; exit 1; }
+            echo "fetch-wine: applied $(basename "$q")"
+        done
+        break
     fi
 done
 echo "fetch-wine: $WINE_TAG ready, ${#patches[@]} patch(es) in place"

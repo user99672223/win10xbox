@@ -322,7 +322,7 @@ objects, DCs, drawing).
 | `NtCreateFile`, `NtOpenFile`, `NtQueryAttributesFile`, `NtQueryFullAttributesFile`, `NtDeleteFile` | `OBJECT_ATTRIBUTES` through `vfs::TranslateObjectAttributes` (fallback without VFS: `\??\C:\` -> `machine_root`, E1 builtin rule for ntdll/kernel32/kernelbase). Names relative to a `RootDirectory` handle are untouched (host handles). |
 | `NtQueryInformationFile` | `FileNameInformation` / `FileNormalizedNameInformation` rewritten to the guest view. |
 | `NtLockFile`, `NtUnlockFile` | the `IoStatusBlock` contract differs between hosts. Wine's kernelbase calls `NtLockFile` with a NULL block; Windows answers `STATUS_ACCESS_VIOLATION`, so a Windows host gets a block of ours (heap; kept if the call comes back pending). Wine hosts refuse any block in `NtLockFile` (the guest's is filled in afterwards) and disagree on `NtUnlockFile` (Wine 9 wants NULL, Wine 11 dereferences it), which is tried with the block first and NULL second. |
-| `NtOpenDirectoryObject`, `NtOpenSymbolicLinkObject` | `\KnownDlls*` -> `STATUS_OBJECT_NAME_NOT_FOUND` (E3); others pass. |
+| `NtCreate/NtOpen/NtQuery DirectoryObject`, `NtCreate/NtOpen/NtQuery SymbolicLinkObject`, `NtQueryObject`, named `NtCreate/NtOpen Event/Mutant/Semaphore/Timer/Section/KeyedEvent/IoCompletion/JobObject` | the object manager namespace, see "Object manager namespace". `\KnownDlls*` -> `STATUS_OBJECT_NAME_NOT_FOUND` (E3). |
 | `NtCreateSection(Ex)` with `SEC_IMAGE` | file read through the host handle, `SECTION_IMAGE_INFORMATION` computed like Windows/Wine, emulated handle (`ObjectKind::ImageSection`). Other sections pass. |
 | `NtMapViewOfSection(Ex)` on our sections | `loader::MapImageFromMemory(ReserveOnly)` -> header `ImageBase` updated when relocated (Wine's `perform_relocations` relies on it) -> `RewriteSyscallStubs` -> `ScanAndPatch` (cpuid/rdtsc; raw `syscall` only when no stub was rewritten) -> `FinalizeProtections`. Returns `STATUS_IMAGE_NOT_AT_BASE` when relocated. |
 | `NtUnmapViewOfSection(Ex)`, `NtQuerySection`, `NtAreMappedFilesTheSame` | our views / sections; others pass. |
@@ -354,6 +354,67 @@ objects, DCs, drawing).
 | `NtQueryDefaultLocale`, `NtSetDefaultLocale`, `NtQueryDefaultUILanguage`, `NtSetDefaultUILanguage` | `nt_nls.cpp` locale state: set stores, query answers, nothing on the host changes. Starts at en-US (0x0409). Zero LCID or LANGID is `STATUS_INVALID_PARAMETER`. |
 | token `Nt*Token*`, `NtAccessCheck`, `NtPrivilegeCheck`, `NtQuerySecurityObject` (token handles) | `token::Tok_Nt*` |
 | `NtQueryPerformanceCounter`, `NtQuerySystemTime`, `NtSetSystemTime`, `NtDelayExecution`, `Nt{Query,Set}TimerResolution` | `clock::Clk_Nt*` |
+
+## Object manager namespace (`nt_object.cpp`, `ob_namespace.cpp`)
+
+What a Windows program sees of the object manager, kept in the layer so that it does not depend on what the host's own
+namespace allows (Wine's server has no `\Sessions`, the console's AppContainer may not open `\BaseNamedObjects`).
+
+**The tree.** `ob::Tree` (ob_namespace.cpp, pure, unit-tested) holds directory objects, symbolic links and kernel-provided
+leaves. Lookup follows `ObpLookupObjectName`: `STATUS_OBJECT_PATH_SYNTAX_BAD` (no leading `\` and no root, or a rooted name
+under a root handle), `STATUS_OBJECT_NAME_INVALID` (empty component, trailing `\` after an existing directory),
+`STATUS_OBJECT_PATH_NOT_FOUND` (a missing component with more path after it), `STATUS_OBJECT_NAME_NOT_FOUND` (missing leaf),
+`STATUS_OBJECT_TYPE_MISMATCH` (a link or a leaf used as a directory, a directory opened as another type), case sensitivity
+only with `OBJ_CASE_INSENSITIVE`, symbolic links followed in the middle of a name and at the end unless the caller asks
+for the link (`NtOpenSymbolicLinkObject`, `NtCreateSymbolicLinkObject`). A miss directly in the root `\` is not ours:
+the name goes to the host or the VFS as before (`\Device`, `\Registry`, `\KnownDlls`...), a link that leads there hands
+back the name to continue with.
+
+Layout, built at `Initialize` for the session in `PEB.SessionId` (host value; `<n>` below):
+
+```
+\                                  (listing = the tree + the host's own top-level directories)
+\BaseNamedObjects                  Global, Local (-> \BaseNamedObjects), Session (-> \Sessions\BNOLINKS)
+\Sessions\BNOLINKS\<n>             -> \Sessions\<n>\BaseNamedObjects
+\Sessions\<n>\BaseNamedObjects     Global (-> \BaseNamedObjects), Local (-> itself), Session
+\Sessions\<n>\AppContainerNamedObjects[\<sid>]    <sid> only when the host process is an AppContainer (the console)
+\KernelObjects  \ObjectTypes
+\??  (misses continue in \GLOBAL??)   \DosDevices -> \??
+\GLOBAL??                          drive letters from core/vfs (C: -> \Device\HarddiskVolume1...), PIPE, MAILSLOT, UNC, NUL,
+                                   GLOBALROOT (-> ""), Global
+```
+
+Directories and links created by a guest are nodes with a pin per handle: a temporary one disappears with its last handle
+(and a directory with its last child), `OBJ_PERMANENT` keeps it, `NtMakeTemporaryObject` ends that. Their handles are
+emulated (`ObjectKind::Directory` / `SymbolicLink`), so `NtClose`, `NtDuplicateObject` and `NtQueryObject` (basic, name,
+type with the host's real mappings and masks) are answered here. `NtQueryDirectoryObject` fills the real
+`OBJECT_DIRECTORY_INFORMATION` array (rows, an all-zero row, then the NUL-terminated strings) with Windows' `context`,
+`STATUS_MORE_ENTRIES`, `STATUS_NO_MORE_ENTRIES` and `STATUS_BUFFER_TOO_SMALL` rules (`ob::PackDirectoryEntries`).
+
+**Named kernel objects.** Events, mutexes, semaphores, timers, sections, keyed events, I/O completions, jobs and reserve
+objects are created by the host. A name that resolves to a free leaf in one of our directories becomes
+`<host named-object directory>\W10X<layer>!<escaped guest path>` (`ob::MangleName`: `\` -> `|`, `|` and `%` percent
+escaped; a path whose escaped form exceeds 200 characters is named `W10X<layer>#<hash>` and remembered by the process that
+used it). The host directory is the one the host itself uses for a `Local\` object, found at start-up with a probe event
+(`\Sessions\1\BaseNamedObjects` on a desktop, `\Sessions\<n>\AppContainerNamedObjects\<sid>` in the console's
+AppContainer, whatever Wine's server uses under Wine). The layer prefix is 16 hex digits: the first process of a
+program tree draws it and puts it in its host environment as `WIN10XBOX_OBJNS`, children get it with the other host-owned
+variables (`NtCreateUserProcess`), so a guest and the children it starts share one set of names and nothing else does.
+Waits, access checks, security and `OBJ_OPENIF` / `STATUS_OBJECT_NAME_EXISTS` / collision answers are the host's;
+arguments are checked before the name (an invalid event type is `STATUS_INVALID_PARAMETER` whatever the name), by asking
+the host about an unnamed object of the same kind. `NtQueryObject(ObjectNameInformation)` of such a handle decodes the host
+name back to the guest path, so a child sees the right name on an inherited handle too. A directory listing is the
+tree's children plus the host directory's objects that carry this layer's prefix (when the host lets the process list it)
+plus what this process holds open (when it does not).
+
+Limits. Directories and links a guest creates exist in that process only: a child sees the layout above and the named
+objects by their full guest path, but not a directory its parent made (the object under it is found only when the
+directory also exists in the child). `NtCreateDebugObject` stays `STATUS_NOT_SUPPORTED` (E6) and window stations are
+not objects (core/user), so the `om` unit stops there (docs/slices/om.md). `OBJ_PERMANENT` on a directory or link is
+honoured without the `SeCreatePermanentPrivilege` check. File names that go through the tree (`\BaseNamedObjects\x`, a
+name relative to one of our directory handles, a link the guest made in `\??`) are resolved here first
+(`ResolveFileNameThroughNamespace`, called from `TranslateOA`): a directory is `STATUS_OBJECT_TYPE_MISMATCH`, a name the
+tree does not know `STATUS_OBJECT_NAME_NOT_FOUND`, and a link that leads out (`\Device\Null`) continues with that name.
 
 ## Child processes (`NtCreateUserProcess`, D1/E7)
 

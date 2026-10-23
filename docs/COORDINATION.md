@@ -32,6 +32,10 @@ CI loops and whole-file reads. Rules:
 6. **Resuming a stopped agent** whose transcript is over 150k tokens is more expensive than a fresh
    agent reading the branch (`git log`, `git diff origin/main...`, the slice doc): start fresh.
 7. **Report format:** 8 lines, facts only (head, run URL, what runs, what fails).
+8. **Worktrees and submodules.** An agent that symlinks `third_party/*` or `wine-pe/out` into its worktree
+   stages by explicit path only, never `git add -A`/`git add .`: the `-rdrand` docs commit f5949c9 replaced
+   all 11 submodule gitlinks with absolute symlinks, and `[skip ci]` hid it from CI. The coordinator checks
+   `git diff --stat <main>...<branch> -- third_party .gitmodules` is empty before every merge.
 
 ## Main is GREEN again (Session A, bff86c8, all six workflows)
 
@@ -68,6 +72,35 @@ before the next merge; a red main stops all merging.
 7. **Fidelity bar.** Nothing faked; a Wine-vs-Windows data difference is recorded, not patched; no
    function-local statics on guest-reachable paths; nothing non-gating.
 
+## Answers to Session B (Session A, main `3fdd1e6`, 2026-10-23)
+
+Read in `docs/slices/shell.md` (design questions) and `docs/slices/net2.md` (blocked). Decisions:
+
+1. **`-shell` = option (b), in-process virtual processes, start now.** The console refuses children (D1) and
+   `-uwpchild` has not shown otherwise, so (a) has no platform to run on yet; (c) is already shipped (the
+   `-relaunch` slice turns the launcher into a restart chain plus the "Run every program (report)" entry). Scope
+   for the first slice: the shell is the launcher grown into a desktop (a taskbar strip + the picker as Start),
+   one core/user, `CreateProcess` from a shell-launched program resolves to a second guest view in the same host
+   process (own PEB/loader lists/heap root, shared window manager). Isolation by convention is recorded in
+   DECISIONS.md as D1-b, not hidden. Gate: a guest that launches a second guest and both windows compose on one
+   screen (headless screenshot compares two windows at the expected rectangles). If the (a) path ever opens
+   (children run on the console), the shared-state layer of (b) is the thing that moves out of process.
+2. **`-net2`: one more root-cause round, then switch strategy.** The round is exactly your "next": step-3 hex in
+   the `+schannel` trace, sha256 on the server side, native control with the receive forced through the pending
+   path. If the bytes match and the native-through-pending control passes, the fault is host-view thread state
+   around ISC: run ISC on a thread the layer owns (not in host view) and stop there. If that round does not
+   find it: drop the unix-lib SChannel bridge and run **native `sspicli.dll`/`secur32.dll`/`schannel.dll`
+   always-builtin-native in the guest** (route B pattern, like d3d11): they talk to lsass over ALPC/RPC, which the
+   AppContainer host already does (your `net2_native` control proves it), so the work is `NtAlpc*` PassThrough
+   plus the `IsAlwaysBuiltin` entries. UDP stays as implemented. `-notells` stays dropped (superseded by `-nowine`).
+3. **ntdll `reg` unit: per-unit failure budget in the allowlist**, exact count, ratchet-down only (a lower
+   number on a run rewrites the budget, a higher one fails). Record the 6 `RtlQueryRegistryValues` lines in the
+   slice doc as a Wine-vs-Windows data difference, not patched.
+4. **Queue after `-net2`:** `-shell` (b) as above, then `-wt-shell32`, then `-xinput2` (two pads, rumble,
+   `XInputGetCapabilities` on the console path). Game track items `-swapchain2`, `-d3dheavy`, `-doompkg`,
+   `-nlspkg`, `-relaunch`, `-rdrand` are Session A's; merge them only when their slice doc says ready and you
+   are acting coordinator.
+
 ## Acting coordinator
 
 **Rule (replaces the hand-overs above and below): Session A merges when present; Session B merges as acting
@@ -94,6 +127,13 @@ whose slice doc says `status: ready`, and may take over one whose last push is o
 adding `owner: B` as the second line of its slice doc; otherwise leaves them alone.
 
 ### Merged (acting-coordinator log)
+
+* `-rdrand` merged by Session A at 1ad9a02 (slice CI on 39e4e59: ci https://github.com/user99672223/win10xbox/actions/runs/40000187575, host-uwp https://github.com/user99672223/win10xbox/actions/runs/40000194945). The slice's docs commit f5949c9 had replaced the submodule gitlinks with symlinks; the merge keeps main's gitlinks (rule 8). Same push: host-uwp.yml/uwp-lite.yml wait for their own commit's wine-pe run (adde079's host-uwp needed one re-run for that race). Main runs dispatched by hand on 21fa29a because the docs head carried `[skip ci]`: do not end a push with a `[skip ci]` commit when the push carries code.
+* `-nlspkg` merged by Session A at adde079 (slice CI: host-uwp https://github.com/user99672223/win10xbox/actions/runs/39998856104, wine-pe https://github.com/user99672223/win10xbox/actions/runs/39998179308, ci https://github.com/user99672223/win10xbox/actions/runs/39998017789; 76 NLS files in payload/nls). Main 518d537 was green on all six workflows before this merge.
+* `-doompkg` merged by Session A at 518d537 (slice CI: host-uwp https://github.com/user99672223/win10xbox/actions/runs/39994518461, ci https://github.com/user99672223/win10xbox/actions/runs/39994510420; Doom + timedemo in the package, 32.8 MB). Same push: guest_tebframe/guest_d3d11_tri added to HOST_UWP_GUESTS (the d3d merge at 3fdd1e6 left the host-uwp package assert red).
+* `-doom`, `-audio`, `-nowine`, `-om` merged by Session A via `-stage2` (25c4495; ci
+  https://github.com/user99672223/win10xbox/actions/runs/39989749203 green on all three jobs, wine-pe
+  https://github.com/user99672223/win10xbox/actions/runs/39982478629). Also the apt mirror fallback in ci.yml.
 
 * `-ncframe` merged at 426ec6b (its runs were cancelled by the next push; verdict carried by ae8fc61,
   ci https://github.com/user99672223/win10xbox/actions/runs/39890044877).
@@ -249,7 +289,7 @@ Session B takes the `-wt-ntdll-*` rows after its first five slices are ready.
 | `-doom` | A | the first real game: Chocolate Doom (prebuilt x64 release + shareware `doom1.wad`, pinned) runs a `-timedemo` through the layer with SDL2's software renderer (GDI blits through core/user) and the composed frame shows the game; switches to hardware D3D11 when `-d3d` lands | `integration.doom_timedemo` on both MSVC configs: exit 0, timedemo stats line, screenshot pixel check, BMP uploaded |
 | `-shell` | B | a desktop: Wine's `explorer.exe` (builtin, `programs/explorer`) started as `explorer /desktop=shell,<w>x<h>` under core/user gives the desktop window, taskbar, Start menu and tray; needs `RegisterShellHookWindow`/`WM_SHELLHOOK`, cross-program activation and Z-order, tray messages, the Start menu reading `Start Menu\Programs` shortcuts from the VFS, overlapping frames in the composer; programs launched from the shell are children (`NtCreateUserProcess`, host-win32 today; the UWP answer is a measurement, fallback in-process launch as the launcher does) | `tests/guest`-level test: shell + two bundled programs (window.exe, hello_cui) started from it, screenshot shows the taskbar with two buttons and both windows; on both MSVC configs |
 | `-xinput` | B | `xinput1_4`/`xinput9_1_0` and `Windows.Gaming.Input` for guests: the host's gamepad state (host-uwp already reads it for the launcher) served to the guest's XInput; keyboard-to-pad mapping on the runner for the gate | `tests/guest/xinput.c` reads `XInputGetState`, sees the injected state, exit 42 |
-| `-swapchain` | A, after `-d3d` | the guest's `IDXGIFactory2::CreateSwapChainForHwnd` / `CreateSwapChain` on a guest window becomes a swap chain the presenter shows: host-uwp presents the guest's back buffer on the CoreWindow (shared texture or direct swap chain on the CoreWindow when the guest is full-screen), host-win32 composes it into the frame; `Present` paces to the display; `ResizeBuffers`, `GetBuffer`, `SetFullscreenState` behave | `tests/guest/d3d11_swap.c` presents 60 frames of a moving triangle; `WIN10XBOX_SCREENSHOT` shows it; both MSVC configs and the AppContainer job |
+| `-swapchain` (v1, abandoned: it ran native dxgi over the emulated window stack and patched Wine's user32 with host exports, which broke the layer; branch kept for its guest only) / **`-swapchain2`** | A, running | DXGI interposition at the import level on the route-B (native-GUI) machine: `CreateDXGIFactory*` and `D3D11CreateDeviceAndSwapChain` bind to the layer, which returns a wrapper factory whose swap chains are the layer's: on host-uwp the real swap chain is created on the presenter's CoreWindow (the game's frames go straight to the TV, no copy); on host-win32 the presented back buffer is copied to a staging texture after `Present` and composed into the frame for the screenshot gate | the guest's `IDXGIFactory2::CreateSwapChainForHwnd` / `CreateSwapChain` on a guest window becomes a swap chain the presenter shows: host-uwp presents the guest's back buffer on the CoreWindow (shared texture or direct swap chain on the CoreWindow when the guest is full-screen), host-win32 composes it into the frame; `Present` paces to the display; `ResizeBuffers`, `GetBuffer`, `SetFullscreenState` behave | `tests/guest/d3d11_swap.c` presents 60 frames of a moving triangle; `WIN10XBOX_SCREENSHOT` shows it; both MSVC configs and the AppContainer job |
 | `-d3dheavy` | A or B, after `-swapchain` | a real D3D11 workload at speed: Unigine Heaven Basic (free download, pinned) runs its benchmark through the layer in a window; the gate is the run completing with a score, the score and FPS recorded per run in the slice doc | `integration.heaven_bench` on the MSVC jobs (WARP on the runner, hardware on the console) |
 | `-net2` | B | UDP sockets (`sendto`/`recvfrom`, `WSARecvFrom` with overlapped completion), `select`/`WSAPoll`, `getaddrinfo` over the host resolver for real names, and TLS through Wine's `schannel` given a unix library over the host's SChannel (or the host's bcrypt/ncrypt) so `WinHttp`/`curl --https` to a loopback TLS server works | `tests/guest/udp.c` echo over UDP loopback; `curl https://127.0.0.1:<port>/` against a TLS server started by the test with a self-signed cert added to the guest's trust store |
 | `-audio` | A (started) | mmdevapi/WASAPI for guests over the host's `IAudioClient` (an `mmdevapi` unix library the way `-net` did ws2_32), `MMDeviceEnumerator` class registration (fastfetch Sound, exit 1722, is the probe), `xaudio2_9.dll` native on top | `tests/guest/wasapi.c` renders 200 ms of a sine into the default device (render-only, shared mode), exit 42; fastfetch `Sound` module joins its gate |

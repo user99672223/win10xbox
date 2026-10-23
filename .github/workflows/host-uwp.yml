@@ -71,7 +71,23 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
           $id = $null
+          # Prefer the wine-pe run of THIS commit (wine-pe/ or wine-pe.yml changed in the push) and wait while it
+          # runs, so a new wine-pe.yml (a new artifact, a new DLL) is never paired with an older run's artifacts;
+          # that pairing is what failed run 40003374002 (no wine-pe-nls on the previous run). No run for this
+          # commit = wine-pe did not change: the newest successful run on the branch is the right one.
+          foreach ($attempt in 1..40) {
+            $own = @(gh run list --repo ${{ github.repository }} --workflow wine-pe.yml --commit ${{ github.sha }} --limit 1 --json databaseId,status,conclusion 2>$null | ConvertFrom-Json)
+            if ($own.Count -eq 0) { break }
+            if ($own[0].status -eq 'completed') {
+              if ($own[0].conclusion -eq 'success') { $id = $own[0].databaseId }
+              else { Write-Host "wine-pe run $($own[0].databaseId) for this commit ended $($own[0].conclusion); falling back to the newest successful run" }
+              break
+            }
+            Write-Host "attempt ${attempt}: wine-pe run $($own[0].databaseId) for this commit is $($own[0].status); waiting 60s"
+            Start-Sleep -Seconds 60
+          }
           foreach ($attempt in 1..3) {
+            if ($id) { break }
             foreach ($scope in @("--branch ${{ github.ref_name }}", "")) {
               $args = @('run','list','--repo','${{ github.repository }}','--workflow','wine-pe.yml',
                         '--status','success','--limit','1','--json','databaseId','--jq','.[0].databaseId')
@@ -100,6 +116,33 @@ jobs:
             exit 1
           }
           Write-Host "downloaded wine-pe-builtin from run $id ($n DLLs, ntdll.dll present)"
+          # The NLS data (same run): bundled as payload/nls so the package does not need the target's System32.
+          New-Item -ItemType Directory -Force -Path wine-pe/out/nls | Out-Null
+          foreach ($attempt in 1..3) {
+            gh run download $id --repo ${{ github.repository }} --name wine-pe-nls --dir wine-pe/out/nls
+            if ((Get-ChildItem wine-pe/out/nls -Filter *.nls -ErrorAction SilentlyContinue).Count -gt 0) { break }
+            Write-Host "attempt ${attempt}: NLS download produced no files; retrying in $(5 * $attempt)s"
+            Start-Sleep -Seconds (5 * $attempt)
+          }
+          $nn = (Get-ChildItem wine-pe/out/nls -Filter *.nls -ErrorAction SilentlyContinue).Count
+          if ($nn -eq 0) {
+            Write-Host "::error::wine-pe run $id has no wine-pe-nls artifact (or it is empty). Dispatch wine-pe.yml on this branch first. Failing rather than publishing a package whose guests crash in RtlInitNlsTables."
+            exit 1
+          }
+          Write-Host "downloaded wine-pe-nls from run $id ($nn files)"
+
+      # Chocolate Doom 3.1.1 + SDL2 DLLs + the shareware doom1.wad (about 10 MB), pinned by SHA-256 and verified on every
+      # run (tools/ci/fetch_doom.ps1, same pins and cache key as ci.yml). Staged flat into payload\guest by stage.cmake
+      # (-DHOST_UWP_EXTRA_GUEST_DIR); the sidecars (chocolate-doom.args/.env/.title, doom-timedemo.launch) are in
+      # host-uwp/payload/guest. docs/slices/doompkg.md.
+      - name: Cache Chocolate Doom and doom1.wad
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/doom-src
+          key: doom-3.1.1-58c34c61ae954493fce5ff01fd553898240a0de25658aa97b43ac9510c49581f-wad-1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771
+      - name: Fetch Chocolate Doom 3.1.1 and doom1.wad (packaged guest)
+        shell: pwsh
+        run: ./tools/ci/fetch_doom.ps1 -Out "${{ runner.temp }}/doom-guest"
 
       # Mirror ci.yml's proven windows Configure. No -DCMAKE_POLICY_VERSION_MINIMUM:
       # ci.yml builds the same third_party/zydis + core/ on this runner without it,
@@ -116,6 +159,7 @@ jobs:
           -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
           -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
           -DHOST_UWP_PACKAGE_VERSION=1.0.0.${{ github.run_number }}
+          -DHOST_UWP_EXTRA_GUEST_DIR=${{ runner.temp }}\doom-guest
       - name: Build
         env: { SCCACHE_GHA_ENABLED: "true" }
         run: cmake --build build-uwp -- -k 0   # keep going so all compile errors surface in one run
@@ -176,6 +220,13 @@ jobs:
             Write-Host "::error::the package bundles $n builtin DLL(s) and ntdll.dll present=$ntdll, so it CANNOT run a guest: the host fails at startup with 'no Wine PE builtins in the machine folder'. That is exactly what shipped in run 39809498419 and wasted an on-hardware test. Failing instead of publishing it."
             exit 1
           }
+          $nlsNeeded = @('l_intl.nls','c_10000.nls','c_1252.nls','locale.nls','sortdefault.nls')
+          $nlsMissing = @($nlsNeeded | Where-Object { -not (Test-Path "$stage/payload/nls/$_") })
+          Write-Host ("packaged NLS: " + @(Get-ChildItem "$stage/payload/nls" -Filter *.nls -ErrorAction SilentlyContinue).Count + " file(s); missing: " + ($nlsMissing -join ', '))
+          if ($nlsMissing.Count -gt 0) {
+            Write-Host "::error::the package lacks NLS file(s) $($nlsMissing -join ', ') (payload/nls): every guest crashes in Wine's RtlInitNlsTables on a console whose System32 does not have them. Failing instead of publishing it."
+            exit 1
+          }
           if ($mb -lt 10) {
             Write-Host "::error::package is only $mb MB; a complete one is about 21 MB. The builtins are probably missing from the payload even though the staging directory has them."
             exit 1
@@ -188,11 +239,20 @@ jobs:
                         'guest_window_scroll.exe', 'guest_window_text.exe', 'guest_window_hooks.exe', 'guest_window_nc.exe', 'smoke.exe',
                         'guest_spawn.exe', 'guest_dialog.exe', 'guest_comctl.exe', 'guest_clipboard.exe',
                         'guest_seh.exe', 'guest_seh_dll.dll', 'guest_gdi_bitmap.exe', 'guest_window_menu.exe', 'guest_xinput.exe',
-                        'guest_cursor.exe', 'guest_regpersist.exe', 'guest_identity.exe')
+                        'guest_cursor.exe', 'guest_regpersist.exe', 'guest_identity.exe',
+                        'guest_net.exe', 'guest_wasapi.exe', 'guest_xaudio2.exe', 'guest_nowine.exe', 'guest_named_objects.exe', 'guest_rdrand.exe')
           $missing = @($expected | Where-Object { -not (Test-Path "$stage/payload/guest/$_") })
           Write-Host ("bundled guests: " + (@(Get-ChildItem "$stage/payload/guest" -File | ForEach-Object { $_.Name }) -join ', '))
           if ($missing.Count -gt 0) {
             Write-Host "::error::the package is missing bundled guest(s): $($missing -join ', ')"
+            exit 1
+          }
+          # Chocolate Doom is not a tests/guest program: it comes from fetch_doom.ps1 plus the sidecars, checked by name.
+          $doom = @('chocolate-doom.exe', 'doom1.wad', 'SDL2.dll', 'chocolate-doom.args', 'chocolate-doom.env',
+                    'chocolate-doom.title', 'doom-timedemo.launch')
+          $missingDoom = @($doom | Where-Object { -not (Test-Path "$stage/payload/guest/$_") })
+          if ($missingDoom.Count -gt 0) {
+            Write-Host "::error::the package is missing Chocolate Doom file(s): $($missingDoom -join ', ')"
             exit 1
           }
           # Our own builtin DLLs (guest-dlls/): the XInput DLL under its three names.
@@ -234,9 +294,15 @@ jobs:
           $lines = @('### host-uwp package contents', "- package size: $mb MB (budget 500 MB)", "- guests: $($want -join ', ')", '', '| dir | files | MB |', '|---|---|---|')
           $lines += @($groups | ForEach-Object { "| $($_.Dir) | $($_.Files) | $($_.MB) |" })
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          $doomMissing = @('chocolate-doom.exe', 'doom1.wad', 'SDL2.dll', 'chocolate-doom.args', 'chocolate-doom.env',
+                           'chocolate-doom.title', 'doom-timedemo.launch') | Where-Object { $entries -notcontains "payload/guest/$_" }
           if ($entries -notcontains 'payload/guests.txt') { Write-Host '::error::payload/guests.txt manifest missing from package'; exit 1 }
+          foreach ($f in 'l_intl.nls','c_10000.nls','c_1252.nls','locale.nls','sortdefault.nls') {
+            if ($entries -notcontains "payload/nls/$f") { Write-Host "::error::payload/nls/$f missing from the .msix"; exit 1 }
+          }
           if (-not ($entries | Where-Object { $_ -like 'payload/builtin/*.dll' })) { Write-Host '::error::no Wine builtins in package'; exit 1 }
           if ($missing.Count -gt 0) { Write-Host "::error::guest(s) missing from the .msix: $($missing -join ', ')"; exit 1 }
+          if ($doomMissing) { Write-Host "::error::Chocolate Doom file(s) missing from the .msix: $($doomMissing -join ', ')"; exit 1 }
           if ($mb -gt 500) { Write-Host "::error::package is $mb MB, over the 500 MB sideload budget"; exit 1 }
 
       # Upload whenever a package exists, even if the selftest step failed (the job is then
@@ -423,6 +489,14 @@ jobs:
             Get-Content -Path $status | ForEach-Object { Write-Host $_ }
             $first = (Get-Content -Path $status -TotalCount 1)
           }
+          # Which source served each NLS file: nls-pkg = the package's payload/nls, nls = copied from the runner's own
+          # System32 (a fallback that would mask a package without NLS; there must be none). The guest-side reads come
+          # only from LocalState\machine (nt_nls.cpp has no host-System32 fallback).
+          Write-Host '--- NLS staging lines (stage[nls-pkg] = package, stage[nls] = host System32 fallback) ---'
+          $nlsLines = @(Get-ChildItem -Path $ls -File -ErrorAction SilentlyContinue | ForEach-Object { Select-String -Path $_.FullName -Pattern 'stage\[nls(-pkg)?\]' -ErrorAction SilentlyContinue } | ForEach-Object { $_.Line })
+          $nlsLines | Select-Object -First 40 | ForEach-Object { Write-Host $_ }
+          $fromHost = @($nlsLines | Where-Object { $_ -match 'stage\[nls\].*: copied' })
+          if ($fromHost.Count -gt 0) { Write-Host "::warning::$($fromHost.Count) NLS file(s) came from the runner's System32, not the package" }
           foreach ($f in 'crash.txt') {
             $p = Join-Path $ls $f
             if (Test-Path $p) { Write-Host "--- $f (first 60 lines) ---"; Get-Content -Path $p -TotalCount 60 | ForEach-Object { Write-Host $_ } }

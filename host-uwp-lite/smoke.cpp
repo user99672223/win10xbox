@@ -524,10 +524,27 @@ StageResult StageMachine(const std::wstring& local_state, const std::wstring& ma
     for (const std::wstring& f : ListFiles(payload + L"\\guest"))
         StageOne(r.guest, "guest", payload + L"\\guest\\" + f, machine + L"\\guest\\" + f, f);
 
-    // Genuine NLS data, by name
     const std::wstring dst_sys32 = machine + L"\\Windows\\System32\\";
+    // NLS data bundled in the package (payload\\nls, Wine's own files): self-contained, tried first. A name served
+    // from the package is not fetched from the host's System32 again (the sizes could differ and overwrite it).
+    std::vector<std::wstring> packaged_nls;
+    for (const std::wstring& f : ListFiles(payload + L"\\nls"))
+    {
+        const bool sort = _wcsicmp(f.c_str(), L"sortdefault.nls") == 0;
+        const std::wstring dst = sort ? machine + L"\\Windows\\Globalization\\Sorting\\" + f : dst_sys32 + f;
+        StageOne(r.nls, "nls-pkg", payload + L"\\nls\\" + f, dst, f);
+        packaged_nls.push_back(f);
+    }
+    auto from_package = [&](const std::wstring& n) {
+        for (const std::wstring& p : packaged_nls)
+            if (_wcsicmp(p.c_str(), n.c_str()) == 0) return true;
+        return false;
+    };
+
+    // Genuine NLS data from the host's System32, by name (fallback for what the package does not carry)
     for (const wchar_t* name : kNlsRequired)
     {
+        if (from_package(name)) continue;
         Copy c = StageOne(r.nls, "nls", sys32 + L"\\" + name, dst_sys32 + name, name);
         if (c == Copy::Missing || c == Copy::Failed) r.required_missing.push_back(Narrow(name));
     }
@@ -535,8 +552,10 @@ StageResult StageMachine(const std::wstring& local_state, const std::wstring& ma
     {
         wchar_t name[32];
         std::swprintf(name, 32, L"c_%03u.nls", cp);
+        if (from_package(name)) continue;
         StageOne(r.nls, "nls", sys32 + L"\\" + name, dst_sys32 + name, name);
     }
+    if (!from_package(L"sortdefault.nls"))
     {
         // sortdefault.nls lives in C:\Windows\Globalization\Sorting (System32 as fallback, same as the emulation)
         const std::wstring dst = machine + L"\\Windows\\Globalization\\Sorting\\sortdefault.nls";

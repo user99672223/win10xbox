@@ -12,6 +12,7 @@
 #   AppxManifest.xml  win10xbox-uwp.exe  Win10XboxUwp.winmd  Assets\*.png
 #   payload\machine.json  payload\launch.json  payload\launch.example.json
 #   payload\guest\* (every file of GUESTS: window.exe, hello.exe, ...)
+#   payload\nls\*.nls (Wine NLS data, -DNLS_DIR=<wine-pe/out/nls>)
 #   payload\builtin\*.dll (+ LICENSE.wine, MANIFEST.txt)
 # At run time host_stage.cpp (StageMachineFiles) copies payload\builtin and payload\guest into
 # LocalState\machine, StageMachineJson copies payload\machine.json (never over an existing one),
@@ -71,6 +72,32 @@ foreach(_g IN LISTS _guests)
 endforeach()
 file(WRITE "${STAGE}/payload/guests.txt" "${_list}")
 
+# Files that are not built here: the sidecars (.args/.env/.title/.launch, host-uwp/payload/guest/) and, when
+# EXTRA_GUEST_DIR is given, everything in it (Chocolate Doom, its DLLs and the WAD). Not listed in guests.txt.
+set(_extra "")
+if(EXISTS "${PAYLOAD_DIR}/guest")
+  file(GLOB _side "${PAYLOAD_DIR}/guest/*")
+  list(APPEND _extra ${_side})
+endif()
+if(NOT "${EXTRA_GUEST_DIR}" STREQUAL "")
+  if(NOT IS_DIRECTORY "${EXTRA_GUEST_DIR}")
+    message(FATAL_ERROR "stage.cmake: EXTRA_GUEST_DIR ${EXTRA_GUEST_DIR} is not a directory")
+  endif()
+  file(GLOB _more "${EXTRA_GUEST_DIR}/*")
+  list(APPEND _extra ${_more})
+endif()
+foreach(_f IN LISTS _extra)
+  if(NOT IS_DIRECTORY "${_f}")
+    get_filename_component(_n "${_f}" NAME)
+    if(EXISTS "${STAGE}/payload/guest/${_n}")
+      message(FATAL_ERROR "stage.cmake: extra guest file ${_n} collides with a bundled guest")
+    endif()
+    file(COPY_FILE "${_f}" "${STAGE}/payload/guest/${_n}")
+  endif()
+endforeach()
+list(LENGTH _extra _nx)
+message(STATUS "stage.cmake: ${_nx} extra guest file(s) (sidecars, fetched programs)")
+
 if(NOT "${MACHINE_JSON}" STREQUAL "" AND EXISTS "${MACHINE_JSON}")
   file(COPY_FILE "${MACHINE_JSON}" "${STAGE}/payload/machine.json")
 endif()
@@ -122,4 +149,24 @@ if(_nw EQUAL 0)
 else()
   message(STATUS "stage.cmake: bundled ${_nw} Wine PE builtin DLLs from ${BUILTIN_DIR}")
 endif()
+# Wine NLS data (LGPL-2.1+; the wine-pe-nls CI artifact): payload\nls\*.nls. The host copies it into
+# LocalState\machine\Windows\System32 (sortdefault.nls into ...\Globalization\Sorting) at first run, where the
+# emulated NtGetNlsSectionPtr reads it. Without it the package depends on the console's own System32 (it has none).
+set(_nn 0)
+if(NOT "${NLS_DIR}" STREQUAL "" AND IS_DIRECTORY "${NLS_DIR}")
+  file(MAKE_DIRECTORY "${STAGE}/payload/nls")
+  file(GLOB _nls "${NLS_DIR}/*.nls")
+  foreach(_f IN LISTS _nls)
+    get_filename_component(_n "${_f}" NAME)
+    file(COPY_FILE "${_f}" "${STAGE}/payload/nls/${_n}")
+    math(EXPR _nn "${_nn} + 1")
+  endforeach()
+endif()
+if(_nn EQUAL 0)
+  message(WARNING "stage.cmake: no NLS files in '${NLS_DIR}'. The package is produced without payload/nls and every "
+                  "guest crashes in RtlInitNlsTables on a console whose System32 lacks l_intl.nls/c_10000.nls.")
+else()
+  message(STATUS "stage.cmake: bundled ${_nn} NLS files from ${NLS_DIR}")
+endif()
+
 message(STATUS "stage.cmake: AppX layout ready in ${STAGE}")

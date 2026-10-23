@@ -244,6 +244,20 @@ std::vector<std::wstring> DefaultEnvironment() {
     return env;
 }
 
+// Wine's advapi32 answers GetUserNameW from the WINEUSERNAME variable, which Wine's server puts into every process
+// environment, not from the token. Without it GetUserNameW fails and shell32's %USERPROFILE% expansion (SHGetFolderPath,
+// so SDL_GetPrefPath, so every program's %APPDATA% directory) builds a path with a garbage user name. A child's inherited guest
+// environment has no WINE* entry (nt_spawn.cpp keeps them host-owned), so the entry is added here for every process.
+void EnsureWineUserName(std::vector<std::wstring>* env) {
+    for (const std::wstring& e : *env)
+        if (e.size() > 13 && _wcsnicmp(e.c_str(), L"WINEUSERNAME=", 13) == 0) return;
+#if WIN10XBOX_HAVE_TOKEN
+    env->push_back(L"WINEUSERNAME=" + token::UserName());
+#else
+    env->push_back(L"WINEUSERNAME=User");
+#endif
+}
+
 std::wstring DefaultCurrentDirectory() {
 #if WIN10XBOX_HAVE_VFS
     return vfs::GuestUserProfile();
@@ -411,11 +425,11 @@ NTSTATUS MapGuestNtdll(const std::wstring& root) {
     InstallTebFrameDispatch();
 
     void* base = view->image.base;
-    if (auto* p = static_cast<void**>(loader::FindExport(base, "__wine_unix_call_dispatcher")))
+    if (auto* p = static_cast<void**>(loader::FindExportByOrdinal(base, wine_ordinal::kUnixCallDispatcher)))
         *p = reinterpret_cast<void*>(&UnixCallDispatcher);
     else
-        ERR(process, "guest ntdll has no __wine_unix_call_dispatcher: not a Wine PE ntdll?");
-    if (auto* p = static_cast<std::uint64_t*>(loader::FindExport(base, "__wine_unixlib_handle")))
+        ERR(process, "guest ntdll has no unix call dispatcher (ordinal %u): not our Wine PE ntdll?", static_cast<unsigned>(wine_ordinal::kUnixCallDispatcher));
+    if (auto* p = static_cast<std::uint64_t*>(loader::FindExportByOrdinal(base, wine_ordinal::kUnixlibHandle)))
         *p = NtdllUnixLibHandle();
     G().ldr_init = reinterpret_cast<PFN_LdrInitializeThunk>(loader::FindExport(base, "LdrInitializeThunk"));
     G().user_thread_start = loader::FindExport(base, "RtlUserThreadStart");
@@ -482,6 +496,7 @@ NTSTATUS BuildProcessParameters(const LaunchOptions& o, const std::wstring& imag
     std::wstring curdir = o.current_directory.empty() ? DefaultCurrentDirectory() : o.current_directory;
     if (curdir.empty() || curdir.back() != L'\\') curdir += L'\\';
     std::vector<std::wstring> env = o.environment.empty() ? DefaultEnvironment() : o.environment;
+    EnsureWineUserName(&env);
     auto& block = G().environment;
     block.clear();
     for (auto& e : env) { block.insert(block.end(), e.begin(), e.end()); block.push_back(0); }
@@ -650,6 +665,12 @@ int Launch(const LaunchOptions& opts) {
         const DWORD n = GetEnvironmentVariableW(L"WIN10XBOX_TEST_LEAK_GUEST_ACTCTX", v, 8);
         g.leak_actctx = n != 0 && n < 8 && v[0] != L'0';
     }
+    {
+        // Test hook, latched here for the same reason: rdrand/rdseed sites become ud2 so the emulation runs on a CPU that has them.
+        wchar_t v[8];
+        const DWORD n = GetEnvironmentVariableW(L"WIN10XBOX_TEST_FORCE_RDRAND_TRAP", v, 8);
+        SetForceRandomTrap(n != 0 && n < 8 && v[0] != L'0');
+    }
 #if WIN10XBOX_HAVE_VFS
     {
         CpuPolicy cp;
@@ -701,11 +722,12 @@ int Launch(const LaunchOptions& opts) {
         const CpuPolicy cp = GetCpuPolicy();
         vendor = cp.vendor.empty() ? std::string("AuthenticAMD") : cp.vendor;
         dispatch::detail::BuildFirmwareTables(vendor);
-        if (cp.advertise_rdrand) InstallRandomInstructionEmulation();
+        if (cp.advertise_rdrand || ForceRandomTrap()) InstallRandomInstructionEmulation();
     }
 #if WIN10XBOX_HAVE_AFD
     afd::PrimeHost();   // before the PEB take-over (see afd.h)
 #endif
+    PrimeAudio(root);   // the host audio thread and stack, likewise before the take-over (unix_mmdevapi.cpp)
     RegisterNtdllUnixLib();
 
     if ((s = MapGuestNtdll(root))) return static_cast<int>(s);
