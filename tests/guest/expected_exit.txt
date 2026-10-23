@@ -52,7 +52,7 @@ guest_xaudio2.exe 42=endpoint 43=no-endpoint
 # Gamepad: 42 with a pad, 1 after the 30 s wait without one
 guest_xinput.exe 42=pad 1=no-pad
 
-# d3d11.dll does not load under the launcher (error 126): separate slice
+# Off-screen D3D11 on machine-native-d3d (guest_d3d11_tri.machine); 10 = d3d11.dll did not load (no D3D machine)
 guest_d3d11_tri.exe 42=d3d11 10=no-d3d11
 # Dear ImGui's example on machine-native-d3d (guest_imgui_d3d11.machine): 60 frames, then its normal shutdown returns 0.
 guest_imgui_d3d11.exe 0=frames KNOWNFAIL=-2147483392:uwp-no-hwnd-swapchain(-uwpswap)
