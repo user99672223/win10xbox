@@ -1,0 +1,63 @@
+win10xbox: LsaGetUserName allocates the string and its buffer separately
+
+Windows' LsaGetUserName returns a UNICODE_STRING whose Buffer is its own allocation: callers free the Buffer
+with RtlFreeUnicodeString() and the string with LsaFreeMemory() (fastfetch does exactly that). Wine allocated both
+in one block, so the first free released an interior pointer, which a Windows heap (the host heap the layer
+forwards RtlFreeHeap to) reports as STATUS_HEAP_CORRUPTION. The user and the domain string each get their own
+Buffer allocation now.
+
+diff --git a/dlls/advapi32/lsa.c b/dlls/advapi32/lsa.c
+index 5ca7273..460202a 100644
+--- a/dlls/advapi32/lsa.c
++++ b/dlls/advapi32/lsa.c
+@@ -143,14 +143,23 @@ NTSTATUS WINAPI LsaGetUserName(PUNICODE_STRING *user_name, PUNICODE_STRING *doma
+     if (GetUserNameW(NULL, &user_size) || GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+        return STATUS_UNSUCCESSFUL;
+ 
+-    user = malloc(sizeof(*user) + user_size * sizeof(WCHAR));
++    /* Windows allocates the string and its Buffer separately: callers (fastfetch) free the Buffer with
++     * RtlFreeUnicodeString() and the string with LsaFreeMemory(), and a block with the Buffer inside it
++     * makes the first of the two free an interior pointer. */
++    user = malloc(sizeof(*user));
+     if (!user) return STATUS_NO_MEMORY;
+ 
+-    user->Buffer = (WCHAR *)(user + 1);
++    user->Buffer = malloc(user_size * sizeof(WCHAR));
++    if (!user->Buffer)
++    {
++        free(user);
++        return STATUS_NO_MEMORY;
++    }
+     user->MaximumLength = user_size * sizeof(WCHAR);
+     user->Length = user->MaximumLength - sizeof(WCHAR);
+     if (!GetUserNameW(user->Buffer, &user_size))
+     {
++        free(user->Buffer);
+         free(user);
+         return STATUS_UNSUCCESSFUL;
+     }
+@@ -164,18 +173,21 @@ NTSTATUS WINAPI LsaGetUserName(PUNICODE_STRING *user_name, PUNICODE_STRING *doma
+         domain_size = ARRAY_SIZE(computer);
+         if (!GetComputerNameW(computer, &domain_size))
+         {
++            free(user->Buffer);
+             free(user);
+             return STATUS_UNSUCCESSFUL;
+         }
+ 
+-        domain = malloc(sizeof(*domain) + (domain_size + 1) * sizeof(WCHAR));
+-        if (!domain)
++        domain = malloc(sizeof(*domain));
++        if (domain) domain->Buffer = malloc((domain_size + 1) * sizeof(WCHAR));
++        if (!domain || !domain->Buffer)
+         {
++            free(domain);
++            free(user->Buffer);
+             free(user);
+             return STATUS_NO_MEMORY;
+         }
+ 
+-        domain->Buffer = (WCHAR *)(domain + 1);
+         domain->Length = domain_size * sizeof(WCHAR);
+         domain->MaximumLength = domain->Length + sizeof(WCHAR);
+         wcscpy(domain->Buffer, computer);

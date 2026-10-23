@@ -409,7 +409,7 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   set(_guest_args "-iwad;C:\\guest\\doom1.wad;-nosound;-nomusic;-nomouse;-window;-geometry;640x400;-nogui;-timedemo;demo1")
   set(_guest_debug "-all,err+all,fixme+all")
   set(_guest_run_timeout 280)
-  set(_guest_expect_trace "timed [0-9]+ gametics in [0-9]+ realtics;shot: distinct=([3-9]|[1-9][0-9]+) written=1")
+  set(_guest_expect_trace "timed [0-9]+ gametics in [0-9]+ realtics \\([0-9.]+ fps\\);shot: distinct=([3-9]|[1-9][0-9]+) written=1")
   set(_guest_forbid_trace "TIMEOUT")
   win10xbox_guest_test(doom_timedemo "C:\\guest\\chocolate-doom.exe" -1 "Chocolate Doom 3\\.1\\.1" "adding C:.guest.doom1\\.wad" "Playing demo demo1")
   set_tests_properties(integration.doom_timedemo PROPERTIES

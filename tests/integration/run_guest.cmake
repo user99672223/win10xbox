@@ -71,6 +71,12 @@ execute_process(COMMAND ${EMULATOR} "${HOST}" --machine "${_machine}" "${_progra
                 RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT ${_timeout})
 # Before the guest's output: ctest keeps only the first 1024 bytes of a passing test's output.
 set(_builtin_fail "")
+# What the trace checks matched, first: ctest keeps only the first 1024 bytes of a passing test's output.
+foreach(re ${EXPECT_TRACE_REGEX})
+  if(err MATCHES "${re}")
+    message("trace: ${CMAKE_MATCH_0}")
+  endif()
+endforeach()
 if(REQUIRE_BUILTIN_DLLS)
   # trace:modules:Xl_NtCreateSection section <h>: C:\Windows\System32\x.dll (<n> bytes, host path <path>)
   string(REGEX MATCHALL "C:\\\\Windows\\\\System32\\\\[^ \\\\]+ \\([0-9]+ bytes, host path [^)\n]+\\)" _maps "${err}")
