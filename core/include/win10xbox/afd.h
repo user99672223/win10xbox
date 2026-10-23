@@ -16,6 +16,12 @@ NTSTATUS Open(PHANDLE handle, PIO_STATUS_BLOCK io);
 // WSAStartup on the host Winsock, once per process (ws2_32's unix calls need it before any socket exists).
 void EnsureWinsock();
 
+// Loads everything the host Winsock fetches lazily (mswsock, the name-resolution providers, dnsapi, nsi...) by doing one
+// throw-away socket of each kind and one lookup. Must run before the PEB take-over: afterwards the host's loader
+// state (PEB.Ldr, activation context) is the guest's and a host LoadLibrary from inside a Winsock call fails, which
+// shows up as WSAHOST_NOT_FOUND for "localhost". Failures are ignored here (no network capability is not an error).
+void PrimeHost();
+
 bool IsSocketHandle(HANDLE h);
 NTSTATUS Close(HANDLE h);   // closes the host socket and the emulated handle
 

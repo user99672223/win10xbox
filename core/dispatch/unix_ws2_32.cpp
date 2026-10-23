@@ -77,8 +77,12 @@ NTSTATUS WINAPI U_getaddrinfo(void* args) {
     addrinfo* res = nullptr;
     const int rc = ::getaddrinfo(p->node, service, p->hints ? &hints : nullptr, &res);
     if (rc) {
-        TRACE(dispatch, "ws2_32 unix getaddrinfo(%s, %s) -> host error %d", p->node ? p->node : "(null)",
-              service ? service : "(null)", rc);
+        addrinfo num_hints{}, *num = nullptr;
+        num_hints.ai_flags = AI_NUMERICHOST;
+        const int num_rc = ::getaddrinfo("127.0.0.1", nullptr, &num_hints, &num);   // diagnostic: is the host resolver alive?
+        if (num) ::freeaddrinfo(num);
+        TRACE(dispatch, "ws2_32 unix getaddrinfo(%s, %s) -> host error %d (numeric 127.0.0.1 -> %d, GetLastError %lu)",
+              p->node ? p->node : "(null)", service ? service : "(null)", rc, num_rc, GetLastError());
         return rc;
     }
     size_t need = 0;

@@ -12,6 +12,9 @@
 #if WIN10XBOX_HAVE_CLOCK
 #include "win10xbox/clock.h"
 #endif
+#if WIN10XBOX_HAVE_AFD
+#include "win10xbox/afd.h"
+#endif
 #if WIN10XBOX_HAVE_TOKEN
 #include "win10xbox/token.h"
 #endif
@@ -605,6 +608,9 @@ int Launch(const LaunchOptions& opts) {
     }
 #else
     LoadCpuPolicy(root);
+#endif
+#if WIN10XBOX_HAVE_AFD
+    afd::PrimeHost();   // before the PEB take-over (see afd.h)
 #endif
     RegisterNtdllUnixLib();
 

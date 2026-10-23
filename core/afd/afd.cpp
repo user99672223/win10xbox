@@ -411,6 +411,29 @@ void EnsureWinsock() {
     }
 }
 
+void PrimeHost() {
+    EnsureWinsock();
+    const struct { int family, type, protocol; } kinds[] = {
+        {AF_INET, SOCK_STREAM, IPPROTO_TCP}, {AF_INET, SOCK_DGRAM, IPPROTO_UDP}, {AF_INET6, SOCK_STREAM, IPPROTO_TCP}};
+    for (const auto& k : kinds) {
+        SOCKET s = ::socket(k.family, k.type, k.protocol);
+        if (s != INVALID_SOCKET) ::closesocket(s);
+    }
+    addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    addrinfo* res = nullptr;
+    if (::getaddrinfo("localhost", "0", &hints, &res) == 0) {
+        sockaddr_in lo{};
+        lo.sin_family = AF_INET;
+        lo.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        char host[NI_MAXHOST];
+        ::getnameinfo(reinterpret_cast<sockaddr*>(&lo), sizeof lo, host, sizeof host, nullptr, 0, 0);
+        ::freeaddrinfo(res);
+    }
+    TRACE(dispatch, "host Winsock primed");
+}
+
 bool IsAfdDeviceName(const OBJECT_ATTRIBUTES* attr) {
     if (!attr || !attr->ObjectName || !attr->ObjectName->Buffer) return false;
     static const wchar_t kName[] = L"\\Device\\Afd";
