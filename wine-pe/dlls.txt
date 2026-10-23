@@ -55,6 +55,9 @@ hid
 secur32
 winbrand
 wtsapi32
+# --- SDL2.dll (docs/slices/realsdl.md) static imports: setupapi (-> cfgmgr32, already built), winmm (-> msacm32) ---
+setupapi
+msacm32     # winmm static import
 
 # --- COM -------------------------------------------------------------------
 ole32
