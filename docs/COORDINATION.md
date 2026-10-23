@@ -36,6 +36,9 @@ adding `owner: B` as the second line of its slice doc; otherwise leaves them alo
 * `-realcurl` merged at 253a848 (same; wine-pe for bcrypt: https://github.com/user99672223/win10xbox/actions/runs/39889436184).
 * `-dialog` merged at ae8fc61, ci https://github.com/user99672223/win10xbox/actions/runs/39890044877,
   host-uwp https://github.com/user99672223/win10xbox/actions/runs/39890044955 (guest_dialog added to the package).
+* `-comctl` and `-wt-msvcrt` merged at b41089c (comctl: guest_comctl added to the package), ci
+  https://github.com/user99672223/win10xbox/actions/runs/39891332079, host-uwp
+  https://github.com/user99672223/win10xbox/actions/runs/39891332117.
 
 ## Protocol
 
