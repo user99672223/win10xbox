@@ -152,6 +152,12 @@ function(run7z label expect_rc expect_regex)
     if(NOT _retraced)
       set(_retraced TRUE PARENT_SCOPE)
       set(ENV{WIN10XBOX_DEBUG} "-all,+wine,+relay,+process")
+      list(GET ARGN 0 _verb)
+      if(_verb STREQUAL "a")   # the failed run left a partial archive that the retrace would try to open and update
+        list(GET ARGN 1 _arc)
+        string(REPLACE "C:\\work7z" "${_work}" _arc "${_arc}")
+        file(REMOVE "${_arc}")
+      endif()
       execute_process(COMMAND ${EMULATOR} "${HOST}" --machine "${_machine}" "C:\\guest\\7zr.exe" ${ARGN}
         RESULT_VARIABLE _rc2 OUTPUT_VARIABLE _out2 ERROR_VARIABLE _err2 TIMEOUT 500)
       set(ENV{WIN10XBOX_DEBUG} "-all,+wine")
