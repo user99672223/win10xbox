@@ -532,6 +532,16 @@ NTSTATUS NTAPI Xl_NtMapViewOfSection(HANDLE, HANDLE, PVOID*, ULONG_PTR, SIZE_T, 
 NTSTATUS NTAPI Xl_NtClose(HANDLE);
 
 // ---- Unix calls / Wine debug (unix_calls.cpp) ------------------------------------
+// Ordinals of the Wine-internal exports of the guest ntdll. wine-pe/patches/0006 exports every wine_* / __wine_*
+// function by ordinal only (no name in the export table) and writes the numbers into ntdll.spec, so they are fixed.
+namespace wine_ordinal {
+inline constexpr std::uint16_t kUnixCallDispatcher = 1455;   // __wine_unix_call_dispatcher (data: a pointer)
+inline constexpr std::uint16_t kUnixlibHandle = 1456;        // __wine_unixlib_handle (data: a uint64)
+inline constexpr std::uint16_t kDbgGetChannelFlags = 1458;   // __wine_dbg_get_channel_flags
+inline constexpr std::uint16_t kDbgHeader = 1459;            // __wine_dbg_header
+inline constexpr std::uint16_t kDbgOutput = 1460;            // __wine_dbg_output
+inline constexpr std::uint16_t kDbgStrdup = 1461;            // __wine_dbg_strdup
+}  // namespace wine_ordinal
 std::uint64_t NtdllUnixLibHandle();
 void RegisterNtdllUnixLib();
 // ws2_32's resolver unix calls on host Winsock (unix_ws2_32.cpp); the table is in unix_calls.cpp.

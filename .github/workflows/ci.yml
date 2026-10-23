@@ -476,7 +476,7 @@ jobs:
           $null = & build/bin/guest/guest_wasapi.exe 2>&1
           $hostAudio = ($LASTEXITCODE -eq 42)
           Write-Host "host audio endpoint: $hostAudio (guest_wasapi exit $LASTEXITCODE)"
-          $expect = [ordered]@{ OS = '^OS: '; Host = '^Host: '; Kernel = '^Kernel: '; Uptime = '^Uptime: '; Shell = '^Shell: ';
+          $expect = [ordered]@{ OS = '^OS: '; Host = '^Host: '; Kernel = '^Kernel: WIN32_NT 10\.0\.19045'; Uptime = '^Uptime: '; Shell = '^Shell: ';
                                 Terminal = '^Terminal: '; CPU = '^CPU: '; Memory = '^Memory: '; Swap = '^Swap: ';
                                 Disk = '^Disk \(.*\): '; Locale = '^Locale: '; Sound = $(if ($hostAudio) { '^Sound' } else { '' }) }
           $machine = (Resolve-Path build/bin/machine-builtin).Path

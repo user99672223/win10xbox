@@ -424,11 +424,11 @@ NTSTATUS MapGuestNtdll(const std::wstring& root) {
     ApplyRtlForwarding(view->image);
 
     void* base = view->image.base;
-    if (auto* p = static_cast<void**>(loader::FindExport(base, "__wine_unix_call_dispatcher")))
+    if (auto* p = static_cast<void**>(loader::FindExportByOrdinal(base, wine_ordinal::kUnixCallDispatcher)))
         *p = reinterpret_cast<void*>(&UnixCallDispatcher);
     else
-        ERR(process, "guest ntdll has no __wine_unix_call_dispatcher: not a Wine PE ntdll?");
-    if (auto* p = static_cast<std::uint64_t*>(loader::FindExport(base, "__wine_unixlib_handle")))
+        ERR(process, "guest ntdll has no unix call dispatcher (ordinal %u): not our Wine PE ntdll?", static_cast<unsigned>(wine_ordinal::kUnixCallDispatcher));
+    if (auto* p = static_cast<std::uint64_t*>(loader::FindExportByOrdinal(base, wine_ordinal::kUnixlibHandle)))
         *p = NtdllUnixLibHandle();
     G().ldr_init = reinterpret_cast<PFN_LdrInitializeThunk>(loader::FindExport(base, "LdrInitializeThunk"));
     G().user_thread_start = loader::FindExport(base, "RtlUserThreadStart");
