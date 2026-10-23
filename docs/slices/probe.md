@@ -1,8 +1,8 @@
-status: wip
+status: ready
 
 # Slice probe: bad caller pointers are STATUS_ACCESS_VIOLATION, not a guest crash
 
-Run: (pending)
+Run: https://github.com/user99672223/win10xbox/actions/runs/39936246881 (head 05def7a; linux-cross, windows Debug, windows RelWithDebInfo all green)
 
 On Windows a syscall that is handed a bad pointer returns `STATUS_ACCESS_VIOLATION` (or
 `STATUS_DATATYPE_MISALIGNMENT` where it probes alignment); it does not fault. PassThrough syscalls get that from the
