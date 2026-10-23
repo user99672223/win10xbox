@@ -578,6 +578,8 @@ NTSTATUS WINAPI Ws2UnixGetNameInfo(void* args);
 // mmdevapi's driver on the host's WASAPI (unix_mmdevapi.cpp). PrimeAudio starts the host audio thread and loads the
 // host stack; call it before the PEB take-over. RegisterMmdevapiUnixLib registers the "winewasapi" unix library.
 void PrimeAudio(const std::wstring& machine_root);
+// WIN10XBOX_AUDIO_NULL_ENDPOINT=1 (latched in process::Launch before PrimeAudio): one fake render endpoint, no host COM.
+void SetAudioNullEndpoint(bool on);
 void RegisterMmdevapiUnixLib();
 std::uint64_t UnixLibHandleByName(std::wstring_view module_name);   // 0 if none
 // Replacements patched over the guest ntdll's __wine_dbg_* exports.
