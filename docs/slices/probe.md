@@ -73,8 +73,14 @@ NtQuerySection's return length, section/file object attributes.
   faulting at once), the captures, and bad pointers to the clock (NtQueryPerformanceCounter...), registry (NtOpenKey,
   NtCreateKey, NtSetValueKey), token (NtOpenProcessToken, NtQueryInformationToken, NtAdjustPrivilegesToken,
   NtAccessCheck) and the file translator, each next to the NULL that stays accepted.
-* Wine ntdll `time` joins `wine-pe/tests/ntdll.allowlist` (floor 5000; 10657 assertions, 0 failures under Wine 9 here)
-  and `tests/wine-tests/baseline.cmake` (`run 0`).
+* Wine ntdll `time` now completes instead of crashing at `time.c:129`: 10657 assertions, 0 failures under a Wine host
+  (`tests/wine-tests/baseline.cmake` says `run 0`). On the Windows runners (run 39932848300) it executes 10667
+  assertions with exactly one failure, `time.c:201: rdtscp ... and RtlQueryPerformanceCounter ... are out of order`, so
+  it is NOT on `wine-pe/tests/ntdll.allowlist`. That failure is not a pointer: the runner's real KUSER_SHARED_DATA has
+  QpcBypassEnabled set, which the test reads through a register pointer (the real page), while the guest's own
+  ntdll reads the virtual page (bypass off) and answers from the virtual QPC, and the test's `__rdtsc()` is the
+  virtual TSC multiplied with the real hypervisor page. Two views of one clock; fixing it means the virtual clock
+  mirroring the host's QPC bypass data, which belongs to core/clock.
 
 ## Still failing
 
