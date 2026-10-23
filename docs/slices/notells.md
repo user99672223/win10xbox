@@ -1,4 +1,4 @@
-status: wip
+status: ready
 
 # Slice: an ordinary program that looks for Wine does not find it
 
@@ -126,4 +126,75 @@ kernel32 and user32 no `wine*` name at all. CI's run is the evidence that counts
 
 ## Results
 
-(filled in when ci.yml and wine-pe.yml are green)
+* ci.yml, all three jobs green on c936a53 (the code and test of this slice; the commit after it only changes this file):
+  https://github.com/user99672223/win10xbox/actions/runs/39965132603 (windows Debug, windows RelWithDebInfo, linux-cross; the first
+  linux-cross attempt died in the step "Install Wine + ninja", three apt-get timeouts, before any test ran, and was re-run unchanged).
+  `integration.guest_notells` Passed in all three, "Gate - nothing skipped" passed (skip count 0).
+* wine-pe.yml green with the patches: https://github.com/user99672223/win10xbox/actions/runs/39961466147 (commit 6023581, which is
+  the last commit that touches `wine-pe/`; later commits change nothing there, so ci.yml takes these builtins) and run 39958507974 for
+  the first push.
+* host-uwp.yml (workflow_dispatch on this branch, run 39961794246): red, but not because of this slice: "Verify package contents"
+  fails with `guest(s) missing from the .msix: guest_msctf_stub.exe, guest_net.exe`, the same error as main's own host-uwp run
+  39948347965 (head of main at the time). `guest_notells.exe` is built, packaged and not in the missing list.
+
+What `guest_notells` printed through the layer (windows Debug, `build/bin/guest_notells.log` of the artifact `windows-Debug-logs`;
+the version strings of ntdll and kernel32 are the same shape as user32's, the printed `?` are the two (R) signs narrowed to ASCII):
+
+```
+notells: getprocaddress ok
+notells: info allowed export ntdll.dll!wine_server_call
+notells: info allowed export ntdll.dll!wine_server_fd_to_handle
+notells: info allowed export ntdll.dll!wine_server_handle_to_fd
+notells: info ntdll.dll: 2584 named exports, 0 wine_ (not allowed) 3 wine_ (allowed) 10 __wine_
+notells: info kernelbase.dll: 1439 named exports, 0 wine_ (not allowed) 0 wine_ (allowed) 0 __wine_
+notells: info kernel32.dll: 1356 named exports, 0 wine_ (not allowed) 0 wine_ (allowed) 0 __wine_
+notells: info win32u.dll: 1540 named exports, 0 wine_ (not allowed) 0 wine_ (allowed) 0 __wine_
+notells: info user32.dll: 832 named exports, 0 wine_ (not allowed) 0 wine_ (allowed) 0 __wine_
+notells: info gdi32.dll: 531 named exports, 0 wine_ (not allowed) 0 wine_ (allowed) 0 __wine_
+notells: info __wine_ exports in total: 10 (not gated)
+notells: exports ok
+notells: info ntdll.dll file 10.0.19045.3803 product 10.0.19045.3803
+notells: version-ntdll ok
+notells: info kernel32.dll file 10.0.19045.3803 product 10.0.19045.3803
+notells: version-kernel32 ok
+notells: info user32.dll file 10.0.19045.3803 product 10.0.19045.3803
+notells: info user32.dll 040904b0 CompanyName=Microsoft Corporation
+notells: info user32.dll 040904b0 FileDescription=Multi-User Windows USER API Client DLL
+notells: info user32.dll 040904b0 LegalCopyright=Licensed under the GNU Lesser General Public License, version 2.1 or later
+notells: info user32.dll 040904b0 ProductName=Microsoft? Windows? Operating System
+notells: version-user32 ok
+notells: info RegOpenKeyExW(HKCU\Software\Wine) = 2            (and the other four keys: 2 = ERROR_FILE_NOT_FOUND)
+notells: registry ok
+notells: info environment has 28 variables
+notells: environment ok
+notells: info logical drives: C
+notells: info QueryDosDeviceW(C:) = \Device\HarddiskVolume1
+notells: info QueryDosDeviceW(Q:) = \??\C:\Windows
+notells: info 1 DOS device names: C:
+notells: drives ok
+notells: info RtlGetVersion 10.0.19045
+notells: info GetVersionExW 10.0.19045
+notells: os-version ok
+notells: info ntdll.dll DOS stub marker "Wine builtin DLL": present
+notells: done
+```
+
+Notes on those lines:
+
+* ntdll shows 2584 named exports on a Windows host and 1462 on the Wine host (linux-cross): on a Windows host
+  `ExtendGuestNtdllExports` (core/dispatch/rtl_forward.cpp) appends the host ntdll's code exports to the guest ntdll's table so
+  native DLLs bind, and already skips host names starting with `__wine` / `wine_` (a Wine dev host).
+* The first run on the Windows Debug job (before the fixes below) already showed the exports, versions, registry and
+  environment right; what it caught: a one-character comparison bug in the guest, a static `version.lib` import that killed the
+  shared-folder variant, and, on the linux-cross job, `Z:` coming from the Wine host (see Drives and DOS devices).
+
+Syscalls changed: `NtOpenDirectoryObject` and `NtOpenSymbolicLinkObject` (Translate, more cases), `NtCreateSymbolicLinkObject` and
+`NtMakeTemporaryObject` (PassThrough -> Translate), all for `\DosDevices` only; docs/SYSCALLS.md regenerated.
+DLLs added to `wine-pe/dlls.txt`: none (patches 0030, 0031 only).
+
+What still fails: nothing in this slice's gate. What still tells is the list above ("What still tells"): `wine_server_*`
+exports, `__wine_*` exports, the DOS-stub marker and debug sections, no Authenticode signature, other modules' legacy version
+numbers, no kernelbase version resource, the dead `SC_ABOUTWINE` strings in user32.
+Not measured: the console (Xbox) host. The private `\DosDevices` directory needs `NtCreateDirectoryObject` and
+`NtCreateSymbolicLinkObject` to be allowed in the AppContainer; if the host refuses either, the old pass-through stays (a
+`\DosDevices: ...` warning is traced) and the guest sees the host's drive letters again.
