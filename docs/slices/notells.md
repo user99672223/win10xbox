@@ -1,4 +1,4 @@
-status: blocked (merge e04e43b: ci run 39973241420 red only in winetest_ntdll parity on windows, which main also fails in run 39971364492; linux-cross winetest_dbghelp "no assertion executed"; wine-pe run 39973241327 green; first error: WINETEST parity ntdll:file file.c:5415 file.c:5628 file.c:5672)
+status: blocked (superseded by Session A's `-nowine`, which covers the same scope and more; this branch is kept for its guest tests/guest/notells.c, the version-string patch and the guest-private \DosDevices in core/dispatch/nt_file.cpp, to be lifted into -nowine if Session A wants them; no further work here)
 
 ## Handoff (read this first)
 1. Done and green: ci.yml run 39965132603 (all three jobs, code head c936a53), wine-pe.yml run 39961466147. Nothing left to fix; no CI loop needed.
