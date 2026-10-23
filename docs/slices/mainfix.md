@@ -1,4 +1,4 @@
-status: wip (run URL below once watched)
+status: ready (ci.yml green on all three jobs)
 
 # Slice mainfix: main red after the merge batch of 2c579b5..78a0e47
 
@@ -19,4 +19,5 @@ Run that was red: https://github.com/user99672223/win10xbox/actions/runs/3997136
 * Fix: wine-pe/tests/kernel32.sh starts a unit again (at most 3 attempts, after `wineserver -w`) only when its whole log is
   that wine line; any output of the unit itself is never retried. Baseline lowered for the IMPROVED change, fiber, file.
 
-Run: pending.
+Run: https://github.com/user99672223/win10xbox/actions/runs/39977150424 (head 446b360): linux-cross, windows (Debug), windows (RelWithDebInfo) all success.
+The non-gating survey unit ntdll:exception still ends before its summary (native run dies too, see wt-ntdll-rest.md); it was never the failure.
