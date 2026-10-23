@@ -95,6 +95,10 @@ adding `owner: B` as the second line of its slice doc; otherwise leaves them alo
 
 ### Merged (acting-coordinator log)
 
+* `-doom`, `-audio`, `-nowine`, `-om` merged by Session A via `-stage2` (25c4495; ci
+  https://github.com/user99672223/win10xbox/actions/runs/39989749203 green on all three jobs, wine-pe
+  https://github.com/user99672223/win10xbox/actions/runs/39982478629). Also the apt mirror fallback in ci.yml.
+
 * `-ncframe` merged at 426ec6b (its runs were cancelled by the next push; verdict carried by ae8fc61,
   ci https://github.com/user99672223/win10xbox/actions/runs/39890044877).
 * `-realcurl` merged at 253a848 (same; wine-pe for bcrypt: https://github.com/user99672223/win10xbox/actions/runs/39889436184).
