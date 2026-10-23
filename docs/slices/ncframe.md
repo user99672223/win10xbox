@@ -43,6 +43,8 @@ at (153,300), close button at (538,150), client at (300,300).
 Syscalls: none newly registered. The slice changes the behaviour behind the existing user32 entry points (non-client
 paint, hit test, SC_MOVE/SC_SIZE modal loop in DefWindowProc, caption text drawn with the built-in face).
 
+Packaging: guest_window_nc.exe is bundled in the host-uwp package (host-uwp/CMakeLists.txt, host-uwp.yml expected list).
+
 DLLs added to wine-pe/dlls.txt: none.
 
 What still fails / not covered: system-button clicks other than close (minimize, maximize/restore) send
