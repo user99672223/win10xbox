@@ -955,7 +955,10 @@ NTSTATUS NTAPI Xl_NtQueryObject(HANDLE h, ULONG cls, PVOID buf, ULONG len, PULON
     }
 #if WIN10XBOX_HAVE_REGISTRY
     else if (registry::IsKeyHandle(h)) {
-        NTSTATUS s = QueryKeyHandle(h, cls, buf, len, ret);
+        // The registry answers the classes it knows (a deleted key reports STATUS_KEY_DELETED); the rest is described here.
+        NTSTATUS s = registry::Reg_NtQueryObject(h, cls, buf, len, ret);
+        if (s != nts::NotImplemented) return s;
+        s = QueryKeyHandle(h, cls, buf, len, ret);
         if (s != nts::NotImplemented) return s;
     }
 #endif
