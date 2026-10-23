@@ -1,4 +1,4 @@
-status: wip
+status: ready
 
 # Slice: the python.org embeddable CPython through the layer
 
@@ -14,9 +14,14 @@ real guest program that is not ours and that we do not build. It runs on the bui
 * `integration.real_python_json`: `python.exe -m json.tool C:\guest\python_sample.json` (`tests/guest/python/sample.json`,
   one line), exit 0; the re-indented document on stdout.
 
-CI run: (filled in when the head is green)
+CI run: https://github.com/user99672223/win10xbox/actions/runs/39879470846 (head dd314b0; linux-cross, windows (Debug) and
+windows (RelWithDebInfo) all green; `integration.real_python_platform` and `integration.real_python_json` passed, 49 of 49
+tests ran and passed on windows, `ctest gate: PASS`).
 
 ## What python prints through the layer
+
+(Output copied from a local run under Wine on the same builtin-only folder; ctest keeps the stdout of a passing test out of
+the CI log, and the gates above assert exactly these lines on the runners.)
 
 ```
 3.12.10 (tags/v3.12.10:0cc8128, Apr  8 2025, 12:21:36) [MSC v.1943 64 bit (AMD64)]
