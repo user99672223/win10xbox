@@ -153,6 +153,10 @@ if no pad is ever seen) and keyboard (arrows, Enter/Space, Esc/Backspace).
     Keys, one per line: `exe=<leaf name>` (required, must be in the list), `title=<text>`, `args=<words>`
     (whitespace separated, `"double quotes"` group a word; repeatable, appended), `env=KEY=VALUE` (repeatable).
     An entry whose `exe` is not present is not offered. `autoselect` matches the entry name (`doom-timedemo.launch`).
+  * **Directory install** (docs/slices/dirlaunch.md): a subdirectory `<dir>\` of `payload\guest` or `LocalState\guests` holding
+    `<dir>.launch` is ONE entry named `<dir>`. The whole tree is copied to `C:\guest\<dir>\`; `exe=` is a relative path
+    inside it (`bin\App.exe`, no `..`, no drive) and `cwd=` the working directory relative to it (`.` = the directory;
+    default the directory). `cwd=` also works in a flat `.launch` (relative to `C:\guest`). Bundled: `dirtree`.
 * **Doom.** The `msix` job runs `tools/ci/fetch_doom.ps1` (pinned) into `payload\guest\` (flat: `chocolate-doom.exe`,
   the SDL2 DLLs, `doom1.wad`, about 10 MB; `stage.cmake` `EXTRA_GUEST_DIR` / CMake `HOST_UWP_EXTRA_GUEST_DIR`).
   Shipped sidecars (`host-uwp/payload/guest/`): `chocolate-doom.args` = `-iwad doom1.wad -fullscreen -nomouse`,

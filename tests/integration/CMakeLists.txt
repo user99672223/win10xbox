@@ -43,7 +43,8 @@ if(TARGET guest_hello)
                    guest_window guest_window2 guest_window_input guest_window_input2 guest_window_text guest_window_nc
                    guest_dialog guest_comctl guest_seh guest_window_scroll guest_clipboard guest_net msctf_stub
                    guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput xinput1_4 gdi32full_stub guest_identity
-                   guest_cursor guest_regpersist guest_wasapi guest_xaudio2 guest_tebframe guest_rdrand)
+                   guest_cursor guest_regpersist guest_wasapi guest_xaudio2 guest_tebframe guest_rdrand
+                   stage_guest_dirtree guest_xaudio2_play)
   if(TARGET guest_d3d11_tri)
     add_dependencies(prepare_machine guest_d3d11_tri)
   endif()
@@ -92,6 +93,7 @@ function(win10xbox_guest_test name program exit_code)
       "-DFORBID_TRACE_REGEX=${_guest_forbid_trace}"
       "-DEXPECT_TRACE_REGEX=${_guest_expect_trace}"
       "-DSAVE_STDOUT=${_guest_save_stdout}"
+      "-DCWD=${_guest_cwd}"
       "-DKEEP_REGISTRY_OVERLAY=${_guest_keep_overlay}"
       -DEXPECT_EXIT=${exit_code}
       "-DEXPECT_REGEX=${ARGN}"
@@ -170,6 +172,19 @@ win10xbox_guest_test(guest_spawn "C:\\guest\\guest_spawn.exe" 42
   "spawn-child: argc=5" "spawn-child: argv\\[1\\]=\\[child\\]" "spawn-child: argv\\[2\\]=\\[a b\\]"
   "spawn-child: argv\\[3\\]=\\[c.d\\]" "spawn-child: argv\\[4\\]=\\[e\\]"
   "spawn-child: cwd=C:\\\\Windows" "spawn-child: mark=mark42" "spawn: child2 exit 7" "spawn: done")
+
+# A program installed as a directory tree (docs/slices/dirlaunch.md): C:\guest\dirtree\bin\guest_dirtree.exe with
+# its data beside it, the working directory C:\guest\dirtree\data (the host's --cwd; host-uwp's cwd= in dirtree.launch).
+# Proves what a game installed in a folder needs: the module path, the cwd, relative / absolute opens, letter case and
+# paths over MAX_PATH. The VFS already does the case and long-path work (docs/slices/dirlaunch.md "What was already there").
+set(_guest_cwd "C:\\guest\\dirtree\\data")
+set(_guest_console ON)
+win10xbox_guest_test(guest_dirtree "C:\\guest\\dirtree\\bin\\guest_dirtree.exe" 42
+  "dirtree: all checks passed" "dirtree: ok: GetModuleFileNameW" "dirtree: ok: GetCurrentDirectoryW"
+  "dirtree: ok: case: absolute upper case" "dirtree: ok: long path: file read back")
+set_tests_properties(integration.guest_dirtree PROPERTIES FAIL_REGULAR_EXPRESSION "dirtree: FAIL")
+unset(_guest_cwd)
+unset(_guest_console)
 
 # Named objects across CreateProcess (docs/DISPATCHER.md "Object manager namespace"): the parent creates a named event,
 # a named section holding a string and a global event; lists both BaseNamedObjects directories; starts itself as the
@@ -473,6 +488,43 @@ foreach(_a wasapi xaudio2)
     LABELS "guest_e2e"
     TIMEOUT 240)
 endforeach()
+
+# xaudio2_play (docs/slices/xaudio2play.md): two queued 500 ms buffers through XAudio2 2.9.
+# (a) WIN10XBOX_AUDIO_NULL_ENDPOINT=1: the layer's own render endpoint "win10xbox null output" (consumes at real-time
+#     pace and counts frames), so the guest plays on every runner: exit 42 and N consumed frames within 10 % of 48000
+#     (43200..52800; about 1 s of the engine's output).
+set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+set(_guest_console ON)
+set(_guest_debug "-all,+audio")
+set(_guest_expect_trace "audio: null endpoint consumed (43[2-9][0-9][0-9]|4[4-9][0-9][0-9][0-9]|5[01][0-9][0-9][0-9]|52[0-7][0-9][0-9]|52800) frames")
+win10xbox_guest_test(guest_xaudio2_play "C:\\guest\\guest_xaudio2_play.exe" 42
+  "xaudio2_play: RESULT played" "xaudio2_play: done" "mastering voice: GetVoiceDetails" "BuffersQueued=2")
+set_tests_properties(integration.guest_xaudio2_play PROPERTIES FAIL_REGULAR_EXPRESSION "xaudio2_play: FAILED"
+  ENVIRONMENT "WIN10XBOX_AUDIO_NULL_ENDPOINT=1")
+unset(_guest_expect_trace)
+unset(_guest_debug)
+unset(_guest_console)
+unset(_guest_machine)
+# (b) option unset: no change in behaviour. The layer answers what the host's WASAPI answers (guest_wasapi run directly on
+#     the host decides): 43 + "xaudio2_play: no-endpoint hr=0x..." on a runner without an endpoint (the Windows runners),
+#     42 where the host has one (the Linux job's PulseAudio null sink).
+add_test(NAME integration.guest_xaudio2_play_noendpoint
+  COMMAND ${CMAKE_COMMAND}
+    -DHOST=$<TARGET_FILE:win10xbox>
+    -DMACHINE=${WIN10XBOX_BUILTIN_MACHINE_DIR}
+    -DGUEST_EXE=$<TARGET_FILE:guest_xaudio2_play>
+    -DPROBE_EXE=$<TARGET_FILE:guest_wasapi>
+    -DPROGRAM=C:\\guest\\guest_xaudio2_play.exe
+    -DTAG=xaudio2_play
+    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/audio_test.cmake)
+set_tests_properties(integration.guest_xaudio2_play_noendpoint PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "guest_e2e"
+  ENVIRONMENT "WIN10XBOX_AUDIO_NULL_ENDPOINT="
+  TIMEOUT 240)
 
 # ---- Real programs: the first guests that are not ours ----------------------------------------------------------
 # Lua 5.4.7, built from the upstream tarball with MSVC by tools/ci/build_lua.ps1 (a named step of ci.yml's windows
@@ -849,6 +901,33 @@ set_tests_properties(integration.guest_d3d11_swap PROPERTIES
   LABELS "guest_e2e"
   TIMEOUT 240
   ENVIRONMENT "WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_d3d11_swap.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=228,228,ffff0000|101,101,ff0000ff")
+endif()
+
+# The same program under the generic present-limit harness (WIN10XBOX_TEST_PRESENT_LIMIT, docs/TESTING.md): the layer
+# ends the guest with exit 42 after its 10th Present and prints the "present-limit:" line; the last composed frame
+# (window at 100,100, 256x256) must still be on the screenshot, non-uniform (blue clear + triangle).
+if(NOT CMAKE_CROSSCOMPILING AND TARGET guest_d3d11_swap)
+add_test(NAME integration.guest_d3d11_swap_limit
+  COMMAND ${CMAKE_COMMAND}
+    -DHOST=$<TARGET_FILE:win10xbox>
+    -DMACHINE=${WIN10XBOX_D3D_MACHINE_DIR}
+    -DPROGRAM=C:\\guest\\guest_d3d11_swap.exe
+    -DEXPECT_EXIT=42
+    -DSAVE_STDOUT=${CMAKE_BINARY_DIR}/bin/guest_d3d11_swap_limit.log
+    "-DEXPECT_REGEX=swap: CreateSwapChain -> 00000000;present-limit: 10 frames presented, 256x256, "
+    "-DEXPECT_TRACE_REGEX=dxgi: IDXGISwapChain::Present\\(1, 0x0\\) -> 0000000[0-9] \\(back buffer copied\\);present-limit: 10 frames presented"
+    "-DFORBID_TRACE_REGEX=host state reached under the guest TLS view;not handed to the compositor"
+    -DDEBUG_SPEC=+dispatch,+modules,+process,+user
+    -DREQUIRE=Windows/System32/d3d11.dll
+    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
+set_tests_properties(integration.guest_d3d11_swap_limit PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "guest_e2e"
+  TIMEOUT 240
+  ENVIRONMENT "WIN10XBOX_TEST_PRESENT_LIMIT=10;WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_d3d11_swap_limit.bmp;WIN10XBOX_EXPECT_SCREENSHOT_VARIED=100,100,356,356,8,2")
 endif()
 
 # Route B + Direct3D 11 (docs/DECISIONS.md G1): Dear ImGui's example_win32_directx11 (tests/guest/imgui_d3d11.cpp,

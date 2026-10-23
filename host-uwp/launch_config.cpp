@@ -973,7 +973,23 @@ bool ParseExpectedTable(std::string_view text, ExpectedTable* out, std::string* 
         {
             ExpectedRow r;
             const std::size_t eq = w[i].find('=');
-            const std::string head = w[i].substr(0, eq);
+            std::string head = w[i].substr(0, eq);
+            if (head == "KNOWNFAIL")
+            {
+                // KNOWNFAIL=<code>:<label>
+                const std::string rest = eq == std::string::npos ? std::string() : w[i].substr(eq + 1);
+                const std::size_t colon = rest.find(':');
+                if (colon == std::string::npos || colon + 1 >= rest.size()) return fail("'" + w[i] + "' is not KNOWNFAIL=<code>:<label>");
+                char* kend = nullptr;
+                const std::string kc = rest.substr(0, colon);
+                const long kv = std::strtol(kc.c_str(), &kend, 10);
+                if (kc.empty() || *kend != '\0') return fail("'" + w[i] + "' has a bad KNOWNFAIL code");
+                r.known_fail = true;
+                r.code = static_cast<int>(kv);
+                r.label = rest.substr(colon + 1);
+                rows.push_back(r);
+                continue;
+            }
             if (eq != std::string::npos)
             {
                 r.label = w[i].substr(eq + 1);
@@ -1025,8 +1041,11 @@ std::string ReportVerdict(bool timed_out, long exit_code, const std::vector<Expe
         for (const ExpectedRow& r : *rows)
         {
             if (r.timeout) continue;
+            if (r.code == code && r.known_fail)
+                return "KNOWN-FAIL (exit code " + std::to_string(code) + " = " + r.label + ")";
             if (r.code == code)
                 return "PASS (exit code " + std::to_string(code) + (r.label.empty() ? std::string() : " = " + r.label) + ")";
+            if (r.known_fail) continue;
             want += (want.empty() ? "" : " or ") + std::to_string(r.code);
         }
         return "FAIL (exit code " + std::to_string(code) + ", expected " + (want.empty() ? std::string("a timeout") : want) + ")";

@@ -37,6 +37,17 @@ win10xbox_add_guest(guest_identity)
 add_executable(guest_rdrand rdrand.c)
 win10xbox_add_guest(guest_rdrand)
 
+# A program installed as a directory tree (docs/slices/dirlaunch.md): tests/guest/dirtree/ (data, dirtree.launch) plus
+# the program, assembled as bin/guest/dirtree/ = C:\guest\dirtree\ (bin/guest_dirtree.exe, data/file.pak). integration.guest_dirtree.
+add_executable(guest_dirtree dirtree.c)
+win10xbox_add_guest(guest_dirtree)
+add_custom_target(stage_guest_dirtree ALL
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${WIN10XBOX_GUEST_DIR}/dirtree/bin
+  COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/dirtree ${WIN10XBOX_GUEST_DIR}/dirtree
+  COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:guest_dirtree> ${WIN10XBOX_GUEST_DIR}/dirtree/bin/guest_dirtree.exe
+  COMMENT "Staging the directory-install guest ${WIN10XBOX_GUEST_DIR}/dirtree" VERBATIM)
+add_dependencies(stage_guest_dirtree guest_dirtree)
+
 add_executable(guest_sleep sleep.c)
 win10xbox_add_guest(guest_sleep)
 
@@ -214,6 +225,11 @@ win10xbox_add_guest(guest_wasapi)
 add_executable(guest_xaudio2 xaudio2.c)
 target_link_libraries(guest_xaudio2 PRIVATE ole32)
 win10xbox_add_guest(guest_xaudio2)
+
+# XAudio2 playback of two queued 500 ms buffers (WIN10XBOX_AUDIO_NULL_ENDPOINT=1 gives it an endpoint, docs/TESTING.md).
+add_executable(guest_xaudio2_play xaudio2_play.c)
+target_link_libraries(guest_xaudio2_play PRIVATE ole32)
+win10xbox_add_guest(guest_xaudio2_play)
 
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
 add_test(NAME guest.seh COMMAND guest_seh)

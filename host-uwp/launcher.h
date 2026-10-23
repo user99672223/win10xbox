@@ -35,7 +35,10 @@ namespace w10x_uwp
         std::wstring path;       // host path of the file (package payload\guest or LocalState\guests)
         bool from_localstate = false;
         // Sidecars (guest_sidecar.h), read from the directory of `path` when the list is built.
-        std::string exe;         // the guest program to run (name, or the exe= of a .launch entry)
+        std::string exe;         // the guest program to run (name, or the exe= of a .launch entry; relative path in a directory entry)
+        std::string cwd;         // cwd= of a .launch file (relative to the entry's directory), "" = none
+        bool is_dir = false;     // a directory install (<dir>\<dir>.launch): `name` is the directory, mapped as C:\guest\<name> (with a trailing separator)
+        std::wstring dir_path;   // host path of that directory
         std::string title;       // shown instead of the file name when not empty
         std::vector<std::string> args;                            // replaces launch.json "args" for this launch
         std::vector<std::pair<std::string, std::string>> env;     // set for this launch only

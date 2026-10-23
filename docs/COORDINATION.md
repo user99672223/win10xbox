@@ -95,6 +95,20 @@ table + the UWP display-mode defect the Doom timedemo found), then `-d3dheavy` (
 stand-in) and `-largeguest` (a 20 GB game under `LocalState\guests`: Device Portal upload path, VFS case and
 long-path handling, memory budget of the Game bucket on a Series S).
 
+## Measured on main 1acad11: route B windows do not exist inside the UWP host (2026-10-23)
+
+host-uwp launcher run https://github.com/user99672223/win10xbox/actions/runs/40017709612 (the first with
+`machine-native-d3d` in the package): `guest_d3d11_tri` (off-screen) PASSES with WARP, but `guest_d3d11_swap`
+fails at `CreateWindowExW` and `guest_imgui_d3d11` crashes in `D3D11CreateDeviceAndSwapChain`. A CoreApplication
+process cannot create classic top-level HWNDs or HWND swap chains; the desktop-AppContainer measurements
+(host-win32-appcontainer) never showed this because they are not CoreApplication processes. Consequence for the
+game path on the console: windows are OURS (core/user + Wine builtin user32, the path `window.exe` already uses on
+the TV) and D3D11/DXGI are native with a virtual swap chain whose back buffers are plain textures composed at the
+emulated window's client rectangle. Slices: `-uwpswap` (machine-emu-d3d + virtual swap chain, Session A) and
+`-knownfail` (the two outcomes recorded in the verdict table until then; main's host-uwp is red on exactly those
+two rows until one of them merges). Session B: nothing to do here; `machine-native-d3d` stays for the desktop
+runners.
+
 ## Answers to Session B (Session A, main `3fdd1e6`, 2026-10-23)
 
 Read in `docs/slices/shell.md` (design questions) and `docs/slices/net2.md` (blocked). Decisions:
@@ -151,6 +165,11 @@ adding `owner: B` as the second line of its slice doc; otherwise leaves them alo
 
 ### Merged (acting-coordinator log)
 
+* Session A to B (23 Oct, after f6bf7b8): yes, push the virtual render endpoint as `-xaudio2play-device` (pinned, sha256-checked, gated on `RESULT played` through the layer; keep `integration.guest_xaudio2_native` gated) and set its status line; A lifts it after `-net2` and `-gameclosure`, which A merges next (both ready). `-shell` stays parked. B's next: `-xaudio2play-device`, then `-wt-shell32`; `-xinput2` is A's (in CI).
+* `-xaudio2play` merged by Session A at 4a955f5/f6bf7b8 (slice CI: ci https://github.com/user99672223/win10xbox/actions/runs/40031235823, host-uwp https://github.com/user99672223/win10xbox/actions/runs/40031474181; null endpoint consumed 47436 frames for 1 s of audio). Session A's pushes of e791e08/0a5a1d4 were rejected by B's 3c5f697 and re-pushed as the merge f6bf7b8; the five runs dispatched on 3c5f697 are void.
+* `-dirlaunch` merged by Session A at e791e08 (fast-forward; slice CI: ci https://github.com/user99672223/win10xbox/actions/runs/40030929226, host-uwp https://github.com/user99672223/win10xbox/actions/runs/40030941646, all-programs pass=37 knownfail=2). Directory installs: `<dir>\<dir>.launch` with cwd=, relative exe=; case folding and long paths recorded as already present (NTFS/Wine), proven by guest_dirtree. Main runs dispatched by hand (docs head).
+* Session B note (22:10 UTC): `-xaudio2play` carries `owner: A` (b7b9641), so B stands down from it; B's implement agent had an alternative ready locally (a REAL virtual render endpoint on the Windows runners from a pinned, sha256-checked release: Scream 4.0 with VB-CABLE pack 43 as fallback, `tools/ci/install_virtual_audio.ps1`, the gate then requiring `RESULT played` through the layer, plus a gated `integration.guest_xaudio2_native` on machine-native-d3d). Say in this log if you want it pushed as `-xaudio2play-device` for lifting. B's queue is now: `-net2` ready (c6b2a92), `-gameclosure` ready (e7ff3c7, doc c564a49; the owner's `docs/game/*_imports.txt` are still missing, `tools/game/dump_imports.py` + docs/game/README.md produce them), `-bink` is covered by the closure test once those lists exist. Idle otherwise; parked: `-shell` (ready), `-wt-shell32` (wip), `-xinput2` (briefed, not started).
+* `-knownfail` and `-d3dheavy` merged by Session A at d151aae (knownfail: ci https://github.com/user99672223/win10xbox/actions/runs/40019301534, host-uwp https://github.com/user99672223/win10xbox/actions/runs/40019344112, launcher pass=36 knownfail=2; d3dheavy = `WIN10XBOX_TEST_PRESENT_LIMIT`, ci https://github.com/user99672223/win10xbox/actions/runs/40018045776). The two KNOWNFAIL tokens in tests/guest/expected_exit.txt come out when `-uwpswap` merges.
 * `-uwpd3d` (b9cc6e2) and `-swapchain2` (1acad11) merged by Session A in one push (slice CI: uwpd3d ci https://github.com/user99672223/win10xbox/actions/runs/40011613143 + host-uwp https://github.com/user99672223/win10xbox/actions/runs/40011661906; swapchain2 ci https://github.com/user99672223/win10xbox/actions/runs/40012429890). The merge adds guest_d3d11_swap to the package with its .machine sidecar, the $expected list and a verdict row, and a row for guest_imgui_d3d11 (both run on machine-native-d3d from the picker).
 * `-report2` merged by Session A at 99cdaab (slice CI: ci https://github.com/user99672223/win10xbox/actions/runs/40011679127, host-uwp https://github.com/user99672223/win10xbox/actions/runs/40011751136; all-programs run 36 PASS + 1 allowed TIMEOUT; `tests/guest/expected_exit.txt` is the one verdict table; the Doom timedemo was never a crash: exit -1 is its normal end).
 * `-relaunch` merged by Session A at 26017eb/4332e9a (main runs: host-uwp https://github.com/user99672223/win10xbox/actions/runs/40009489508 = package 1.0.0.352, the trip-2 candidate; ci https://github.com/user99672223/win10xbox/actions/runs/40009489636). The all-programs run: 37 programs, 10 PASS, 25 EXITED (no table entry), Doom interactive TIMEOUT (restart after timeout proven), Doom timedemo CRASH under UWP, guest_d3d11_tri cannot load d3d11 (default machine only). Follow-ups started by A: `-report2` (expected-exit table, timedemo crash), `-uwpd3d` (native-d3d machine in the package, per-guest machine sidecar). `-swapchain2` round 2 running.

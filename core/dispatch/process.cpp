@@ -20,6 +20,7 @@
 #endif
 #include <algorithm>
 #include <cstring>
+#include <cstdlib>
 #include <cwchar>
 #include <cwctype>
 
@@ -670,6 +671,18 @@ int Launch(const LaunchOptions& opts) {
         wchar_t v[8];
         const DWORD n = GetEnvironmentVariableW(L"WIN10XBOX_TEST_FORCE_RDRAND_TRAP", v, 8);
         SetForceRandomTrap(n != 0 && n < 8 && v[0] != L'0');
+    }
+    {
+        // Test hook: N > 0 ends the guest (exit 42) after its N-th Present, see dxgi_interpose.cpp.
+        wchar_t v[16];
+        const DWORD n = GetEnvironmentVariableW(L"WIN10XBOX_TEST_PRESENT_LIMIT", v, 16);
+        SetPresentLimit(n != 0 && n < 16 ? static_cast<unsigned>(wcstoul(v, nullptr, 10)) : 0u);
+    }
+    {
+        // Test hook: the audio driver exposes one fake render endpoint that consumes at real-time pace (unix_mmdevapi.cpp).
+        wchar_t v[8];
+        const DWORD n = GetEnvironmentVariableW(L"WIN10XBOX_AUDIO_NULL_ENDPOINT", v, 8);
+        SetAudioNullEndpoint(n != 0 && n < 8 && v[0] != L'0');
     }
 #if WIN10XBOX_HAVE_VFS
     {

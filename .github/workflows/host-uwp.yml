@@ -255,7 +255,7 @@ jobs:
                         'guest_spawn.exe', 'guest_dialog.exe', 'guest_comctl.exe', 'guest_clipboard.exe',
                         'guest_seh.exe', 'guest_seh_dll.dll', 'guest_gdi_bitmap.exe', 'guest_window_menu.exe', 'guest_xinput.exe',
                         'guest_cursor.exe', 'guest_regpersist.exe', 'guest_identity.exe',
-                        'guest_net.exe', 'guest_wasapi.exe', 'guest_xaudio2.exe', 'guest_nowine.exe', 'guest_named_objects.exe', 'guest_rdrand.exe',
+                        'guest_net.exe', 'guest_wasapi.exe', 'guest_xaudio2.exe', 'guest_xaudio2_play.exe', 'guest_nowine.exe', 'guest_named_objects.exe', 'guest_rdrand.exe',
                         'guest_d3d11_tri.exe', 'guest_imgui_d3d11.exe', 'guest_d3d11_tri.machine', 'guest_imgui_d3d11.machine',
                         'guest_d3d11_swap.exe', 'guest_d3d11_swap.machine')
           $missing = @($expected | Where-Object { -not (Test-Path "$stage/payload/guest/$_") })
@@ -270,6 +270,12 @@ jobs:
           $missingDoom = @($doom | Where-Object { -not (Test-Path "$stage/payload/guest/$_") })
           if ($missingDoom.Count -gt 0) {
             Write-Host "::error::the package is missing Chocolate Doom file(s): $($missingDoom -join ', ')"
+            exit 1
+          }
+          # The directory install (docs/slices/dirlaunch.md): payload/guest/dirtree/ is one picker entry (dirtree.launch), not a flat guest.
+          $dirtree = @('dirtree.launch', 'bin/guest_dirtree.exe', 'data/file.pak') | Where-Object { -not (Test-Path "$stage/payload/guest/dirtree/$_") }
+          if ($dirtree) {
+            Write-Host "::error::the package is missing payload/guest/dirtree file(s): $($dirtree -join ', ')"
             exit 1
           }
           # The second machine folder (route B + Direct3D 11, LocalState\machine-native-d3d): its machine.json and msctf stand-in.
@@ -312,7 +318,8 @@ jobs:
           $groups | Sort-Object MB -Descending | Format-Table -AutoSize | Out-String | Write-Host
           $want = @(Get-Content build-uwp/AppX/payload/guests.txt | Where-Object { $_ })
           foreach ($c in Get-ChildItem tests/guest -Filter *.c) {
-            if ($c.BaseName -eq 'msctf_stub' -or $c.BaseName -eq 'gdi32full_stub') { continue }   # a msctf.dll stand-in for the native-GUI machine folder, not a guest
+            if ($c.BaseName -eq 'msctf_stub' -or $c.BaseName -eq 'gdi32full_stub') { continue }   # a msctf.dll / gdi32full.dll stand-in for the native-GUI machine folders, not a guest
+            if ($c.BaseName -eq 'dirtree') { continue }      # a directory install (payload/guest/dirtree/), checked below
             $n = if ($c.BaseName -eq 'dll') { 'guest_dll.dll' } elseif ($c.BaseName -eq 'window') { 'window.exe' } else { "guest_$($c.BaseName).exe" }
             if ($want -notcontains $n) { $want += $n }
           }
@@ -324,6 +331,8 @@ jobs:
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           $doomMissing = @('chocolate-doom.exe', 'doom1.wad', 'SDL2.dll', 'chocolate-doom.args', 'chocolate-doom.env',
                            'chocolate-doom.title', 'doom-timedemo.launch') | Where-Object { $entries -notcontains "payload/guest/$_" }
+          $dirMissing = @('payload/guest/dirtree/dirtree.launch', 'payload/guest/dirtree/bin/guest_dirtree.exe', 'payload/guest/dirtree/data/file.pak') | Where-Object { $entries -notcontains $_ }
+          if ($dirMissing) { Write-Host "::error::directory install file(s) missing from the .msix: $($dirMissing -join ', ')"; exit 1 }
           if ($entries -notcontains 'payload/guests.txt') { Write-Host '::error::payload/guests.txt manifest missing from package'; exit 1 }
           if ($entries -notcontains 'payload/expected_exit.txt') { Write-Host '::error::payload/expected_exit.txt missing from package'; exit 1 }
           foreach ($f in 'l_intl.nls','c_10000.nls','c_1252.nls','locale.nls','sortdefault.nls') {
@@ -826,7 +835,7 @@ jobs:
           Get-ChildItem -Path $ls -Filter *.bmp -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName uwp-evidence-all -Force }
           $p = Join-Path $ls 'report.txt'
           $text = if (Test-Path $p) { Get-Content -Path $p -Raw } else { '' }
-          if ($text) { Write-Host '--- report.txt (header and verdict lines) ---'; $text -split "`n" | Where-Object { $_ -match '^(# |os_build|package|date_utc|programs|pass|fail|exited|timeout|crash=|crash$|skipped|program=|verdict=)' } | ForEach-Object { Write-Host $_ } }
+          if ($text) { Write-Host '--- report.txt (header and verdict lines) ---'; $text -split "`n" | Where-Object { $_ -match '^(# |os_build|package|date_utc|programs|pass|fail|exited|timeout|knownfail|crash=|crash$|skipped|program=|verdict=)' } | ForEach-Object { Write-Host $_ } }
           $fail = @()
           $countLine = ''
           if (-not $text) { $fail += 'LocalState\report.txt was not written' }
@@ -834,6 +843,8 @@ jobs:
             if ($text -notmatch '(?m)^os_build=\d+\.\d+\.\d+') { $fail += 'the report header has no os_build' }
             $dir = Join-Path $pkg.InstallLocation 'payload\guest'
             $bundled = @(Get-ChildItem -Path $dir -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '\.(exe|launch)$' } | ForEach-Object { $_.Name })
+            # A subdirectory <dir>\<dir>.launch is one entry named <dir> (docs/slices/dirlaunch.md).
+            $bundled += @(Get-ChildItem -Path $dir -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.FullName ($_.Name + '.launch')) } | ForEach-Object { $_.Name })
             Write-Host "bundled programs: $($bundled.Count)"
             # The expected-exit table (tests/guest/expected_exit.txt, staged next to guests.txt): <program> <code>[=<label>] ...
             $tablePath = Join-Path $pkg.InstallLocation 'payload\expected_exit.txt'
@@ -842,26 +853,33 @@ jobs:
             else {
               foreach ($tl in Get-Content $tablePath) {
                 $w = @(($tl -replace '#.*$', '') -split '\s+' | Where-Object { $_ })
-                if ($w.Count -ge 2) { $table[$w[0].ToLower()] = [bool](@($w[1..($w.Count - 1)] | Where-Object { $_ -match '^TIMEOUT(=|$)' }).Count) }
+                if ($w.Count -ge 2) { $table[$w[0].ToLower()] = [pscustomobject]@{ Timeout = [bool](@($w[1..($w.Count - 1)] | Where-Object { $_ -match '^TIMEOUT(=|$)' }).Count); Known = [bool](@($w[1..($w.Count - 1)] | Where-Object { $_ -match '^KNOWNFAIL=' }).Count) } }
               }
             }
             Write-Host "expected-exit table: $($table.Count) programs"
             foreach ($n in $bundled) {
               if (-not $table.ContainsKey($n.ToLower())) { $fail += "$n is bundled but has no row in expected_exit.txt" }
             }
+            $knownList = @()
             foreach ($n in ($table.Keys | Sort-Object)) {
               if (-not ($bundled | Where-Object { $_.ToLower() -eq $n })) { Write-Host "table row $n is not bundled: skipped"; continue }
-              $m = [regex]::Match($text, '(?ms)^program=' + [regex]::Escape($n) + '\s*\r?\n(?:(?!^program=).)*?^verdict=(\w+)')
+              $m = [regex]::Match($text, '(?ms)^program=' + [regex]::Escape($n) + '\s*\r?\n(?:(?!^program=).)*?^verdict=([\w-]+)')
               if (-not $m.Success) { $fail += "no block for $n"; continue }
               $word = $m.Groups[1].Value
               if ($word -eq 'PASS') { continue }
-              if ($word -eq 'TIMEOUT' -and $table[$n]) { continue }
+              if ($word -eq 'TIMEOUT' -and $table[$n].Timeout) { continue }
+              if ($word -eq 'KNOWN-FAIL' -and $table[$n].Known) { $knownList += $n; continue }
               $fail += "$n is $word, not PASS"
             }
-            $counts = @{ PASS = 0; FAIL = 0; EXITED = 0; TIMEOUT = 0; CRASH = 0 }
-            foreach ($m in [regex]::Matches($text, '(?m)^verdict=(\w+)')) { $k = $m.Groups[1].Value; if ($counts.ContainsKey($k)) { $counts[$k]++ } }
-            $countLine = "pass=$($counts.PASS) fail=$($counts.FAIL) exited=$($counts.EXITED) timeout=$($counts.TIMEOUT) crash=$($counts.CRASH)"
+            $counts = @{ PASS = 0; 'KNOWN-FAIL' = 0; FAIL = 0; EXITED = 0; TIMEOUT = 0; CRASH = 0 }
+            foreach ($m in [regex]::Matches($text, '(?m)^verdict=([\w-]+)')) { $k = $m.Groups[1].Value; if ($counts.ContainsKey($k)) { $counts[$k]++ } }
+            $countLine = "pass=$($counts.PASS) knownfail=$($counts['KNOWN-FAIL']) fail=$($counts.FAIL) exited=$($counts.EXITED) timeout=$($counts.TIMEOUT) crash=$($counts.CRASH)"
             Write-Host $countLine
+            # The directory install ran as C:\guest\dirtree\bin\guest_dirtree.exe with cwd C:\guest\dirtree\data: its own checks all passed.
+            $dm = [regex]::Match($text, '(?ms)^program=dirtree\s*\r?\n(?:(?!^program=).)*')
+            if (-not $dm.Success) { $fail += 'no report block for the directory install dirtree' }
+            elseif ($dm.Value -notmatch 'dirtree: all checks passed') { $fail += 'the dirtree block lacks "dirtree: all checks passed"' }
+            elseif ($dm.Value -match 'dirtree: FAIL') { $fail += 'the dirtree block holds a "dirtree: FAIL" line' }
             # The Doom timedemo runs the whole demo (it exits through I_Error with -1, table label "timedemo"): its last frame is not black.
             $bmp = Join-Path $ls 'doom-timedemo.bmp'
             if (-not (Test-Path $bmp)) { $fail += 'doom-timedemo.bmp was not written' }
@@ -875,6 +893,8 @@ jobs:
           }
           $lines = @('### host-uwp launcher: Run every program (autoselect all)')
           if ($countLine) { $lines += "- $countLine" }
+          if ($knownList.Count -gt 0) { $lines += "- KNOWN-FAIL (recorded, not PASS): $($knownList -join ', ')"; Write-Host "knownfail programs: $($knownList -join ', ')" }
+          else { $lines += '- KNOWN-FAIL: none' }
           if ($fail.Count -eq 0) { $lines += '- PASS: every bundled program has a row in expected_exit.txt and is PASS (TIMEOUT only where the table says so); doom-timedemo.bmp is not black' }
           else { $fail | ForEach-Object { $lines += "- FAIL: $_"; Write-Host "::error::$_" } }
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8

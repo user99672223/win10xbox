@@ -309,8 +309,13 @@ target_link_libraries(guest_net PRIVATE ws2_32)
 foreach(_g wasapi xaudio2 nowine)
   add_executable(guest_${_g} "${WIN10XBOX_ROOT}/tests/guest/${_g}.c")
 endforeach()
+# guest_dirtree is a directory install (docs/slices/dirlaunch.md), not a flat guest: it is not in HOST_UWP_GUESTS; stage.cmake
+# (-DDIRTREE_EXE) puts it into payload\guest\dirtree\bin with tests/guest/dirtree/ (data\file.pak, dirtree.launch).
+add_executable(guest_dirtree "${WIN10XBOX_ROOT}/tests/guest/dirtree.c")
 target_link_libraries(guest_wasapi PRIVATE ole32)
 target_link_libraries(guest_xaudio2 PRIVATE ole32)
+add_executable(guest_xaudio2_play "${WIN10XBOX_ROOT}/tests/guest/xaudio2_play.c")
+target_link_libraries(guest_xaudio2_play PRIVATE ole32)
 add_executable(smoke_guest WIN32 "${WIN10XBOX_ROOT}/host-uwp-lite/smoke_guest.c")
 target_compile_definitions(smoke_guest PRIVATE SMOKE_GUI=1)
 set_target_properties(smoke_guest PROPERTIES OUTPUT_NAME "smoke")
@@ -319,7 +324,7 @@ set(HOST_UWP_GUESTS window_guest hello_guest hello_guest_cui guest_hello guest_c
     smoke_guest_cui drv_client guest_window2 guest_window_input guest_window_input2 guest_window_text smoke_guest
     guest_spawn guest_window_nc guest_dialog guest_comctl guest_seh guest_seh_dll guest_window_scroll guest_clipboard
     guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput guest_identity guest_net guest_cursor
-    guest_regpersist guest_wasapi guest_xaudio2 guest_nowine guest_named_objects guest_tebframe guest_d3d11_tri guest_d3d11_swap
+    guest_regpersist guest_wasapi guest_xaudio2 guest_xaudio2_play guest_nowine guest_named_objects guest_tebframe guest_d3d11_tri guest_d3d11_swap
     guest_rdrand)
 if(TARGET guest_imgui_d3d11)
   list(APPEND HOST_UWP_GUESTS guest_imgui_d3d11)
@@ -410,6 +415,7 @@ endif()
 #   payload\launch.json             host-uwp/payload: the packaged default launch configuration
 #   payload\launch.example.json     host-uwp/payload: every key documented (published to LocalState)
 #   payload\guest\*                 every guest of HOST_UWP_GUESTS (window.exe is the default)
+#   payload\guest\dirtree\          a directory install: dirtree.launch, bin\guest_dirtree.exe, data\file.pak (docs/slices/dirlaunch.md)
 #   payload\builtin\*.dll           Wine PE builtins (optional, see HOST_UWP_BUILTIN_DIR) + our own (guest-dlls/)
 # resources.pri is made by package.cmd (makepri).
 # ---------------------------------------------------------------------------
@@ -438,6 +444,8 @@ add_custom_target(stage_appx ALL
           "-DPAYLOAD_DIR=${CMAKE_CURRENT_SOURCE_DIR}/payload"
           "-DBUILTIN_DIR=${HOST_UWP_BUILTIN_DIR}"
           "-DEXTRA_GUEST_DIR=${HOST_UWP_EXTRA_GUEST_DIR}"
+          "-DDIRTREE_EXE=$<TARGET_FILE:guest_dirtree>"
+          "-DDIRTREE_SRC=${WIN10XBOX_ROOT}/tests/guest/dirtree"
           "-DNLS_DIR=${HOST_UWP_NLS_DIR}"
           "-DGUEST_DLL_DIR=${WIN10XBOX_GUEST_DLL_DIR}"
           "-DMACHINE_JSON=${WIN10XBOX_ROOT}/machine/machine.default.json"
@@ -446,7 +454,7 @@ add_custom_target(stage_appx ALL
           -P "${CMAKE_CURRENT_SOURCE_DIR}/stage.cmake"
   COMMENT "Staging the AppX layout in ${HOST_UWP_STAGE_DIR}"
   VERBATIM)
-add_dependencies(stage_appx host_uwp xinput1_4 msctf_stub gdi32full_stub ${HOST_UWP_GUESTS})
+add_dependencies(stage_appx host_uwp xinput1_4 msctf_stub gdi32full_stub guest_dirtree ${HOST_UWP_GUESTS})
 if(HOST_UWP_WINMD_TARGET)
   add_dependencies(stage_appx ${HOST_UWP_WINMD_TARGET})
 endif()

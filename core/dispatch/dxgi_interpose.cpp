@@ -31,6 +31,7 @@
 #if defined(_MSC_VER) && !defined(__clang__)
 #include <intrin.h>
 #endif
+#include <atomic>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -70,6 +71,9 @@ CreateFactoryFn g_real_create_factory1 = nullptr;
 CreateFactory2Fn g_real_create_factory2 = nullptr;
 CreateDeviceFn g_real_create_device = nullptr;
 CreateDeviceAndSwapFn g_real_create_device_and_swap = nullptr;
+// WIN10XBOX_TEST_PRESENT_LIMIT (latched in Launch): the N-th successful Present on any swap chain ends the guest.
+std::atomic<unsigned> g_present_limit{0};
+std::atomic<unsigned> g_presents{0};
 
 // The layer's functions below run on guest threads under the guest's TLS view: anything touching host C++ runtime
 // state (trace, allocation, the compositor hand-off) runs in a HostModeScope; calls into the guest's native
@@ -155,6 +159,7 @@ public:
         W10X_TR( "dxgi: IDXGISwapChain::Present(%u, 0x%x) -> %08lx%s", sync, flags, static_cast<unsigned long>(hr),
               cap ? " (back buffer copied)" : "");
         if (cap && SUCCEEDED(hr)) Deliver();
+        if ((flags & DXGI_PRESENT_TEST) == 0 && SUCCEEDED(hr)) CountPresent();
         return hr;
     }
     HRESULT STDMETHODCALLTYPE GetBuffer(UINT i, REFIID r, void** pp) override {
@@ -187,6 +192,7 @@ public:
         W10X_TR( "dxgi: IDXGISwapChain1::Present1(%u, 0x%x) -> %08lx%s", sync, flags, static_cast<unsigned long>(hr),
               cap ? " (back buffer copied)" : "");
         if (cap && SUCCEEDED(hr)) Deliver();
+        if ((flags & DXGI_PRESENT_TEST) == 0 && SUCCEEDED(hr)) CountPresent();
         return hr;
     }
     BOOL STDMETHODCALLTYPE IsTemporaryMonoSupported() override { return sc1_ ? sc1_->IsTemporaryMonoSupported() : FALSE; }
@@ -197,6 +203,31 @@ public:
     HRESULT STDMETHODCALLTYPE GetRotation(DXGI_MODE_ROTATION* r) override { return sc1_ ? sc1_->GetRotation(r) : E_NOTIMPL; }
 
 private:
+    // Present-limit harness: after the limit-th presented frame (already handed to the compositor) log one line and
+    // end the guest like ExitProcess(42); the host takes its screenshot of the last composed frame at exit.
+    void CountPresent() {
+        const unsigned lim = g_present_limit.load();
+        if (!lim || g_presents.fetch_add(1) + 1 != lim) return;
+        DXGI_SWAP_CHAIN_DESC d{};
+        sc0_->GetDesc(&d);
+        char adapter[128] = "unknown";
+        IDXGIDevice* dev = nullptr;
+        if (SUCCEEDED(sc0_->GetDevice(__uuidof(IDXGIDevice), reinterpret_cast<void**>(&dev))) && dev) {
+            IDXGIAdapter* ad = nullptr;
+            DXGI_ADAPTER_DESC add{};
+            if (SUCCEEDED(dev->GetAdapter(&ad)) && ad) {
+                if (SUCCEEDED(ad->GetDesc(&add)))
+                    std::snprintf(adapter, sizeof adapter, "%ls", add.Description);
+                ad->Release();
+            }
+            dev->Release();
+        }
+        W10X_TR( "present-limit: %u frames presented, %ux%u, %s", lim, d.BufferDesc.Width, d.BufferDesc.Height, adapter);
+        { HostModeScope w10x_host_; std::printf("present-limit: %u frames presented, %ux%u, %s\n", lim,
+                                              d.BufferDesc.Width, d.BufferDesc.Height, adapter); std::fflush(stdout); }
+        HostModeScope w10x_host_;   // GuestExit does not return
+        process::GuestExit(42);
+    }
     // Copies back buffer 0 into pix_ (top-down BGRA). False when there is no window to report for or the buffer
     // cannot be read (traced once).
     bool Capture() {
@@ -945,6 +976,13 @@ bool InterposeDxgiImage(const loader::MappedImage& img, const std::wstring& id) 
     return false;
 }
 
+void SetPresentLimitImpl(unsigned n) { g_present_limit.store(n); g_presents.store(0); }
+
 bool IsDxgiInterposedModule(const std::wstring& id) { return IsModule(id, L"dxgi.dll") || IsModule(id, L"d3d11.dll"); }
 
 }  // namespace win10xbox::dispatch::detail
+
+namespace win10xbox::dispatch {
+namespace detail { void SetPresentLimitImpl(unsigned n); }
+void SetPresentLimit(unsigned n) { detail::SetPresentLimitImpl(n); }
+}  // namespace win10xbox::dispatch
