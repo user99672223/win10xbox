@@ -1,13 +1,13 @@
-win10xbox: kernelbase exports the entry points the genuine user32/imm32 import through the host API-set map
+win10xbox: kernelbase exports what the genuine user32/imm32 import through the host API-set map
 
 The guest shares the host PEB, so ApiSetMap is Windows' own schema: api-ms-win-core-heap-obsolete
 resolves to kernelbase (Wine: kernel32), and the native user32/imm32 import CheckTokenMembershipEx,
-SetProcessValidCallTargets, WTSGetServiceSessionId, WTSIsServerContainer and the Global*/Local* family
-from there. Wine had them as stubs or only in kernel32, so the loader bound a stub that raised
-EXCEPTION_WINE_STUB (the Global*/Local* ones forward to kernel32).
+SetProcessValidCallTargets and the Global*/Local* family from there. Wine had the first two as stubs and
+the rest only in kernel32, so the loader bound a stub that raised EXCEPTION_WINE_STUB (the Global*/Local*
+ones now forward to kernel32). Applies on top of 0003.
 
 diff --git a/dlls/kernelbase/kernelbase.spec b/dlls/kernelbase/kernelbase.spec
-index 2c5906a..f227fa2 100644
+index cc298e3..f227fa2 100644
 --- a/dlls/kernelbase/kernelbase.spec
 +++ b/dlls/kernelbase/kernelbase.spec
 @@ -131,7 +131,7 @@
@@ -52,22 +52,11 @@ index 2c5906a..f227fa2 100644
  @ stdcall SetProcessWorkingSetSizeEx(long long long long)
  # @ stub SetProtectedPolicy
  # @ stub SetRoamingLastObservedChangeTime
-@@ -1735,8 +1743,8 @@
- @ stdcall VirtualQuery(ptr ptr long)
- @ stdcall VirtualQueryEx(long ptr ptr long)
- @ stdcall VirtualUnlock(ptr long)
--# @ stub WTSGetServiceSessionId
--# @ stub WTSIsServerContainer
-+@ stdcall WTSGetServiceSessionId()
-+@ stdcall WTSIsServerContainer()
- @ stdcall WaitCommEvent(long ptr ptr)
- @ stdcall WaitForDebugEvent(ptr long)
- @ stdcall WaitForDebugEventEx(ptr long)
 diff --git a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
-index d16035f..ed63ffc 100644
+index e51a361..ed63ffc 100644
 --- a/dlls/kernelbase/process.c
 +++ b/dlls/kernelbase/process.c
-@@ -1163,6 +1163,42 @@ BOOL WINAPI DECLSPEC_HOTPATCH ProcessIdToSessionId( DWORD pid, DWORD *id )
+@@ -1163,6 +1163,24 @@ BOOL WINAPI DECLSPEC_HOTPATCH ProcessIdToSessionId( DWORD pid, DWORD *id )
  }
  
  
@@ -89,24 +78,6 @@ index d16035f..ed63ffc 100644
 +}
 +
 +
-+/***********************************************************************
-+ *           WTSGetServiceSessionId   (kernelbase.@)
-+ */
-+DWORD WINAPI WTSGetServiceSessionId(void)
-+{
-+    return 0;
-+}
-+
-+
-+/***********************************************************************
-+ *           WTSIsServerContainer   (kernelbase.@)
-+ */
-+BOOL WINAPI WTSIsServerContainer(void)
-+{
-+    return FALSE;
-+}
-+
-+
  /***********************************************************************
-  *           QueryProcessCycleTime   (kernelbase.@)
+  *           WTSGetServiceSessionId   (kernelbase.@)
   */
