@@ -65,16 +65,23 @@ static void Record(Seh* s, EXCEPTION_POINTERS* ep, bool via_uef) {
 }
 
 #ifdef SEH_USE_TRY
-static LONG SehFilter(EXCEPTION_POINTERS* ep, Seh* s, bool via_uef) {
-    Record(s, ep, via_uef);
+/* The filter reads its state from globals, not from SehRun's locals: clang 21 crashes (recoverAddrOfEscapedLocal)
+ * when a filter expression captures locals of the function. */
+static Seh* g_cur_seh = nullptr;
+static bool g_cur_uef = false;
+static LONG SehFilter(EXCEPTION_POINTERS* ep) {
+    Record(g_cur_seh, ep, g_cur_uef);
     return EXCEPTION_EXECUTE_HANDLER;
 }
 static Seh SehRun(SehFn fn, void* arg, bool via_uef = false) {
     Seh s = {};
+    g_cur_seh = &s;
+    g_cur_uef = via_uef;
     __try {
         fn(arg);
-    } __except (SehFilter(GetExceptionInformation(), &s, via_uef)) {
+    } __except (SehFilter(GetExceptionInformation())) {
     }
+    g_cur_seh = nullptr;
     return s;
 }
 #else
@@ -223,7 +230,8 @@ static void do_av_write(void*) {
 }
 static void do_av_read(void*) {
     int* volatile p = reinterpret_cast<int*>(static_cast<ULONG_PTR>(0x10));
-    (void)*p;
+    volatile int sink = *p;
+    (void)sink;
 }
 static void do_div0(void*) {
     volatile int z = 0;

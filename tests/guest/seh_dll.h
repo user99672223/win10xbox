@@ -10,7 +10,8 @@ struct SehBoom {
     int code;
 };
 
-extern "C" {
+/* C++ linkage on purpose: MSVC /EHsc assumes extern "C" functions do not throw and would not run the frame's
+ * destructors while an exception unwinds through it. */
 /* Throws SehBoom{code} from inside the DLL. */
 SEHDLL_API void sehdll_throw(int code);
 /* Calls cb() from a DLL frame that owns an object with a destructor; whatever cb throws unwinds through this frame. */
@@ -23,4 +24,3 @@ SEHDLL_API int sehdll_catch_inside(int code);
 SEHDLL_API int sehdll_ctor_ran(void);
 /* Raises an access violation (write to address 0) from a DLL frame. */
 SEHDLL_API void sehdll_fault(void);
-}

@@ -70,11 +70,21 @@ target_link_libraries(guest_seh PRIVATE guest_seh_dll)
 win10xbox_add_guest(guest_seh)
 if(NOT MSVC)
   include(CheckCXXSourceCompiles)
-  set(CMAKE_REQUIRED_FLAGS "-fms-extensions")
+  set(CMAKE_REQUIRED_FLAGS "-fms-extensions -g")
+  # The probe mirrors seh.cpp's SehRun (a filter that calls a function, the result passed back by value) so a
+  # compiler that cannot handle the construct is detected here and not in the guest build.
   check_cxx_source_compiles("
     #include <windows.h>
-    static LONG f(EXCEPTION_POINTERS* ep) { return ep->ExceptionRecord->ExceptionCode == 1 ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH; }
-    int main() { int r = 0; __try { RaiseException(1, 0, 0, 0); } __except (f(GetExceptionInformation())) { r = 1; } return r; }"
+    struct R { int a; unsigned long b; };
+    static R* g_cur; static bool g_flag;
+    static LONG filt(EXCEPTION_POINTERS* ep) { g_cur->b = ep->ExceptionRecord->ExceptionCode; return EXCEPTION_EXECUTE_HANDLER; }
+    static R run(void (*fn)(void*), void* arg, bool flag) {
+      R r = {}; g_cur = &r; g_flag = flag;
+      __try { fn(arg); } __except (filt(GetExceptionInformation())) { }
+      g_cur = 0; return r;
+    }
+    static void thrower(void*) { RaiseException(1, 0, 0, 0); }
+    int main() { R r = run(thrower, 0, false); return r.b == 1 ? 0 : 1; }"
     WIN10XBOX_CLANG_SEH_TRY)
   unset(CMAKE_REQUIRED_FLAGS)
   if(WIN10XBOX_CLANG_SEH_TRY)
@@ -84,6 +94,9 @@ if(NOT MSVC)
 endif()
 
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
+add_test(NAME guest.seh COMMAND guest_seh)
+set_tests_properties(guest.seh PROPERTIES PASS_REGULAR_EXPRESSION "seh: done failures=0"
+  FAIL_REGULAR_EXPRESSION "seh: [a-z_.]+ FAILED;seh: FAIL line")
 add_test(NAME guest.hello COMMAND guest_hello)
 set_tests_properties(guest.hello PROPERTIES PASS_REGULAR_EXPRESSION "hello from guest")
 add_test(NAME guest.cpuid COMMAND guest_cpuid)

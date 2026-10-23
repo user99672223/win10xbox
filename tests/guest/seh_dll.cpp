@@ -18,7 +18,6 @@ struct Guard {
 };
 } // namespace
 
-extern "C" {
 void sehdll_throw(int code) { throw SehBoom{code}; }
 
 int sehdll_call(void (*cb)(void)) {
@@ -44,6 +43,5 @@ void sehdll_fault(void) {
     int* volatile p = nullptr;
     *p = 1;
 }
-}
 
-BOOL WINAPI DllMain(HINSTANCE, DWORD, LPVOID) { return TRUE; }
+extern "C" BOOL WINAPI DllMain(HINSTANCE, DWORD, LPVOID) { return TRUE; }
