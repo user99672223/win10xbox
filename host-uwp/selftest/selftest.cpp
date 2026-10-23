@@ -240,10 +240,39 @@ namespace
         std::string err;
         CHECK(ParseLaunchConfig("{}", &c, &err) && !c.has_picker && c.autoselect.empty());
         CHECK(ParseLaunchConfig("{\"picker\": true, \"autoselect\": \"hello_cui.exe\"}", &c, &err));
-        CHECK(c.has_picker && c.picker && c.autoselect == "hello_cui.exe");
+        CHECK(c.has_picker && c.picker && c.autoselect.size() == 1 && c.autoselect[0] == "hello_cui.exe");
         CHECK(Contains(DescribeLaunchConfig(c), "autoselect=hello_cui.exe"));
+        CHECK(ParseLaunchConfig("{\"autoselect\": [\"hello_cui.exe\", \"guest_hello.exe\"]}", &c, &err));
+        CHECK(c.autoselect.size() == 2 && c.autoselect[1] == "guest_hello.exe");
+        CHECK(Contains(DescribeLaunchConfig(c), "autoselect=hello_cui.exe,guest_hello.exe"));
+        CHECK(ParseLaunchConfig("{\"autoselect\": []}", &c, &err) && c.autoselect.empty());
+        EXPECT_ERROR("{\"autoselect\": [\"a.exe\", \"C:\\\\x.exe\"]}", "bare file names");
+        EXPECT_ERROR("{\"autoselect\": [1]}", "bare file names");
         EXPECT_ERROR("{\"picker\": \"yes\"}", "true or false");
         EXPECT_ERROR("{\"autoselect\": \"C:\\\\x.exe\"}", "bare file name");
+    }
+
+    void TestRestartArgs()
+    {
+        CHECK(FormatRestartArgs(1, "hello_cui.exe") == "picker run=1 select=hello_cui.exe");
+        CHECK(FormatRestartArgs(2, "") == "picker run=2");
+        RestartArgs r = ParseRestartArgs("picker run=1 select=hello_cui.exe");
+        CHECK(r.valid && r.run == 1 && r.select == "hello_cui.exe");
+        r = ParseRestartArgs(FormatRestartArgs(7, "my prog.exe"));
+        CHECK(r.valid && r.run == 7 && r.select == "my prog.exe");
+        r = ParseRestartArgs("  picker \r\n");
+        CHECK(r.valid && r.run == 0 && r.select.empty());
+        r = ParseRestartArgs("picker select=a.exe");
+        CHECK(r.valid && r.run == 0 && r.select == "a.exe");
+        CHECK(!ParseRestartArgs("").valid);
+        CHECK(!ParseRestartArgs("--restart").valid);
+        CHECK(!ParseRestartArgs("pickerx run=1").valid);
+        CHECK(!ParseRestartArgs("picker run=").valid);
+        CHECK(!ParseRestartArgs("picker run=x").valid);
+        CHECK(!ParseRestartArgs("picker run=99999").valid);
+        CHECK(!ParseRestartArgs("picker run=1x select=a.exe").valid);
+        CHECK(!ParseRestartArgs("picker select=C:\\x.exe").valid);
+        CHECK(!ParseRestartArgs("picker bogus=1").valid);
     }
 
     // The files the package actually ships (payload\launch.json is what a fresh install runs):
@@ -281,6 +310,7 @@ int main(int argc, char** argv)
     TestPathHelpers();
     TestQuoting();
     TestLauncherKeys();
+    TestRestartArgs();
     if (argc > 1) TestPackagedPayload(argv[1]);   // ctest passes host-uwp/payload
     std::printf("host_uwp_selftest: %d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

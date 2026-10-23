@@ -225,6 +225,11 @@ struct Host::Impl
     bool picked = false;            // this run's guest was chosen in the launcher
     bool autoselected = false;      // ... by launch.json "autoselect" (one run, then the host ends)
     std::string picked_name;
+    // Restart-per-guest: set by the shell before the worker starts, see Host::SetRestart.
+    int run_index = 0;                  // guests already run in this restart chain
+    std::string restart_select;         // the cursor starts on this entry (the program that ran last)
+    Host::RestartFn restart_fn;
+    std::size_t autoselect_total = 0;   // entries in launch.json "autoselect" of this run
 
     std::mutex reason_mu;
     std::string stop_reason;
@@ -250,6 +255,7 @@ void Host::Impl::ShowLauncherResult(const std::string& verdict, bool ran, long e
     r.verdict = verdict;
     r.ran = ran;
     r.exit_code = exit_code;
+    r.run = run_index + 1;
     if (ran) r.lines = TailLines(info.local_state + L"\\stdout.txt", 20);
     if (!WriteLauncherResult(info.local_state + L"\\launcher_result.txt", r))
         diag::Line("launcher: cannot write launcher_result.txt (error %lu)", GetLastError());
@@ -284,16 +290,49 @@ void Host::Impl::RunWorker()
 {
     try
     {
-        // With the launcher the worker goes round: pick, run, result screen, back to the list.
-        // (A second guest in the same process after the first one's shutdown is not proven on
-        // hardware, docs/HANDOFF.md "Launcher".) autoselect, a failure before a guest was
-        // chosen, or a stop request end the loop.
+        // With the launcher a guest is followed by a restart of the whole app (core allows one guest per
+        // process, docs/HANDOFF.md "Launcher"): RequestRestartAsync ends this process on success. Only when
+        // the restart is refused does the worker go round in this process (the old behaviour, whose next
+        // Launch is refused with a message naming the restart). A failure before a guest was chosen, a
+        // stop request, or the end of the autoselect list end the loop.
         for (;;)
         {
             picked = false;
             RunImpl();
-            if (!picked || launcher == nullptr || autoselected || stop.load()) break;
+            if (!picked || launcher == nullptr || stop.load()) break;
+            const bool more_autoselect = autoselected && static_cast<std::size_t>(run_index) + 1 < autoselect_total;
+            if (autoselected && !more_autoselect) break;
+            if (!autoselected && !launcher->WaitDismiss(stop)) break;
+
+            std::string why;
+            if (!restart_fn)
+                why = "the shell offers no restart";
+            else
+            {
+                const std::string arg = FormatRestartArgs(run_index + 1, picked_name);
+                diag::Line("launcher: restarting the app for the next program (argument \"%s\")", arg.c_str());
+                report.Set("launcher.restart", "requested: " + arg);
+                report.Flush();
+                diag::FlushLog();
+                why = restart_fn(arg);   // does not return when the restart is granted
+                if (why.empty()) why = "the restart was granted but the process did not end";
+            }
+            diag::Line("launcher: restart failed: %s", why.c_str());
+            report.Set("launcher.restart", "FAILED: " + why);
+            report.Flush();
+            if (autoselected) break;   // the test hook cannot continue without the restart: the missing block says so
+
+            // Interactive: the reason on the result screen, then back to the list in this process.
+            LauncherResult r;
+            r.name = picked_name;
+            r.verdict = "restart failed";
+            r.ran = true;
+            r.run = run_index + 1;
+            r.note = "Cannot restart for the next program: " + why;
+            launcher->ShowResult(r);
             if (!launcher->WaitDismiss(stop)) break;
+            restart_select = picked_name;
+            ++run_index;
         }
     }
     catch (const std::exception& e)
@@ -397,6 +436,7 @@ void Host::Impl::RunImpl()
     // launch.json at all. The list is the guests bundled in the package plus any .exe in LocalState\guests.
     LauncherEntry chosen;
     autoselected = false;
+    autoselect_total = lc.autoselect.size();
     const bool no_config = source.rfind("built-in defaults", 0) == 0;
     if (launcher != nullptr && (lc.has_picker ? lc.picker : (no_config || !lc.autoselect.empty())))
     {
@@ -421,21 +461,25 @@ void Host::Impl::RunImpl()
         });
         diag::Line("launcher: %u entr%s", static_cast<unsigned>(entries.size()), entries.size() == 1 ? "y" : "ies");
         int idx = -1;
-        if (!lc.autoselect.empty())
+        if (!lc.autoselect.empty() && static_cast<std::size_t>(run_index) < lc.autoselect.size())
         {
             autoselected = true;
+            const std::string& want = lc.autoselect[static_cast<std::size_t>(run_index)];
             for (std::size_t i = 0; i < entries.size(); ++i)
-                if (_stricmp(entries[i].name.c_str(), lc.autoselect.c_str()) == 0) idx = static_cast<int>(i);
+                if (_stricmp(entries[i].name.c_str(), want.c_str()) == 0) idx = static_cast<int>(i);
             if (idx < 0)
             {
-                Fail("launch.json \"autoselect\" names " + lc.autoselect + ", which is not in the launcher list");
+                Fail("launch.json \"autoselect\" names " + want + ", which is not in the launcher list");
                 return;
             }
         }
         else
         {
             const std::size_t slash = lc.guest.find_last_of('\\');
-            idx = launcher->Pick(entries, slash == std::string::npos ? lc.guest : lc.guest.substr(slash + 1), stop);
+            // The cursor starts on the program that just ran (restart argument), else on launch.json "guest".
+            const std::string start_on =
+                !restart_select.empty() ? restart_select : (slash == std::string::npos ? lc.guest : lc.guest.substr(slash + 1));
+            idx = launcher->Pick(entries, start_on, stop);
             if (idx < 0)
             {
                 Fail("stopped by the shell in the launcher (" + StopReason() + ")");
@@ -805,6 +849,13 @@ bool Host::StartWorker()
 void Host::AttachLauncher(Launcher* launcher)
 {
     impl_->launcher = launcher;
+}
+
+void Host::SetRestart(int run, const std::string& select, RestartFn fn)
+{
+    impl_->run_index = run;
+    impl_->restart_select = select;
+    impl_->restart_fn = std::move(fn);
 }
 
 bool Host::Finished() const { return impl_->finished.load(); }

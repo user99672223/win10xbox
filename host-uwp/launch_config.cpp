@@ -736,10 +736,25 @@ bool ParseLaunchConfig(std::string_view text, LaunchConfig* out, std::string* er
         }
         else if (k == "autoselect")
         {
-            if (!WantString(v, k, &s, error)) return false;
-            if (!s.empty() && !IsLeafNameUtf8(s))
-                return Fail(error, v.line, "\"autoselect\" must be a bare file name such as \"hello_cui.exe\"");
-            c.autoselect = s;
+            c.autoselect.clear();
+            if (v.type == Value::Type::Array)
+            {
+                if (v.items.size() > kMaxListEntries) return Fail(error, v.line, "\"autoselect\" has too many entries");
+                for (const Value& a : v.items)
+                {
+                    if (a.type != Value::Type::String || a.str.empty() || !IsLeafNameUtf8(a.str))
+                        return Fail(error, a.line,
+                                    "\"autoselect\" list entries must be bare file names such as \"hello_cui.exe\"");
+                    c.autoselect.push_back(a.str);
+                }
+            }
+            else
+            {
+                if (!WantString(v, k, &s, error)) return false;
+                if (!s.empty() && !IsLeafNameUtf8(s))
+                    return Fail(error, v.line, "\"autoselect\" must be a bare file name such as \"hello_cui.exe\"");
+                if (!s.empty()) c.autoselect.push_back(s);
+            }
         }
         else
         {
@@ -774,8 +789,60 @@ std::string DescribeLaunchConfig(const LaunchConfig& c)
     s += "stage_native=" + (names.empty() ? std::string("(none)") : names) + "\n";
     s += std::string("input_pump=") + (c.input_pump ? "true" : "false") + "\n";
     if (c.has_picker) s += std::string("picker=") + (c.picker ? "true" : "false") + "\n";
-    if (!c.autoselect.empty()) s += "autoselect=" + c.autoselect + "\n";
+    if (!c.autoselect.empty())
+    {
+        std::string list;
+        for (const std::string& n : c.autoselect) list += (list.empty() ? "" : ",") + n;
+        s += "autoselect=" + list + "\n";
+    }
     return s;
+}
+
+std::string FormatRestartArgs(int run, const std::string& select)
+{
+    std::string s = "picker run=" + std::to_string(run);
+    if (!select.empty()) s += " select=" + select;
+    return s;
+}
+
+RestartArgs ParseRestartArgs(const std::string& args)
+{
+    RestartArgs r;
+    std::string_view a(args);
+    while (!a.empty() && (a.front() == ' ' || a.front() == '\t')) a.remove_prefix(1);
+    while (!a.empty() && (a.back() == ' ' || a.back() == '\t' || a.back() == '\r' || a.back() == '\n')) a.remove_suffix(1);
+    constexpr std::string_view kWord = "picker";
+    if (a.substr(0, kWord.size()) != kWord) return r;
+    a.remove_prefix(kWord.size());
+    if (!a.empty() && a.front() != ' ') return r;
+    int run = 0;
+    std::string select;
+    while (!a.empty())
+    {
+        a.remove_prefix(1);   // the separating blank
+        if (a.substr(0, 4) == "run=")
+        {
+            a.remove_prefix(4);
+            std::size_t n = 0;
+            long v = 0;
+            while (n < a.size() && a[n] >= '0' && a[n] <= '9' && n < 6) v = v * 10 + (a[n++] - '0');
+            if (n == 0 || v > kMaxRestartRun || (n < a.size() && a[n] != ' ')) return r;
+            run = static_cast<int>(v);
+            a.remove_prefix(n);
+        }
+        else if (a.substr(0, 7) == "select=")
+        {
+            select.assign(a.substr(7));   // the rest of the string: a file name may hold blanks
+            if (!select.empty() && !IsLeafNameUtf8(select)) return r;
+            a = {};
+        }
+        else
+            return r;
+    }
+    r.valid = true;
+    r.run = run;
+    r.select = select;
+    return r;
 }
 
 }  // namespace w10x_uwp

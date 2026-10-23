@@ -16,6 +16,7 @@
 #include "winexbox/driver.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -69,6 +70,14 @@ namespace w10x_uwp
         // The on-console launcher (launcher.h). Optional; set by the shell before StartWorker().
         // Without it launch.json "picker" / "autoselect" are ignored.
         void AttachLauncher(Launcher* launcher);
+
+        // Restart-per-guest (docs/HANDOFF.md "Launcher"): core allows one guest per process, so after a guest
+        // has run the worker asks the shell to restart the app with an argument. `run` and `select` come from
+        // the restart argument of this activation (0 and "" on a normal start). `fn(arg)` is called on the
+        // worker thread, calls CoreApplication::RequestRestartAsync(arg) and returns only on failure, with the
+        // reason (on success the process ends). Set before StartWorker().
+        using RestartFn = std::function<std::string(const std::string& arg)>;
+        void SetRestart(int run, const std::string& select, RestartFn fn);
 
         // ---- display / input backend (UI thread) --------------------------
         // The winexbox backend. M5 only creates it and counts the input that reaches it;

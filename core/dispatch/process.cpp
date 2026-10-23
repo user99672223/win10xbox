@@ -597,7 +597,7 @@ int Launch(const LaunchOptions& opts) {
     AcquireSRWLockExclusive(&g.lock);
     if (g.launched) {
         ReleaseSRWLockExclusive(&g.lock);
-        ERR(process, "Launch: a guest process is already running in this host (D1: one per host for now)");
+        ERR(process, "Launch: this host process has already run a guest; D1 allows one guest per host process, so the shell must restart the app (host-uwp: CoreApplication::RequestRestartAsync) before the next program");
         return static_cast<int>(st::Unsuccessful);
     }
     g.launched = true;

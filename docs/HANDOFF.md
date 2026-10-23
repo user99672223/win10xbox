@@ -122,18 +122,31 @@ if no pad is ever seen) and keyboard (arrows, Enter/Space, Esc/Backspace).
   before launch. The cursor starts on the `"guest"` of `launch.json`. Arguments and `expect_exit_code`
   written for another guest are dropped.
 * **After the guest exits** the result screen shows its exit code, the verdict and the last 20 lines of
-  `stdout.txt`; B/Esc/Enter returns to the list. The same data is written to
-  `LocalState\launcher_result.txt` (`guest=`, `ran=`, `exit_code=`, `verdict=`, `  | <line>`).
-* **Test hook.** `"autoselect": "hello_cui.exe"` launches that entry without input, writes
-  `launcher_result.txt`, and (with `exit_when_done`, default true) ends the app after one run.
+  `stdout.txt`; B/Esc/Enter dismisses it. The same data is appended to `LocalState\launcher_result.txt`
+  as one block per run (`run=N`, `guest=`, `ran=`, `exit_code=`, `verdict=`, `  | <line>`, blank line);
+  run 1 truncates the file.
+* **One guest per process, so the app restarts.** `core/dispatch/process.cpp` allows one `Launch` per
+  host process (D1); measured on the Series S, a second launch failed with status 0xc0000001. After the
+  result screen is dismissed the worker calls
+  `CoreApplication::RequestRestartAsync(L"picker run=<N> select=<name>")` (`main.cpp`
+  `RequestAppRestart`, via `Host::SetRestart`). On success the process ends and the new one gets the
+  argument in `OnActivated` (`ParseRestartArgs`, `launch_config.h`): `run` counts the guests already run
+  (indexes `autoselect`, numbers the result blocks) and the picker's cursor starts on `select`, the
+  program that just ran. If the restart fails (`AppRestartFailureReason`, or an exception) the reason is
+  shown on the result screen and the worker goes back to the list in the same process as before; the next
+  `Launch` then fails with the D1 message that names the restart.
+* **Test hook.** `"autoselect": ["hello_cui.exe", "guest_hello.exe"]` (a single string still works) runs
+  entry k in run k without input; between runs the app restarts itself. `exit_when_done` (default true)
+  ends the app after the last one. A restart failure under autoselect stops the chain, so the missing
+  `run=2` block is the symptom.
 * **Gate.** `host-uwp.yml` job `launcher` (needs `msix`, not continue-on-error): installs the `.msix` on
-  the runner, writes `LocalState\launch.json` with `picker` + `autoselect`, activates the app on the
-  runner's CoreWindow and asserts `guest=hello_cui.exe`, `ran=yes`, `exit_code=42` and
-  `hello from guest` in `launcher_result.txt`. Parser keys are covered by `host_uwp.selftest`.
-* **Not proven.** Gamepad/keyboard navigation (CI cannot press buttons) and running a SECOND guest in the
-  same process after the first one's `win10xbox::Shutdown()` (the worker loops back to the list and
-  re-runs the whole `RunImpl`; `Initialize` is re-entrant on paper, nothing has run it twice on hardware).
-  If a second run misbehaves, that is the first thing to look at; `crash.txt` will say.
+  the runner, writes `LocalState\launch.json` with `picker` + the two-entry `autoselect`, activates the
+  app, waits for the `run=2` block and asserts two blocks, each `ran=yes` and `exit_code=42`, run
+  numbers 1 and 2, and `hello from guest` in the first. Parser keys and the restart argument are covered
+  by `host_uwp.selftest`.
+* **Not proven.** Gamepad/keyboard navigation (CI cannot press buttons) and `RequestRestartAsync` itself
+  on the runner and on the Series S (written against the documented API; the first CI run and the first
+  console run are the evidence). `uwp_activate` may see the first process end; the job polls for `run=2`.
 
 
 ### Standing rule

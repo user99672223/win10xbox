@@ -42,13 +42,16 @@ namespace w10x_uwp
         bool ran = false;                  // the guest was started and exited (exit_code is valid)
         long exit_code = 0;
         std::vector<std::string> lines;    // last lines of the guest's stdout
+        int run = 1;                       // 1-based number of this run in the restart chain (launcher_result.txt "run=")
+        std::string note;                  // shown on the result screen: why the self-restart failed
     };
 
     // Last `n` non-empty-tail lines of a text file (the file's last 64 KiB are looked at), control
     // characters replaced by '?'. Empty when the file cannot be read.
     std::vector<std::string> TailLines(const std::wstring& path, std::size_t n);
 
-    // LocalState\launcher_result.txt: the test oracle of the CI gate and a record for the owner.
+    // LocalState\launcher_result.txt: the test oracle of the CI gate and a record for the owner. One block per
+    // run ("run=N" first line, a blank line after it); run 1 truncates the file, later runs append.
     bool WriteLauncherResult(const std::wstring& path, const LauncherResult& r);
 
     class Launcher final : public FrameSource

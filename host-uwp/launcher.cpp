@@ -152,14 +152,18 @@ std::vector<std::string> TailLines(const std::wstring& path, std::size_t n)
 bool WriteLauncherResult(const std::wstring& path, const LauncherResult& r)
 {
     std::string t;
+    t += "run=" + std::to_string(r.run) + "\n";
     t += "guest=" + r.name + "\n";
     t += std::string("ran=") + (r.ran ? "yes" : "no") + "\n";
     t += "exit_code=" + std::to_string(r.exit_code) + "\n";
     t += "verdict=" + r.verdict + "\n";
     t += "stdout_last_lines=" + std::to_string(r.lines.size()) + "\n";
     for (const std::string& l : r.lines) t += "  | " + l + "\n";
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    t += "\n";
+    const bool append = r.run > 1;
+    HANDLE h = CreateFileW(path.c_str(), append ? FILE_APPEND_DATA : GENERIC_WRITE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           append ? OPEN_ALWAYS : CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return false;
     WriteAll(h, t.data(), t.size());
     FlushFileBuffers(h);
@@ -420,10 +424,11 @@ void Launcher::Draw(std::uint32_t* bgra, int width, int height)
         y += lh;
         for (const std::string& l : result_.lines)
         {
-            if (y > footer - lh) break;
+            if (y > footer - 2 * lh) break;
             c.Text(margin, y, l, kText);
             y += lh;
         }
+        if (!result_.note.empty()) c.Text(margin, footer - lh, result_.note, kBad);
         c.Text(margin, footer, "B or Esc or Enter: back to the list", kDim);
     }
 }
