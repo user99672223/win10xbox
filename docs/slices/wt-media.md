@@ -1,4 +1,4 @@
-status: blocked: out of pushes; ci run 39939220417 linux-cross: `FAIL: windowscodecs conformance below baseline` (and propsys): both still carry the measurement baseline `run -1`, measured numbers below
+status: wip
 
 # Slice: wt-media
 
@@ -78,18 +78,14 @@ no count); each unit still has to crash as recorded, and completing prints IMPRO
 | tiffformat | ok, 1 executed | 1 | `tiffformat.c:1844: CoCreateInstance error 0x80040154` |
 | wmpformat | ok, 1 executed | 1 | `wmpformat.c:92: WmpDecoder isn't available, skipping test` |
 
-## Open
+## What still fails
 
-* Root cause of the windowscodecs/propsys failures: REGDB_E_CLASSNOTREG (0x80040154), the classes are not in the registry.
-  `DllRegisterServer` of both DLLs goes through winecrt0's `__wine_register_resources`, which loads the ATL registrar
-  (`atl100.dll`, `AtlCreateRegistrar`) and returns E_NOINTERFACE when that fails; atl100 is not in wine-pe/dlls.txt.
-  Next step: add `atl100` to wine-pe/dlls.txt (check the wine-pe run builds it), rerun, then record the new numbers.
-* The head needs ONE more push: set propsys.baseline and windowscodecs.baseline from the numbers above
-  (propsys `propsys crash 0`; windowscodecs `crash 0` for bitmap bmpformat converter info metadata palette propertybag
-  stream, `run 1` for ddsformat gifformat jpegformat pngformat tiffformat wmpformat, `run 7` for icoformat) or, after
-  atl100 is built, from the new run. mlang, gdiplus and dwrite pass their gates; ci windows (Debug) and
-  (RelWithDebInfo) are green on the head, the only red ctest entries are those two.
-* gdiplus `image` dies with c0000090 (float invalid operation) after a NaN: the guest's MXCSR exception masks look
-  unmasked; core/ has no MXCSR handling at all (not investigated further, out of slice).
-* gdiplus `graphics` hangs until the cap; not investigated.
-* dwrite/gdiplus font tests need real fonts in Windows\Fonts; none are staged by design.
+* windowscodecs and propsys: every failure is REGDB_E_CLASSNOTREG (0x80040154). `regdll.exe` (media.sh's regsvr32 step)
+  returns 0x80004002 (E_NOINTERFACE) because `DllRegisterServer` of both DLLs goes through winecrt0's
+  `__wine_register_resources`, which needs the ATL registrar (`atl100.dll`, `AtlCreateRegistrar`) and atl100.dll is not a
+  builtin (not in wine-pe/dlls.txt). Adding atl100 to wine-pe/dlls.txt and re-measuring is the follow-up slice; the
+  baselines of this slice are the numbers measured without it, as listed above.
+* gdiplus `image` dies with c0000090 (STATUS_FLOAT_INVALID_OPERATION) after `image.c:2133: Expected 0.000000, got
+  -nan(ind)`: the guest's MXCSR exceptions look unmasked; core/ has no MXCSR handling at all (not investigated, out of slice).
+* gdiplus `graphics` hangs until the 40 s cap (baseline `timeout`); brush, font and metafile crash after failed assertions.
+* dwrite and the gdiplus font tests need real fonts in Windows\Fonts; none are staged by design.
