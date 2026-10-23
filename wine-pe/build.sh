@@ -135,8 +135,17 @@ CONFIGURE_ARGS=(
     --without-opencl --without-oss --without-pcsclite --without-coreaudio
     --without-hwloc
 )
+# The builtins carry no Wine debug machinery: TRACE/WARN/FIXME are compiled
+# out by wine/debug.h itself (WINE_NO_TRACE_MSGS, WINE_NO_DEBUG_MSGS), and
+# patches/0005 makes WINE_NO_DEBUG_MSGS silence ERR as well, so neither the
+# message strings nor the __wine_dbch_* channel names reach the binaries.
+# No -g: DWARF would carry source paths and Wine function names, and the
+# prefix maps keep the checkout path out of __FILE__ (assert, critical-section
+# names). These flags replace the "-g -O2" Wine's configure picks for the
+# cross compiler.
+PE_CFLAGS="-O2 -DWINE_NO_TRACE_MSGS -DWINE_NO_DEBUG_MSGS -ffile-prefix-map=$SRC=. -ffile-prefix-map=$BUILD=."
 STAMP="$BUILD/.win10xbox-configure-stamp"
-WANT_STAMP="$WINE_TAG|$CROSS_CC|${CONFIGURE_ARGS[*]}"
+WANT_STAMP="$WINE_TAG|$CROSS_CC|$PE_CFLAGS|${CONFIGURE_ARGS[*]}"
 
 if [[ $CLEAN -eq 1 ]]; then
     echo "build.sh: --clean: removing $BUILD and $OUT"
@@ -149,7 +158,7 @@ if [[ ! -f "$BUILD/Makefile" || "$(cat "$STAMP" 2>/dev/null || true)" != "$WANT_
     echo "build.sh: configuring Wine ($WINE_TAG), compiler: $CROSS_CC"
     (
         cd "$BUILD"
-        x86_64_CC="$CROSS_CC" "$SRC/configure" "${CONFIGURE_ARGS[@]}"
+        x86_64_CC="$CROSS_CC" x86_64_CFLAGS="$PE_CFLAGS" "$SRC/configure" "${CONFIGURE_ARGS[@]}"
     ) > "$LOGS/configure.log" 2>&1 || {
         echo "build.sh: configure failed, tail of $LOGS/configure.log:" >&2
         tail -30 "$LOGS/configure.log" >&2

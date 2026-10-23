@@ -30,7 +30,7 @@ set(_prepare_args
 add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
-  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
+  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_nowine guest_spawn guest_window guest_window2
                    guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog guest_comctl
                    guest_seh guest_window_scroll guest_clipboard msctf_stub)
 endif()
@@ -105,6 +105,17 @@ win10xbox_guest_test(guest_cpuid "C:\\guest\\guest_cpuid.exe" 0
 # syscall stub and Clk_NtDelayExecution recursed until the stack ran out. No
 # other guest sleeps, so nothing exercised it.
 win10xbox_guest_test(guest_sleep "C:\\guest\\guest_sleep.exe" 7 "guest slept")
+
+# Nothing of Wine is observable from the builtins (docs/slices/nowine.md, wine-pe/patches 0005-0007): tests/guest/nowine.c
+# walks the modules the process has loaded and checks every export name, version resource and read-only data section,
+# and that ntdll does not resolve the Wine version function. Builtin-only folder: every system DLL is one of ours.
+set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+set(_guest_console ON)
+win10xbox_guest_test(guest_nowine "C:\\guest\\guest_nowine.exe" 42
+  "nowine: ntdll.dll exports=" "nowine: kernelbase.dll exports=" "nowine: ntdll.dll does not resolve" "nowine: done modules=[0-9]+ hits=0")
+set_tests_properties(integration.guest_nowine PROPERTIES FAIL_REGULAR_EXPRESSION "nowine: HIT;nowine: FAIL")
+unset(_guest_console)
+unset(_guest_machine)
 
 # CreateProcess (docs/DISPATCHER.md "Child processes"): NtCreateUserProcess starts a new host process running the
 # host executable on the child's guest image. The parent (tests/guest/spawn.c) runs guest_hello.exe and waits for

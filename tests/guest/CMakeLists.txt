@@ -24,6 +24,10 @@ win10xbox_add_guest(guest_cpuid)
 add_executable(guest_sleep sleep.c)
 win10xbox_add_guest(guest_sleep)
 
+# No trace of Wine in the system DLLs the layer loads (names, version resources, read-only data): integration.guest_nowine.
+add_executable(guest_nowine nowine.c)
+win10xbox_add_guest(guest_nowine)
+
 # CreateProcess through the layer (NtCreateUserProcess): runs guest_hello.exe and itself as children.
 add_executable(guest_spawn spawn.c)
 win10xbox_add_guest(guest_spawn)
