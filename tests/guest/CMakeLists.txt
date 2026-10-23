@@ -24,6 +24,10 @@ win10xbox_add_guest(guest_cpuid)
 add_executable(guest_sleep sleep.c)
 win10xbox_add_guest(guest_sleep)
 
+# CreateProcess through the layer (NtCreateUserProcess): runs guest_hello.exe and itself as children.
+add_executable(guest_spawn spawn.c)
+win10xbox_add_guest(guest_spawn)
+
 add_library(guest_dll SHARED dll.c)
 win10xbox_add_guest(guest_dll)
 
@@ -87,3 +91,6 @@ if(NOT CMAKE_CROSSCOMPILING_EMULATOR)
   add_test(NAME guest.window_text COMMAND guest_window_text)
   set_tests_properties(guest.window_text PROPERTIES PASS_REGULAR_EXPRESSION "text: done")
 endif()
+
+# Guests from the SQLite shell bring-up (tests/guest/sqlite).
+add_subdirectory(sqlite)
