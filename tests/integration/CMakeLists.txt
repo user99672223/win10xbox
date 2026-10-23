@@ -27,7 +27,7 @@ add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
-                   guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog)
+                   guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog guest_comctl)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -184,6 +184,20 @@ win10xbox_guest_test(guest_dialog "C:\\guest\\guest_dialog.exe" 42
   "dialog: ok clicked" "dialog: result=7" "dialog: done")
 set_tests_properties(integration.guest_dialog PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_dialog.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=110,150,ff646464|118,158,fff0f0f0|160,114,ffffffc0|240,136,ffffffff;WIN10XBOX_TEST_INJECT_INPUT=sleep 2500\\;move 160,163\\;ldown\\;lup")
+# comctl32 (Wine's builtin, v5 classes: no manifest) through the layer: a report-view ListView (2 columns, 3 items) with its
+# header, a TreeView and a smooth progress bar (bar colour RGB(0,160,0), background RGB(230,230,230), position 50 of
+# 100) as children of a 400x300 popup at (100,100). The guest reads the pixels back with GetPixel (tests/guest/comctl.c);
+# the screenshot checks the same ones at screen coordinates: ListView background (ListView at 5,5 -> client (150,100) =
+# screen (255,205)) white, the header's button face right of its two columns (client (180,9) = (285,114)) f0f0f0, the
+# progress bar (at 5,135) inside the fill (client (20,10) = (125,245)) 00a000 and outside it (client (170,10) =
+# (275,245)) e6e6e6.
+win10xbox_guest_test(guest_comctl "C:\\guest\\guest_comctl.exe" 42
+  "comctl: init ok" "comctl: created lv=1 tv=1 pb=1 hdr=1"
+  "comctl: lv count=3 cols=2 tv count=2 pb pos=50"
+  "comctl: pixels lv=00ffffff hdr=00f0f0f0 pb_in=0000a000 pb_out=00e6e6e6"
+  "comctl: label pixels drawn=[1-9][0-9]*" "comctl: done")
+set_tests_properties(integration.guest_comctl PROPERTIES
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_comctl.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=255,205,ffffffff|285,114,fff0f0f0|125,245,ff00a000|275,245,ffe6e6e6")
 unset(_guest_machine)
 
 # ---- Real programs: the first guests that are not ours ----------------------------------------------------------

@@ -69,6 +69,10 @@ enable_language(RC)
 add_executable(guest_dialog dialog.c dialog.rc)
 target_link_libraries(guest_dialog PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_dialog)
+# Wine's builtin comctl32 (ListView/TreeView/Progress/Trackbar/StatusBar) through the layer (tests/guest/comctl.c).
+add_executable(guest_comctl comctl.c)
+target_link_libraries(guest_comctl PRIVATE user32 gdi32 comctl32)
+win10xbox_add_guest(guest_comctl)
 
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
 add_test(NAME guest.hello COMMAND guest_hello)
