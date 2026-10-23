@@ -28,6 +28,9 @@
 #include <d3d11.h>
 #include <dxgi1_6.h>
 
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h>
+#endif
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -47,6 +50,21 @@ using CreateDeviceAndSwapFn = HRESULT(WINAPI*)(IDXGIAdapter*, D3D_DRIVER_TYPE, H
                                                 ID3D11Device**, D3D_FEATURE_LEVEL*, ID3D11DeviceContext**);
 
 // The guest images' original exports, set once while the image is mapped (one mapping at a time per image).
+// Image ranges of the interposed native dxgi / d3d11: factories requested from inside them (d3d11 creating its own
+// factory for its internals) must be the real objects, because those internals cast them to private types.
+#if defined(_MSC_VER) && !defined(__clang__)
+#define W10X_RETADDR() _ReturnAddress()
+#else
+#define W10X_RETADDR() __builtin_return_address(0)
+#endif
+struct Range { std::uintptr_t base = 0, size = 0; };
+Range g_internal[2];
+bool CalledFromInternal(void* ret) {
+    const auto a = reinterpret_cast<std::uintptr_t>(ret);
+    for (const Range& r : g_internal)
+        if (r.base && a >= r.base && a - r.base < r.size) return true;
+    return false;
+}
 CreateFactoryFn g_real_create_factory = nullptr;
 CreateFactoryFn g_real_create_factory1 = nullptr;
 CreateFactory2Fn g_real_create_factory2 = nullptr;
@@ -426,6 +444,7 @@ HRESULT CreateWrappedFactory(HRESULT real_hr, IUnknown* real_unk, REFIID riid, v
 
 HRESULT WINAPI W10x_CreateDXGIFactory(REFIID riid, void** pp) {
     if (!g_real_create_factory) return E_FAIL;
+    if (CalledFromInternal(W10X_RETADDR())) return g_real_create_factory(riid, pp);
     if (!pp || !IsWrappedFactoryIid(riid)) W10X_TRACE_HR("CreateDXGIFactory (not wrapped)", g_real_create_factory(riid, pp));
     IUnknown* u = nullptr;
     const HRESULT hr = CreateWrappedFactory(g_real_create_factory(__uuidof(IDXGIFactory), reinterpret_cast<void**>(&u)), u, riid, pp);
@@ -434,6 +453,7 @@ HRESULT WINAPI W10x_CreateDXGIFactory(REFIID riid, void** pp) {
 
 HRESULT WINAPI W10x_CreateDXGIFactory1(REFIID riid, void** pp) {
     if (!g_real_create_factory1) return E_FAIL;
+    if (CalledFromInternal(W10X_RETADDR())) return g_real_create_factory1(riid, pp);
     if (!pp || !IsWrappedFactoryIid(riid)) W10X_TRACE_HR("CreateDXGIFactory1 (not wrapped)", g_real_create_factory1(riid, pp));
     IUnknown* u = nullptr;
     const HRESULT hr = CreateWrappedFactory(g_real_create_factory1(__uuidof(IDXGIFactory), reinterpret_cast<void**>(&u)), u, riid, pp);
@@ -442,6 +462,7 @@ HRESULT WINAPI W10x_CreateDXGIFactory1(REFIID riid, void** pp) {
 
 HRESULT WINAPI W10x_CreateDXGIFactory2(UINT flags, REFIID riid, void** pp) {
     if (!g_real_create_factory2) return E_FAIL;
+    if (CalledFromInternal(W10X_RETADDR())) return g_real_create_factory2(flags, riid, pp);
     if (!pp || !IsWrappedFactoryIid(riid)) W10X_TRACE_HR("CreateDXGIFactory2 (not wrapped)", g_real_create_factory2(flags, riid, pp));
     IUnknown* u = nullptr;
     const HRESULT hr = CreateWrappedFactory(g_real_create_factory2(flags, __uuidof(IDXGIFactory), reinterpret_cast<void**>(&u)), u, riid, pp);
@@ -570,6 +591,7 @@ std::size_t ReplaceExports(const loader::MappedImage& img, const Replace* list, 
 
 bool InterposeDxgiImage(const loader::MappedImage& img, const std::wstring& id) {
     if (IsModule(id, L"dxgi.dll")) {
+        g_internal[0] = {reinterpret_cast<std::uintptr_t>(img.base), static_cast<std::uintptr_t>(img.size)};
         const Replace list[] = {
             {"CreateDXGIFactory", reinterpret_cast<const void*>(&W10x_CreateDXGIFactory), reinterpret_cast<void**>(&g_real_create_factory)},
             {"CreateDXGIFactory1", reinterpret_cast<const void*>(&W10x_CreateDXGIFactory1), reinterpret_cast<void**>(&g_real_create_factory1)},
@@ -578,6 +600,7 @@ bool InterposeDxgiImage(const loader::MappedImage& img, const std::wstring& id) 
         return ReplaceExports(img, list, 3, "dxgi.dll") != 0;
     }
     if (IsModule(id, L"d3d11.dll")) {
+        g_internal[1] = {reinterpret_cast<std::uintptr_t>(img.base), static_cast<std::uintptr_t>(img.size)};
         // D3D11CreateDevice is only read (the layer calls it), D3D11CreateDeviceAndSwapChain is replaced.
         void* real_device_and_swap = nullptr;
         const Replace list[] = {
