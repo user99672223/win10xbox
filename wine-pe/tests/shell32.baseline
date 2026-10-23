@@ -1,0 +1,20 @@
+# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/shell32.sh): push 1 = measurement placeholders
+# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/shell32.sh; measured on linux-cross)
+assoc run 999999
+autocomplete run 999999
+brsfolder run 999999
+ebrowser run 999999
+generated run 999999
+progman_dde run 999999
+recyclebin run 999999
+shelldispatch run 999999
+shelllink run 999999
+shellole run 999999
+shellpath run 999999
+shfldr_special run 999999
+shlexec run 999999
+shlfileop run 999999
+shlfolder run 999999
+shlview run 999999
+string run 999999
+systray run 999999
