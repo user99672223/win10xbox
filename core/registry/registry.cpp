@@ -1003,6 +1003,27 @@ void ApplySoftwareSkeleton(State& st, Node* sw) {
     }
 }
 
+// The in-process COM servers the Wine builtins provide and a program reaches through CoCreateInstance: WMI's locator
+// (D18: Win32_Processor.Name is wbemprox reading the SMBIOS table). Windows registers them in
+// SOFTWARE\Classes\CLSID\{...}\InprocServer32; a real hive's entry is never overridden.
+void ApplyComClasses(State& st, Node* sw) {
+    struct Class { const wchar_t* clsid; const wchar_t* name; };
+    const Class kClasses[] = {
+        {L"{4590F811-1D3A-11D0-891F-00AA004B2E24}", L"WBEM Locator"},
+        {L"{674B6698-EE92-11D0-AD71-00C04FD8FDFF}", L"WBEM Call Context"},
+        {L"{CB8555CC-9128-11D1-AD9B-00C04FD8FDFF}", L"WBEM Administrative Locator"},
+    };
+    for (const Class& c : kClasses) {
+        const std::wstring key = std::wstring(L"Classes\\CLSID\\") + c.clsid;
+        Val v;
+        Node* server = EnsureKey(st, sw, key + L"\\InprocServer32");
+        if (server && FindValue(server, L"", &v)) continue;
+        SetStr(st, sw, key, L"", c.name);
+        SetStr(st, sw, key + L"\\InprocServer32", L"", L"wbemprox.dll");
+        SetStr(st, sw, key + L"\\InprocServer32", L"ThreadingModel", L"Both");
+    }
+}
+
 void ApplySystemFidelity(State& st, Node* sys, bool hive_missing) {
     const Fidelity& f = st.fid;
     if (hive_missing) {
@@ -1151,6 +1172,7 @@ NTSTATUS Initialize(const std::wstring& machine_root) {
     // Fidelity: fill what a missing hive lacks; override only what machine.json states.
     if (sw_missing) ApplySoftwareSkeleton(st, sw);
     if (sw_missing || st.fid.has_windows) ApplySoftwareFidelity(st, sw);
+    ApplyComClasses(st, sw);
     if (sys_missing || st.fid.has_identity) ApplySystemFidelity(st, st.system, sys_missing);
     if (sys_missing) {
         // The overlay-only SYSTEM needs the link target to exist for CurrentControlSet.

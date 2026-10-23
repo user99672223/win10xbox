@@ -1,6 +1,7 @@
 # Prepares the machine folder used by the integration tests (cmake -P).
 #   cmake -DMACHINE=<bin>/machine -DBUILTIN_DIR=<wine-pe/out/builtin>
 #         -DGUEST_DIR=<bin>/guest -DDEFAULT_JSON=<machine/machine.default.json>
+#         [-DGUEST_DLL_DIR=<bin>/guest-dlls]   DLLs of our own (guest-dlls/): staged as builtins too
 #         -P prepare_machine.cmake
 #
 # Layout (the same one CI builds with machine/import_windows_dlls.ps1 plus the
@@ -32,7 +33,17 @@ endif()
 
 set(_builtins 0)
 if(BUILTIN_DIR AND IS_DIRECTORY "${BUILTIN_DIR}")
-  file(GLOB _files "${BUILTIN_DIR}/*.dll" "${BUILTIN_DIR}/*.exe")
+  file(GLOB _files "${BUILTIN_DIR}/*.dll" "${BUILTIN_DIR}/*.exe" "${BUILTIN_DIR}/*.drv")
+  foreach(f ${_files})
+    get_filename_component(n "${f}" NAME)
+    file(COPY_FILE "${f}" "${MACHINE}/Windows/builtin/${n}" ONLY_IF_DIFFERENT)
+    math(EXPR _builtins "${_builtins} + 1")
+  endforeach()
+endif()
+
+# Our own builtins (guest-dlls/: xinput1_4.dll and its two copies) go next to Wine's.
+if(GUEST_DLL_DIR AND IS_DIRECTORY "${GUEST_DLL_DIR}")
+  file(GLOB _files "${GUEST_DLL_DIR}/*.dll")
   foreach(f ${_files})
     get_filename_component(n "${f}" NAME)
     file(COPY_FILE "${f}" "${MACHINE}/Windows/builtin/${n}" ONLY_IF_DIFFERENT)
@@ -42,7 +53,7 @@ endif()
 
 set(_guests 0)
 if(GUEST_DIR AND IS_DIRECTORY "${GUEST_DIR}")
-  file(GLOB _files "${GUEST_DIR}/*.exe" "${GUEST_DIR}/*.dll" "${GUEST_DIR}/*.lua" "${GUEST_DIR}/*.ninja"
+  file(GLOB _files "${GUEST_DIR}/*.exe" "${GUEST_DIR}/*.dll" "${GUEST_DIR}/*.lua" "${GUEST_DIR}/*.c" "${GUEST_DIR}/*.ninja"
        "${GUEST_DIR}/*.py" "${GUEST_DIR}/*.json")
   foreach(f ${_files})
     get_filename_component(n "${f}" NAME)
@@ -94,6 +105,10 @@ if(BUILTIN_ONLY_MACHINE)
       math(EXPR _copied "${_copied} + 1")
     endif()
   endforeach()
+  # Real programs that come as a directory (tools/ci/fetch_tcc.ps1: guest/tcc with its include/ and lib/).
+  if(IS_DIRECTORY "${MACHINE}/guest/tcc")
+    file(COPY "${MACHINE}/guest/tcc" DESTINATION "${BUILTIN_ONLY_MACHINE}/guest")
+  endif()
   # Programs with a directory of their own under guest/ (MinGit: guest/mingit, a git.exe with its DLLs beside it).
   file(GLOB_RECURSE _files "${MACHINE}/guest/*/*")
   foreach(f ${_files})

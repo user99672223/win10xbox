@@ -116,11 +116,20 @@ using SiteHandler = bool (*)(SiteKind kind, ScanRegs* regs, void* ctx);
 
 struct ScanOptions {
     bool patch_cpuid = true, patch_rdtsc = true, patch_syscall = true, patch_kuser_reads = false;
+    // patch_kuser_reads covers [kuser_lo, kuser_hi) (default: the whole KUSER_SHARED_DATA page). With kuser_addresses
+    // it also covers `mov reg, imm` / `lea reg, [abs]` forming an address in that window, whose later loads cannot be
+    // seen as sites (the handler gets the instruction and returns the matching address in its own page).
+    std::uint64_t kuser_lo = 0x7FFE0000ull, kuser_hi = 0x7FFE1000ull;
+    bool kuser_addresses = false;
     SiteHandler handler = nullptr;
     void* handler_ctx = nullptr;
 };
 struct ScanSite { SiteKind kind; void* address; std::uint8_t length; bool patched_inline; };
 struct ScanResult { std::vector<ScanSite> sites; std::size_t patched = 0, trapped = 0, skipped = 0; };
+
+// The original bytes (out: at least 15) of a patched KuserRead site, which a handler needs to decode: by the time it runs
+// the site holds a jump or an int3.
+bool KuserSiteBytes(std::uint64_t site, std::uint8_t* out, std::uint8_t* len);
 
 NTSTATUS ScanAndPatch(const MappedImage& img, const ScanOptions& opts, ScanResult* result);
 // Scan an arbitrary range (e.g. JIT output or a host-loaded module).
