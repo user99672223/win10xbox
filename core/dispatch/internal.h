@@ -399,6 +399,7 @@ struct HostGui {
     decltype(&::IsIconic) IsIconic;
     decltype(&::GetWindowRect) GetWindowRect;
     decltype(&::GetWindowDC) GetWindowDC;
+    decltype(&::PrintWindow) PrintWindow;   // optional: a D3D swap chain's content (core/user/native_compose.cpp)
     decltype(&::ReleaseDC) ReleaseDC;
     decltype(&::GetSystemMetrics) GetSystemMetrics;
     decltype(&::CreateCompatibleDC) CreateCompatibleDC;
@@ -587,6 +588,12 @@ extern "C" const char* __cdecl w10x_wine_dbg_strdup(const char* str);
 // Replacement for the guest ntdll's RtlCreateHeap (the host's heap, with Wine's "no maximum means growable").
 extern "C" PVOID NTAPI w10x_RtlCreateHeap(ULONG flags, PVOID base, SIZE_T reserve, SIZE_T commit, PVOID lock, PVOID params);
 
+// ---- Wine TEB-frame exceptions (teb_frames.cpp) --------------------------------
+// The guest ntdll's RtlUnwind: a target that is a __TRY frame on TEB.NtTib.ExceptionList is unwound here.
+extern "C" void NTAPI w10x_RtlUnwind(PVOID target_frame, PVOID target_ip, PEXCEPTION_RECORD record, PVOID retval);
+// Adds the vectored handler that dispatches those frames (once per process, before the guest runs).
+void InstallTebFrameDispatch();
+void LogTebFrameStats();
 // ---- Firmware tables (firmware.cpp, D18) ---------------------------------------------
 // Builds the synthetic SMBIOS table from config::machine_identity and the host's topology; `vendor` is the 12-character
 // CPU vendor (the string CPUID leaf 0 serves). Call before the guest runs.
@@ -610,5 +617,15 @@ bool PatchJump(void* from, const void* to);
 // directory and the jumps live in one allocation within 4 GiB above the image (export RVAs are 32-bit).
 // The image must still be writable. Returns how many names were added.
 std::size_t ExtendGuestNtdllExports(const loader::MappedImage& guest_ntdll);
+// native_imports.cpp. Route B: called by MapImageView for every image; with the native GUI active, extends the
+// guest (Wine) kernelbase's export table with what native DLLs import from it and Wine lacks (jumps to Wine's
+// kernel32 export of the name, else to the host kernelbase's). Remembers the guest kernel32 for that.
+void NoteNativeGuestImage(const loader::MappedImage& img, const std::wstring& host_path, const std::wstring& export_name);
+// native_d3d.cpp. Route B + Direct3D: called by win10xbox_dispatch around every win32u pass-through (host view).
+// Before NtUserDestroyWindow: compose the guest's windows (NativeGuestPainted). After a NtGdiDdDDI* (D3DKMT) call:
+// trace each name the first time, and compose after present-type calls (throttled).
+void NativeWin32uBefore(const char* name);
+void NativeWin32uAfter(const char* name, std::uint64_t result);
+std::uint64_t NativeD3dkmtCalls();
 
 }  // namespace win10xbox::dispatch::detail

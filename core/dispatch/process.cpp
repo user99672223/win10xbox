@@ -422,6 +422,7 @@ NTSTATUS MapGuestNtdll(const std::wstring& root) {
     if (!view->stubs_rewritten) ERR(process, "guest ntdll: no syscall stub was rewritten");
 
     ApplyRtlForwarding(view->image);
+    InstallTebFrameDispatch();
 
     void* base = view->image.base;
     if (auto* p = static_cast<void**>(loader::FindExportByOrdinal(base, wine_ordinal::kUnixCallDispatcher)))
@@ -805,6 +806,7 @@ int WaitForGuest(DWORD timeout_ms) {
     InterlockedExchange(&g.exit_code, static_cast<LONG>(exit_code));
     InterlockedExchange(&g.exited, 1);
     TRACE(process, "guest exit, code %u", exit_code);
+    LogTebFrameStats();
 #if WIN10XBOX_HAVE_REGISTRY
     // What a program wrote to the registry outlives it (docs/DISPATCHER.md). Before the other threads are killed: one
     // that dies inside a registry call would leave the registry's mutex held.

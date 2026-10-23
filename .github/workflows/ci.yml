@@ -229,6 +229,20 @@ jobs:
       - name: Fetch the WDK km headers (required)
         shell: pwsh
         run: ./tools/ci/fetch_wdk_km.ps1
+      # Dear ImGui's release source for guest_imgui_d3d11 (tests/guest/imgui_d3d11.cpp wraps its unmodified
+      # example_win32_directx11; docs/DECISIONS.md G1). Not vendored; CMake reads WIN10XBOX_IMGUI_DIR at configure.
+      - name: Fetch Dear ImGui (guest_imgui_d3d11)
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'imgui'
+          for ($i = 1; $i -le 4; $i++) {
+            if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
+            git clone -q --depth 1 --branch v1.93.0 https://github.com/ocornut/imgui $dir
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Seconds (5 * $i)
+          }
+          if (-not (Test-Path "$dir/examples/example_win32_directx11/main.cpp")) { throw "Dear ImGui v1.93.0 not fetched" }
+          "WIN10XBOX_IMGUI_DIR=$dir" >> $env:GITHUB_ENV
       - name: Configure
         env: { SCCACHE_GHA_ENABLED: "true" }
         run: >
@@ -242,6 +256,10 @@ jobs:
       - name: Populate machine folder from the runner's System32 (never committed)
         shell: pwsh
         run: ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine -CI
+      # The natives only the Direct3D machine folder gets (machine/guest_dlls_d3d.txt), kept out of the shared machine folder.
+      - name: Stage the Direct3D machine's extra natives
+        shell: pwsh
+        run: ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine-d3d-extra -CI -ListFile machine/guest_dlls_d3d.txt
       # A real program that is not ours: 7-Zip 24.09's 7zr.exe from the official source tarball (pinned SHA-256, the
       # cache key carries it), nmake in CPP/7zip/Bundles/Alone7z -> build/bin/machine/guest/7zr.exe; run by
       # integration.real7z (tests/integration/real7z.cmake).

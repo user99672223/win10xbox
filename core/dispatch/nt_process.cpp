@@ -38,6 +38,8 @@ constexpr ULONG kProcessImageFileNameWin32 = 43;
 // THREADINFOCLASS
 constexpr ULONG kThreadQuerySetWin32StartAddress = 9;
 constexpr ULONG kThreadAmILastThread = 12;
+// Private class (wine-pe patch 0005, alloc_tls_slot): where is the GUEST's static-TLS vector of this thread? See below.
+constexpr ULONG kThreadGuestTlsLocation = 0x10020;
 // SYSTEM_INFORMATION_CLASS
 #if WIN10XBOX_HAVE_CLOCK
 constexpr ULONG kSystemTimeOfDayInformation = 3;
@@ -269,16 +271,64 @@ static NTSTATUS NTAPI Xl_NtQueryInformationProcess(HANDLE process, ULONG klass, 
     return Host().NtQueryInformationProcess(process, klass, buffer, length, ret_len);
 }
 
+// ThreadBasicInformation (class 0), the layout the kernel returns.
+struct ThreadBasicInfo {
+    NTSTATUS exit_status;
+    PVOID teb;
+    CLIENT_ID client_id;
+    ULONG_PTR affinity;
+    LONG priority;
+    LONG base_priority;
+};
+
+// Class kThreadGuestTlsLocation: the address of the pointer that holds the guest's static-TLS vector of `thread`.
+// That is the TEB field (TEB+0x58) of a thread that is running guest code, or of the CALLING thread (it is in the
+// host view only while this call runs and is back in the guest view when the caller reads the answer); for another
+// guest thread that is inside the dispatcher (blocked in a system call: depth > 0) the TEB shows the HOST's vector
+// and the guest's is parked in its ThreadState. Wine's alloc_tls_slot replaces slot i of every thread's vector when
+// a DLL with a TLS directory is loaded after startup; without this it replaced (and freed) slots of the host's
+// vector of every thread that was waiting in a system call: heap corruption on the first such load (dxcore.dll
+// after d3d11 had made thread-pool and timer-queue threads). docs/DISPATCHER.md, "Guest view and host view".
+static NTSTATUS GuestTlsLocation(HANDLE thread, PVOID buffer, ULONG length, PULONG ret_len) {
+    if (length != sizeof(void*)) return st::InfoLengthMismatch;
+    ThreadBasicInfo tbi{};
+    const NTSTATUS s = Host().NtQueryInformationThread(thread, 0, &tbi, sizeof tbi, nullptr);
+    if (!NtSuccess(s)) return s;
+    if (!tbi.teb) return st::InvalidParameter;
+    void* location = static_cast<std::uint8_t*>(tbi.teb) + teb::ThreadLocalStoragePointer;
+    const DWORD tid = static_cast<DWORD>(reinterpret_cast<std::uintptr_t>(tbi.client_id.UniqueThread));
+    if (tid != GetCurrentThreadId()) {
+        for (ThreadState* t : GuestThreads())
+            if (t->tid == tid) {
+                if (t->depth) location = &t->guest_tls;
+                break;
+            }
+    }
+    *static_cast<void**>(buffer) = location;
+    if (ret_len) *ret_len = sizeof(void*);
+    return st::Success;
+}
+
 static NTSTATUS NTAPI Xl_NtQueryInformationThread(HANDLE thread, ULONG klass, PVOID buffer, ULONG length,
                                                   PULONG ret_len) {
-    if (klass == kThreadAmILastThread && IsCurrentThreadHandle(thread)) {
+    if (klass == kThreadGuestTlsLocation) return GuestTlsLocation(thread, buffer, length, ret_len);
+    if (klass == kThreadAmILastThread) {
+        // Wine's RtlExitUserThread leaves its out value uninitialised when this fails, and a nonzero stack leftover
+        // ends the whole process with the thread's exit code. Trace every query so the answer is on record.
+        const bool current = IsCurrentThreadHandle(thread);
         ThreadState* self = CurrentThreadState();
-        if (self && (self->flags & kThreadGuest)) {
+        TRACE(process, "thread %04lx: NtQueryInformationThread(ThreadAmILastThread) current=%d state=%p flags=%x guests=%zu",
+              GetCurrentThreadId(), current ? 1 : 0, static_cast<void*>(self), self ? static_cast<unsigned>(self->flags) : 0u,
+              GuestThreads().size());
+        if (current && self && (self->flags & kThreadGuest)) {
             if (length != sizeof(ULONG)) return st::InfoLengthMismatch;
             if (NTSTATUS ps = probe::ProbeWrite(buffer, length, sizeof(ULONG))) return ps;
             if (ret_len)
                 if (NTSTATUS ps = probe::ProbeWrite(ret_len, sizeof(ULONG), sizeof(ULONG))) return ps;
-            if (NTSTATUS ws = probe::Store<ULONG>(static_cast<ULONG*>(buffer), GuestThreads().size() <= 1 ? 1 : 0))
+            const std::size_t guests = GuestThreads().size();
+            TRACE(process, "thread %04lx: ThreadAmILastThread -> %lu (%zu guest threads)", GetCurrentThreadId(),
+                  static_cast<unsigned long>(guests <= 1 ? 1 : 0), guests);
+            if (NTSTATUS ws = probe::Store<ULONG>(static_cast<ULONG*>(buffer), guests <= 1 ? 1 : 0))
                 return ws;
             return probe::StoreIfPresent<ULONG>(ret_len, sizeof(ULONG));
         }
@@ -340,6 +390,8 @@ static NTSTATUS NTAPI Xl_NtQuerySecurityObject(HANDLE h, ULONG info, PVOID sd, U
 // ---- Termination ---------------------------------------------------------------------------
 
 static NTSTATUS NTAPI Xl_NtTerminateProcess(HANDLE process, NTSTATUS code) {
+    TRACE(process, "thread %04lx: NtTerminateProcess(%p, %08lx)", GetCurrentThreadId(), process,
+          static_cast<unsigned long>(code));
     if (!process) {
         // Wine's RtlExitUserProcess: kill every other thread of the (guest) process.
         TerminateOtherGuestThreads(code);
@@ -350,6 +402,8 @@ static NTSTATUS NTAPI Xl_NtTerminateProcess(HANDLE process, NTSTATUS code) {
 }
 
 static NTSTATUS NTAPI Xl_NtTerminateThread(HANDLE thread, NTSTATUS code) {
+    TRACE(process, "thread %04lx: NtTerminateThread(%p, %08lx)", GetCurrentThreadId(), thread,
+          static_cast<unsigned long>(code));
     if (!thread || IsCurrentThreadHandle(thread)) {
         ThreadState* self = CurrentThreadState();
         if (self && (self->flags & kThreadGuest)) GuestThreadExit(code);

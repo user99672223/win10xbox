@@ -302,15 +302,17 @@ const HostNt& Host() { return S().host; }
 // a no-op; for native ones it is what makes the id mean the right function.
 std::size_t RenumberSyscallThunks(const std::vector<loader::StubPatch>& patched, const wchar_t* module) {
     State& s = S();
-    std::size_t renumbered = 0, unknown = 0, extra = 0;
+    std::size_t renumbered = 0, unknown = 0, extra = 0, ddi = 0, ddi_extra = 0;
     std::string unknown_names;
     AcquireSRWLockExclusive(&s.lock);
     for (const loader::StubPatch& p : patched) {
         if (!p.address) continue;
         std::uint32_t want = kUnknownSyscallId;
+        const Entry* forwarded = nullptr;   // the table entry this thunk now dispatches to, when it passes through
         auto it = s.by_name.find(p.name);
         if (it != s.by_name.end()) {
             want = it->second->id;
+            if (it->second->policy == Policy::PassThrough) forwarded = it->second;
         } else if (s.gui_native && s.host_win32u && IsWin32kName(p.name) && s.next_extra_id < kUnknownSyscallId) {
             // A win32u syscall of this Windows build that Wine's table does not have: pass it through by name too.
             if (void* fn = reinterpret_cast<void*>(GetProcAddress(s.host_win32u, p.name.c_str()))) {
@@ -324,10 +326,13 @@ std::size_t RenumberSyscallThunks(const std::vector<loader::StubPatch>& patched,
                 want = e->id;
                 s.by_name.emplace(e->name, e.get());
                 s.by_id[e->id] = e.get();
+                forwarded = e.get();
+                if (p.name.rfind("NtGdiDdDDI", 0) == 0) ++ddi_extra;
                 s.extra.push_back(std::move(e));
                 ++extra;
             }
         }
+        if (forwarded && p.name.rfind("NtGdiDdDDI", 0) == 0) ++ddi;
         if (want == kUnknownSyscallId) {
             ++unknown;
             if (unknown <= 8) (unknown_names += unknown_names.empty() ? "" : ", ") += p.name;
@@ -343,6 +348,9 @@ std::size_t RenumberSyscallThunks(const std::vector<loader::StubPatch>& patched,
         ++renumbered;
     }
     ReleaseSRWLockExclusive(&s.lock);
+    if (ddi)
+        TRACE(dispatch, "%ls: %zu NtGdiDdDDI* (D3DKMT) thunks forwarded by name to the host's win32u (%zu of them not in "
+                        "Wine's table)", module ? module : L"?", ddi, ddi_extra);
     if (renumbered || unknown)
         TRACE(dispatch, "%ls: %zu of %zu syscall thunks renumbered to the table's ids by name (%zu added as native-only "
                         "win32u pass-through)", module ? module : L"?", renumbered, patched.size(), extra);
@@ -990,9 +998,11 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
     unsigned long native_error = last_error;
     if (native_win32u) {
         NoteNativeWin32uCall();   // installs the callback trampolines once the guest's user32 has its table in
+        NativeWin32uBefore(e->name);   // native_d3d.cpp: last picture before NtUserDestroyWindow
         __writegsdword(teb::LastErrorValue, last_error);
         result64 = CallWithArgs64(e->host_fn, f->args, e->nargs);
         native_error = __readgsdword(teb::LastErrorValue);
+        NativeWin32uAfter(e->name, result64);   // native_d3d.cpp: D3DKMT evidence, compose after presents
         status = static_cast<NTSTATUS>(result64);
     } else
     switch (e->policy) {

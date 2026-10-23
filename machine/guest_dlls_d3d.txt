@@ -1,0 +1,9 @@
+# Native DLLs only the Direct3D machine folder (machine-native-d3d, tests/integration/prepare_machine.cmake D3D_MACHINE)
+# needs on top of machine/guest_dlls.txt. Staged by machine/import_windows_dlls.ps1 -ListFile into a separate directory
+# (CI: build/bin/machine-d3d-extra) and NOT into the shared machine folder: a native kernel.appcore.dll there is picked
+# up by every guest (an API set sends kernelbase's appmodel imports to it) and pulls in native msvcrt.dll after
+# startup. docs/slices/d3d.md has what loads each one.
+#   directxdatabasehelper.dll   dxcore.dll delay-loads ext-ms-win-dx-dxdbhelper-l1-1-0 (adapter enumeration)
+#   kernel.appcore.dll          ext-ms-win-core-resourcepolicy-l1-1-0 (dxcore) and api-ms-win-appmodel-runtime-*
+directxdatabasehelper.dll
+kernel.appcore.dll

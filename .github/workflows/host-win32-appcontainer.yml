@@ -49,6 +49,12 @@ name: host-win32-appcontainer
 #                          through ac_launch --plain
 #   window-ac              the same inside the AppContainer: does window.c paint through the real win32k inside our layer
 #                          inside the container? NON-gating, reported in the GUI MEASUREMENT block ("WINDOW (route B)")
+#   d3d11-plain            control: win10xbox.exe + guest_d3d11_tri.exe (tests/guest/d3d11_tri.c, docs/slices/d3d.md) in gui native
+#                          mode: the guest loads the host's NATIVE d3d11/dxgi/d3dcompiler_47, renders a triangle off-screen and reads
+#                          it back; its D3DKMT calls (NtGdiDdDDI*) go to the host's win32u; prints
+#                          "d3d11: adapter=<name> feature_level=<hex> driver=<hardware|warp>"
+#   d3d11-ac               the same inside the AppContainer: what may a container do with the GPU, hardware or WARP, which feature
+#                          level, which NtGdiDdDDI* call is refused? NON-gating, reported as "D3D11 (route B)"
 # The three measurements (also in the job summary and ac-out/ac-measurements.txt):
 #   1. does GetFinalPathNameByHandleW(VOLUME_NAME_DOS) fail inside the container? Evidence: the probe, and the layer's own
 #      "host path of image file ... unavailable" warning (core/dispatch/nt_section.cpp) in the smoke-ac log WITHOUT the hook.
@@ -142,6 +148,10 @@ jobs:
           $gui = Join-Path $env:RUNNER_TEMP 'native-gui-dlls.txt'
           Set-Content -Path $gui -Value @('user32.dll', 'win32u.dll', 'gdi32.dll', 'gdi32full.dll', 'msvcp_win.dll', 'imm32.dll')
           ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine -CI -ListFile $gui
+          # Direct3D 11 (d3d11-* runs): the native runtime guest_d3d11_tri.exe loads by name (d3d10warp is WARP's user-mode driver).
+          $d3d = Join-Path $env:RUNNER_TEMP 'native-d3d-dlls.txt'
+          Set-Content -Path $d3d -Value @('d3d11.dll', 'dxgi.dll', 'd3dcompiler_47.dll', 'd3d10warp.dll', 'dxcore.dll', 'dwmapi.dll', 'd3d12.dll', 'D3D12Core.dll', 'D3DSCache.dll', 'powrprof.dll', 'umpdc.dll', 'directxdatabasehelper.dll', 'kernel.appcore.dll')
+          ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine -CI -ListFile $d3d
           $nb = @(Get-ChildItem "$machine/Windows/builtin" -Filter *.dll).Count
           $nn = @(Get-ChildItem "$machine/Windows/System32" -Filter *.nls).Count
           Write-Host "staged $nb Wine builtins and $nn NLS files in $machine"
@@ -258,6 +268,22 @@ jobs:
           }
           window window-plain plain
           window window-ac ac
+          # Direct3D 11 off-screen through the layer (non-gating): the host's native d3d11/dxgi as guest code, plain and in the container.
+          d3d11() {
+            local label="$1" mode="$2"
+            XARGS=(--env WIN10XBOX_GUI=native --env WIN10XBOX_DEBUG=+dispatch,+process,+user,+modules,+relay
+                   --env 'WIN10XBOX_WINEDEBUG=+loaddll,warn+module,+rpc,+seh,+service' --env "WIN10XBOX_CRASH_DIR=$OUTW\\crash-$label")
+            run "$label" "$mode" 240 "$HOST" --machine "$MACHINE" 'C:\guest\guest_d3d11_tri.exe'
+            if [ -f "$OUT/$label.log" ]; then grep -a -E '^d3d11:|native d3d|NtGdiDdDDI|gui native|host path [^)]*(d3d|dxgi|umd|warp|dxcore)' "$OUT/$label.log" | tr -d '\r' | cut -c1-300 | head -150; fi
+          }
+          d3d11 d3d11-plain plain
+          d3d11 d3d11-ac ac
+          # The control for the control: the same program as an ordinary process of this shell, no layer at all. Its module
+          # list is the DLL closure of the runner's own d3d11/dxgi and shows which user-mode driver the runner picks.
+          echo
+          echo "################ d3d11-native (the runner's shell, outside the layer) ################"
+          (cd "$OUT" && timeout 200 ../build/bin/machine/guest/guest_d3d11_tri.exe > d3d11-native.log 2>&1; echo "$?" > d3d11-native.rc)
+          tr -d '\r' < "$OUT/d3d11-native.log" | grep -a '^d3d11:' | cut -c1-260; echo "exit status: $(cat "$OUT/d3d11-native.rc")"
           echo
           echo "files in $OUT:"; ls -l "$OUT" | cut -c1-200
           exit 0
@@ -518,6 +544,34 @@ jobs:
             say "  $r: context=$(prov $r) exit code=$(rcx $r) callbacks=$ncb screen=$px (want ff0050dc / ffff0000)"
             say "      $wl"
             md "| $r | $(prov $r) | $(rcx $r) | $(printf '%s' "$wl" | clip 300) | $ncb | $px |"
+          done
+
+          # ---- D3D11 (route B): guest_d3d11_tri.exe through the layer, off-screen. NON-gating; a missing log fails -----
+          say ""
+          say "D3D11 (route B): tests/guest/d3d11_tri.c through the layer, gui native: the guest loads the host's native d3d11/dxgi,"
+          say "  D3DKMT (NtGdiDdDDI*) is forwarded to the host's win32u; exit 42 = the triangle was rendered and read back"
+          md ""
+          md "### D3D11 (route B): off-screen triangle through the layer"
+          md ""
+          md "| run | context | exit code | adapter / feature level / driver | hardware attempt | D3DKMT refusals | pixels |"
+          md "|---|---|---|---|---|---|---|"
+          for r in d3d11-native d3d11-plain d3d11-ac; do
+            if [ ! -f "$OUT/$r.log" ]; then gui_fail=1; gui_missing="$gui_missing $r.log"; fi
+            al=$(if [ -f "$OUT/$r.log" ]; then grep -a -m1 '^d3d11: adapter=' "$OUT/$r.log" | tr -d '\r'; fi)
+            hw=$(if [ -f "$OUT/$r.log" ]; then grep -a -m1 'd3d11: D3D11CreateDevice(hardware)' "$OUT/$r.log" | tr -d '\r'; fi)
+            rf=$(if [ -f "$OUT/$r.log" ]; then grep -a 'native d3d: D3DKMT .* returned' "$OUT/$r.log" | tr -d '\r' | sed -e 's/.*D3DKMT //' | tr '\n' ' '; fi)
+            px=$(if [ -f "$OUT/$r.log" ]; then grep -a -m1 '^d3d11: centre=' "$OUT/$r.log" | tr -d '\r'; fi)
+            fl=$(if [ -f "$OUT/$r.log" ]; then grep -a -m1 -E '^d3d11: FAILED' "$OUT/$r.log" | tr -d '\r'; fi)
+            say "  $r: context=$(prov $r) exit code=$(rcx $r)"
+            say "      $al"
+            say "      $hw"
+            say "      D3DKMT calls that returned an error status: $rf"
+            say "      $px $fl"
+            md "| $r | $(prov $r) | $(rcx $r) | $(printf '%s' "$al" | clip 200) | $(printf '%s' "$hw" | clip 120) | $(printf '%s' "$rf" | clip 300) | $(printf '%s' "$px $fl" | clip 120) |"
+            if [ -f "$OUT/$r.log" ]; then
+              say "      modules and adapters:"
+              grep -a -E '^d3d11: (module .*(d3d|dxgi|umd|warp|dxcore|dwm)|adapters:|adapter detail|loaded)' "$OUT/$r.log" | tr -d '\r' | clip 260 | sed -e 's/^/        /' | tee -a "$meas"
+            fi
           done
 
           # ---- everything the probes saw, for the record ----------------------------------------------------------
