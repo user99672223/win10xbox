@@ -306,6 +306,8 @@ foreach(_g wasapi xaudio2 nowine)
 endforeach()
 target_link_libraries(guest_wasapi PRIVATE ole32)
 target_link_libraries(guest_xaudio2 PRIVATE ole32)
+add_executable(guest_xaudio2_play "${WIN10XBOX_ROOT}/tests/guest/xaudio2_play.c")
+target_link_libraries(guest_xaudio2_play PRIVATE ole32)
 add_executable(smoke_guest WIN32 "${WIN10XBOX_ROOT}/host-uwp-lite/smoke_guest.c")
 target_compile_definitions(smoke_guest PRIVATE SMOKE_GUI=1)
 set_target_properties(smoke_guest PROPERTIES OUTPUT_NAME "smoke")
@@ -314,7 +316,7 @@ set(HOST_UWP_GUESTS window_guest hello_guest hello_guest_cui guest_hello guest_c
     smoke_guest_cui drv_client guest_window2 guest_window_input guest_window_input2 guest_window_text smoke_guest
     guest_spawn guest_window_nc guest_dialog guest_comctl guest_seh guest_seh_dll guest_window_scroll guest_clipboard
     guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput guest_identity guest_net guest_cursor
-    guest_regpersist guest_wasapi guest_xaudio2 guest_nowine guest_named_objects guest_tebframe guest_d3d11_tri guest_d3d11_swap
+    guest_regpersist guest_wasapi guest_xaudio2 guest_xaudio2_play guest_nowine guest_named_objects guest_tebframe guest_d3d11_tri guest_d3d11_swap
     guest_rdrand)
 if(TARGET guest_imgui_d3d11)
   list(APPEND HOST_UWP_GUESTS guest_imgui_d3d11)

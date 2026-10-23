@@ -207,6 +207,11 @@ add_executable(guest_xaudio2 xaudio2.c)
 target_link_libraries(guest_xaudio2 PRIVATE ole32)
 win10xbox_add_guest(guest_xaudio2)
 
+# XAudio2 playback of two queued 500 ms buffers (WIN10XBOX_AUDIO_NULL_ENDPOINT=1 gives it an endpoint, docs/TESTING.md).
+add_executable(guest_xaudio2_play xaudio2_play.c)
+target_link_libraries(guest_xaudio2_play PRIVATE ole32)
+win10xbox_add_guest(guest_xaudio2_play)
+
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
 add_test(NAME guest.seh COMMAND guest_seh)
 set_tests_properties(guest.seh PROPERTIES PASS_REGULAR_EXPRESSION "seh: done failures=0"

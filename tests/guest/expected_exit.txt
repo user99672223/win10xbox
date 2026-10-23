@@ -48,6 +48,7 @@ guest_named_objects.exe 42=child-ran 1=no-child-processes
 # Audio: the runner has no endpoint (hr 0x80070490), the console has one
 guest_wasapi.exe 42=endpoint 43=no-endpoint
 guest_xaudio2.exe 42=endpoint 43=no-endpoint
+guest_xaudio2_play.exe 42=played 43=no-endpoint
 
 # Gamepad: 42 with a pad, 1 after the 30 s wait without one
 guest_xinput.exe 42=pad 1=no-pad
