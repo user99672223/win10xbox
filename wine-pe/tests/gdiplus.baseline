@@ -1,14 +1,14 @@
 # <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/media.sh --dll gdiplus; numbers in docs/slices/wt-media.md)
-# measurement push: every unit -1 so every unit prints and fails the gate; replaced by measured values
-brush run -1
-customlinecap run -1
-font run -1
-graphics run -1
-graphicspath run -1
-image run -1
-matrix run -1
-metafile run -1
-pathiterator run -1
-pen run -1
-region run -1
-stringformat run -1
+# measured on the CI linux-cross job (ci run 39930353399, head 14697fd)
+brush crash 0
+customlinecap run 0
+font crash 0
+graphics timeout 0
+graphicspath run 0
+image crash 0
+matrix run 0
+metafile crash 0
+pathiterator run 0
+pen run 0
+region run 2
+stringformat run 0

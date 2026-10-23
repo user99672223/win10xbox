@@ -29,7 +29,7 @@
 # "<unit> <run|crash|timeout> <max_failures>"):
 #   run    the unit must complete with failures <= max (fewer prints IMPROVED)
 #   crash|timeout  must not complete; completing prints IMPROVED (record it)
-#   and at least one assertion must have executed over all units.
+#   and at least one assertion must have executed over all units (unless the baseline records no "run" unit).
 # Exit: 0 baseline holds, 1 regression, 2 usage, 77 prerequisites missing
 # (the Wine sources, the builtins or the NLS data): ctest SKIP.
 set -uo pipefail
@@ -137,6 +137,35 @@ do_build() {
         -Wl,--error-limit=0 "${libs[@]}" \
         || { echo "media.sh: build failed" >&2; exit 1; }
     echo "media.sh: built $EXE"
+    # regdll.exe <module>: LoadLibrary + DllRegisterServer, what regsvr32 does, so the COM classes of
+    # propsys/windowscodecs are in the registry as on an installed Windows (the tests CoCreateInstance them).
+    local rc_="$OUT/regdll.c"
+    cat > "$rc_" <<'REGEOF'
+#include <windows.h>
+static void out(const char *s) { DWORD n; WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), s, lstrlenA(s), &n, NULL); }
+void regdll_start(void)
+{
+    const char *p = GetCommandLineA();
+    char hex[] = "0123456789abcdef", num[11];
+    HRESULT hr = 0x80070002;
+    HMODULE m;
+    int i;
+    if (*p == '"') { for (p++; *p && *p != '"'; p++) ; if (*p) p++; } else while (*p && *p != ' ') p++;
+    while (*p == ' ') p++;
+    m = LoadLibraryA(p);
+    if (m)
+    {
+        HRESULT (WINAPI *reg)(void) = (void *)GetProcAddress(m, "DllRegisterServer");
+        hr = reg ? reg() : 0x8007007f;
+    }
+    out("regdll: "); out(p); out(" DllRegisterServer=0x");
+    for (i = 0; i < 8; i++) num[i] = hex[((unsigned)hr >> (28 - 4 * i)) & 15];
+    num[8] = '\n'; num[9] = 0; out(num);
+    ExitProcess(hr ? 1 : 0);
+}
+REGEOF
+    "$cc" -O1 -w -nostdlib -Wl,-entry:regdll_start "$rc_" -o "$OUT/regdll.exe" -lkernel32 \
+        || { echo "media.sh: regdll build failed" >&2; exit 1; }
 }
 
 baseline_of() {   # <unit> -> "<expect> <max>"
@@ -161,6 +190,16 @@ do_run() {
     wmachine="${wmachine//\//\\}"
     export WIN10XBOX_DEBUG="${WIN10XBOX_DEBUG_SPEC:--all}"
     local tsv="$OUT/${DLL}.tsv" total=0 bad=0
+    local regs=""
+    case "$DLL" in propsys) regs="propsys.dll" ;; windowscodecs) regs="propsys.dll windowscodecs.dll" ;; esac
+    if [[ -n "$regs" && -f "$OUT/regdll.exe" ]]; then
+        cp -f "$OUT/regdll.exe" "$MACHINE/guest-wine/regdll.exe"
+        local r
+        for r in $regs; do
+            timeout -k 5 "$TIMEOUT" $EMULATOR "$HOST" --machine "$wmachine" "C:\\guest-wine\\regdll.exe" "$r" \
+                < /dev/null 2>&1 | tr -d '\r' | sed 's/^/  /' | head -4
+        done
+    fi
     : > "$tsv"
     local re='([0-9]+) tests executed \(([0-9]+) marked as todo, ([0-9]+) as flaky, ([0-9]+) failures?\), ([0-9]+) skipped'
     local unit
@@ -207,7 +246,12 @@ do_run() {
         fi
     done
     echo "WINETEST $DLL total executed=$total"
-    if (( total < 1 )); then echo "FAIL: no assertion executed in any unit"; exit 1; fi
+    # A suite whose baseline records only crash/timeout units executes no counted
+    # assertion by definition; every other suite must execute at least one.
+    if (( total < 1 )) && grep -qE '^[^#[:space:]]+[[:space:]]+run[[:space:]]' "$BASELINE" 2>/dev/null; then
+        echo "FAIL: no assertion executed in any unit"; exit 1
+    fi
+    if (( total < 1 )) && [[ ! -f "$BASELINE" ]]; then echo "FAIL: no assertion executed in any unit"; exit 1; fi
     (( bad == 0 )) || { echo "FAIL: $DLL conformance below baseline (logs in $OUT)"; exit 1; }
     echo "PASS (baseline holds)"
 }
