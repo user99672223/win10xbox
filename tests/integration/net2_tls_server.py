@@ -72,6 +72,16 @@ def handle(conn):
         pass
 
 
+def records(d):
+    """'type/len' of the TLS records in a chunk (the last may be cut), as the guest's +schannel trace prints them."""
+    out, i = [], 0
+    while i + 5 <= len(d):
+        n = (d[i + 3] << 8) | d[i + 4]
+        out.append("%02x/%d%s" % (d[i], n, "(cut)" if i + 5 + n > len(d) else ""))
+        i += 5 + n
+    return ",".join(out) or "-"
+
+
 def tap(raw):
     """Diagnostic: put a logging relay between the client and the TLS engine and return the engine's end. Every chunk
     that crosses is logged with its direction (c2s read from the client, s2c written to it), length, sha256 and bytes."""
@@ -83,7 +93,7 @@ def tap(raw):
                 d = src.recv(16384)
                 if not d:
                     break
-                print("%s %d sha256=%s %s" % (tag, len(d), hashlib.sha256(d).hexdigest(), d[:400].hex()), flush=True)
+                print("%s %d %s %s" % (tag, len(d), records(d), hashlib.sha256(d).hexdigest()[:16]), flush=True)
                 dst.sendall(d)
         except OSError:
             pass

@@ -578,6 +578,7 @@ NTSTATUS WINAPI Ws2UnixGetNameInfo(void* args);
 extern const UnixCallFn kSchannelFuncs[];
 extern const std::size_t kSchannelFuncCount;
 void PrimeSchannelHost();   // before the PEB take-over, like afd::PrimeHost
+void SwapHostPebFields();   // exchange the PEB fields the take-over replaced with the host's (twice = back); process.cpp
 // mmdevapi's driver on the host's WASAPI (unix_mmdevapi.cpp). PrimeAudio starts the host audio thread and loads the
 // host stack; call it before the PEB take-over. RegisterMmdevapiUnixLib registers the "winewasapi" unix library.
 void PrimeAudio(const std::wstring& machine_root);

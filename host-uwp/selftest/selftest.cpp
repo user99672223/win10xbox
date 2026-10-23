@@ -5,12 +5,15 @@
 // Windows: the host-uwp workflow builds and runs it on the CI runner before the
 // package is made, so the one piece of host logic that does not need a console
 // is exercised for real. Exit code 0 = all checks passed.
+#include "../guest_sidecar.h"
 #include "../launch_config.h"
 
 #include <cstdio>
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <utility>
+#include <vector>
 
 using namespace w10x_uwp;
 
@@ -268,6 +271,80 @@ namespace
         CHECK(parse("launch.example.json", &e));
         CHECK(e.guest == "C:\\guest\\hello.exe");   // documents the built-in defaults
     }
+
+    std::string ReadAll(const std::string& path, bool* ok)
+    {
+        std::ifstream f(path, std::ios::binary);
+        *ok = f.good();
+        return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    }
+
+    void TestSidecars()
+    {
+        // .args: one argument per line, verbatim, CRLF tolerated, blank and '#' lines skipped, BOM dropped.
+        std::vector<std::string> a;
+        ParseArgsFile("\xEF\xBB\xBF-iwad\r\ndoom1.wad\r\n\r\n# comment\n-title\nTwo Words\n  lead\n", &a);
+        CHECK(a.size() == 5 && a[0] == "-iwad" && a[1] == "doom1.wad" && a[2] == "-title" && a[3] == "Two Words" && a[4] == "  lead");
+        ParseArgsFile("", &a);
+        CHECK(a.empty());
+        ParseArgsFile("last-without-newline", &a);
+        CHECK(a.size() == 1 && a[0] == "last-without-newline");
+
+        // .env
+        std::vector<std::pair<std::string, std::string>> e;
+        std::string err;
+        CHECK(ParseEnvFile("SDL_RENDER_DRIVER=software\r\n# x\n\n A = b=c \nEMPTY=\n", &e, &err));
+        CHECK(e.size() == 3);
+        CHECK(e.size() == 3 && e[0].first == "SDL_RENDER_DRIVER" && e[0].second == "software");
+        CHECK(e.size() == 3 && e[1].first == "A" && e[1].second == " b=c ");
+        CHECK(e.size() == 3 && e[2].first == "EMPTY" && e[2].second.empty());
+        CHECK(!ParseEnvFile("OK=1\nnoequals\n", &e, &err) && Contains(err, "noequals"));
+        CHECK(!ParseEnvFile("=v\n", &e, &err));
+
+        // .title
+        CHECK(ParseTitleFile("Doom\r\n") == "Doom");
+        CHECK(ParseTitleFile("\n  \n  Spaced Title \nsecond\n") == "Spaced Title");
+        CHECK(ParseTitleFile("# only a comment\n").empty());
+
+        // argument line of a .launch file
+        const std::vector<std::string> w = SplitArgLine("-a  \"b c\" d\"e f\"g \"\" -z");
+        CHECK(w.size() == 5 && w[0] == "-a" && w[1] == "b c" && w[2] == "de fg" && w[3].empty() && w[4] == "-z");
+        CHECK(SplitArgLine("   ").empty());
+
+        // .launch
+        GuestLaunch g;
+        CHECK(ParseLaunchFile("# t\nexe=chocolate-doom.exe\r\ntitle=Doom (timedemo)\nargs=-iwad doom1.wad -window\n"
+                              "args=-nosound\nenv=SDL_RENDER_DRIVER=software\nenv=K=a=b\n", &g, &err));
+        CHECK(g.exe == "chocolate-doom.exe" && g.title == "Doom (timedemo)");
+        CHECK(g.args.size() == 4 && g.args[0] == "-iwad" && g.args[2] == "-window" && g.args[3] == "-nosound");
+        CHECK(g.env.size() == 2 && g.env[0].first == "SDL_RENDER_DRIVER" && g.env[1].second == "a=b");
+        CHECK(!ParseLaunchFile("title=x\n", &g, &err) && Contains(err, "exe="));
+        CHECK(!ParseLaunchFile("exe=sub\\\\x.exe\n", &g, &err));
+        CHECK(!ParseLaunchFile("exe=a.exe\nbogus=1\n", &g, &err) && Contains(err, "bogus"));
+        CHECK(!ParseLaunchFile("exe=a.exe\nenv=NOEQ\n", &g, &err));
+        CHECK(!ParseLaunchFile("exe a.exe\n", &g, &err));
+    }
+
+    // The sidecars host-uwp/payload/guest ships for Chocolate Doom.
+    void TestPackagedSidecars(const std::string& dir)
+    {
+        bool ok = false;
+        std::vector<std::string> a;
+        ParseArgsFile(ReadAll(dir + "/guest/chocolate-doom.args", &ok), &a);
+        CHECK(ok && a.size() == 4 && a[0] == "-iwad" && a[1] == "doom1.wad" && a[2] == "-fullscreen" && a[3] == "-nomouse");
+        std::vector<std::pair<std::string, std::string>> e;
+        std::string err;
+        CHECK(ParseEnvFile(ReadAll(dir + "/guest/chocolate-doom.env", &ok), &e, &err) && ok);
+        CHECK(e.size() == 1 && e[0].first == "SDL_RENDER_DRIVER" && e[0].second == "software");
+        CHECK(!ParseTitleFile(ReadAll(dir + "/guest/chocolate-doom.title", &ok)).empty() && ok);
+        GuestLaunch g;
+        CHECK(ParseLaunchFile(ReadAll(dir + "/guest/doom-timedemo.launch", &ok), &g, &err) && ok);
+        CHECK(g.exe == "chocolate-doom.exe" && g.title == "Doom (timedemo)");
+        bool timedemo = false, nogui = false;
+        for (const std::string& s : g.args) { timedemo |= s == "-timedemo"; nogui |= s == "-nogui"; }
+        CHECK(timedemo && nogui);
+        CHECK(g.env.size() == 1 && g.env[0].first == "SDL_RENDER_DRIVER");
+    }
 }  // namespace
 
 int main(int argc, char** argv)
@@ -281,6 +358,8 @@ int main(int argc, char** argv)
     TestPathHelpers();
     TestQuoting();
     TestLauncherKeys();
+    TestSidecars();
+    if (argc > 1) TestPackagedSidecars(argv[1]);
     if (argc > 1) TestPackagedPayload(argv[1]);   // ctest passes host-uwp/payload
     std::printf("host_uwp_selftest: %d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

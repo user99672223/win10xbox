@@ -35,3 +35,20 @@ ROOT-CAUSE LOOP (run https://github.com/user99672223/win10xbox/actions/runs/3998
 - Dropping ISC_REQ_EXTENDED_ERROR and SCH_CRED_NO_SERVERNAME_CHECK (now identical to the control): no change.
 - Next (not done, pushes used): dump the step-3 input as hex in the +schannel trace and have the server log sha256 of the bytes it writes
   (ssl.MemoryBIO); try the native control with the receive forced through the pending path; run ISC on a thread that is not in host view.
+
+THIRD LOOP (run https://github.com/user99672223/win10xbox/actions/runs/39998984615, head 1f4b58e, both windows jobs fail identically; linux-cross green):
+- Step 1 of the plan: the bytes are NOT the cause as far as measured. Server relay (tests/integration/net2_tls_server.py `tap`) vs the +schannel hex trace:
+  client step-1 output 143 bytes sha256 15c6d757.. == what the server read (c2s 143); server write of 1213 bytes sha256 fa77f579.. == step-2 input (1213).
+  The server log of the later chunks (c2s 126, s2c 242) was cut by ctest's 1024-byte output limit for a passing test, so the 242-byte step-3 input is
+  unverified against the server (the relay now prints one short line per chunk: direction, length, record types/lengths, sha256 prefix).
+  The step-3 input is well formed: 16/186 (NewSessionTicket, 04 00 00 b6) 14/1 16/40 (AES-GCM Finished, explicit nonce 5f8e88bd5d06c0e4).
+- Step 2 of the plan: ISC/DecryptMessage/EncryptMessage/QueryContextAttributes now run on one dedicated worker thread that is never in the guest view
+  (unix_schannel.cpp RunOnWorker): SAME failure (80090330 at call 3). So guest-view TLS/FLS state of the calling thread is not the cause.
+- What is left that differs from the native control is PROCESS-wide: the PEB take-over (core/dispatch/process.cpp SavePebFields) replaces Ldr, LoaderLock,
+  FastPebLock, TlsBitmap, ActivationContextData, ProcessParameters, code page tables and the OS version fields for the whole run, and the host's SChannel
+  loads providers lazily (LoadLibrary reads exactly those). Second push (this head): RunOnWorker swaps the host's PEB fields back in around every SSPI
+  call (SwapHostPebFields, twice = back), and the +schannel trace prints, per step, the image mappings that appeared during it and the host's negotiated
+  connection/cipher info. Not yet observed on Windows; if it still fails, the new trace names what the host loaded at step 3 and the relay log has the
+  server's 242-byte hash (artifact windows-*-logs, ctest-junit.xml, test integration.net2_tls_server_stop).
+- Still untried: SCH_CREDENTIALS vs SCHANNEL_CRED, ctx.options |= ssl.OP_NO_TICKET on the server, a full in-process loopback handshake in PrimeSchannelHost
+  (loads the decrypt-side providers before the take-over).

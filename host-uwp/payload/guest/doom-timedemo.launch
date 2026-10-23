@@ -1,0 +1,5 @@
+# Second picker entry: runs chocolate-doom.exe on the built-in demo and exits (the engine reports the timing through I_Error, exit code -1).
+exe=chocolate-doom.exe
+title=Doom (timedemo)
+args=-iwad doom1.wad -timedemo demo1 -nosound -nomouse -nogui -window
+env=SDL_RENDER_DRIVER=software

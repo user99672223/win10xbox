@@ -52,6 +52,40 @@ void TraceHex(const char* tag, int step, const unsigned char* d, size_t n) {
     }
 }
 
+// Diagnostic (+schannel): image mappings that appeared in the process since the last call, i.e. what the host's SChannel
+// loaded lazily during a step. Baseline pass (quiet) first.
+void* g_seen_images[1024];
+size_t g_seen_count = 0;
+void ScanImages(int step, bool quiet) {
+    if (!quiet && !win10xbox::trace::Enabled(&__win10xbox_dbch_schannel, win10xbox::trace::Class::Trace)) return;
+    using QueryFn = LONG(NTAPI*)(HANDLE, PVOID, int, PVOID, SIZE_T, PSIZE_T);
+    auto query = reinterpret_cast<QueryFn>(HostExport("NtQueryVirtualMemory"));
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    char* p = static_cast<char*>(si.lpMinimumApplicationAddress);
+    MEMORY_BASIC_INFORMATION mbi;
+    while (p < static_cast<char*>(si.lpMaximumApplicationAddress) && VirtualQuery(p, &mbi, sizeof mbi)) {
+        if (mbi.Type == MEM_IMAGE && mbi.AllocationBase == mbi.BaseAddress) {
+            bool seen = false;
+            for (size_t i = 0; i < g_seen_count; ++i) if (g_seen_images[i] == mbi.BaseAddress) { seen = true; break; }
+            if (!seen && g_seen_count < 1024) {
+                g_seen_images[g_seen_count++] = mbi.BaseAddress;
+                if (!quiet) {
+                    alignas(8) unsigned char buf[1024] = {};
+                    struct UStr { USHORT Length, MaximumLength; PWSTR Buffer; };
+                    SIZE_T got = 0;
+                    const UStr* us = reinterpret_cast<const UStr*>(buf);
+                    if (query && query(GetCurrentProcess(), mbi.BaseAddress, 2, buf, sizeof buf, &got) >= 0 && us->Buffer)
+                        TRACE(schannel, "step %d: new image %p %.*ls", step, mbi.BaseAddress, static_cast<int>(us->Length / 2), us->Buffer);
+                    else
+                        TRACE(schannel, "step %d: new image %p", step, mbi.BaseAddress);
+                }
+            }
+        }
+        p = static_cast<char*>(mbi.BaseAddress) + mbi.RegionSize;
+    }
+}
+
 using Session64 = std::uint64_t;
 constexpr NTSTATUS STATUS_INTERNAL_ERROR = static_cast<NTSTATUS>(0xC00000E5);
 constexpr NTSTATUS STATUS_NOT_IMPLEMENTED = static_cast<NTSTATUS>(0xC0000002);
@@ -130,6 +164,11 @@ DWORD WINAPI SchannelWorker(LPVOID) {
 
 NTSTATUS RunOnWorker(NTSTATUS (WINAPI* fn)(void*), void* args) {
     AcquireSRWLockExclusive(&g_worker_lock);
+    if (g_worker_state == 0) ScanImages(0, true);
+    // The host's SChannel runs with the host's own PEB (Ldr, loader lock, activation context, parameters, OS version):
+    // during a run those are the guest's, and a LoadLibrary in the provider chain would read them. The guest thread
+    // that called is blocked below; the fields are put back before it continues.
+    SwapHostPebFields();
     if (g_worker_state == 0) {
         g_worker_req = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         g_worker_done = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -147,6 +186,7 @@ NTSTATUS RunOnWorker(NTSTATUS (WINAPI* fn)(void*), void* args) {
     } else {
         st = fn(args);
     }
+    SwapHostPebFields();
     ReleaseSRWLockExclusive(&g_worker_lock);
     return st;
 }
@@ -287,6 +327,17 @@ NTSTATUS WINAPI U_schan_handshake(void* args) {
                       ++s->calls, static_cast<unsigned long>(ss), static_cast<unsigned long>(used), rin,
                       static_cast<unsigned long>(p->input_size), static_cast<unsigned long>(in[1].cbBuffer),
                       static_cast<unsigned long>(in[1].BufferType), static_cast<unsigned long>(out_buf.cbBuffer), rout);
+            }
+            ScanImages(s->calls, false);
+            if (s->have_ctx && win10xbox::trace::Enabled(&__win10xbox_dbch_schannel, win10xbox::trace::Class::Trace)) {
+                SecPkgContext_ConnectionInfo ci{};
+                SecPkgContext_CipherInfo cip{};
+                cip.dwVersion = SECPKGCONTEXT_CIPHERINFO_V1;
+                SECURITY_STATUS q1 = QueryContextAttributesW(&s->ctx, SECPKG_ATTR_CONNECTION_INFO, &ci);
+                SECURITY_STATUS q2 = QueryContextAttributesW(&s->ctx, SECPKG_ATTR_CIPHER_INFO, &cip);
+                TRACE(schannel, "step %d: connection %08lx proto %08lx cipher %x/%lu hash %x/%lu exch %x/%lu; cipher_info %08lx suite %08lx",
+                      s->calls, static_cast<unsigned long>(q1), ci.dwProtocol, ci.aiCipher, ci.dwCipherStrength, ci.aiHash,
+                      ci.dwHashStrength, ci.aiExch, ci.dwExchStrength, static_cast<unsigned long>(q2), cip.dwCipherSuite);
             }
             if (ss != SEC_E_INCOMPLETE_MESSAGE && in_desc.cBuffers >= 2 && used) {
                 ULONG extra = (in[1].BufferType == SECBUFFER_EXTRA) ? in[1].cbBuffer : 0;

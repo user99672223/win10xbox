@@ -87,6 +87,30 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Wine's NLS data (nls/*.nls of the source tree used for the build: l_intl, c_*, locale, norm*,
+      # sortdefault). The packages bundle them so they do not depend on the target's System32.
+      - name: Collect Wine NLS data
+        run: |
+          mkdir -p wine-pe/out/nls
+          cp -f wine-pe/wine-src/nls/*.nls wine-pe/out/nls/
+          n="$(ls wine-pe/out/nls/*.nls | wc -l)"
+          for f in l_intl.nls c_10000.nls c_1252.nls locale.nls sortdefault.nls; do
+            test -s "wine-pe/out/nls/$f" || { echo "::error::$f missing from wine-src/nls"; exit 1; }
+          done
+          {
+            echo "### wine-pe NLS data ($n files)"
+            echo '```'
+            ls -l wine-pe/out/nls | head -40
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wine-pe-nls
+          path: wine-pe/out/nls/
+          if-no-files-found: error
+          retention-days: 30
+
       - uses: actions/upload-artifact@v4
         with:
           name: wine-pe-builtin
