@@ -29,6 +29,7 @@
 #include "win10xbox/dispatch.h"
 #include "win10xbox/trace.h"
 #include "win10xbox/user.h"
+#include "win10xbox/vfs.h"
 #include "winexbox/driver.h"
 #include <windows.h>
 #include <intrin.h>
@@ -95,6 +96,15 @@ std::wstring ResolveProgram(const std::wstring& arg, const std::wstring& machine
     const bool drive_form = a.size() > 2 && a[1] == L':' && a[2] == L'\\';
     // 1. Guest C: path whose file exists in the machine folder.
     if (drive_form && std::towupper(a[0]) == L'C' && FileExists(machine + a.substr(2))) return a;
+    // 1b. A guest path the VFS serves from elsewhere in the machine folder: C:\Windows\System32\cmd.exe is
+    // Windows\builtin\cmd.exe. It must not fall through to step 3, which would run the host's own file of that name.
+    if (drive_form) {
+        std::wstring served;
+        // The VFS is brought up by process::Launch, after this; it is cheap to do twice (Launch replaces the state).
+        if (win10xbox::vfs::Initialize(machine) == 0 && win10xbox::vfs::TranslateWin32Path(a, &served) == 0 &&
+            FileExists(served))
+            return a;
+    }
     // 2. Host path under the machine folder -> guest C:.
     std::wstring host = FullPath(a);
     if (IStartsWith(host, machine + L"\\") && FileExists(host)) return L"C:" + host.substr(machine.size());

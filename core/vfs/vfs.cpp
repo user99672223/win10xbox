@@ -689,7 +689,7 @@ NTSTATUS ValidateGuestNtFileName(std::wstring_view p, bool* dir_only) {
 
 }  // namespace
 
-NTSTATUS TranslateObjectAttributes(const OBJECT_ATTRIBUTES* in, TranslatedAttributes* out) {
+NTSTATUS TranslateObjectAttributes(const OBJECT_ATTRIBUTES* in, TranslatedAttributes* out, unsigned long create_options) {
     out->attr = OBJECT_ATTRIBUTES{};
     out->name = UNICODE_STRING{};
     out->storage.clear();
@@ -706,11 +706,12 @@ NTSTATUS TranslateObjectAttributes(const OBJECT_ATTRIBUTES* in, TranslatedAttrib
     NTSTATUS s = ValidateGuestNtFileName(guest, &dir_only);
     if (s != STATUS_SUCCESS && s != STATUS_NOT_SUPPORTED) return s;
     if (dir_only) {
-        // "file.txt\" names a directory component: an existing regular file answers NAME_INVALID.
+        // "file.txt\" names a directory component: an existing regular file answers NAME_INVALID (NOT_A_DIRECTORY when
+        // the caller asked for a directory).
         std::wstring file_host;
         if (TranslateNtPath(guest.substr(0, guest.size() - 1), &file_host) == STATUS_SUCCESS &&
             file_host.size() > 4 && FileExists(file_host.substr(4)))
-            return STATUS_OBJECT_NAME_INVALID;
+            return (create_options & 0x1) ? STATUS_NOT_A_DIRECTORY : STATUS_OBJECT_NAME_INVALID;   // FILE_DIRECTORY_FILE
     }
     s = TranslateNtPath(guest, &host);
     if (s == STATUS_NOT_SUPPORTED) return STATUS_SUCCESS;   // namespace we do not own: pass through

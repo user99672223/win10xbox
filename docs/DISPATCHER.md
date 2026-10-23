@@ -343,8 +343,9 @@ knows the machine folder and `machine.json` but not drives mapped at run time by
 outside the machine folder given to the first `win10xbox.exe`); every child boots its own Wine ntdll, so a child costs a
 full start (a second or so under Wine); there is no process tree or session sharing, so Wine-only mechanisms that need
 wineserver (`CreateProcess` of a Unix binary, `winevdm`) do not apply; the machine folder must provide the program: the
-builtin set built by `wine-pe` does not contain `cmd.exe`, so `CreateProcess("cmd.exe ...")` and `system()` find
-nothing until a `cmd.exe` is staged. `NtCreateProcessEx` (an empty process to be filled in with `NtWriteVirtualMemory` and
+builtin set built by `wine-pe` carries Wine's `cmd.exe` (`programs/cmd` in `wine-pe/dlls.txt`; the VFS serves it as
+`C:\Windows\System32\cmd.exe` from `Windows\builtin`, integration.cmd_builtin), so `CreateProcess("cmd.exe ...")`,
+`system()` and the `ComSpec` the guest environment names find it. `NtCreateProcessEx` (an empty process to be filled in with `NtWriteVirtualMemory` and
 a later thread) and the legacy `NtCreateThread` (caller-allocated stack and arbitrary `CONTEXT`; guest threads enter
 Wine's per-thread loader init, E4) answer `STATUS_NOT_SUPPORTED` with a FIXME; nothing in Windows 10 user mode calls them.
 

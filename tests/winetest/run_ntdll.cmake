@@ -79,6 +79,13 @@ if(EMULATOR AND _machine MATCHES "^/")
 endif()
 string(REPLACE "/" "\\" _machine "${_machine}")
 
+# Units that run as on Windows (`--platform=windows`, see wine-pe/tests/ntdll.sh): Wine's harness takes the guest for
+# Wine, because its ntdll exports wine_get_version, and every todo_wine block then EXPECTS a failure. The file unit's
+# behaviour is the host's NTFS, which is Windows: with the platform "wine" every todo_wine that Windows passes would
+# count as a failure ("Test succeeded inside todo block": 107 of the 157 failures the unit printed), and the unit could
+# never reach 0.
+set(_windows_platform_units file)
+
 set(_re "([0-9]+) tests executed \\(([0-9]+) marked as todo, ([0-9]+) as flaky, ([0-9]+) failures?\\), ([0-9]+) skipped")
 set(ENV{WIN10XBOX_DEBUG} "-all")   # relay tracing would bury the test output
 
@@ -101,7 +108,12 @@ foreach(_u IN LISTS _units)
   endif()
 
   set(_log "${RESULTS_DIR}/${_u}.log")
-  set(_cmd ${EMULATOR} "${HOST}" --machine "${_machine}" "C:\\guest-wine\\ntdll_test.exe" "${_u}")
+  set(_platform_arg "")
+  list(FIND _windows_platform_units "${_u}" _wp)
+  if(_wp GREATER -1)
+    set(_platform_arg "--platform=windows")
+  endif()
+  set(_cmd ${EMULATOR} "${HOST}" --machine "${_machine}" "C:\\guest-wine\\ntdll_test.exe" "${_u}" ${_platform_arg})
   if(CMAKE_HOST_UNIX)
     find_program(_timeout_tool timeout)
     if(_timeout_tool)
