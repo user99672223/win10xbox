@@ -292,6 +292,7 @@ objects, DCs, drawing).
 | `NtContinue(Ex)`, `NtRaiseException`, `NtSetContextThread` (self) | switch to the guest TEB view, then pass. |
 | registry `Nt*Key*` | `registry::Reg_Nt*` |
 | `NtOpenKeyTransacted`, `NtOpenKeyTransactedEx` | `registry::Reg_NtOpenKeyTransacted(Ex)`: the transaction handle is traced and ignored, the open is the plain `NtOpenKey(Ex)`. `NtCreateKeyTransacted` is unchanged (`STATUS_NOT_IMPLEMENTED`). |
+| `NtQueryObject` (key handle) | `registry::Reg_NtQueryObject`: a key handle is no host object. `ObjectBasicInformation` and `ObjectNameInformation` (`STATUS_KEY_DELETED` for a deleted key, `STATUS_INFO_LENGTH_MISMATCH` for a short buffer); other classes `STATUS_NOT_IMPLEMENTED`. Other handles go to the host as before. |
 | `NtLoadKey2` | `registry::Reg_NtLoadKey2`: `NtLoadKeyEx` with the flags and no trust key, event, access or root handle. |
 | `NtQueryDefaultLocale`, `NtSetDefaultLocale`, `NtQueryDefaultUILanguage`, `NtSetDefaultUILanguage` | `nt_nls.cpp` locale state: set stores, query answers, nothing on the host changes. Starts at en-US (0x0409). Zero LCID or LANGID is `STATUS_INVALID_PARAMETER`. |
 | token `Nt*Token*`, `NtAccessCheck`, `NtPrivilegeCheck`, `NtQuerySecurityObject` (token handles) | `token::Tok_Nt*` |

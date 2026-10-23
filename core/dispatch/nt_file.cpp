@@ -5,6 +5,9 @@
 // SetFallbackDrive) and applies the E1 builtin rule for system DLLs.
 #include "internal.h"
 #include "win10xbox/config.h"
+#if WIN10XBOX_HAVE_REGISTRY
+#include "win10xbox/registry.h"
+#endif
 #if WIN10XBOX_HAVE_VFS
 #include "win10xbox/vfs.h"
 #endif
@@ -417,6 +420,9 @@ static NTSTATUS NTAPI Xl_NtQueryInformationFile(HANDLE file, PIO_STATUS_BLOCK io
 // outside every guest drive, keep the host's answer.
 static NTSTATUS NTAPI Xl_NtQueryObject(HANDLE h, ULONG klass, PVOID buffer, ULONG length, PULONG ret_len) {
     constexpr ULONG kObjectNameInformation = 1;
+#if WIN10XBOX_HAVE_REGISTRY
+    if (registry::IsKeyHandle(h)) return registry::Reg_NtQueryObject(h, klass, buffer, length, ret_len);   // a key is no host object
+#endif
     if (klass == kObjectNameInformation) {
         alignas(8) std::uint8_t probe[4096];
         ULONG probe_len = 0;
