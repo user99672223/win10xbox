@@ -158,6 +158,17 @@ jobs:
           rem informational (the gate prints how many symbols the guest imports); never fails the step
           dumpbin /imports build\bin\machine\guest\smoke_cui.exe > build\smoke_cui.imports.txt || exit /b 0
 
+      # The SQLite shell, a program that is not ours (tools/ci/build_sqlite.ps1: pinned archive, SHA-256 verified on every
+      # run); the smoke gate below runs it under console conditions too.
+      - name: Cache the SQLite amalgamation
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/sqlite-download
+          key: sqlite-amalgamation-3540100-0a9c8e34352dad46006aa82836d5383bff9dc6bc9ce5a60553c05aa30e6ad1f9
+      - name: Build the SQLite shell (pinned, SHA-256 verified)
+        shell: pwsh
+        run: ./tools/ci/build_sqlite.ps1 -OutDir build/bin/machine/guest
+
       # GATING run: the console's condition (host paths unknown). Before eb52c50
       # this is where kernelbase.dll was aliased onto ntdll.dll and every KERNEL32
       # import dangled. The exit code of win10xbox.exe is the guest's.
