@@ -188,6 +188,11 @@ std::uint32_t GuestExitCode();
 bool IsGuestThread();   // true on threads running guest code (TLS flag set by Launch/thread start)
 // Waits for the guest started by Launch(wait=false); returns its exit code.
 int WaitForGuest(DWORD timeout_ms = INFINITE);
+// From a host thread: ends a guest that is still running (all its threads) and gives the process its own PEB view
+// back (as after a normal exit). The launcher's watchdog uses it before asking for an app restart.
+void AbortGuest(std::uint32_t exit_code);
+// True while the guest's PEB view (ProcessParameters, ActivationContextData, ...) is installed instead of the host's.
+bool GuestOwnsPeb();
 // Guest path of the main image ("C:\\..."), empty before Launch.
 std::wstring GuestImagePath();
 // A child started by a guest (NtCreateUserProcess) is this same host program with `--guest-env`: its guest

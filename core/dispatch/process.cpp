@@ -800,6 +800,26 @@ int WaitForGuest(DWORD timeout_ms) {
     return static_cast<int>(g.exit_code);
 }
 
+bool GuestOwnsPeb() { return G().peb.saved; }
+
+void AbortGuest(std::uint32_t exit_code) {
+    Globals& g = G();
+    if (!g.main_thread) return;
+    InterlockedExchange(&g.exit_code, static_cast<LONG>(exit_code));
+    InterlockedExchange(&g.exited, 1);
+    TRACE(process, "guest aborted by the host, code %u", exit_code);
+#if WIN10XBOX_HAVE_REGISTRY
+    registry::PersistOverlay();
+#endif
+    // Called from a host thread: every guest thread is "other". The main thread is terminated too (it may not be
+    // in the guest thread list yet), then the host's PEB view comes back (ActivationContextData included).
+    TerminateOtherGuestThreads(static_cast<NTSTATUS>(exit_code));
+    Host().NtTerminateThread(g.main_thread, static_cast<NTSTATUS>(exit_code));
+    WaitForSingleObject(g.main_thread, 5000);
+    RestorePebFields();
+    if (g.exit_event) SetEvent(g.exit_event);
+}
+
 [[noreturn]] void GuestExit(std::uint32_t exit_code) {
     Globals& g = G();
     InterlockedExchange(&g.exit_code, static_cast<LONG>(exit_code));

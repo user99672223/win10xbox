@@ -604,7 +604,7 @@ jobs:
           if ($fail.Count -gt 0) { exit 1 }
 
       # "Run every program (report)": launch.json "autoselect": "all" runs every bundled program in turn (the app restarts
-      # between them), 20 s each, and writes LocalState\report.txt (header + one block per program) and <name>.bmp. The
+      # between them), 60 s each (guest_cursor.exe waits for input up to its own 40 s watchdog), and writes LocalState\report.txt (header + one block per program) and <name>.bmp. The
       # runner has no gamepad, so guest_xinput.exe's expected result is its own "no pad" exit code (the verdict says PASS).
       - name: Write LocalState launch.json (autoselect all) and run every program
         id: all
@@ -615,7 +615,7 @@ jobs:
           $pkg = Get-AppxPackage -Name win10xbox.uwp
           $ls = Join-Path $env:LOCALAPPDATA ("Packages\" + $pkg.PackageFamilyName + "\LocalState")
           foreach ($f in 'launcher_result.txt', 'report.txt') { Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $ls $f) }
-          $json = '{ "picker": true, "autoselect": "all", "autoselect_timeout_sec": 20, "exit_when_done": true }'
+          $json = '{ "picker": true, "autoselect": "all", "autoselect_timeout_sec": 60, "exit_when_done": true }'
           Set-Content -Path (Join-Path $ls 'launch.json') -Value $json -Encoding ascii
           & .\uwp_activate.exe "$($pkg.PackageFamilyName)!App" --package-full-name $pkg.PackageFullName --timeout 300
           $report = Join-Path $ls 'report.txt'

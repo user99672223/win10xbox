@@ -954,9 +954,14 @@ void Host::Impl::RunImpl()
                                "\"trace\": \"+relay\") show where it is stuck");
             if (chain_all)
             {
-                // The process ends below (the guest owns the PEB), so the block is written and the restart for the next
-                // program asked for first, from this thread. Best effort: WinRT while a guest is running is unproven.
+                // The block is written first (the screen shows the running guest), then the guest is ended and the host's
+                // PEB restored: with the guest's PEB (ActivationContextData) installed the WinRT activation behind
+                // RequestRestartAsync fails with 0x800736b2 (ERROR_SXS_INVALID_ACTCTXDATA_FORMAT). The verdict stays TIMEOUT.
                 RecordAllRun(true, 0, CaptureScreen());
+                win10xbox::process::AbortGuest(0x102);
+                guest_running.store(false);
+                diag::Line("launcher: guest ended after the timeout, PEB is %s",
+                           win10xbox::process::GuestOwnsPeb() ? "still the guest's" : "the host's");
                 if (chain_more && restart_fn)
                 {
                     const std::string arg = NextRestartArg();
@@ -964,8 +969,10 @@ void Host::Impl::RunImpl()
                     report.Set("launcher.restart", "requested after the timeout: " + arg);
                     report.Flush();
                     diag::FlushLog();
+                    const bool guest_peb = win10xbox::process::GuestOwnsPeb();
                     const std::string why = restart_fn(arg);   // does not return when granted
-                    diag::Line("launcher: restart after the timeout failed: %s", why.c_str());
+                    diag::Line("ERR launcher: restart after the timeout failed: %s (PEB at the call: %s)", why.c_str(),
+                               guest_peb ? "guest" : "host");
                     report.Set("launcher.restart", "FAILED after the timeout: " + why);
                     report.Flush();
                 }
