@@ -53,7 +53,10 @@ BOOL CALLBACK CollectGuestWindow(HWND hwnd, LPARAM lp) {
     DWORD pid = 0;
     const DWORD tid = es->h->GetWindowThreadProcessId(hwnd, &pid);
     if (pid != GetCurrentProcessId()) return TRUE;
-    if (std::find(es->guest_tids.begin(), es->guest_tids.end(), tid) == es->guest_tids.end()) return TRUE;
+    // A window that received a swap chain frame belongs to the guest even when its creating thread is not in the
+    // guest thread list (route B: native windows, docs/slices/swapchain2.md).
+    if (std::find(es->guest_tids.begin(), es->guest_tids.end(), tid) == es->guest_tids.end() && !FindClientFrame(hwnd))
+        return TRUE;
     if (!es->h->IsWindowVisible(hwnd) || es->h->IsIconic(hwnd)) return TRUE;
     es->windows.push_back(hwnd);
     return TRUE;
@@ -67,6 +70,14 @@ bool ComposeLive(const HostGui& h, std::uint32_t* out, std::int32_t w, std::int3
     if (es.guest_tids.empty()) return false;
     h.EnumWindows(&CollectGuestWindow, reinterpret_cast<LPARAM>(&es));
     *nwin = es.windows.size();
+    if (es.windows.empty() && g_client_frames)
+        for (const ClientFrame& f : *g_client_frames) {
+            DWORD fpid = 0;
+            const DWORD ftid = h.GetWindowThreadProcessId(f.hwnd, &fpid);
+            TRACE(user, "native compose: frame for hwnd %p not composed: pid %lu (ours %lu) tid %lu visible %d iconic %d",
+                  static_cast<void*>(f.hwnd), static_cast<unsigned long>(fpid), static_cast<unsigned long>(GetCurrentProcessId()),
+                  static_cast<unsigned long>(ftid), h.IsWindowVisible(f.hwnd) ? 1 : 0, h.IsIconic(f.hwnd) ? 1 : 0);
+        }
     std::memset(out, 0, static_cast<std::size_t>(w) * h_px * 4);
     if (!es.windows.empty()) {
         HDC mem = h.CreateCompatibleDC(nullptr);

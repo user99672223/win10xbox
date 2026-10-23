@@ -290,7 +290,7 @@ set(HOST_UWP_GUESTS window_guest hello_guest hello_guest_cui guest_hello guest_c
     smoke_guest_cui drv_client guest_window2 guest_window_input guest_window_input2 guest_window_text smoke_guest
     guest_spawn guest_window_nc guest_dialog guest_comctl guest_seh guest_seh_dll guest_window_scroll guest_clipboard
     guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput guest_identity guest_net guest_cursor
-    guest_regpersist guest_wasapi guest_xaudio2 guest_nowine guest_named_objects guest_tebframe guest_d3d11_tri
+    guest_regpersist guest_wasapi guest_xaudio2 guest_nowine guest_named_objects guest_tebframe guest_d3d11_tri guest_d3d11_swap
     guest_rdrand)
 
 # ---------------------------------------------------------------------------
