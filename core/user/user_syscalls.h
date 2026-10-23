@@ -91,6 +91,13 @@ UINT_PTR WINAPI NtUserSetTimer(HWND hwnd, UINT_PTR id, UINT timeout, TIMERPROC p
 BOOL WINAPI NtUserKillTimer(HWND hwnd, UINT_PTR id);
 UINT_PTR WINAPI NtUserSetSystemTimer(HWND hwnd, UINT_PTR id, UINT timeout);
 BOOL WINAPI NtUserKillSystemTimer(HWND hwnd, UINT_PTR id);
+// ---- win_hook.cpp ----
+HHOOK WINAPI NtUserSetWindowsHookEx(HINSTANCE inst, UNICODE_STRING* module, DWORD tid, INT id, HOOKPROC proc,
+                                    BOOL ansi);
+BOOL WINAPI NtUserUnhookWindowsHookEx(HHOOK handle);
+BOOL WINAPI NtUserUnhookWindowsHook(INT id, HOOKPROC proc);
+LRESULT WINAPI NtUserCallNextHookEx(HHOOK hhook, INT code, WPARAM wparam, LPARAM lparam);
+BOOL WINAPI NtUserCallMsgFilter(MSG* msg, INT code);
 ULONG_PTR WINAPI NtUserGetThreadState(int cls);
 DWORD WINAPI NtUserGetQueueStatus(UINT flags);
 BOOL WINAPI NtUserWaitMessage();
@@ -320,6 +327,8 @@ INT WINAPI NtGdiStretchDIBitsInternal(HDC hdc, INT x_dst, INT y_dst, INT width_d
     X(NtUserGetDoubleClickTime) X(NtUserMessageBeep) X(NtUserCreateCaret) X(NtUserDestroyCaret) X(NtUserShowCaret) \
     X(NtUserHideCaret) X(NtUserSetCaretPos) X(NtUserGetCaretPos) X(NtUserGetCaretBlinkTime) \
     X(NtUserGetOpenClipboardWindow) \
+    X(NtUserSetWindowsHookEx) X(NtUserUnhookWindowsHookEx) X(NtUserUnhookWindowsHook) X(NtUserCallNextHookEx) \
+    X(NtUserCallMsgFilter) \
     X(NtUserBeginPaint) X(NtUserEndPaint) X(NtUserGetDC) X(NtUserGetDCEx) X(NtUserGetWindowDC) X(NtUserReleaseDC) \
     X(NtUserInvalidateRect) X(NtUserInvalidateRgn) X(NtUserValidateRect) X(NtUserValidateRgn) X(NtUserRedrawWindow) \
     X(NtUserGetUpdateRect) X(NtUserGetUpdateRgn) X(NtUserExcludeUpdateRgn) X(NtUserWindowFromDC) \

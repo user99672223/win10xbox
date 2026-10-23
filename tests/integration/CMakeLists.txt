@@ -27,7 +27,7 @@ add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
-                   guest_window_input guest_window_input2 guest_window_text)
+                   guest_window_input guest_window_input2 guest_window_text guest_window_hooks)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -150,6 +150,21 @@ win10xbox_guest_test(guest_window_input2 "C:\\guest\\guest_window_input2.exe" 42
   "PASS child: click" "PASS US layout: VkKeyScan" "window_input2: [0-9]+ passed, 0 failed")
 set_tests_properties(integration.guest_window_input2 PROPERTIES
   ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=sleep 3000\\;move 150,150\\;ldown\\;lup\\;ldown\\;lup\\;rdown\\;rup\\;wheel -120\\;key 0x42"
+  FAIL_REGULAR_EXPRESSION "FAIL ")
+# Hooks and timers (tests/guest/window_hooks.c): WH_MOUSE x2, WH_KEYBOARD and WH_GETMESSAGE hooks on the guest's own
+# thread see the host-injected input before the window procedure does, a hook returning 1 eats a message, an unhooked
+# hook stops seeing keys; SetTimer fires every `elapse` ms (50 ms x20 within 950..1400 ms, never closer than 40 ms),
+# clamps to 10 ms, KillTimer drops a pending WM_TIMER, a TIMERPROC is called by DispatchMessage.
+win10xbox_guest_test(guest_window_hooks "C:\\guest\\guest_window_hooks.exe" 42
+  "hooks: PASS injected input arrived" "hooks: PASS WH_MOUSE sees LBUTTONDOWN before the window procedure"
+  "hooks: PASS WH_MOUSE chain runs newest first and CallNextHookEx reaches the older hook"
+  "hooks: PASS WH_KEYBOARD sees vk 41 down and up" "hooks: PASS hook returning 1 eats WM_RBUTTONDOWN"
+  "hooks: PASS UnhookWindowsHookEx stops WH_KEYBOARD" "hooks: PASS WH_GETMESSAGE sees every message with PM_REMOVE"
+  "hooks: PASS SetTimer 50 ms cadence" "hooks: PASS SetTimer minimum is 10 ms"
+  "hooks: PASS KillTimer removes the pending WM_TIMER" "hooks: PASS TIMERPROC is called through DispatchMessage"
+  "hooks: PASS message time is the tick count" "hooks: [0-9]+ passed, 0 failed" "hooks: done")
+set_tests_properties(integration.guest_window_hooks PROPERTIES
+  ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=sleep 2000\\;move 150,150\\;ldown\\;lup\\;key 0x41\\;rdown\\;rup\\;key 0x42"
   FAIL_REGULAR_EXPRESSION "FAIL ")
 # The text GUI guest (tests/guest/window_text.c): a 400x300 WS_POPUP window at (100,100), client origin = screen
 # origin (100,100). It draws "HI" at client (20,20) and "Hello/Xbox" into (20,60)-(380,120) with the stock system

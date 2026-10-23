@@ -5,7 +5,7 @@ Windows 10 x64 / 22H2 NT syscall numbers) and the hand-maintained policy
 `core/dispatch/syscall_policy.inc`; win32u entries (ids 0x1000..) are Emulate when
 `core/user/user_syscalls.h` registers them. Do not edit by hand.
 
-1798 syscalls. passthrough 155, translate 35, emulate 303, todo 1305. Generated 2026-10-23.
+1798 syscalls. passthrough 155, translate 35, emulate 308, todo 1300. Generated 2026-10-23.
 
 Policy: **PassThrough** calls the host ntdll export by name; **Translate**
 rewrites arguments (paths, handles, timeouts) then passes through;
@@ -1098,8 +1098,8 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1337 | NtUserCallHwndParamLock | 0 | Todo |  |
 | 0x1338 | NtUserCallHwndParamLockSafe | 0 | Todo |  |
 | 0x1339 | NtUserCallHwndSafe | 0 | Todo |  |
-| 0x133a | NtUserCallMsgFilter | 2 | Todo |  |
-| 0x133b | NtUserCallNextHookEx | 4 | Todo |  |
+| 0x133a | NtUserCallMsgFilter | 2 | Emulate | core/user |
+| 0x133b | NtUserCallNextHookEx | 4 | Emulate | core/user |
 | 0x133c | NtUserCallNoParam | 1 | Emulate | core/user |
 | 0x133d | NtUserCallOneParam | 2 | Emulate | core/user |
 | 0x133e | NtUserCallTwoParam | 3 | Emulate | core/user |
@@ -1727,7 +1727,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x15ac | NtUserSetWindowStationUser | 0 | Todo |  |
 | 0x15ad | NtUserSetWindowWord | 3 | Emulate | core/user |
 | 0x15ae | NtUserSetWindowsHookAW | 0 | Todo |  |
-| 0x15af | NtUserSetWindowsHookEx | 6 | Todo |  |
+| 0x15af | NtUserSetWindowsHookEx | 6 | Emulate | core/user |
 | 0x15b0 | NtUserShellForegroundBoostProcess | 0 | Todo |  |
 | 0x15b1 | NtUserShellHandwritingDelegateInput | 0 | Todo |  |
 | 0x15b2 | NtUserShellHandwritingHandleDelegatedInput | 0 | Todo |  |
@@ -1771,8 +1771,8 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x15d8 | NtUserTranslateMessage | 2 | Emulate | core/user |
 | 0x15d9 | NtUserUndelegateInput | 0 | Todo |  |
 | 0x15da | NtUserUnhookWinEvent | 1 | Todo |  |
-| 0x15db | NtUserUnhookWindowsHook | 2 | Todo |  |
-| 0x15dc | NtUserUnhookWindowsHookEx | 1 | Todo |  |
+| 0x15db | NtUserUnhookWindowsHook | 2 | Emulate | core/user |
+| 0x15dc | NtUserUnhookWindowsHookEx | 1 | Emulate | core/user |
 | 0x15dd | NtUserUnloadKeyboardLayout | 0 | Todo |  |
 | 0x15de | NtUserUnlockWindowStation | 0 | Todo |  |
 | 0x15df | NtUserUnregisterClass | 3 | Emulate | core/user |

@@ -15,6 +15,7 @@ target_sources(win10xbox_core PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/win_window.cpp
   ${CMAKE_CURRENT_LIST_DIR}/win_defwnd.cpp
   ${CMAKE_CURRENT_LIST_DIR}/win_message.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/win_hook.cpp
   ${CMAKE_CURRENT_LIST_DIR}/win_paint.cpp
   ${CMAKE_CURRENT_LIST_DIR}/win_sysparams.cpp
 )

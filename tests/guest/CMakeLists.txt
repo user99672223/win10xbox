@@ -53,6 +53,11 @@ win10xbox_add_guest(guest_window_input)
 add_executable(guest_window_input2 window_input2.c)
 target_link_libraries(guest_window_input2 PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window_input2)
+# Hooks and timers (tests/guest/window_hooks.c): thread-local WH_MOUSE / WH_KEYBOARD / WH_GETMESSAGE hooks fed by
+# host-injected input (WIN10XBOX_TEST_INJECT_INPUT), and SetTimer cadence measured with GetTickCount64.
+add_executable(guest_window_hooks window_hooks.c)
+target_link_libraries(guest_window_hooks PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_window_hooks)
 # The text guest: TextOutW/DrawTextW with the stock system font, glyph pixels read back with GetPixel
 # (tests/guest/window_text.c). Its integration test is DISABLED until the text rendering slice lands.
 add_executable(guest_window_text window_text.c)

@@ -1788,6 +1788,7 @@ ULONG_PTR WINAPI NtUserCallNoParam(ULONG code) {
     case abi::NoParamExitingThread: {
         if (UserThread* t = FindUserThread()) {
             t->exiting = true;
+            RemoveThreadHooks(t->tid);
             DestroyThreadWindows(t);
         }
         return 0;
