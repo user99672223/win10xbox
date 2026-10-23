@@ -143,7 +143,17 @@ using CloseObjectFn = NTSTATUS(NTAPI*)(HANDLE);
 void SetHostNamespace(OpenDirectoryFn open_directory, CloseObjectFn close);
 
 // Overlay persistence (machine folder\registry-overlay.bin): optional.
+// SaveOverlay writes the whole overlay, LoadOverlay applies the file on top of the current state; both take the
+// cross-process lock file (registry-overlay.lock) around the file access and write through a temp file + rename.
 NTSTATUS SaveOverlay();
 NTSTATUS LoadOverlay();
+
+// Cross-process persistence for the dispatcher (docs/DISPATCHER.md "Registry persistence"). EnablePersistence is
+// called once right after Initialize: it remembers the freshly seeded overlay as the baseline (only differences from
+// it are ever written), loads the file when there is one and arms PersistOverlay. PersistOverlay (NtFlushKey, before a
+// child process starts, at guest exit) saves when the overlay changed since the last load or save; a machine folder
+// that cannot be written logs one FIXME and nothing persists. It never fails the caller.
+NTSTATUS EnablePersistence();
+void PersistOverlay();
 
 }  // namespace win10xbox::registry

@@ -40,6 +40,11 @@ win10xbox_add_guest(guest_sleep)
 add_executable(guest_spawn spawn.c)
 win10xbox_add_guest(guest_spawn)
 
+# Registry writes outlive the process and reach a child (docs/DISPATCHER.md "Registry persistence"): run twice.
+add_executable(guest_regpersist regpersist.c)
+target_link_libraries(guest_regpersist PRIVATE advapi32)
+win10xbox_add_guest(guest_regpersist)
+
 add_library(guest_dll SHARED dll.c)
 win10xbox_add_guest(guest_dll)
 

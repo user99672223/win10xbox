@@ -34,7 +34,7 @@ if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
                    guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog guest_comctl
                    guest_seh guest_window_scroll guest_clipboard guest_net msctf_stub guest_gdi_bitmap
-                   guest_window_hooks guest_window_menu guest_xinput xinput1_4 guest_identity)
+                   guest_window_hooks guest_window_menu guest_xinput xinput1_4 guest_identity guest_regpersist)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -77,6 +77,7 @@ function(win10xbox_guest_test name program exit_code)
       "-DFORBID_TRACE_REGEX=${_guest_forbid_trace}"
       "-DEXPECT_TRACE_REGEX=${_guest_expect_trace}"
       "-DSAVE_STDOUT=${_guest_save_stdout}"
+      "-DKEEP_REGISTRY_OVERLAY=${_guest_keep_overlay}"
       -DEXPECT_EXIT=${exit_code}
       "-DEXPECT_REGEX=${ARGN}"
       "-DINPUT_FILE=${_guest_input}" "-DGUEST_FILE=${_guest_file}"
@@ -365,6 +366,29 @@ win10xbox_guest_test(guest_net "C:\\guest\\guest_net.exe" 42
   "net: connected" "net: FIONBIO ok" "net: sent 35 bytes" "net: received 35 bytes: hello from the guest over loopback"
   "net: done")
 set_tests_properties(integration.guest_net PROPERTIES FAIL_REGULAR_EXPRESSION "net: FAILED")
+unset(_guest_no_user32)
+unset(_guest_machine)
+
+# ---- Registry persistence (docs/DISPATCHER.md "Registry persistence") -------------------------------------------------
+# tests/guest/regpersist.c twice, each a new host process on the same machine folder: the first run writes a value of each
+# common type under HKCU\Software\win10xbox\persist, RegFlushKey, writes one more, and starts itself as a child that
+# reads the flushed and the unflushed value; the second run (argument "read", after the first exited and so after the
+# exit-time save) reads every value back. run_guest.cmake deletes the overlay file before every other guest run, and
+# keeps it for this one. Console DLL set.
+set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+set(_guest_no_user32 ON)
+win10xbox_guest_test(guest_regpersist_write "C:\\guest\\guest_regpersist.exe" 42
+  "regpersist: write ok" "regpersist: child ok" "regpersist: done")
+set(_guest_args "read")
+set(_guest_keep_overlay ON)   # the registry the write run left
+win10xbox_guest_test(guest_regpersist_read "C:\\guest\\guest_regpersist.exe" 42
+  "regpersist: sz ok" "regpersist: expand ok" "regpersist: multisz ok" "regpersist: dword ok" "regpersist: qword ok"
+  "regpersist: binary ok" "regpersist: default ok" "regpersist: prespawn ok" "regpersist: subkey ok" "regpersist: done")
+unset(_guest_args)
+unset(_guest_keep_overlay)
+set_tests_properties(integration.guest_regpersist_write integration.guest_regpersist_read PROPERTIES
+  FAIL_REGULAR_EXPRESSION "regpersist: [a-z ]+ FAILED")
+set_tests_properties(integration.guest_regpersist_read PROPERTIES DEPENDS integration.guest_regpersist_write)
 unset(_guest_no_user32)
 unset(_guest_machine)
 

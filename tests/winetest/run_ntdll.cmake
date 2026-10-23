@@ -101,6 +101,7 @@ foreach(_u IN LISTS _units)
   endif()
 
   set(_log "${RESULTS_DIR}/${_u}.log")
+  file(REMOVE "${MACHINE}/registry-overlay.bin")   # each unit starts from the registry of the hives (persistence)
   set(_cmd ${EMULATOR} "${HOST}" --machine "${_machine}" "C:\\guest-wine\\ntdll_test.exe" "${_u}")
   if(CMAKE_HOST_UNIX)
     find_program(_timeout_tool timeout)

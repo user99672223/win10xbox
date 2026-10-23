@@ -335,7 +335,7 @@ objects, DCs, drawing).
 | `NtMakePermanentObject` | pass-through |
 | `NtRaiseHardError` | `err:process: hard error ...` with the string parameters, answers `ResponseOk`. |
 | `NtContinue(Ex)`, `NtRaiseException`, `NtSetContextThread` (self) | switch to the guest TEB view, then pass. |
-| registry `Nt*Key*` | `registry::Reg_Nt*` |
+| registry `Nt*Key*` | `registry::Reg_Nt*`; `NtFlushKey` also saves the overlay file, see "Registry persistence" |
 | `NtOpenKeyTransacted`, `NtOpenKeyTransactedEx` | `registry::Reg_NtOpenKeyTransacted(Ex)`: the transaction handle is traced and ignored, the open is the plain `NtOpenKey(Ex)`. `NtCreateKeyTransacted` is unchanged (`STATUS_NOT_IMPLEMENTED`). |
 | `NtQueryObject` (key handle) | `registry::Reg_NtQueryObject`: a key handle is no host object. `ObjectBasicInformation` and `ObjectNameInformation` (`STATUS_KEY_DELETED` for a deleted key, `STATUS_INFO_LENGTH_MISMATCH` for a short buffer); other classes `STATUS_NOT_IMPLEMENTED`. Other handles go to the host as before. |
 | `NtLoadKey2` | `registry::Reg_NtLoadKey2`: `NtLoadKeyEx` with the flags and no trust key, event, access or root handle. |
@@ -399,6 +399,17 @@ Windows asks for) answer `STATUS_PRIVILEGE_NOT_HELD` and so does every class not
 (59, settable without a privilege, changes a counter) reaches the host. `kernelbase!SetSystemTimeAdjustment` and the time
 zone setters therefore fail with `ERROR_PRIVILEGE_NOT_HELD`, as they do for an unprivileged Windows user, and the virtual
 clock and the machine identity stay the layer's.
+
+## Registry persistence (D13)
+
+1. Hives stay read-only; every guest write lands in the in-memory overlay. The overlay is also kept in one file, `<machine>\registry-overlay.bin` (the `SaveOverlay` format), which `process::Launch` loads right after `registry::Initialize` (`registry::EnablePersistence`) when it exists.
+2. Only differences from what `Initialize` itself seeded (fidelity values, COM classes) are written, so a later `machine.json` edit still shows; a process that changed nothing writes nothing.
+3. `registry::PersistOverlay` saves when the overlay changed since the last load or save: on `NtFlushKey` (a valid handle), in `GuestExit` (before the other guest threads are killed), and in `Xl_NtCreateUserProcess` just before the child host process is created, so the child's `Initialize` loads the parent's writes.
+4. Writes after that save reach a running child (or any other process) only through a later flush or at exit; the child's own writes reach the parent only through the file, which the parent re-reads only at its next start.
+5. Concurrent processes: last writer wins per save (the whole overlay is replaced, not merged). The file is written to `registry-overlay.bin.tmp`, flushed and renamed over the old one (`MoveFileExW`), so a reader sees the old or the new file; `registry-overlay.lock`, opened without sharing, serialises load and save across processes (a dead holder releases it; after 10 s a waiter goes on without it).
+6. A machine folder that is read-only, or a file that cannot be replaced, logs one `FIXME` and nothing persists; no registry call fails because of it (`NtFlushKey` still answers success). The console's LocalState machine folder is writable (D15), so it persists there with no `machine.json` setting.
+7. Not covered: a process that dies without `NtTerminateProcess` (a host crash) loses its writes since the last flush; volatile keys are not persisted; the unit test `registry_overlay_persist_atomic_lock` and `integration.guest_regpersist_write` / `_read` gate it.
+8. Unit tests that call `Initialize` alone never touch the file: persistence starts with `EnablePersistence`, which only the dispatcher calls.
 
 ## Wine "unix side"
 
@@ -504,6 +515,7 @@ looks up `Peb->ImageBaseAddress`.
 <machine>\Windows\builtin\*.dll           Wine PE builtins (wine-pe/out/builtin), ntdll.dll required
 <machine>\Windows\System32\*.dll          native DLLs (machine/import_windows_dlls.ps1)
 <machine>\Windows\System32\config\        registry hives (optional)
+<machine>\registry-overlay.bin             the registry overlay (written by the layer, "Registry persistence"), + .lock
 <machine>\Windows\Temp\
 <machine>\Users\User\AppData\Local\Temp\  <machine>\Users\User\AppData\Roaming\
 <machine>\ProgramData\  <machine>\Program Files\  <machine>\Program Files (x86)\

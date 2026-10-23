@@ -144,6 +144,11 @@ struct Fidelity {
     std::string cpu_vendor = "AuthenticAMD";
 };
 
+// The overlay as Initialize left it (fidelity seeds, COM classes...): what persistence never writes back, so a later
+// machine.json edit still shows. Keyed by the upper-cased key path.
+struct BaseVal { ULONG type = 0; bool deleted = false; std::vector<std::uint8_t> data; };
+struct BaseKey { std::uint32_t fl = 0; std::wstring cls; std::map<std::wstring, BaseVal> vals; };
+
 struct State {
     std::wstring root_dir;
     std::vector<std::unique_ptr<Node>> arena;
@@ -156,6 +161,10 @@ struct State {
     std::list<std::shared_ptr<Watch>> watches;
     std::uint64_t init_time = 0;
     Fidelity fid;
+    std::unordered_map<std::wstring, BaseKey> base;   // EnablePersistence: the seeded overlay
+    bool persist = false;                // EnablePersistence ran
+    bool persist_warned = false;         // the FIXME for an unwritable machine folder was logged
+    std::string persisted;               // the serialized overlay as last loaded or saved
 };
 
 std::mutex g_mu;
@@ -1376,10 +1385,15 @@ NTSTATUS Reg_NtEnumerateValueKey(HANDLE KeyHandle, ULONG Index, ULONG KeyValueIn
 }
 
 NTSTATUS Reg_NtFlushKey(HANDLE KeyHandle) {
-    std::lock_guard<std::mutex> lk(g_mu);
-    if (!g_st) return nt::kUnsuccessful;
-    Node* n;
-    return GetHandle(*g_st, KeyHandle, 0, &n);   // the overlay is memory-only; nothing to flush
+    NTSTATUS s;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        if (!g_st) return nt::kUnsuccessful;
+        Node* n;
+        s = GetHandle(*g_st, KeyHandle, 0, &n);
+    }
+    if (s >= 0) PersistOverlay();   // the overlay file is the only thing to flush; failing to write it is not the guest's error
+    return s;
 }
 
 NTSTATUS Reg_NtNotifyChangeKey(HANDLE KeyHandle, HANDLE Event, PIO_APC_ROUTINE ApcRoutine, PVOID /*ApcContext*/,
@@ -1945,74 +1959,196 @@ bool Dirty(const Node* n) {
     return n->link || n->has_class || !n->ov.empty();
 }
 
-void SaveWalk(const Node* n, Out& o, std::uint32_t* count) {
+std::uint32_t KeyFlags(const Node* n) {
+    std::uint32_t fl = 0;
+    if (n->deleted) fl |= kFlagDeleted;
+    if (!n->is_mount && !n->shadow) fl |= kFlagCreated;
+    if (n->link) fl |= kFlagLink;
+    if (n->has_class) fl |= kFlagClass;
+    return fl;
+}
+
+std::vector<const OvValue*> SortedValues(const Node* n) {
+    std::vector<const OvValue*> vals;
+    for (auto& [up, v] : n->ov) vals.push_back(&v);
+    std::sort(vals.begin(), vals.end(), [](const OvValue* a, const OvValue* b) { return a->seq < b->seq; });
+    return vals;
+}
+
+void CaptureWalk(State& st, const Node* n) {
     if (n->is_volatile) return;
     if (Dirty(n)) {
-        ++*count;
-        o.Str(PathOf(n));
-        std::uint32_t fl = 0;
-        if (n->deleted) fl |= kFlagDeleted;
-        if (!n->is_mount && !n->shadow) fl |= kFlagCreated;
-        if (n->link) fl |= kFlagLink;
-        if (n->has_class) fl |= kFlagClass;
-        o.U32(fl);
-        o.U64(n->mtime);
-        o.Str(n->cls);
-        std::vector<const OvValue*> vals;
-        for (auto& [up, v] : n->ov) vals.push_back(&v);
-        std::sort(vals.begin(), vals.end(), [](const OvValue* a, const OvValue* b) { return a->seq < b->seq; });
-        o.U32(static_cast<std::uint32_t>(vals.size()));
-        for (auto* v : vals) {
-            o.U32(v->deleted ? 1 : 0);
-            o.U32(v->type);
-            o.Str(v->name);
-            o.U32(static_cast<std::uint32_t>(v->data.size()));
-            o.Bytes(v->data.data(), v->data.size());
+        BaseKey& b = st.base[Upcase(PathOf(n))];
+        b.fl = KeyFlags(n);
+        b.cls = n->cls;
+        for (const OvValue* v : SortedValues(n)) {
+            BaseVal& bv = b.vals[Upcase(v->name)];
+            bv.type = v->type;
+            bv.deleted = v->deleted;
+            bv.data = v->data;
         }
     }
     if (n->deleted) return;
-    for (auto& [up, k] : n->kids) SaveWalk(k, o, count);
+    for (auto& [up, k] : n->kids) CaptureWalk(st, k);
 }
+
+// A key (and the values of it) that still is what Initialize made is not written: only differences from st.base.
+void SaveWalk(const State& st, const Node* n, Out& o, std::uint32_t* count) {
+    if (n->is_volatile) return;
+    if (Dirty(n)) {
+        const std::uint32_t fl = KeyFlags(n);
+        const BaseKey* b = nullptr;
+        if (!st.base.empty()) {
+            auto it = st.base.find(Upcase(PathOf(n)));
+            if (it != st.base.end()) b = &it->second;
+        }
+        const bool same_key = b && b->fl == fl && b->cls == n->cls;
+        std::vector<const OvValue*> vals;
+        for (const OvValue* v : SortedValues(n)) {
+            if (same_key) {
+                auto bv = b->vals.find(Upcase(v->name));
+                if (bv != b->vals.end() && bv->second.type == v->type && bv->second.deleted == v->deleted &&
+                    bv->second.data == v->data)
+                    continue;
+            }
+            vals.push_back(v);
+        }
+        if (!same_key || !vals.empty()) {
+            ++*count;
+            o.Str(PathOf(n));
+            o.U32(fl);
+            o.U64(n->mtime);
+            o.Str(n->cls);
+            o.U32(static_cast<std::uint32_t>(vals.size()));
+            for (auto* v : vals) {
+                o.U32(v->deleted ? 1 : 0);
+                o.U32(v->type);
+                o.Str(v->name);
+                o.U32(static_cast<std::uint32_t>(v->data.size()));
+                o.Bytes(v->data.data(), v->data.size());
+            }
+        }
+    }
+    if (n->deleted) return;
+    for (auto& [up, k] : n->kids) SaveWalk(st, k, o, count);
+}
+
+std::string SerializeOverlay(const State& st, std::uint32_t* count_out) {
+    Out body;
+    std::uint32_t count = 0;
+    SaveWalk(st, st.root, body, &count);
+    Out all;
+    all.Bytes(kOverlayMagic, 8);
+    all.U32(count);
+    all.Bytes(body.b.data(), body.b.size());
+    if (count_out) *count_out = count;
+    return std::string(reinterpret_cast<const char*>(all.b.data()), all.b.size());
+}
+
+// The lock file serialises the processes of one machine folder around loading and replacing the overlay file. It is
+// opened with no sharing, so a second process waits (the OS releases it when a holder dies); the file itself stays.
+// INVALID_HANDLE_VALUE: no lock (the folder is read-only, or a holder did not let go in 10 s); callers go on without it.
+HANDLE LockOverlay(const State& st) {
+    const std::wstring lock = st.root_dir + L"\\registry-overlay.lock";
+    for (int i = 0; i < 1000; ++i) {
+        HANDLE h = CreateFileW(lock.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h != INVALID_HANDLE_VALUE) return h;
+        if (GetLastError() != ERROR_SHARING_VIOLATION) return INVALID_HANDLE_VALUE;
+        Sleep(10);
+    }
+    WARN(registry, "overlay lock %ls is held by another process: going on without it", lock.c_str());
+    return INVALID_HANDLE_VALUE;
+}
+
+void UnlockOverlay(HANDLE h) {
+    if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+}
+
+// Write the temp file, then replace the overlay with it: a reader sees the old or the new file, never half of one.
+NTSTATUS WriteOverlayFile(const State& st, const std::string& bytes) {
+    const std::wstring path = st.root_dir + L"\\registry-overlay.bin";
+    const std::wstring tmp = path + L".tmp";
+    HANDLE lock = LockOverlay(st);
+    bool ok = false;
+    HANDLE f = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f != INVALID_HANDLE_VALUE) {
+        std::size_t done = 0;
+        ok = true;
+        while (done < bytes.size()) {
+            DWORD w = 0;
+            if (!WriteFile(f, bytes.data() + done, static_cast<DWORD>(std::min<std::size_t>(bytes.size() - done, 1u << 24)), &w, nullptr) || !w) { ok = false; break; }
+            done += w;
+        }
+        ok = ok && FlushFileBuffers(f);
+        CloseHandle(f);
+        if (ok) {
+            ok = false;
+            for (int i = 0; i < 50 && !ok; ++i) {   // an unlocked reader may still have the old file open
+                ok = MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+                if (!ok) Sleep(20);
+            }
+        }
+        if (!ok) DeleteFileW(tmp.c_str());
+    }
+    UnlockOverlay(lock);
+    return ok ? nt::kSuccess : nt::kUnsuccessful;
+}
+
+// Save when `only_if_changed` is false or the overlay differs from what was last loaded or saved.
+NTSTATUS SaveOverlayLocked(State& st, bool only_if_changed) {
+    std::uint32_t count = 0;
+    std::string bytes = SerializeOverlay(st, &count);
+    if (only_if_changed && bytes == st.persisted) return nt::kSuccess;
+    NTSTATUS s = WriteOverlayFile(st, bytes);
+    if (s < 0) {
+        if (!st.persist_warned) {
+            st.persist_warned = true;
+            FIXME(registry, "cannot write %ls\\registry-overlay.bin (error %lu): registry changes are not persisted",
+                  st.root_dir.c_str(), static_cast<unsigned long>(GetLastError()));
+        }
+        return s;
+    }
+    st.persisted = std::move(bytes);
+    TRACE(registry, "saved %u overlay keys to %ls\\registry-overlay.bin", count, st.root_dir.c_str());
+    return nt::kSuccess;
+}
+
+NTSTATUS LoadOverlayLocked(State& st);
 
 }  // namespace
 
 NTSTATUS SaveOverlay() {
     std::lock_guard<std::mutex> lk(g_mu);
     if (!g_st) return nt::kUnsuccessful;
-    State& st = *g_st;
-    Out body;
-    std::uint32_t count = 0;
-    SaveWalk(st.root, body, &count);
-    Out all;
-    all.Bytes(kOverlayMagic, 8);
-    all.U32(count);
-    all.Bytes(body.b.data(), body.b.size());
-    const std::wstring path = st.root_dir + L"\\registry-overlay.bin";
-    const std::wstring tmp = path + L".tmp";
-    HANDLE f = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (f == INVALID_HANDLE_VALUE) { ERR(registry, "cannot write %ls", tmp.c_str()); return nt::kUnsuccessful; }
-    std::size_t done = 0;
-    bool ok = true;
-    while (done < all.b.size()) {
-        DWORD w = 0;
-        if (!WriteFile(f, all.b.data() + done, static_cast<DWORD>(std::min<std::size_t>(all.b.size() - done, 1u << 24)), &w, nullptr) || !w) { ok = false; break; }
-        done += w;
-    }
-    CloseHandle(f);
-    if (!ok || !MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-        DeleteFileW(tmp.c_str());
-        return nt::kUnsuccessful;
-    }
-    TRACE(registry, "saved %u overlay keys to %ls", count, path.c_str());
-    return nt::kSuccess;
+    return SaveOverlayLocked(*g_st, false);
 }
 
-NTSTATUS LoadOverlay() {
+NTSTATUS EnablePersistence() {
     std::lock_guard<std::mutex> lk(g_mu);
     if (!g_st) return nt::kUnsuccessful;
     State& st = *g_st;
+    st.base.clear();
+    CaptureWalk(st, st.root);
+    NTSTATUS s = LoadOverlayLocked(st);
+    if (s == nt::kObjectNameNotFound) s = nt::kSuccess;   // no file yet
+    else if (s < 0) WARN(registry, "overlay file ignored from the first damaged record on (0x%08lx)", static_cast<unsigned long>(s));
+    st.persisted = SerializeOverlay(st, nullptr);
+    st.persist = true;
+    return s;
+}
+
+void PersistOverlay() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (g_st && g_st->persist) SaveOverlayLocked(*g_st, true);
+}
+
+namespace {
+
+NTSTATUS LoadOverlayLocked(State& st) {
     const std::wstring path = st.root_dir + L"\\registry-overlay.bin";
+    HANDLE lock = LockOverlay(st);
     std::string raw = ReadFileBytes(path, false);
+    UnlockOverlay(lock);
     if (raw.empty()) return nt::kObjectNameNotFound;
     In in{reinterpret_cast<const std::uint8_t*>(raw.data()), raw.size()};
     if (!in.Need(8) || std::memcmp(raw.data(), kOverlayMagic, 8) != 0) return kStatusRegistryCorrupt;
@@ -2064,6 +2200,14 @@ NTSTATUS LoadOverlay() {
         if (mt) n->mtime = mt;
     }
     return in.ok ? nt::kSuccess : kStatusRegistryCorrupt;
+}
+
+}  // namespace
+
+NTSTATUS LoadOverlay() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (!g_st) return nt::kUnsuccessful;
+    return LoadOverlayLocked(*g_st);
 }
 
 }  // namespace win10xbox::registry
