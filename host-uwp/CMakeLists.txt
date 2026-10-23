@@ -89,6 +89,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 add_compile_definitions(_WIN32_WINNT=0x0A00 WINVER=0x0A00 UNICODE _UNICODE)
 
 enable_language(ASM_MASM)   # core's asm syscall entry stub
+enable_language(RC)         # guest_gdi_bitmap's BITMAP resources
 
 # ---------------------------------------------------------------------------
 # Options
@@ -127,7 +128,7 @@ add_subdirectory(${WIN10XBOX_ROOT}/winexbox winexbox)
 
 # ---------------------------------------------------------------------------
 # The UWP host exe: AppContainer PE, CoreApplication view, headless display backend.
-#   C++/WinRT sources (include pch.h):  main.cpp App.cpp
+#   C++/WinRT sources (include pch.h):  main.cpp App.cpp launcher.cpp (the gamepad)
 #   everything else is plain Win32 + the win10xbox public API:
 #     host.cpp          the Host: worker flow from launch.json to the verdict (host.h)
 #     host_diag.cpp     trace.log, status.txt, crash filter (host_diag.h)
@@ -137,6 +138,7 @@ add_subdirectory(${WIN10XBOX_ROOT}/winexbox winexbox)
 #     host_shell.cpp    crash capture wired from the shell, first-run files (host_shell.h)
 #     crash.cpp         crash.txt / crash.dmp / entry-reached.txt: a copy of host-uwp-lite's
 #     presenter.cpp     D3D11 device thread + CoreWindow swap chain + screen.bmp (presenter.h)
+#     launcher.cpp      the on-console launcher: bitmap-font list + result screen, gamepad/keyboard (launcher.h)
 #     blit.cpp          the D3D11 upload + copy of the composed frame (blit.h; also in the blit test)
 # ---------------------------------------------------------------------------
 add_executable(host_uwp WIN32
@@ -151,6 +153,7 @@ add_executable(host_uwp WIN32
   crash.cpp
   presenter.cpp
   blit.cpp
+  launcher.cpp
   App.h
   host.h
   host_diag.h
@@ -161,6 +164,7 @@ add_executable(host_uwp WIN32
   crash.h
   presenter.h
   blit.h
+  launcher.h
   pch.h)
 set_target_properties(host_uwp PROPERTIES OUTPUT_NAME "win10xbox-uwp")
 target_include_directories(host_uwp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -214,9 +218,14 @@ set_target_properties(window_guest PROPERTIES OUTPUT_NAME "window")
 
 # Every other guest of the repo, so the package carries them all to the console (HANDOFF.md
 # "Standing testing rule"). Console programs; output names as in the main tree.
-foreach(_g hello cpuid sleep)
+foreach(_g hello cpuid sleep spawn xinput)
   add_executable(guest_${_g} "${WIN10XBOX_ROOT}/tests/guest/${_g}.c")
 endforeach()
+# Our own builtin DLLs (guest-dlls/: xinput1_4.dll and its copies xinput1_3.dll / xinput9_1_0.dll, staged into
+# payload\builtin next to Wine's) and the XInput guest that imports one.
+set(WIN10XBOX_GUEST_DLL_DIR ${CMAKE_BINARY_DIR}/bin/guest-dlls)
+add_subdirectory(${WIN10XBOX_ROOT}/guest-dlls guest-dlls)
+target_link_libraries(guest_xinput PRIVATE xinput1_4 user32)
 add_library(guest_dll SHARED "${WIN10XBOX_ROOT}/tests/guest/dll.c")
 set_target_properties(guest_dll PROPERTIES PREFIX "")
 add_executable(smoke_guest_cui "${WIN10XBOX_ROOT}/host-uwp-lite/smoke_guest.c")
@@ -227,8 +236,38 @@ set_target_properties(smoke_guest_cui PROPERTIES OUTPUT_NAME "smoke_cui")
 add_executable(drv_client "${WIN10XBOX_ROOT}/tests/drivers/drv_client.c")
 target_include_directories(drv_client PRIVATE "${WIN10XBOX_ROOT}/tests/drivers")
 
+# The remaining GUI guests of tests/guest (same output names as ci.yml's bin/guest), and the GUI
+# smoke variant, so the package carries every guest ci.yml builds (HANDOFF.md "Package contents").
+foreach(_g window2 window_input window_input2 window_text window_hooks window_nc window_scroll clipboard)
+foreach(_g window2 window_input window_input2 window_text window_nc window_scroll clipboard window_menu)
+  add_executable(guest_${_g} "${WIN10XBOX_ROOT}/tests/guest/${_g}.c")
+  target_link_libraries(guest_${_g} PRIVATE user32 gdi32)
+endforeach()
+# The dialog guest carries a DIALOG resource (tests/guest/dialog.rc).
+enable_language(RC)
+add_executable(guest_dialog "${WIN10XBOX_ROOT}/tests/guest/dialog.c" "${WIN10XBOX_ROOT}/tests/guest/dialog.rc")
+target_link_libraries(guest_dialog PRIVATE user32 gdi32)
+# The common-controls guest (tests/guest/comctl.c) links comctl32.
+add_executable(guest_comctl "${WIN10XBOX_ROOT}/tests/guest/comctl.c")
+target_link_libraries(guest_comctl PRIVATE user32 gdi32 comctl32)
+# The exception-handling guest and the DLL it throws across (tests/guest/seh.cpp, seh_dll.cpp).
+add_library(guest_seh_dll SHARED "${WIN10XBOX_ROOT}/tests/guest/seh_dll.cpp")
+set_target_properties(guest_seh_dll PROPERTIES PREFIX "")
+add_executable(guest_seh "${WIN10XBOX_ROOT}/tests/guest/seh.cpp")
+target_link_libraries(guest_seh PRIVATE guest_seh_dll)
+# guest_gdi_bitmap: the same sources as tests/guest/CMakeLists.txt (a generated .rc with absolute .bmp paths, msimg32).
+set(W10X_BMP_DIR "${WIN10XBOX_ROOT}/tests/guest/gdi_bitmap_res")
+configure_file("${WIN10XBOX_ROOT}/tests/guest/gdi_bitmap.rc.in" "${CMAKE_CURRENT_BINARY_DIR}/gdi_bitmap.rc" @ONLY)
+add_executable(guest_gdi_bitmap "${WIN10XBOX_ROOT}/tests/guest/gdi_bitmap.c" "${CMAKE_CURRENT_BINARY_DIR}/gdi_bitmap.rc")
+target_link_libraries(guest_gdi_bitmap PRIVATE user32 gdi32 msimg32)
+add_executable(smoke_guest WIN32 "${WIN10XBOX_ROOT}/host-uwp-lite/smoke_guest.c")
+target_compile_definitions(smoke_guest PRIVATE SMOKE_GUI=1)
+set_target_properties(smoke_guest PROPERTIES OUTPUT_NAME "smoke")
+
 set(HOST_UWP_GUESTS window_guest hello_guest hello_guest_cui guest_hello guest_cpuid guest_sleep guest_dll
-    smoke_guest_cui drv_client)
+    smoke_guest_cui drv_client guest_window2 guest_window_input guest_window_input2 guest_window_text smoke_guest
+    guest_spawn guest_window_nc guest_dialog guest_comctl guest_seh guest_seh_dll guest_window_scroll guest_clipboard
+    guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput)
 
 # ---------------------------------------------------------------------------
 # The selftest: the launch.json parser (launch_config.cpp has no Windows or layer
@@ -313,7 +352,7 @@ endif()
 #   payload\launch.json             host-uwp/payload: the packaged default launch configuration
 #   payload\launch.example.json     host-uwp/payload: every key documented (published to LocalState)
 #   payload\guest\*                 every guest of HOST_UWP_GUESTS (window.exe is the default)
-#   payload\builtin\*.dll           Wine PE builtins (optional, see HOST_UWP_BUILTIN_DIR)
+#   payload\builtin\*.dll           Wine PE builtins (optional, see HOST_UWP_BUILTIN_DIR) + our own (guest-dlls/)
 # resources.pri is made by package.cmd (makepri).
 # ---------------------------------------------------------------------------
 set(HOST_UWP_STAGE_DIR "${CMAKE_BINARY_DIR}/AppX")
@@ -340,11 +379,12 @@ add_custom_target(stage_appx ALL
           "-DASSETS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/assets"
           "-DPAYLOAD_DIR=${CMAKE_CURRENT_SOURCE_DIR}/payload"
           "-DBUILTIN_DIR=${HOST_UWP_BUILTIN_DIR}"
+          "-DGUEST_DLL_DIR=${WIN10XBOX_GUEST_DLL_DIR}"
           "-DMACHINE_JSON=${WIN10XBOX_ROOT}/machine/machine.default.json"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/stage.cmake"
   COMMENT "Staging the AppX layout in ${HOST_UWP_STAGE_DIR}"
   VERBATIM)
-add_dependencies(stage_appx host_uwp ${HOST_UWP_GUESTS})
+add_dependencies(stage_appx host_uwp xinput1_4 ${HOST_UWP_GUESTS})
 if(HOST_UWP_WINMD_TARGET)
   add_dependencies(stage_appx ${HOST_UWP_WINMD_TARGET})
 endif()

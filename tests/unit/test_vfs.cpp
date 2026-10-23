@@ -456,6 +456,9 @@ TEST(vfs_override_lookup) {
     CHECK(OverrideFor(L"gdi32") == DllOverride::Builtin);
     CHECK(OverrideFor(L"win32u") == DllOverride::Builtin);
     CHECK(OverrideFor(L"imm32.dll") == DllOverride::Builtin);
+    CHECK(OverrideFor(L"xinput1_4.dll") == DllOverride::Builtin);   // the layer's own XInput, under its three names
+    CHECK(OverrideFor(L"XInput1_3") == DllOverride::Builtin);
+    CHECK(OverrideFor(L"xinput9_1_0") == DllOverride::Builtin);
     CHECK(OverrideFor(L"d3d9") == DllOverride::Disabled);
     CHECK(OverrideFor(L"msvcrt") == DllOverride::Native);
     // E1: ntdll/kernelbase/kernel32 are always builtin, whatever machine.json says
@@ -752,6 +755,44 @@ TEST(vfs_translate_object_attributes_errors) {
     NTSTATUS s = TranslateObjectAttributes(&oa_h, &ta);
     CHECK_MSG(s == STATUS_NAME_TOO_LONG || s == STATUS_SUCCESS, "unexpected %08lx", static_cast<unsigned long>(s));
     if (s == STATUS_SUCCESS) CHECK(ta.name.Length <= 0xFFFE);
+}
+
+// An NT name is not normalised on its way to the file system (Wine's ntdll test_nt_names asserts the same table).
+TEST(vfs_translate_object_attributes_validates_nt_names) {
+    UseMachine();
+    struct Case { const wchar_t* name; NTSTATUS expect; };
+    static const Case cases[] = {
+        {L"\\??\\C:\\Users\\User\\marker.txt", STATUS_SUCCESS},
+        {L"\\??\\C:\\\\Users\\User\\marker.txt", STATUS_SUCCESS},          // one empty component after the device
+        {L"\\??\\C:\\\\\\Users\\User\\marker.txt", STATUS_OBJECT_NAME_INVALID},
+        {L"\\??\\C:\\Users\\\\User\\marker.txt", STATUS_OBJECT_NAME_INVALID},
+        {L"\\??\\C:\\Users\\User\\.\\marker.txt", STATUS_OBJECT_NAME_INVALID},
+        {L"\\??\\C:\\Users\\User\\..\\User\\marker.txt", STATUS_OBJECT_NAME_INVALID},
+        {L"\\??\\C:\\Users\\.", STATUS_OBJECT_NAME_INVALID},
+        {L"\\??\\C:\\Users\\..\\", STATUS_OBJECT_NAME_INVALID},
+        {L"\\??\\C:\\Users/User\\marker.txt", STATUS_OBJECT_NAME_INVALID},
+        {L"\\??\\C:\\Users\\User\\marker.txt*", STATUS_OBJECT_NAME_INVALID},
+        {L"\\??\\C:\\Users\\Us?r\\marker.txt", STATUS_OBJECT_NAME_INVALID},
+        {L"\\??\\C:\\Users\\User\\mark\001er.txt", STATUS_OBJECT_NAME_INVALID},
+        {L"\\??\\C:\\Users\\User\\\\", STATUS_OBJECT_NAME_INVALID},          // two trailing separators
+        {L"\\??\\C:\\Users\\User\\", STATUS_SUCCESS},                        // one: a directory request
+        {L"\\??\\C:\\Users\\User\\marker.txt\\", STATUS_OBJECT_NAME_INVALID},   // ... on a regular file
+        {L"\\??\\C:\\Users\\User\\nothere\\", STATUS_SUCCESS},              // the host answers NAME_NOT_FOUND
+        {L"\\??\\C:/", STATUS_OBJECT_NAME_NOT_FOUND},                       // "C:/" is no device name
+        {L"\\??\\C:/Users\\User", STATUS_OBJECT_PATH_NOT_FOUND},
+        {L"\\??\\C:\\", STATUS_SUCCESS},
+        {L"\\??\\C:\\\\", STATUS_SUCCESS},
+        {L"\\??\\C:\\Users\\a:stream", STATUS_SUCCESS},                      // ':' names a stream
+    };
+    for (const Case& c : cases) {
+        std::wstring name = c.name;
+        UNICODE_STRING us = MakeUs(name);
+        OBJECT_ATTRIBUTES oa = MakeAttr(&us);
+        TranslatedAttributes ta;
+        NTSTATUS s = TranslateObjectAttributes(&oa, &ta);
+        CHECK_MSG(s == c.expect, "%ls: %08lx, expected %08lx", c.name, static_cast<unsigned long>(s),
+                  static_cast<unsigned long>(c.expect));
+    }
 }
 
 // ------------------------------------------------------------------ GuestFullPath & guest dirs

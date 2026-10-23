@@ -2,10 +2,11 @@
 // display driver, memory-DC bitmaps, 32 bpp DIB sections). Every primitive
 // clips to the DC's region (DrawTarget::clip, device coordinates) and writes
 // the alpha byte as 0xFF. Ternary raster operations are evaluated bitwise on
-// the 24 colour bits, with fast paths for the common ones. No font engine yet:
-// ExtTextOut fills its opaque rectangle and draws no glyphs.
+// the 24 colour bits, with fast paths for the common ones. Text is the built-in
+// 8x16 bitmap face (font8x16.h), scaled by whole factors for tall LOGFONTs.
 #include "user_internal.h"
 #include "user_syscalls.h"
+#include "font8x16.h"
 
 #include <algorithm>
 #include <cmath>
@@ -473,12 +474,25 @@ RECT Normalized(RECT r) {
     return RECT{std::min(r.left, r.right), std::min(r.top, r.bottom), std::max(r.left, r.right), std::max(r.top, r.bottom)};
 }
 
-void NoteNoText() {
-    static volatile LONG reported = 0;   // plain flag
-    if (!InterlockedExchange(&reported, 1)) FIXME(gdi, "ExtTextOut: no font engine, glyphs are not drawn");
+}  // namespace
+
+// Caption text: the built-in face at (x, y) (device coordinates, top-left of the first cell), no background, clipped
+// to `limit` and the target's clip.
+void DrawGlyphRun(const DrawTarget& t, RECT limit, int x, int y, const std::wstring& text, std::uint32_t fg) {
+    const int cw = font8x16::kCellWidth, ch = font8x16::kCellHeight;
+    int gx = x;
+    for (wchar_t c : text) {
+        const RECT g{gx, y, gx + cw, y + ch};
+        gx += cw;
+        const RECT vis = RectIntersect(g, limit);
+        if (RectEmpty(vis)) continue;
+        const std::uint8_t* rows = font8x16::GlyphRows(static_cast<char32_t>(c));
+        ForEachPixel(t, vis, [&](int px, int py, std::uint32_t& dst) {
+            if (font8x16::GlyphPixel(rows, px - g.left, py - g.top)) dst = fg;
+        });
+    }
 }
 
-}  // namespace
 }  // namespace detail
 
 namespace sys {
@@ -779,29 +793,86 @@ BOOL WINAPI NtGdiInvertRgn(HDC hdc, HRGN hrgn) {
 BOOL WINAPI NtGdiExtTextOutW(HDC hdc, INT x, INT y, UINT flags, const RECT* rect, const WCHAR* str, UINT count,
                              const INT* dx, DWORD cp) {
     LockGuard lock;
-    (void)dx; (void)cp;
+    (void)cp;
     DcObj* dc = DcGet(hdc);
     if (!dc) return FALSE;
+    abi::DcAttr* a = dc->attr;
+    const UINT align = a->text_align;
+    if (align & TA_UPDATECP) {
+        x = a->cur_pos.x;
+        y = a->cur_pos.y;
+    }
+    if (!str) count = 0;
     DrawTarget t;
     const bool ok = ResolveDrawTarget(dc, &t);
-    if (rect && (flags & ETO_OPAQUE) && ok) {
-        const RECT r = Normalized(LogicalRect(dc, rect->left, rect->top, rect->right - rect->left, rect->bottom - rect->top));
+    RECT rect_dev{};
+    const bool have_rect = rect && (flags & (ETO_OPAQUE | ETO_CLIPPED));
+    if (have_rect) rect_dev = Normalized(LogicalRect(dc, rect->left, rect->top, rect->right - rect->left, rect->bottom - rect->top));
+    if (ok && rect && (flags & ETO_OPAQUE)) {
         BrushPaint b;
         b.null = false;
-        b.color = ColorToPixel(dc->attr->background_color);
-        PaintRect(dc, t, r, b);
+        b.color = ColorToPixel(a->background_color);
+        PaintRect(dc, t, rect_dev, b);
     }
-    if (count && str) {
-        NoteNoText();
-        TRACE(gdi, "%p (%d,%d) %.*ls (not drawn)", hdc, x, y, static_cast<int>(count), str);
+
+    // Advance of every character, in device units, and the total.
+    const TextCell cell = TextCellOf(dc);
+    const int stride = (flags & ETO_PDY) ? 2 : 1;
+    auto advance = [&](UINT i) {
+        return dx ? LogicalToDeviceDx(dc, dx[i * stride]) : cell.width + a->char_extra;
+    };
+    long long total = 0;
+    long long total_logical = 0;
+    for (UINT i = 0; i < count; ++i) {
+        total += advance(i);
+        total_logical += dx ? dx[i * stride] : cell.width + a->char_extra;
     }
-    if (dc->attr->text_align & TA_UPDATECP) {
-        auto* f = GdiGetT<FontObj>(dc->font, abi::kObjFont);
-        int h = f ? f->lf.lfHeight : 16;
-        if (h < 0) h = -h;
-        if (!h) h = 16;
-        dc->attr->cur_pos.x += static_cast<LONG>(count) * ((h * 7 + 8) / 16);
+
+    if (count && ok) {
+        const POINT p = LogicalToDevice(dc, x, y);
+        long left = p.x;
+        switch (align & (TA_LEFT | TA_RIGHT | TA_CENTER)) {
+        case TA_CENTER: left -= static_cast<long>(total / 2); break;
+        case TA_RIGHT: left -= static_cast<long>(total); break;
+        default: break;
+        }
+        long top = p.y;
+        switch (align & TA_BASELINE) {
+        case TA_BASELINE: top -= cell.ascent; break;
+        case TA_BOTTOM: top -= cell.height; break;
+        default: break;
+        }
+        const RECT box{left, top, left + static_cast<long>(total), top + cell.height};
+        RECT limit = t.clip.Box();
+        if (flags & ETO_CLIPPED) limit = RectIntersect(limit, rect_dev);
+        TRACE(gdi, "%p (%d,%d) align %#x %.*ls -> device (%ld,%ld) +%lld", hdc, x, y, align, static_cast<int>(count), str,
+              left, top, total);
+        if (a->background_mode == OPAQUE) {
+            DrawTarget bt = t;   // ETO_CLIPPED limits the text background as well
+            if (flags & ETO_CLIPPED) {
+                Rgn lim;
+                lim.Set(rect_dev);
+                bt.clip = CombineRgns(t.clip, lim, RGN_AND);
+            }
+            FillTargetRect(bt, box, ColorToPixel(a->background_color));
+        }
+        const std::uint32_t fg = ColorToPixel(a->text_color);
+        const int s = cell.scale;
+        long gx = left;
+        for (UINT i = 0; i < count; ++i) {
+            const RECT g{gx, top, gx + cell.width, top + cell.height};
+            gx += advance(i);
+            const RECT vis = RectIntersect(g, limit);
+            if (RectEmpty(vis)) continue;
+            const std::uint8_t* rows = font8x16::GlyphRows(str[i]);
+            ForEachPixel(t, vis, [&](int px, int py, std::uint32_t& dst) {
+                if (font8x16::GlyphPixel(rows, (px - g.left) / s, (py - g.top) / s)) dst = fg;
+            });
+        }
+        NoteDrawn(dc, t, RectIntersect(box, limit));
     }
+    if ((align & TA_UPDATECP) && (align & (TA_LEFT | TA_RIGHT | TA_CENTER)) == TA_LEFT)
+        a->cur_pos.x = static_cast<LONG>(x + total_logical);
     return TRUE;
 }
 
@@ -819,8 +890,6 @@ INT WINAPI NtGdiStretchDIBitsInternal(HDC hdc, INT x_dst, INT y_dst, INT width_d
     if (v.bottom_up) sy = v.height - y_src - height_src;
     const RECT dr = LogicalRect(dc, x_dst, y_dst, width_dst, height_dst);
     const RECT sr{x_src, sy, x_src + width_src, sy + height_src};
-    DrawTarget t;
-    if (!ResolveDrawTarget(dc, &t)) return height_src;
     const RECT nd = Normalized(dr);
     const int dw = nd.right - nd.left, dh = nd.bottom - nd.top;
     if (dw <= 0 || dh <= 0 || !width_src || !height_src) return 0;
@@ -829,15 +898,33 @@ INT WINAPI NtGdiStretchDIBitsInternal(HDC hdc, INT x_dst, INT y_dst, INT width_d
     const RECT ns = Normalized(sr);
     const int sw = ns.right - ns.left, sh = ns.bottom - ns.top;
     const BrushPaint b = BrushOf(dc, dc->brush);
-    ForEachPixel(t, nd, [&](int x, int y, std::uint32_t& px) {
+    auto source_at = [&](int x, int y) {
         int sx = ns.left + static_cast<int>((static_cast<long long>(x - nd.left) * sw) / dw);
         int syy = ns.top + static_cast<int>((static_cast<long long>(y - nd.top) * sh) / dh);
         if (flip_x) sx = ns.right - 1 - (sx - ns.left);
         if (flip_y) syy = ns.bottom - 1 - (syy - ns.top);
-        const std::uint32_t s = DibViewPixel(v, sx, syy);
-        px = rop3 == 0xcc ? s | 0xff000000u : 0xff000000u | (Rop3(rop3, b.At(x, y), s, px) & 0xffffff);
-    });
-    NoteDrawn(dc, t, nd);
+        return DibViewPixel(v, sx, syy);
+    };
+    auto combine = [&](int x, int y, std::uint32_t old) {
+        const std::uint32_t s = source_at(x, y);
+        return rop3 == 0xcc ? s | 0xff000000u : 0xff000000u | (Rop3(rop3, b.At(x, y), s, old) & 0xffffff);
+    };
+    DrawTarget t;
+    if (ResolveDrawTarget(dc, &t)) {
+        ForEachPixel(t, nd, [&](int x, int y, std::uint32_t& px) { px = combine(x, y, px); });
+        NoteDrawn(dc, t, nd);
+        return height_src;
+    }
+    // A bitmap without a 32 bpp view (a paletted or 24 bpp DIB section, a monochrome bitmap): pixel by pixel.
+    // user32's LoadImage(LR_CREATEDIBSECTION) fills the DIB section it made through StretchDIBits on a memory DC.
+    SlowDest d;
+    if (!OpenSlowDest(dc, &d)) return height_src;
+    for (const RECT& c : d.clip.rects) {
+        const RECT x = RectIntersect(nd, c);
+        for (int y = x.top; y < x.bottom; ++y)
+            for (int xx = x.left; xx < x.right; ++xx)
+                SetBitmapPixel(*d.bmp, xx, y, combine(xx, y, BitmapPixel(*d.bmp, xx, y)));
+    }
     return height_src;
 }
 
@@ -851,24 +938,42 @@ INT WINAPI NtGdiSetDIBitsToDeviceInternal(HDC hdc, INT x_dst, INT y_dst, DWORD c
     if (!dc || !bits || !MakeDibView(bmi, coloruse, bits, &v)) return 0;
     // `bits` holds `lines` scans starting at scan `startscan` (scan 0 = first row in memory).
     if (lines > static_cast<UINT>(v.height)) lines = static_cast<UINT>(v.height);
-    DrawTarget t;
-    if (!ResolveDrawTarget(dc, &t)) return static_cast<INT>(lines);
     const POINT o = LogicalToDevice(dc, x_dst, y_dst);
     const RECT dr{o.x, o.y, o.x + static_cast<LONG>(cx), o.y + static_cast<LONG>(cy)};
-    ForEachPixel(t, dr, [&](int x, int y, std::uint32_t& px) {
+    // Source pixel for device position (x, y), or false when the scan is outside the `lines` given.
+    auto source_at = [&](int x, int y, std::uint32_t* out) {
         const int sx = x_src + (x - dr.left);
         // DIB y of this destination row: y_src is measured from the bottom for bottom-up DIBs
-        int dib_y = v.bottom_up ? (y_src + static_cast<int>(cy) - 1 - (y - dr.top)) : (y_src + (y - dr.top));
-        const int scan = v.bottom_up ? dib_y : dib_y;
-        if (scan < static_cast<int>(startscan) || scan >= static_cast<int>(startscan + lines) || sx < 0 || sx >= v.width) return;
+        const int scan = v.bottom_up ? (y_src + static_cast<int>(cy) - 1 - (y - dr.top)) : (y_src + (y - dr.top));
+        if (scan < static_cast<int>(startscan) || scan >= static_cast<int>(startscan + lines) || sx < 0 || sx >= v.width)
+            return false;
         const std::uint8_t* row = v.bits + static_cast<std::ptrdiff_t>(scan - static_cast<int>(startscan)) * v.stride;
         DibView one = v;
         one.bits = row;
         one.height = 1;
         one.bottom_up = false;
-        px = DibViewPixel(one, sx, 0) | 0xff000000u;
-    });
-    NoteDrawn(dc, t, dr);
+        *out = DibViewPixel(one, sx, 0) | 0xff000000u;
+        return true;
+    };
+    DrawTarget t;
+    if (ResolveDrawTarget(dc, &t)) {
+        ForEachPixel(t, dr, [&](int x, int y, std::uint32_t& px) {
+            std::uint32_t s;
+            if (source_at(x, y, &s)) px = s;
+        });
+        NoteDrawn(dc, t, dr);
+        return static_cast<INT>(lines);
+    }
+    SlowDest d;   // a bitmap without a 32 bpp view: pixel by pixel
+    if (!OpenSlowDest(dc, &d)) return static_cast<INT>(lines);
+    for (const RECT& c : d.clip.rects) {
+        const RECT r = RectIntersect(dr, c);
+        for (int y = r.top; y < r.bottom; ++y)
+            for (int x = r.left; x < r.right; ++x) {
+                std::uint32_t s;
+                if (source_at(x, y, &s)) SetBitmapPixel(*d.bmp, x, y, s);
+            }
+    }
     return static_cast<INT>(lines);
 }
 

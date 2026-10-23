@@ -1,0 +1,70 @@
+status: wip
+
+# Slice: audio (Wine's mmdevapi over the host's WASAPI; xaudio2_9 on top)
+
+Runs: (pending, first push)
+
+## Mechanism
+
+Wine's `mmdevapi.dll` (PE) is the whole WASAPI stack; what a driver adds is a unix library loaded with
+`__wine_load_unix_lib("wine<name>.drv")` and driven through `__wine_unix_call` (`dlls/mmdevapi/unixlib.h`). The layer's
+driver is `core/dispatch/unix_mmdevapi.cpp`, registered as unix library `winewasapi`, selected by
+`HKCU\Software\Wine\Drivers: Audio=wasapi` (written by `core/registry` with the `MMDeviceEnumerator` class registration,
+`ApplyAudioRegistration`). It runs on the HOST's WASAPI: `IMMDeviceEnumerator` / `IAudioClient` on a Windows host, the
+host Wine's own mmdevapi on a Wine host.
+
+* One host audio thread owns the COM apartment and every host COM object. It is started, and the whole host stack is
+  loaded by a throw-away stream cycle (Initialize, GetService, one silent buffer, Start, Stop), in `PrimeAudio()` before
+  the PEB take-over (afterwards `PEB.Ldr` is the guest's and a host `LoadLibrary` binds to the wrong loader, the same
+  story as Winsock in docs/slices/net.md). Guest threads never touch host COM: control calls are requests the audio
+  thread runs; the data path touches only a stream's own ring buffer under its lock.
+* The guest's stream is a ring buffer in this process. `get_render_buffer`/`release_render_buffer` fill it (Wine's
+  alsa.c contract, including the temporary buffer when a chunk would wrap); the audio thread pumps it into the host
+  stream every 5 ms. Played frames = frames pushed minus the host's `GetCurrentPadding`, interpolated with the system
+  timer between pump steps and never past what was pushed (`get_position`); latency = host `GetStreamLatency` + the pump
+  interval. Event-callback streams get the guest's event signalled once per period. Capture is the same ring the other
+  way round.
+* Shared mode only (exclusive: `AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED`, as winepulse). The host stream is initialised with
+  the guest's format plus `AUTOCONVERTPCM | SRC_DEFAULT_QUALITY`, so the host engine converts.
+* `get_mix_format` is the host mix format; `get_endpoint_ids` is the host's default render and default capture endpoint
+  (none: zero devices, and the guest's `GetDefaultAudioEndpoint` answers `E_NOTFOUND` 0x80070490 like a machine without
+  one); `test_connect` answers Unavailable only when the host cannot even create its enumerator.
+* `WIN10XBOX_AUDIO=0` switches the driver off (no thread, no host audio DLLs loaded).
+
+Unix-library entries implemented: main_loop, get_endpoint_ids, create_stream, release_stream, start, stop, reset,
+timer_loop, get_render_buffer, release_render_buffer, get_capture_buffer, release_capture_buffer, is_format_supported,
+get_loopback_capture_device (E_NOTIMPL), get_mix_format, get_device_period, get_buffer_size, get_latency,
+get_current_padding, get_next_packet_size, get_frequency, get_position, set_volumes, set_event_handle, test_connect,
+is_started, get_prop_value (device path, physical speakers), midi_get_driver / midi_init (no MIDI devices),
+midi_notify_wait, and the do-nothing entries (process_attach/detach, set_sample_rate, midi_*, aux_message).
+
+## What replaced the first attempt
+
+The branch's first commit (87d3c86) bridged to the host by returning the HOST's COM objects through two guest stub DLLs
+(`core/audio`). That is gone: it bypassed Wine's mmdevapi (sessions, volumes, property stores, the registry device
+database) and put host objects into the guest. Its idea of comparing the layer with the host survives in
+`tests/integration/audio_test.cmake`.
+
+## Tests
+
+* `integration.guest_wasapi` (tests/guest/wasapi.c): CoInitializeEx, MMDeviceEnumerator, default render endpoint,
+  shared 48 kHz float stereo Initialize, 200 ms of a 440 Hz sine, padding 9600 before Start, then position advances and
+  padding drains to zero, clock reads about 0.2 s; exit 42. No endpoint: `GetDefaultAudioEndpoint` failed, exit 43.
+* `integration.guest_xaudio2` (tests/guest/xaudio2.c): XAudio2Create, mastering voice, source voice with a callback,
+  one buffer, `OnBufferStart`/`OnBufferEnd`/`OnStreamEnd`, voice state advancing; exit 42 (43 without an endpoint).
+* Both run through `audio_test.cmake` on the builtin-only machine folder: the host's verdict is `guest_wasapi` run
+  directly on the host; the layer must give the same exit code, and without an endpoint the same HRESULT.
+* fastfetch's `Sound` module joins the per-module gate in ci.yml (a `Sound` line when the host has an endpoint, exit 0
+  without).
+
+## What the runner's audio device reported
+
+(pending)
+
+## xaudio2: native or builtin
+
+(pending)
+
+## What still fails
+
+(pending)

@@ -22,10 +22,13 @@ apisetschema
 win32u
 user32
 gdi32
+msimg32      # AlphaBlend / TransparentBlt / GradientFill forward to gdi32 (docs/slices/gdibmp.md)
 
 # --- base services ---------------------------------------------------------
 advapi32
+cryptbase        # advapi32 forwards SystemFunction036 (RtlGenRandom, msvcrt's rand_s) here: git.exe
 sechost
+bcrypt             # CPython's os.urandom (BCryptGenRandom -> RtlGenRandom); no unix lib needed for that
 rpcrt4
 comctl32
 shell32
@@ -35,12 +38,62 @@ imm32
 ws2_32
 winmm
 
+# --- imported by the Sysinternals Coreinfo64 / PsInfo64 guests (docs/slices/sysinfo.md) ---
+comdlg32
+pdh
+mpr
+netapi32
+netutils
+iphlpapi
+dnsapi
+nsi
+shcore      # shlwapi
+coml2       # ole32
+# --- imports of fastfetch.exe (docs/slices/fastfetch.md) and what they pull in ---
+cfgmgr32
+hid
+secur32
+winbrand
+wtsapi32
+# --- SDL2.dll (docs/slices/realsdl.md) static imports: setupapi (-> cfgmgr32, already built), winmm (-> msacm32) ---
+setupapi
+msacm32     # winmm static import
+
 # --- COM -------------------------------------------------------------------
 ole32
 oleaut32
 combase
 
+# --- audio (docs/slices/audio.md): mmdevapi talks to core/dispatch/unix_mmdevapi.cpp, xaudio2_9 (FAudio) sits on mmdevapi
+mmdevapi
+xaudio2_9
+# xaudio2_9 static imports (xaudio2 -> mfplat, mfreadwrite, propsys; mfplat -> rtworkq)
+mfplat
+mfreadwrite
+propsys
+rtworkq
+
 # --- helpers / programs ----------------------------------------------------
 programs/services
 wbemprox
 programs/wineboot
+
+# --- console programs (wine-pe/programs/*.sh, ctest integration.wineprog_*) --
+programs/xcopy
+programs/findstr
+programs/sort
+programs/where
+programs/attrib
+programs/reg
+programs/hostname
+programs/whoami
+programs/chcp
+programs/more
+programs/fc
+programs/timeout
+programs/choice
+programs/expand
+programs/icacls
+programs/cacls
+programs/explorer         # wine-pe/programs/explorer.sh: explorer /desktop=shell,WxH
+programs/conhost          # wine-pe/programs/conhost.sh: console host (DECISIONS.md)

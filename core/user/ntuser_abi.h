@@ -67,6 +67,27 @@ static_assert(offsetof(WinProcParams, dpi_context) == 52);
 static_assert(offsetof(WinProcParams, procA) == 56);
 static_assert(sizeof(WinProcParams) == 72);
 
+// ---- struct win_hook_params (the CbCallWindowsHook callback: this header, the module name, then at the next
+// 16-byte boundary the data lparam points at, which user32 hands to the hook procedure) ----------------------------
+struct WinHookParams {
+    void* proc;
+    void* handle;
+    DWORD pid;
+    DWORD tid;
+    int id;
+    int code;
+    WPARAM wparam;
+    LPARAM lparam;
+    BOOL prev_unicode;
+    BOOL next_unicode;
+    WCHAR module[1];
+};
+static_assert(offsetof(WinHookParams, id) == 24);
+static_assert(offsetof(WinHookParams, wparam) == 32);
+static_assert(offsetof(WinHookParams, lparam) == 40);
+static_assert(offsetof(WinHookParams, prev_unicode) == 48);
+static_assert(offsetof(WinHookParams, module) == 56);
+
 // ---- DPI awareness contexts ---------------------------------------------------------
 constexpr UINT MakeDpiContext(UINT awareness, UINT version, UINT dpi, UINT flags) {
     return awareness | (version << 4) | (dpi << 8) | flags;
@@ -209,6 +230,9 @@ enum : UINT { DcGetBrushOrgEx, DcGetCurrentPosition, DcGetDCOrg };
 enum : UINT { PolyPolygon = 1, PolyPolyline, PolyBezier, PolyBezierTo, PolylineTo, PolyPolygonRgn };
 
 // struct DC_ATTR: gdi32 reads and writes it directly through the handle entry's UserPointer.
+// struct char_width_info (ntgdi.h): NtGdiGetCharWidthInfo.
+struct CharWidthInfo { INT lsb, rsb, unk; };
+
 struct DcAttr {
     UINT hdc;
     LONG disabled;
@@ -254,5 +278,13 @@ static_assert(offsetof(DcAttr, wnd_org) == 100);
 static_assert(offsetof(DcAttr, vport_ext) == 124);
 static_assert(offsetof(DcAttr, emf) == 168);
 static_assert(sizeof(DcAttr) == 192);
+
+// The menu structures user32 passes to NtUserThunkedMenuItemInfo / NtUserThunkedMenuInfo / NtUserGetMenuBarInfo.
+static_assert(sizeof(MENUITEMINFOW) == 80);
+static_assert(offsetof(MENUITEMINFOW, dwTypeData) == 56);
+static_assert(offsetof(MENUITEMINFOW, cch) == 64);
+static_assert(offsetof(MENUITEMINFOW, hbmpItem) == 72);
+static_assert(sizeof(MENUINFO) == 40);
+static_assert(sizeof(MENUBARINFO) == 48);
 
 }  // namespace win10xbox::user::abi

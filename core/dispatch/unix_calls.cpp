@@ -12,6 +12,7 @@
 // WINEDEBUG syntax ("+loaddll,warn+module,-all").
 #include "internal.h"
 #include "win10xbox/config.h"
+#include "win10xbox/gamepad.h"
 #if WIN10XBOX_HAVE_CLOCK
 #include "win10xbox/clock.h"
 #endif
@@ -19,6 +20,9 @@
 #include <cstring>
 #include <cwctype>
 #include <map>
+#if WIN10XBOX_HAVE_TOKEN
+#include "win10xbox/token.h"
+#endif
 
 namespace win10xbox::dispatch {
 namespace detail {
@@ -87,6 +91,66 @@ const UnixCallFn kNtdllFuncs[] = {
     &U_fd_to_handle, &U_handle_to_fd, &U_spawnvp, &U_system_time_precise,
 };
 
+// ---- ws2_32's unix functions (dlls/ws2_32/ws2_32_private.h, enum ws_unix_funcs) -------------------------------
+// Wine's ws2_32 DllMain fails (and with it the load of every program that imports ws2_32, directly or through
+// iphlpapi) unless this library is registered; sockets themselves go through ntdll's \Device\Afd ioctls, not here.
+// The five functions are the host-resolver entry points. The return value is a WSA error code (0 = success).
+// The host name is the layer's computer name, as GetComputerNameW gives it; name resolution is unix_ws2_32.cpp.
+constexpr NTSTATUS kWsaEFault = 10014;
+struct WsGetHostnameParams { char* name; unsigned int size; };
+
+NTSTATUS WINAPI U_ws_gethostname(void* args) {
+    auto* p = static_cast<WsGetHostnameParams*>(args);
+#if WIN10XBOX_HAVE_TOKEN
+    const std::wstring computer = token::ComputerName();
+#else
+    const std::wstring computer = L"DESKTOP-XBOX";
+#endif
+    if (!p->name || computer.size() >= p->size) return kWsaEFault;
+    for (std::size_t i = 0; i < computer.size(); ++i) p->name[i] = static_cast<char>(computer[i]);
+    p->name[computer.size()] = 0;
+    return 0;
+}
+
+const UnixCallFn kWs2Funcs[] = {
+    &Ws2UnixGetAddrInfo,     // unix_ws2_32.cpp: host Winsock
+    &Ws2UnixGetHostByAddr,
+    &Ws2UnixGetHostByName,
+    &U_ws_gethostname,
+    &Ws2UnixGetNameInfo,
+};
+
+// ---- xinput1_4's unix functions (win10xbox/xinput_abi.h; the guest DLL is guest-dlls/xinput) --------------------
+// The guest's XInput is our own small DLL (Wine's is PE code over hid/setupapi and a HID bus driver we do not have).
+// It reaches the host's gamepad store (win10xbox/gamepad.h) the way Wine's PE DLLs reach their unix side. Return
+// values are Win32 error codes, as the DLL hands them to its caller.
+constexpr NTSTATUS kErrorSuccess = 0, kErrorInvalidParameter = 87, kErrorDeviceNotConnected = 1167;
+
+NTSTATUS WINAPI U_xinput_get_state(void* args) {
+    auto* p = static_cast<W10xXInputGetState*>(args);
+    if (!p) return kErrorInvalidParameter;
+    return input::GetGamepadState(p->index, &p->state) ? kErrorSuccess : kErrorDeviceNotConnected;
+}
+
+NTSTATUS WINAPI U_xinput_set_state(void* args) {
+    auto* p = static_cast<W10xXInputSetState*>(args);
+    if (!p) return kErrorInvalidParameter;
+    return input::SetGamepadVibration(p->index, p->left_motor, p->right_motor) ? kErrorSuccess
+                                                                               : kErrorDeviceNotConnected;
+}
+
+NTSTATUS WINAPI U_xinput_get_caps(void* args) {
+    auto* p = static_cast<W10xXInputGetCaps*>(args);
+    if (!p) return kErrorInvalidParameter;
+    if (!input::GamepadConnected(p->index)) return kErrorDeviceNotConnected;
+    p->type = 1;      // XINPUT_DEVTYPE_GAMEPAD
+    p->subtype = 1;   // XINPUT_DEVSUBTYPE_GAMEPAD
+    p->flags = 0;
+    return kErrorSuccess;
+}
+
+const UnixCallFn kXInputFuncs[] = {&U_xinput_get_state, &U_xinput_set_state, &U_xinput_get_caps};
+
 // ---- Wine debug channels ---------------------------------------------------------
 constexpr unsigned char kInitBit = 1u << 7;
 struct WineSpec { std::string channel; unsigned char mask; bool on; };
@@ -154,6 +218,9 @@ std::uint64_t NtdllUnixLibHandle() { return g_ntdll_handle; }
 void RegisterNtdllUnixLib() {
     LoadWineDebugSpec();
     if (!g_ntdll_handle) RegisterUnixLib(L"ntdll", kNtdllFuncs, std::size(kNtdllFuncs));
+    RegisterUnixLib(L"ws2_32", kWs2Funcs, std::size(kWs2Funcs));
+    RegisterMmdevapiUnixLib();   // only when PrimeAudio started the host audio thread
+    RegisterUnixLib(W10X_XINPUT_UNIXLIB_NAME, kXInputFuncs, std::size(kXInputFuncs));
 }
 
 std::uint64_t UnixLibHandleByName(std::wstring_view module_name) {
@@ -164,6 +231,13 @@ std::uint64_t UnixLibHandleByName(std::wstring_view module_name) {
         if (Libs()[i].name == n) { h = i + 1; break; }
     ReleaseSRWLockShared(&g_lib_lock);
     return h;
+}
+
+extern "C" PVOID NTAPI w10x_RtlCreateHeap(ULONG flags, PVOID base, SIZE_T reserve, SIZE_T commit, PVOID lock, PVOID params) {
+    constexpr ULONG kHeapGrowable = 0x2;
+    HostModeScope host;
+    if (!reserve) flags |= kHeapGrowable;
+    return Host().RtlCreateHeap(flags, base, reserve, commit, lock, params);
 }
 
 extern "C" unsigned char __cdecl w10x_wine_dbg_get_channel_flags(WineDebugChannel* ch) {

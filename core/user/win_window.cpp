@@ -296,6 +296,43 @@ HWND WindowFromScreenPoint(POINT pt) {
     return found;
 }
 
+// server/window.c is_point_in_window: visible, not a disabled child, not layered+transparent, inside the window rectangle.
+static bool PointInWindow(const WindowObj* w, POINT pt) {
+    if (!(w->style & WS_VISIBLE)) return false;
+    if ((w->style & (WS_POPUP | WS_CHILD | WS_DISABLED)) == (WS_CHILD | WS_DISABLED)) return false;
+    if ((w->ex_style & (WS_EX_LAYERED | WS_EX_TRANSPARENT)) == (WS_EX_LAYERED | WS_EX_TRANSPARENT)) return false;
+    return PtInRectangle(WindowRectScreen(w), pt.x, pt.y);
+}
+
+static void AppendChildrenFromPoint(const WindowObj* parent, POINT pt, std::vector<HWND>* out) {
+    const std::vector<HWND> kids = parent->children;
+    for (HWND h : kids) {
+        const WindowObj* c = Win(h);
+        if (!c || !PointInWindow(c, pt)) continue;
+        if (!(c->style & (WS_MINIMIZE | WS_DISABLED)) && PtInRectangle(ClientRectScreen(c), pt.x, pt.y))
+            AppendChildrenFromPoint(c, pt, out);
+        out->push_back(h);
+    }
+}
+
+void WindowsFromPoint(HWND scope, POINT pt, std::vector<HWND>* out) {
+    const WindowObj* top = Win(scope ? scope : DesktopWindow());
+    if (!top) return;
+    const bool desktop = (top->flags & kWinIsDesktop) != 0;
+    if (!desktop && !PointInWindow(top, pt)) return;
+    if (!(top->style & (WS_MINIMIZE | WS_DISABLED)) && PtInRectangle(ClientRectScreen(top), pt.x, pt.y))
+        AppendChildrenFromPoint(top, pt, out);
+    out->push_back(top->handle);
+}
+
+HWND ShallowWindowFromPoint(POINT pt) {
+    const WindowObj* desk = Win(DesktopWindow());
+    if (!desk) return nullptr;
+    for (HWND h : desk->children)
+        if (const WindowObj* w = Win(h); w && PointInWindow(w, pt)) return h;
+    return desk->handle;
+}
+
 void AdjustRectForStyle(RECT* rect, DWORD style, bool menu, DWORD ex_style) {
     int adjust = 0;
     if ((ex_style & (WS_EX_STATICEDGE | WS_EX_DLGMODALFRAME)) == WS_EX_STATICEDGE) adjust = 1;
@@ -310,6 +347,32 @@ void AdjustRectForStyle(RECT* rect, DWORD style, bool menu, DWORD ex_style) {
         rect->left -= SystemMetric(SM_CXEDGE); rect->right += SystemMetric(SM_CXEDGE);
         rect->top -= SystemMetric(SM_CYEDGE); rect->bottom += SystemMetric(SM_CYEDGE);
     }
+}
+
+int FrameInset(const WindowObj* w) {
+    RECT r{0, 0, 0, 0};
+    AdjustRectForStyle(&r, w->style, false, w->ex_style & ~WS_EX_CLIENTEDGE);
+    return -r.left;
+}
+
+int CaptionHeightOf(const WindowObj* w) {
+    return (w->ex_style & WS_EX_TOOLWINDOW) ? SystemMetric(SM_CYSMCAPTION) : SystemMetric(SM_CYCAPTION);
+}
+
+bool CaptionButtonRect(const WindowObj* w, int hittest, RECT* out) {
+    if ((w->style & WS_CAPTION) != WS_CAPTION || !(w->style & WS_SYSMENU)) return false;
+    const bool boxes = (w->style & (WS_MINIMIZEBOX | WS_MAXIMIZEBOX)) && !(w->ex_style & WS_EX_TOOLWINDOW);
+    int slot;
+    switch (hittest) {
+    case HTCLOSE: slot = 1; break;
+    case HTMAXBUTTON: slot = 2; break;
+    case HTMINBUTTON: slot = 3; break;
+    default: return false;
+    }
+    if (slot > 1 && !boxes) return false;
+    const int f = FrameInset(w), bw = SystemMetric(SM_CXSIZE), right = (w->window.right - w->window.left) - f;
+    *out = RECT{right - slot * bw, f, right - (slot - 1) * bw, f + CaptionHeightOf(w) - 1};
+    return true;
 }
 
 void SendNcCalcSize(HWND hwnd, RECT* window_parent, RECT* client_out) {
@@ -873,8 +936,6 @@ HWND WINAPI NtUserCreateWindowEx(DWORD ex_style, UNICODE_STRING* class_name, UNI
     if ((w->style & (WS_DLGFRAME | WS_THICKFRAME)) && !(w->style & (WS_CHILD | WS_POPUP))) w->ex_style |= WS_EX_WINDOWEDGE;
     if (!(w->style & (WS_CHILD | WS_POPUP))) w->flags |= kWinNeedSize;
     w->id = reinterpret_cast<ULONG_PTR>(cs.hMenu);
-    if (cs.hMenu && (w->style & (WS_CHILD | WS_POPUP)) != WS_CHILD)
-        FIXME(user, "window %p: menu %p is not drawn (no menu support yet)", hwnd, cs.hMenu);
     w->normal = RECT{cs.x, cs.y, cs.x + cs.cx, cs.y + cs.cy};
     w->window = w->client = w->normal;
     LinkAfter(w, (w->style & WS_CHILD) ? HWND_BOTTOM : HWND_TOP);
@@ -1124,6 +1185,22 @@ WORD WINAPI NtUserSetWindowWord(HWND hwnd, INT offset, WORD newval) {
     return static_cast<WORD>(SetWindowLongSize(hwnd, offset, sizeof(WORD), newval, TRUE));
 }
 
+// Wine changes the style bits in the window record without any message; only a few bits are alterable.
+ULONG WINAPI NtUserAlterWindowStyle(HWND hwnd, UINT mask, UINT style) {
+    LockGuard lock;
+    mask &= WS_TABSTOP | WS_VSCROLL | WS_HSCROLL | 0x23f;
+    WindowObj* w = WinChecked(hwnd);
+    if (!w) return 0;
+    w->style = (w->style & ~mask) | (style & mask);
+    return 1;
+}
+
+// There is no IME: no input context exists.
+UINT_PTR WINAPI NtUserQueryInputContext(HANDLE handle, UINT attr) {
+    (void)handle; (void)attr;
+    return 0;
+}
+
 ULONG_PTR WINAPI NtUserCallHwnd(HWND hwnd, DWORD code) {
     LockGuard lock;
     switch (code) {
@@ -1280,7 +1357,7 @@ ULONG_PTR WINAPI NtUserCallHwndParam(HWND hwnd, DWORD_PTR param, DWORD code) {
     case abi::HwndParamSetDialogInfo: w->dlg_info = static_cast<LONG_PTR>(param); return 0;
     case abi::HwndParamSetMDIClientInfo: w->mdi_info = static_cast<LONG_PTR>(param); return 0;
     case abi::HwndParamGetWinMonitorDpi: return 96;
-    case abi::HwndParamGetScrollInfo: return FALSE;
+    case abi::HwndParamGetScrollInfo: return ScrollGetInfoCall(w->handle, param);   // win_scroll.cpp
     case abi::HwndParamExposeWindowSurface: return FALSE;
     case abi::HwndParamGetPrivateData: {
         auto* p = reinterpret_cast<abi::GetPrivateDataParams*>(param);
@@ -1388,6 +1465,12 @@ NTSTATUS WINAPI NtUserBuildHwndList(HDESK desktop, HWND hwnd, BOOL children, BOO
     (void)desktop; (void)non_immersive;
     WindowObj* root = hwnd ? Win(hwnd) : Win(DesktopWindow());
     if (!root) return static_cast<NTSTATUS>(0xC0000008);   // STATUS_INVALID_HANDLE
+    // Wine's server lists the window's *siblings* (the children of its parent) when `children` is FALSE and a
+    // window is given: GetDlgItem / GetNextDlgTabItem pass the first child of a window and want it and the
+    // controls after it. With `children` TRUE the window is the parent whose descendants are listed.
+    if (hwnd && !children && root->parent) {
+        if (WindowObj* par = Win(root->parent)) root = par;
+    }
     std::vector<HWND> list;
     std::function<void(WindowObj*)> walk = [&](WindowObj* w) {
         for (HWND h : w->children) {
@@ -1666,8 +1749,10 @@ BOOL WINAPI NtUserSetMenu(HWND hwnd, HMENU menu) {
     LockGuard lock;
     WindowObj* w = WinChecked(hwnd);
     if (!w || (w->style & (WS_CHILD | WS_POPUP)) == WS_CHILD) return FALSE;
-    if (menu) FIXME(user, "SetMenu(%p, %p): menus are not drawn (no menu support yet)", hwnd, menu);
-    w->id = reinterpret_cast<ULONG_PTR>(menu);
+    if (!MenuAttachToWindow(w, menu)) return FALSE;
+    // the client area shrinks by the menu bar (win32u NtUserSetMenu)
+    SetWindowPosInternal(w->handle, nullptr, 0, 0, 0, 0,
+                         SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED);
     return TRUE;
 }
 
@@ -1675,14 +1760,6 @@ HMENU WINAPI NtUserGetSystemMenu(HWND hwnd, BOOL revert) {
     (void)hwnd; (void)revert;
     NoteUnimplemented("NtUserGetSystemMenu (no menu support yet)");
     return nullptr;
-}
-
-BOOL WINAPI NtUserDrawMenuBar(HWND hwnd) {
-    LockGuard lock;
-    WindowObj* w = WinChecked(hwnd);
-    if (!w) return FALSE;
-    w->nc_pending = true;
-    return TRUE;
 }
 
 DWORD WINAPI NtUserGetWindowContextHelpId(HWND hwnd) {
@@ -1751,6 +1828,7 @@ ULONG_PTR WINAPI NtUserCallNoParam(ULONG code) {
     case abi::NoParamExitingThread: {
         if (UserThread* t = FindUserThread()) {
             t->exiting = true;
+            RemoveThreadHooks(t->tid);
             DestroyThreadWindows(t);
         }
         return 0;
@@ -1803,6 +1881,7 @@ ULONG_PTR WINAPI NtUserCallOneParam(ULONG_PTR arg, ULONG code) {
         std::memcpy(st, S().key_state, 256);
         return TRUE;
     }
+    case abi::OneParamGetMenuItemCount: return MenuItemCount(arg);
     case abi::OneParamEnableThunkLock:
         return 0;   // the thunk lock exists for 16-bit code, which never runs here
     case abi::OneParamSetKeyboardAutoRepeat:
@@ -1854,8 +1933,7 @@ ULONG_PTR WINAPI NtUserCallTwoParam(ULONG_PTR arg1, ULONG_PTR arg2, ULONG code) 
     case abi::TwoParamAllocWinProc:
         return arg1;   // raw procedure pointers throughout (no WINPROC handles)
     case abi::TwoParamGetMenuInfo:
-        SetLastErr(ERROR_INVALID_MENU_HANDLE);
-        return FALSE;
+        return MenuGetInfo(arg1, reinterpret_cast<MENUINFO*>(arg2));
     }
     FIXME(user, "NtUserCallTwoParam code %lu", code);
     SetLastErr(ERROR_CALL_NOT_IMPLEMENTED);

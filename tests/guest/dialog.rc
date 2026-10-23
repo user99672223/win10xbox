@@ -1,0 +1,17 @@
+/* Dialog template of tests/guest/dialog.c (compiled by rc.exe on MSVC, windres on llvm-mingw).
+ * A frameless popup so that the client origin is the window origin; the program moves the OK button itself in
+ * WM_INITDIALOG, so the test does not depend on dialog-unit conversion. */
+#include <windows.h>
+
+#define IDC_EDIT   100
+#define IDC_STATIC 101
+
+101 DIALOG 0, 0, 160, 80
+STYLE WS_POPUP | WS_VISIBLE
+FONT 8, "MS Shell Dlg"
+BEGIN
+    LTEXT         "Name:", IDC_STATIC, 4, 4, 30, 10
+    EDITTEXT      IDC_EDIT, 36, 4, 100, 12, ES_AUTOHSCROLL
+    DEFPUSHBUTTON "OK", IDOK, 10, 40, 50, 14
+    PUSHBUTTON    "Cancel", IDCANCEL, 80, 40, 50, 14
+END

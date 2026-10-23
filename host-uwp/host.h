@@ -21,6 +21,8 @@
 
 namespace w10x_uwp
 {
+    class Launcher;
+
     struct DisplayInfo
     {
         std::uint32_t width = 1920;
@@ -63,6 +65,10 @@ namespace w10x_uwp
         bool StopRequested() const;
         // Last resort when the worker does not react: write the status, flush, TerminateProcess.
         [[noreturn]] void EmergencyExit(const char* reason);
+
+        // The on-console launcher (launcher.h). Optional; set by the shell before StartWorker().
+        // Without it launch.json "picker" / "autoselect" are ignored.
+        void AttachLauncher(Launcher* launcher);
 
         // ---- display / input backend (UI thread) --------------------------
         // The winexbox backend. M5 only creates it and counts the input that reaches it;

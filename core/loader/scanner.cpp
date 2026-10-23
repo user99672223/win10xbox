@@ -179,7 +179,11 @@ struct TrapSite {
 struct ArenaRec { u64 base; std::size_t size; u64 owner_lo, owner_hi; };
 
 SRWLOCK                g_lock = SRWLOCK_INIT;
-std::vector<TrapSite>& Traps() { static std::vector<TrapSite> v; return v; }
+// Namespace scope, not a function-local static: TrapVeh runs on the guest's TEB view, where the MSVC thread-safe-init
+// guard of a function-local static reads the host image's TLS block, which is not installed (docs/DISPATCHER.md,
+// "The guest-view window"). The first guest to execute a trapped site faulted there on the Windows host.
+std::vector<TrapSite> g_traps;
+std::vector<TrapSite>& Traps() { return g_traps; }
 std::vector<ArenaRec>& Arenas() { static std::vector<ArenaRec> v; return v; }
 PVOID                  g_veh = nullptr;
 
@@ -469,6 +473,7 @@ struct Job {
     std::vector<Range> exec;
     std::vector<u64>   funcs;          // decode resync points (function starts), sorted
     std::vector<u64>   hint_targets;   // known/suspected indirect branch targets
+    std::vector<Range> data;           // data inside executable sections (jump tables), sorted: never decoded
     u64                reach_lo = 0, reach_hi = 0;   // extent of the patched image/range
     u64                owner_lo = 0, owner_hi = 0;
 };
@@ -506,13 +511,19 @@ bool Classify(const Decoded& d, SiteKind* k) {
 // Protected ranges (rewritten thunks, earlier patches) and syscall thunks are
 // stepped over, and decoding resynchronises at function starts.
 template <class F>
-void Sweep(const Range& r, const std::vector<u64>& funcs, F&& on) {
+void Sweep(const Range& r, const std::vector<u64>& funcs, const std::vector<Range>& data, F&& on) {
     const u8* p = r.start;
     const u8* const end = r.start + r.size;
+    std::size_t di = 0;
     std::size_t fi = static_cast<std::size_t>(
         std::lower_bound(funcs.begin(), funcs.end(), reinterpret_cast<u64>(p)) - funcs.begin());
     Decoded d;
     while (p < end) {
+        while (di < data.size() && data[di].start + data[di].size <= p) ++di;
+        if (di < data.size() && data[di].start <= p) {      // a jump table in the code: its bytes are not instructions
+            p = data[di].start + data[di].size;
+            continue;
+        }
         const void* pe = nullptr;
         if (detail::IsProtectedRange(p, &pe)) {
             p = std::max(p + 1, static_cast<const u8*>(pe));
@@ -554,7 +565,7 @@ NTSTATUS ScanCore(const Job& job, const ScanOptions& opts, ScanResult* result) {
     std::vector<SiteInfo> sites;
     std::vector<u64> targets = job.hint_targets;
     for (const Range& r : job.exec) {
-        Sweep(r, job.funcs, [&](const u8* p, const Decoded& d) {
+        Sweep(r, job.funcs, job.data, [&](const u8* p, const Decoded& d) {
             if (const ZydisDecodedOperand* rel = FindRelImm(d)) {
                 u64 t = 0;
                 if (ZYAN_SUCCESS(ZydisCalcAbsoluteAddress(&d.ins, rel, reinterpret_cast<u64>(p), &t))) targets.push_back(t);
@@ -766,6 +777,65 @@ NTSTATUS ScanAndPatchRange(void* start, std::size_t size, const ScanOptions& opt
     return ScanCore(job, opts, result);
 }
 
+// MSVC without optimisation (/Od, the Debug configuration) emits a switch's jump table straight after the function,
+// inside the executable section: `lea rcx,[image base]; mov eax,[rcx+rax*4+TABLE]; add rax,rcx; jmp rax`, TABLE a
+// vector of 32-bit RVAs of the case blocks. A linear sweep decodes those bytes as instructions, and a pair of them
+// that happens to read 0F 05 or 0F A2 became a "syscall" or "cpuid" site; the patch wrote an INT3 over the low byte
+// of a table entry and the switch then jumped into the middle of another instruction (found by a Debug build of
+// tests/guest/sqlite/lockfile.c: a printf with %lu died with an access violation, Release was fine). Find the
+// tables from the instruction that reads them, keep their bytes out of the sweep, and take their entries as branch
+// targets, which the hint scan of the non-executable sections cannot do for tables in code.
+void FindInlineJumpTables(Job* job) {
+    const u64 base = job->reach_lo, image_end = job->reach_hi;
+    std::vector<Range> found;
+    std::vector<Range> none;
+    for (const Range& r : job->exec) {
+        Sweep(r, job->funcs, none, [&](const u8*, const Decoded& d) {
+            if (d.ins.mnemonic != ZYDIS_MNEMONIC_MOV || d.ins.operand_count_visible < 2) return;
+            const ZydisDecodedOperand& dst = d.ops[0];
+            const ZydisDecodedOperand& src = d.ops[1];
+            if (dst.type != ZYDIS_OPERAND_TYPE_REGISTER || dst.size != 32) return;
+            if (src.type != ZYDIS_OPERAND_TYPE_MEMORY || src.mem.type != ZYDIS_MEMOP_TYPE_MEM) return;
+            if (src.mem.base == ZYDIS_REGISTER_NONE || src.mem.base == ZYDIS_REGISTER_RIP ||
+                src.mem.index == ZYDIS_REGISTER_NONE || src.mem.scale != 4 || !src.mem.disp.size ||
+                src.mem.disp.value <= 0)
+                return;
+            const u64 table = base + static_cast<u64>(src.mem.disp.value);
+            if (!InRange(job->exec, table)) return;
+            const u8* t = reinterpret_cast<const u8*>(table);
+            const u8* const limit = [&]() -> const u8* {
+                for (const Range& e : job->exec)
+                    if (table >= reinterpret_cast<u64>(e.start) && table < reinterpret_cast<u64>(e.start) + e.size)
+                        return e.start + e.size;
+                return t;
+            }();
+            std::size_t n = 0;
+            while (n < 4096 && t + 4 * (n + 1) <= limit) {
+                u32 v;
+                std::memcpy(&v, t + 4 * n, 4);
+                // a case block: an RVA inside the image's code, within reach of the table (the same function)
+                const u64 diff = v > src.mem.disp.value ? v - static_cast<u64>(src.mem.disp.value)
+                                                       : static_cast<u64>(src.mem.disp.value) - v;
+                if (!v || v >= image_end - base || !InRange(job->exec, base + v) || diff > 0x10000) break;
+                ++n;
+            }
+            if (n < 2) return;
+            found.push_back({const_cast<u8*>(t), n * 4});
+            for (std::size_t i = 0; i < n; ++i) {
+                u32 v;
+                std::memcpy(&v, t + 4 * i, 4);
+                job->hint_targets.push_back(base + v);
+            }
+        });
+    }
+    std::sort(found.begin(), found.end(), [](const Range& a, const Range& b) { return a.start < b.start; });
+    for (const Range& f : found) {
+        if (!job->data.empty() && job->data.back().start + job->data.back().size > f.start) continue;   // same table again
+        job->data.push_back(f);
+    }
+    if (!job->data.empty()) TRACE(scan, "%zu jump table(s) inside executable sections left out of the sweep", job->data.size());
+}
+
 NTSTATUS ScanAndPatch(const MappedImage& img, const ScanOptions& opts, ScanResult* result) {
     const IMAGE_NT_HEADERS64* nt = nullptr;
     const IMAGE_SECTION_HEADER* secs = nullptr;
@@ -840,6 +910,7 @@ NTSTATUS ScanAndPatch(const MappedImage& img, const ScanOptions& opts, ScanResul
             }
         }
     }
+    FindInlineJumpTables(&job);
     return ScanCore(job, opts, result);
 }
 

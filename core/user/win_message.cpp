@@ -8,6 +8,7 @@
 // US-layout keyboard functions.
 #include "user_internal.h"
 #include "user_syscalls.h"
+#include "win_scroll.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -22,7 +23,28 @@ constexpr UINT kUserTimerMinimum = 10;
 constexpr UINT kUserTimerMaximum = 0x7fffffff;
 constexpr int kMaxRecursion = 64;
 
-DWORD Now() { return static_cast<DWORD>(GetTickCount64()); }
+// Message times are in the guest's own tick count: what its GetTickCount() reads out of KUSER_SHARED_DATA (the
+// formula of kernel32's GetTickCount64), so GetMessageTime() and GetTickCount() can be compared.
+DWORD Now() {
+    const auto* usd = reinterpret_cast<const volatile ULONG*>(0x7ffe0000);
+    const ULONG multiplier = usd[1];                    // TickCountMultiplier
+    ULONG high, low;
+    do {
+        high = usd[0x324 / 4];                            // TickCount.High1Time (KSYSTEM_TIME at 0x320)
+        low = usd[0x320 / 4];                            // TickCount.LowPart
+    } while (high != usd[0x328 / 4]);                    // High2Time
+    return static_cast<DWORD>((((static_cast<ULONGLONG>(high) << 32) | low) * multiplier) >> 24);
+}
+
+// The clock of the timers: milliseconds from the performance counter. GetTickCount64 only advances every
+// ~15.6 ms on Windows, which would put every deadline up to a tick late or early.
+ULONGLONG TimerNow() {
+    LARGE_INTEGER freq, count;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&count);
+    return static_cast<ULONGLONG>(count.QuadPart / freq.QuadPart) * 1000 +
+           static_cast<ULONGLONG>(count.QuadPart % freq.QuadPart) * 1000 / static_cast<ULONGLONG>(freq.QuadPart);
+}
 
 void FillWinProcParams(abi::WinProcParams* p, WindowObj* w, UINT msg, WPARAM wp, LPARAM lp, bool ansi, int mapping) {
     WNDPROC func = w->proc.w ? w->proc.w : w->proc.a;
@@ -77,7 +99,7 @@ void ProcessSentMessages(UserThread& t) {
             continue;
         }
         ++t.send_depth;
-        const LRESULT r = Win(m->hwnd) ? CallWindowProcInternal(m->hwnd, m->msg, m->wparam, m->lparam, m->ansi) : 0;
+        const LRESULT r = Win(m->hwnd) ? CallWindowProcHooked(m->hwnd, m->msg, m->wparam, m->lparam, m->ansi, false) : 0;
         --t.send_depth;
         m->result = r;
         m->done = true;
@@ -88,10 +110,11 @@ void ProcessSentMessages(UserThread& t) {
 // The earliest timer deadline of `t`, in milliseconds from now (INFINITE when none).
 DWORD NextTimerDelay(const UserThread& t) {
     if (t.timers.empty()) return INFINITE;
-    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG now = TimerNow();
     ULONGLONG best = ~0ull;
     for (const Timer& tm : t.timers) best = std::min(best, tm.next);
-    return best <= now ? 0 : static_cast<DWORD>(std::min<ULONGLONG>(best - now, 0x7ffffffe));
+    // +1: a wait that ends a fraction of a millisecond early would find nothing due and wait again for a whole tick
+    return best <= now ? 0 : static_cast<DWORD>(std::min<ULONGLONG>(best - now + 1, 0x7ffffffe));
 }
 
 UINT QueueBits(UserThread& t) {
@@ -104,7 +127,7 @@ UINT QueueBits(UserThread& t) {
         else bits |= QS_MOUSEBUTTON;
     }
     if (FindPaintWindow(&t)) bits |= QS_PAINT;
-    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG now = TimerNow();
     for (const Timer& tm : t.timers)
         if (tm.next <= now) { bits |= QS_TIMER; break; }
     return bits;
@@ -117,8 +140,14 @@ void SetMessageInfo(UserThread& t, const MSG& m, ULONG_PTR extra) {
     t.info->message_extra = extra;
 }
 
-// One PeekMessage pass. Lock held; may drop it (sent messages).
-bool PeekOnce(UserThread& t, MSG* out, HWND hwnd, UINT first, UINT last, UINT flags) {
+// Hardware input (defined with the sink below).
+enum class HwStatus { Deliver, Consumed, Skip };
+HwStatus ProcessMouseMessage(UserThread& t, const QueuedMsg& raw, MSG* out, HWND hwnd_filter, UINT first, UINT last,
+                             bool remove);
+void AcceptInput(UserThread& t, const QueuedMsg& q);
+
+// One PeekMessage pass. Lock held; may drop it (sent messages, hit testing).
+bool PeekOnceRaw(UserThread& t, MSG* out, HWND hwnd, UINT first, UINT last, UINT flags) {
     ProcessSentMessages(t);
     const bool remove = (flags & PM_REMOVE) != 0;
     const UINT qs = flags >> 16;   // PM_QS_*: 0 means everything
@@ -144,12 +173,42 @@ bool PeekOnce(UserThread& t, MSG* out, HWND hwnd, UINT first, UINT last, UINT fl
         }
     }
     if (want_input) {
-        for (auto it = t.input.begin(); it != t.input.end(); ++it) {
-            if (!WindowMatches(hwnd, it->msg.hwnd) || !MessageInRange(it->msg.message, first, last)) continue;
-            *out = it->msg;
-            const ULONG_PTR extra = it->extra;
-            if (remove) t.input.erase(it);
-            SetMessageInfo(t, *out, extra);
+        for (std::size_t i = 0; i < t.input.size();) {
+            const QueuedMsg q = t.input[i];
+            if (q.raw) {
+                // a mouse message the hardware reported: find the window, ask it, activate (may run window procedures)
+                MSG m{};
+                const HwStatus st = ProcessMouseMessage(t, q, &m, hwnd, first, last, remove);
+                std::size_t at = 0;
+                while (at < t.input.size() && t.input[at].seq != q.seq) ++at;
+                if (st == HwStatus::Deliver) {
+                    *out = m;
+                    SetMessageInfo(t, *out, q.extra);
+                    return true;
+                }
+                if (st == HwStatus::Consumed) {
+                    i = 0;   // gone from the queue; procedures that ran may have changed it, start over
+                    continue;
+                }
+                i = at < t.input.size() ? at + 1 : 0;
+                continue;
+            }
+            if (!WindowMatches(hwnd, q.msg.hwnd) || !MessageInRange(q.msg.message, first, last)) {
+                ++i;
+                continue;
+            }
+            *out = q.msg;
+            if (remove) AcceptInput(t, q);
+            if (IsHooked(WH_KEYBOARD) && q.vk &&
+                (q.msg.message == WM_KEYDOWN || q.msg.message == WM_KEYUP || q.msg.message == WM_SYSKEYDOWN ||
+                 q.msg.message == WM_SYSKEYUP) &&
+                CallHooks(WH_KEYBOARD, remove ? HC_ACTION : HC_NOREMOVE, LOWORD(q.msg.wParam), q.msg.lParam, 0)) {
+                // a hook ate the key (message.c process_keyboard_message): drop it, removed or not
+                if (!remove) AcceptInput(t, q);
+                i = 0;
+                continue;
+            }
+            SetMessageInfo(t, *out, q.extra);
             return true;
         }
     }
@@ -174,11 +233,16 @@ bool PeekOnce(UserThread& t, MSG* out, HWND hwnd, UINT first, UINT last, UINT fl
         }
     }
     if (want_timer) {
-        const ULONGLONG now = GetTickCount64();
+        const ULONGLONG now = TimerNow();
         for (Timer& tm : t.timers) {
             if (tm.next > now || !WindowMatches(hwnd, tm.hwnd) || !MessageInRange(tm.msg, first, last)) continue;
             *out = MSG{tm.hwnd, tm.msg, tm.id, reinterpret_cast<LPARAM>(tm.proc), Now(), s.cursor};
-            if (remove) tm.next = now + tm.timeout;
+            if (remove) {
+                // The next deadline follows the previous one, so a timer serviced a little late does not drift;
+                // one that fell behind by whole periods skips them (a single WM_TIMER stands for all of them).
+                tm.next += tm.timeout;
+                while (tm.next <= now) tm.next += tm.timeout;
+            }
             SetMessageInfo(t, *out, 0);
             return true;
         }
@@ -186,12 +250,29 @@ bool PeekOnce(UserThread& t, MSG* out, HWND hwnd, UINT first, UINT last, UINT fl
     return false;
 }
 
-// Drains the display driver's input queue (lock NOT held: the sink takes it).
+// PeekOnceRaw, then WH_GETMESSAGE for the message handed out (the hook may change it).
+bool PeekOnce(UserThread& t, MSG* out, HWND hwnd, UINT first, UINT last, UINT flags) {
+    if (!PeekOnceRaw(t, out, hwnd, first, last, flags)) return false;
+    if (IsHooked(WH_GETMESSAGE))
+        CallHooks(WH_GETMESSAGE, HC_ACTION, flags & PM_REMOVE, reinterpret_cast<LPARAM>(out), sizeof(MSG));
+    return true;
+}
+
+// Drains the display driver's input queue (lock NOT held: the sink takes it). One thread at a time, so
+// two GUI threads cannot deliver two batches out of order.
+SRWLOCK g_pump_lock = SRWLOCK_INIT;
+
+void DriverProcessEvents(winexbox::IWinexboxDriver* d) {
+    AcquireSRWLockExclusive(&g_pump_lock);
+    d->ProcessEvents(QS_ALLINPUT);
+    ReleaseSRWLockExclusive(&g_pump_lock);
+}
+
 void PumpDriver() {
     winexbox::IWinexboxDriver* d = Driver();
     if (!d) return;
     HANDLE wake = d->WakeHandle();
-    if (wake && WaitForSingleObject(wake, 0) == WAIT_OBJECT_0) d->ProcessEvents(QS_ALLINPUT);
+    if (wake && WaitForSingleObject(wake, 0) == WAIT_OBJECT_0) DriverProcessEvents(d);
 }
 
 // Blocks until something may have arrived for `t`, a handle is signalled, or `timeout` ms pass.
@@ -204,11 +285,23 @@ DWORD WaitForQueue(UserThread& t, DWORD count, const HANDLE* handles, DWORD time
     HANDLE driver_wake = d ? static_cast<HANDLE>(d->WakeHandle()) : nullptr;
     if (driver_wake) hs.push_back(driver_wake);
     const DWORD timer = NextTimerDelay(t);
-    if (timer < timeout) timeout = timer;
+    // The host's sleeps end on its clock tick (up to 15.6 ms late), which would put every WM_TIMER a tick behind and
+    // make the next one come too soon after it. A deadline further off than kSpinMs is waited for in a sleep that
+    // ends before it (the caller comes back with the rest); the last kSpinMs are spent polling.
+    constexpr DWORD kSpinMs = 16;
+    const bool spin = !(wait_all && count) && timer <= kSpinMs && timer < timeout;
+    const ULONGLONG spin_end = TimerNow() + timer;
+    if (timer < timeout) timeout = timer > kSpinMs ? timer - kSpinMs : timer;
     DWORD r;
     {
         UnlockScope unlock;
-        if (wait_all && count) {
+        if (spin) {
+            for (;;) {
+                r = WaitForMultipleObjectsEx(static_cast<DWORD>(hs.size()), hs.data(), FALSE, 0, alertable);
+                if (r != WAIT_TIMEOUT || TimerNow() >= spin_end) break;
+                SwitchToThread();
+            }
+        } else if (wait_all && count) {
             // MWMO_WAITALL: the handles all together, or the queue
             r = WaitForMultipleObjectsEx(count, handles, TRUE, 0, alertable);
             if (r == WAIT_TIMEOUT)
@@ -218,7 +311,7 @@ DWORD WaitForQueue(UserThread& t, DWORD count, const HANDLE* handles, DWORD time
             r = WaitForMultipleObjectsEx(static_cast<DWORD>(hs.size()), hs.data(), FALSE, timeout, alertable);
         }
         if (driver_wake && r == WAIT_OBJECT_0 + hs.size() - 1) {
-            d->ProcessEvents(QS_ALLINPUT);
+            DriverProcessEvents(d);
             r = WAIT_OBJECT_0 + count;   // treat as "the queue"
         }
     }
@@ -226,11 +319,14 @@ DWORD WaitForQueue(UserThread& t, DWORD count, const HANDLE* handles, DWORD time
 }
 
 // ---- Input -------------------------------------------------------------------------------------
+// The shape is Wine's: the sink (the driver's events, SendInput) updates the asynchronous key state and the
+// cursor and queues a hardware message on the thread that owns the window the input is for; that thread
+// finishes the job when it takes the message off its queue (ProcessMouseMessage = process_mouse_message), because
+// the hit test, the activation and WM_SETCURSOR are messages to window procedures.
 
-DWORD g_last_click_time = 0;
-POINT g_last_click_pt{};
-UINT g_last_click_msg = 0;
-HWND g_last_click_hwnd = nullptr;
+// The previous click, for double clicks (message.c: static MSG clk_msg).
+struct ClickState { UINT message; HWND hwnd; WPARAM wparam; DWORD time; POINT pt; };
+ClickState g_click{};
 
 UserThread* ForegroundThread() {
     State& s = S();
@@ -238,21 +334,67 @@ UserThread* ForegroundThread() {
     return nullptr;
 }
 
-void PostInput(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, DWORD time) {
-    WindowObj* w = Win(hwnd);
-    if (!w) return;
-    UserThread* t = FindUserThreadById(w->tid);
-    if (!t) return;
-    State& s = S();
-    QueuedMsg q;
-    q.msg = MSG{w->handle, msg, wp, lp, time, s.cursor};
+// server/queue.c update_key_state (0x80 = down; 0x01 = toggled, kept for CapsLock, NumLock and ScrollLock only)
+void UpdateKeyState(BYTE* k, BYTE vk, bool down) {
+    if (down) {
+        // only the lock keys have a toggle state
+        if (!(k[vk] & 0x80) && (vk == VK_CAPITAL || vk == VK_NUMLOCK || vk == VK_SCROLL)) k[vk] ^= 0x01;
+        k[vk] |= 0x80;
+    } else {
+        k[vk] &= static_cast<BYTE>(~0x80);
+    }
+    auto sync = [&](BYTE generic, BYTE l, BYTE r) {
+        k[generic] = static_cast<BYTE>((k[generic] & 0x01) | ((k[l] | k[r]) & 0x80));
+    };
+    if (vk == VK_LSHIFT || vk == VK_RSHIFT) sync(VK_SHIFT, VK_LSHIFT, VK_RSHIFT);
+    if (vk == VK_LCONTROL || vk == VK_RCONTROL) sync(VK_CONTROL, VK_LCONTROL, VK_RCONTROL);
+    if (vk == VK_LMENU || vk == VK_RMENU) sync(VK_MENU, VK_LMENU, VK_RMENU);
+}
+
+bool IsButtonDownMessage(UINT m) { return m == WM_LBUTTONDOWN || m == WM_RBUTTONDOWN || m == WM_MBUTTONDOWN || m == WM_XBUTTONDOWN; }
+
+// The virtual key and direction of a raw mouse button message.
+bool ButtonOfMessage(UINT m, WPARAM wp, BYTE* vk, bool* down) {
+    switch (m) {
+    case WM_LBUTTONDOWN: case WM_LBUTTONUP: *vk = VK_LBUTTON; break;
+    case WM_RBUTTONDOWN: case WM_RBUTTONUP: *vk = VK_RBUTTON; break;
+    case WM_MBUTTONDOWN: case WM_MBUTTONUP: *vk = VK_MBUTTON; break;
+    case WM_XBUTTONDOWN: case WM_XBUTTONUP: *vk = HIWORD(wp) == XBUTTON2 ? VK_XBUTTON2 : VK_XBUTTON1; break;
+    default: return false;
+    }
+    *down = IsButtonDownMessage(m);
+    return true;
+}
+
+// Wine's accept_hardware_message / update_input_key_state: the state GetKeyState sees moves when an
+// application takes the message, not when the hardware reports it.
+void UpdateInputKeyState(const QueuedMsg& q) {
+    BYTE* k = S().input_key_state;
+    if (q.raw) {
+        BYTE vk;
+        bool down;
+        if (ButtonOfMessage(q.msg.message, q.msg.wParam, &vk, &down)) UpdateKeyState(k, vk, down);
+    } else if (q.vk && q.msg.message >= WM_KEYFIRST && q.msg.message <= WM_KEYLAST) {
+        UpdateKeyState(k, q.vk, q.msg.message == WM_KEYDOWN || q.msg.message == WM_SYSKEYDOWN);
+    }
+}
+
+void QueueInput(UserThread* t, QueuedMsg q) {
     q.hardware = true;
-    // coalesce mouse moves
-    if (msg == WM_MOUSEMOVE && !t->input.empty() && t->input.back().msg.message == WM_MOUSEMOVE && t->input.back().msg.hwnd == w->handle)
-        t->input.back() = q;
-    else
-        t->input.push_back(q);
-    WakeThread(t, msg >= WM_KEYFIRST && msg <= WM_KEYLAST ? QS_KEY : msg == WM_MOUSEMOVE ? QS_MOUSEMOVE : QS_MOUSEBUTTON);
+    q.seq = ++S().input_seq;
+    DWORD bits = q.msg.message >= WM_KEYFIRST && q.msg.message <= WM_KEYLAST ? QS_KEY
+                 : q.msg.message == WM_MOUSEMOVE ? QS_MOUSEMOVE : QS_MOUSEBUTTON;
+    // moves are coalesced with the previous one for the same window (server/queue.c)
+    if (q.raw && q.msg.message == WM_MOUSEMOVE && !t->input.empty()) {
+        QueuedMsg& back = t->input.back();
+        if (back.raw && back.msg.message == WM_MOUSEMOVE && back.msg.hwnd == q.msg.hwnd) {
+            back = q;
+            WakeThread(t, bits);
+            return;
+        }
+    }
+    t->input.push_back(q);
+    WakeThread(t, bits);
 }
 
 WPARAM MouseKeyState() {
@@ -268,138 +410,335 @@ WPARAM MouseKeyState() {
     return w;
 }
 
-void KeyDown(BYTE vk, bool down) {
-    BYTE* k = S().key_state;
-    if (down) {
-        if (!(k[vk] & 0x80)) k[vk] ^= 0x01;
-        k[vk] |= 0x80;
-    } else {
-        k[vk] &= static_cast<BYTE>(~0x80);
-    }
-    auto sync = [&](BYTE generic, BYTE l, BYTE r) {
-        k[generic] = static_cast<BYTE>((k[generic] & 0x01) | ((k[l] | k[r]) & 0x80));
-    };
-    if (vk == VK_LSHIFT || vk == VK_RSHIFT) sync(VK_SHIFT, VK_LSHIFT, VK_RSHIFT);
-    if (vk == VK_LCONTROL || vk == VK_RCONTROL) sync(VK_CONTROL, VK_LCONTROL, VK_RCONTROL);
-    if (vk == VK_LMENU || vk == VK_RMENU) sync(VK_MENU, VK_LMENU, VK_RMENU);
-}
-
 // Set-1 scan codes of a US keyboard, by virtual key.
 BYTE ScanOf(UINT vk);
 UINT VkOfScan(UINT scan);
 
-void RouteInput(const winexbox::InputEvent& ev) {
+// A key event: updates the asynchronous state and queues WM_KEYDOWN / WM_KEYUP (or the SYS variants) for the
+// focus window of the foreground thread, the active window when nothing has the focus.
+void RouteKey(const winexbox::InputEvent& ev, DWORD time) {
     State& s = S();
-    const DWORD time = ev.time_ms ? ev.time_ms : Now();
-    s.last_input_time = time;
-    switch (ev.kind) {
-    case winexbox::InputKind::KeyDown:
-    case winexbox::InputKind::KeyUp: {
-        const bool down = ev.kind == winexbox::InputKind::KeyDown;
-        BYTE vk = static_cast<BYTE>(ev.vk ? ev.vk : VkOfScan(ev.scan));
-        if (vk == VK_SHIFT) vk = VK_LSHIFT;
-        if (vk == VK_CONTROL) vk = (ev.flags & winexbox::kInputExtendedKey) ? VK_RCONTROL : VK_LCONTROL;
-        if (vk == VK_MENU) vk = (ev.flags & winexbox::kInputExtendedKey) ? VK_RMENU : VK_LMENU;
-        const bool was_down = (s.key_state[vk] & 0x80) != 0;
-        KeyDown(vk, down);
-        const BYTE generic = (vk == VK_LSHIFT || vk == VK_RSHIFT) ? VK_SHIFT
-                             : (vk == VK_LCONTROL || vk == VK_RCONTROL) ? VK_CONTROL
-                             : (vk == VK_LMENU || vk == VK_RMENU) ? VK_MENU : vk;
-        const UINT scan = ev.scan ? ev.scan : ScanOf(generic);
-        const bool alt = (s.key_state[VK_MENU] & 0x80) != 0;
-        UINT msg = down ? WM_KEYDOWN : WM_KEYUP;
-        if ((alt && !(s.key_state[VK_CONTROL] & 0x80)) || generic == VK_MENU || generic == VK_F10)
-            msg = down ? WM_SYSKEYDOWN : WM_SYSKEYUP;
-        LPARAM lp = 1 | (static_cast<LPARAM>(scan & 0xff) << 16);
-        if (ev.flags & winexbox::kInputExtendedKey) lp |= 1 << 24;
-        if (alt && msg >= WM_SYSKEYDOWN) lp |= 1 << 29;
-        if (!down || was_down) lp |= 1 << 30;
-        if (!down) lp |= static_cast<LPARAM>(1u << 31);
-        UserThread* t = ForegroundThread();
-        HWND target = t ? (t->focus ? t->focus : t->active) : nullptr;
-        if (ev.target && Win(reinterpret_cast<HWND>(ev.target)) && !target) target = reinterpret_cast<HWND>(ev.target);
-        if (target) PostInput(target, msg, generic, lp, time);
-        break;
+    const bool down = ev.kind == winexbox::InputKind::KeyDown;
+    BYTE vk = static_cast<BYTE>(ev.vk ? ev.vk : VkOfScan(ev.scan));
+    if (vk == VK_SHIFT) vk = VK_LSHIFT;
+    if (vk == VK_CONTROL) vk = (ev.flags & winexbox::kInputExtendedKey) ? VK_RCONTROL : VK_LCONTROL;
+    if (vk == VK_MENU) vk = (ev.flags & winexbox::kInputExtendedKey) ? VK_RMENU : VK_LMENU;
+    const bool was_down = (s.key_state[vk] & 0x80) != 0;
+    UpdateKeyState(s.key_state, vk, down);
+    const BYTE generic = (vk == VK_LSHIFT || vk == VK_RSHIFT) ? VK_SHIFT
+                         : (vk == VK_LCONTROL || vk == VK_RCONTROL) ? VK_CONTROL
+                         : (vk == VK_LMENU || vk == VK_RMENU) ? VK_MENU : vk;
+    const UINT scan = ev.scan ? ev.scan : ScanOf(generic);
+    const bool alt = (s.key_state[VK_MENU] & 0x80) != 0;
+    UINT msg = down ? WM_KEYDOWN : WM_KEYUP;
+    if ((alt && !(s.key_state[VK_CONTROL] & 0x80)) || generic == VK_MENU || generic == VK_F10)
+        msg = down ? WM_SYSKEYDOWN : WM_SYSKEYUP;
+    LPARAM lp = 1 | (static_cast<LPARAM>(scan & 0xff) << 16);
+    if (ev.flags & winexbox::kInputExtendedKey) lp |= 1 << 24;
+    if (alt && msg >= WM_SYSKEYDOWN) lp |= 1 << 29;
+    if (!down || was_down) lp |= 1 << 30;
+    if (!down) lp |= static_cast<LPARAM>(1u << 31);
+    UserThread* t = ForegroundThread();
+    HWND target = nullptr;
+    if (t) {
+        if (Win(t->focus)) target = t->focus;
+        else if (Win(t->active)) {
+            target = t->active;
+            if (msg < WM_SYSKEYDOWN) msg += WM_SYSKEYDOWN - WM_KEYDOWN;   // a key with nothing focused is a system key
+        }
     }
+    if (!target) {
+        TRACE(user, "key %02x %s dropped: no focus or active window", vk, down ? "down" : "up");
+        return;
+    }
+    QueuedMsg q;
+    q.msg = MSG{target, msg, generic, lp, time, s.cursor};
+    q.vk = vk;
+    QueueInput(t, q);
+}
+
+// A pointer event: moves the cursor and queues the raw message for the thread that owns the window under it
+// (or the capture window). `from_guest`: SendInput, which also has to tell the driver where the cursor is.
+void RouteMouse(const winexbox::InputEvent& ev, DWORD time, bool from_guest) {
+    State& s = S();
+    const bool move = ev.kind == winexbox::InputKind::MouseMove;
+    // Buttons and the wheel carry the position they happened at; (0,0) means "where the cursor is".
+    if (move || ev.x || ev.y) {
+        s.cursor = POINT{ev.x, ev.y};
+        if (from_guest)
+            if (winexbox::IWinexboxDriver* d = Driver()) {
+                d->CursorSetPos(ev.x, ev.y);
+                winexbox::Point p{};
+                if (d->CursorGetPos(&p)) s.cursor = POINT{p.x, p.y};   // the driver clamps to the screen / clip rectangle
+            }
+    }
+    const POINT pt = s.cursor;
+    QueuedMsg q;
+    q.raw = true;
+    q.msg = MSG{nullptr, 0, 0, 0, time, pt};
+    switch (ev.kind) {
     case winexbox::InputKind::MouseMove:
-    case winexbox::InputKind::MouseButtonDown:
-    case winexbox::InputKind::MouseButtonUp:
-    case winexbox::InputKind::MouseWheel: {
-        if (ev.kind == winexbox::InputKind::MouseMove || ev.x || ev.y) s.cursor = POINT{ev.x, ev.y};
-        const POINT pt = s.cursor;
-        HWND target = nullptr;
-        for (UserThread* t : s.threads)
-            if (t->capture && Win(t->capture)) { target = t->capture; break; }
-        const bool captured = target != nullptr;
-        if (!target) target = WindowFromScreenPoint(pt);
-        WindowObj* w = Win(target);
-        if (!w || (w->flags & kWinIsDesktop)) break;
-        const POINT o = ClientOriginScreen(w);
-        const LPARAM client = MAKELPARAM(static_cast<WORD>(pt.x - o.x), static_cast<WORD>(pt.y - o.y));
-        const bool in_client = captured || PtInRectangle(ClientRectScreen(w), pt.x, pt.y);
-        if (ev.kind == winexbox::InputKind::MouseWheel) {
-            UserThread* t = ForegroundThread();
-            HWND f = t && t->focus ? t->focus : target;
-            const UINT m = (ev.flags & winexbox::kInputHorizontal) ? WM_MOUSEHWHEEL : WM_MOUSEWHEEL;
-            PostInput(f, m, MAKEWPARAM(static_cast<WORD>(MouseKeyState()), static_cast<WORD>(ev.wheel_delta)),
-                      MAKELPARAM(static_cast<WORD>(pt.x), static_cast<WORD>(pt.y)), time);
-            break;
-        }
-        if (ev.kind == winexbox::InputKind::MouseMove) {
-            if (in_client) PostInput(target, WM_MOUSEMOVE, MouseKeyState(), client, time);
-            else PostInput(target, WM_NCMOUSEMOVE, HTCAPTION, MAKELPARAM(static_cast<WORD>(pt.x), static_cast<WORD>(pt.y)), time);
-            break;
-        }
+        q.msg.message = WM_MOUSEMOVE;
+        q.msg.wParam = MouseKeyState();
+        break;
+    case winexbox::InputKind::MouseWheel:
+        q.msg.message = (ev.flags & winexbox::kInputHorizontal) ? WM_MOUSEHWHEEL : WM_MOUSEWHEEL;
+        q.msg.wParam = MAKEWPARAM(static_cast<WORD>(MouseKeyState()), static_cast<WORD>(ev.wheel_delta));
+        break;
+    default: {
         const bool down = ev.kind == winexbox::InputKind::MouseButtonDown;
-        UINT msg = 0;
         BYTE vk = 0;
         WPARAM extra = 0;
         switch (ev.button) {
-        case winexbox::MouseButton::Left: msg = down ? WM_LBUTTONDOWN : WM_LBUTTONUP; vk = VK_LBUTTON; break;
-        case winexbox::MouseButton::Right: msg = down ? WM_RBUTTONDOWN : WM_RBUTTONUP; vk = VK_RBUTTON; break;
-        case winexbox::MouseButton::Middle: msg = down ? WM_MBUTTONDOWN : WM_MBUTTONUP; vk = VK_MBUTTON; break;
-        case winexbox::MouseButton::X1: msg = down ? WM_XBUTTONDOWN : WM_XBUTTONUP; vk = VK_XBUTTON1; extra = XBUTTON1; break;
-        case winexbox::MouseButton::X2: msg = down ? WM_XBUTTONDOWN : WM_XBUTTONUP; vk = VK_XBUTTON2; extra = XBUTTON2; break;
+        case winexbox::MouseButton::Left: q.msg.message = down ? WM_LBUTTONDOWN : WM_LBUTTONUP; vk = VK_LBUTTON; break;
+        case winexbox::MouseButton::Right: q.msg.message = down ? WM_RBUTTONDOWN : WM_RBUTTONUP; vk = VK_RBUTTON; break;
+        case winexbox::MouseButton::Middle: q.msg.message = down ? WM_MBUTTONDOWN : WM_MBUTTONUP; vk = VK_MBUTTON; break;
+        case winexbox::MouseButton::X1: q.msg.message = down ? WM_XBUTTONDOWN : WM_XBUTTONUP; vk = VK_XBUTTON1; extra = XBUTTON1; break;
+        case winexbox::MouseButton::X2: q.msg.message = down ? WM_XBUTTONDOWN : WM_XBUTTONUP; vk = VK_XBUTTON2; extra = XBUTTON2; break;
         }
-        KeyDown(vk, down);
-        if (down) {
-            // activation of an inactive top-level window by a click
-            HWND top = TopLevelOf(target);
-            if (WindowObj* tw = Win(top); tw && s.foreground != top && !(tw->ex_style & WS_EX_NOACTIVATE)) {
-                if (UserThread* tt = FindUserThreadById(tw->tid)) {
-                    // activation runs on the window's thread: a private WM_NULL asks it to (see GetMessage)
-                    s.foreground = top;
-                    PostThreadMessageInternal(tt, top, WM_NULL, 0x57A1, reinterpret_cast<LPARAM>(top));
-                }
-            }
-            // double clicks
-            if ((w->cls->style & CS_DBLCLKS) && msg == g_last_click_msg && target == g_last_click_hwnd &&
-                time - g_last_click_time <= 500 && std::abs(pt.x - g_last_click_pt.x) <= SystemMetric(SM_CXDOUBLECLK) / 2 &&
-                std::abs(pt.y - g_last_click_pt.y) <= SystemMetric(SM_CYDOUBLECLK) / 2) {
-                msg += WM_LBUTTONDBLCLK - WM_LBUTTONDOWN;
-                g_last_click_msg = 0;
-            } else {
-                g_last_click_msg = msg;
-                g_last_click_time = time;
-                g_last_click_pt = pt;
-                g_last_click_hwnd = target;
-            }
-        }
-        const WPARAM wp = MouseKeyState() | (extra << 16);
-        if (in_client) PostInput(target, msg, wp, client, time);
-        else PostInput(target, msg + (WM_NCLBUTTONDOWN - WM_LBUTTONDOWN), HTCAPTION,
-                       MAKELPARAM(static_cast<WORD>(pt.x), static_cast<WORD>(pt.y)), time);
+        UpdateKeyState(s.key_state, vk, down);
+        q.msg.wParam = MouseKeyState() | (extra << 16);
         break;
     }
     }
+    // Who gets it: the capture window, else the top-level window at the point; the thread is the one of the
+    // deepest child there (server/queue.c find_hardware_message_window).
+    HWND scope = nullptr;
+    UserThread* target = nullptr;
+    for (UserThread* t : s.threads)
+        if (Win(t->capture)) {
+            scope = t->capture;
+            target = t;
+            break;
+        }
+    if (!scope) {
+        scope = ShallowWindowFromPoint(pt);
+        std::vector<HWND> list;
+        WindowsFromPoint(scope, pt, &list);
+        if (WindowObj* deepest = Win(list.empty() ? scope : list.front())) target = FindUserThreadById(deepest->tid);
+    }
+    WindowObj* sw = Win(scope);
+    if (!sw || (sw->flags & kWinIsDesktop) || !target) {
+        TRACE(user, "mouse message %04x at %ld,%ld dropped: no window of ours under the cursor", q.msg.message, pt.x, pt.y);
+        return;
+    }
+    q.msg.hwnd = sw->handle;
+    QueueInput(target, q);
+}
+
+void RouteInput(const winexbox::InputEvent& ev, DWORD time, bool from_guest) {
+    State& s = S();
+    s.last_input_time = time;
+    switch (ev.kind) {
+    case winexbox::InputKind::KeyDown:
+    case winexbox::InputKind::KeyUp:
+        RouteKey(ev, time);
+        break;
+    default:
+        RouteMouse(ev, time, from_guest);
+        break;
+    }
+}
+
+// Removes `q` from the queue of `t` and moves the keyboard state it carries (Wine: accept_hardware_message).
+void AcceptInput(UserThread& t, const QueuedMsg& q) {
+    for (auto it = t.input.begin(); it != t.input.end(); ++it)
+        if (it->seq == q.seq) {
+            t.input.erase(it);
+            break;
+        }
+    UpdateInputKeyState(q);
+}
+
+// message.c window_from_point with send_nchittest: the window at `pt` below `scope`, asking the windows of this
+// thread (WM_NCHITTEST) from the front; HTTRANSPARENT passes the point on to the next window behind.
+HWND WindowFromPointHit(UserThread& t, HWND scope, POINT pt, int* hittest) {
+    *hittest = HTNOWHERE;
+    std::vector<HWND> list;
+    WindowsFromPoint(scope, pt, &list);
+    for (HWND h : list) {
+        WindowObj* w = Win(h);
+        if (!w) continue;   // destroyed by an earlier window's procedure
+        if (w->style & WS_DISABLED) {
+            *hittest = HTERROR;
+            return h;
+        }
+        if (w->tid != t.tid) {
+            *hittest = HTCLIENT;
+            return h;
+        }
+        const int res = static_cast<int>(SendMessageInternal(h, WM_NCHITTEST, 0, MAKELPARAM(static_cast<WORD>(pt.x), static_cast<WORD>(pt.y))));
+        if (res != HTTRANSPARENT) {
+            *hittest = res;
+            return h;
+        }
+    }
+    return nullptr;
+}
+
+// message.c send_parent_notify
+void SendParentNotify(HWND hwnd, WORD event, POINT screen_pt) {
+    for (;;) {
+        WindowObj* w = Win(hwnd);
+        if (!w || !(w->style & WS_CHILD) || (w->ex_style & WS_EX_NOPARENTNOTIFY)) break;
+        WindowObj* parent = Win(w->parent);
+        if (!parent || (parent->flags & kWinIsDesktop)) break;
+        const POINT o = ClientOriginScreen(parent);
+        hwnd = parent->handle;
+        SendMessageInternal(hwnd, WM_PARENTNOTIFY, MAKEWPARAM(event, 0),
+                            MAKELPARAM(static_cast<WORD>(screen_pt.x - o.x), static_cast<WORD>(screen_pt.y - o.y)));
+    }
+}
+
+// message.c process_mouse_message, run by the thread taking `raw` off its queue (lock held, dropped while window
+// procedures run). Deliver: *out is the message the application gets. Consumed: it is gone from the queue and
+// nothing is delivered. Skip: the filter does not want it; it stays queued.
+HwStatus ProcessMouseMessage(UserThread& t, const QueuedMsg& raw, MSG* out, HWND hwnd_filter, UINT first, UINT last,
+                             bool remove) {
+    MSG msg = raw.msg;
+    const QueuedMsg copy = raw;
+    bool accepted = false;
+    auto accept = [&] {
+        if (accepted) return;
+        accepted = true;
+        AcceptInput(t, copy);
+    };
+
+    // find the window to dispatch this mouse message to
+    const bool captured = Win(t.capture) != nullptr;
+    int hittest = HTCLIENT;
+    HWND hwnd;
+    if (captured) {
+        hwnd = t.capture;
+    } else {
+        hwnd = WindowFromPointHit(t, Win(msg.hwnd) ? msg.hwnd : DesktopWindow(), msg.pt, &hittest);
+    }
+    WindowObj* w = Win(hwnd);
+    if (!w || w->tid != t.tid) {
+        TRACE(user, "mouse message %04x at %ld,%ld: no window of this thread there, dropped", msg.message, msg.pt.x, msg.pt.y);
+        accept();
+        return HwStatus::Consumed;
+    }
+    msg.hwnd = hwnd = w->handle;
+    if (!WindowMatches(hwnd_filter, hwnd)) return HwStatus::Skip;
+
+    const UINT base = msg.message;
+    UINT message = base;
+    WPARAM wparam = msg.wParam;
+    POINT pt = msg.pt;
+    // windows has no concept of a non-client wheel message
+    if (base != WM_MOUSEWHEEL && base != WM_MOUSEHWHEEL) {
+        if (hittest != HTCLIENT) {
+            message += WM_NCMOUSEMOVE - WM_MOUSEMOVE;
+            wparam = static_cast<WPARAM>(hittest);
+        } else {
+            const POINT o = ClientOriginScreen(w);
+            pt.x -= o.x;
+            pt.y -= o.y;
+        }
+    }
+    const LPARAM lparam = MAKELPARAM(static_cast<WORD>(pt.x), static_cast<WORD>(pt.y));
+
+    // translate double clicks (note that moves can slip in between the down and the double click)
+    if (IsButtonDownMessage(base)) {
+        bool update = remove;
+        if (hittest != HTCLIENT || (w->cls && (w->cls->style & CS_DBLCLKS))) {
+            if (base == g_click.message && hwnd == g_click.hwnd && msg.wParam == g_click.wparam &&
+                msg.time - g_click.time < sys::NtUserGetDoubleClickTime() &&
+                std::abs(msg.pt.x - g_click.pt.x) < SystemMetric(SM_CXDOUBLECLK) / 2 &&
+                std::abs(msg.pt.y - g_click.pt.y) < SystemMetric(SM_CYDOUBLECLK) / 2) {
+                message += WM_LBUTTONDBLCLK - WM_LBUTTONDOWN;
+                if (update) {
+                    g_click.message = 0;   // clear the double click conditions
+                    update = false;
+                }
+            }
+        }
+        if (!MessageInRange(message, first, last)) return HwStatus::Skip;
+        if (update) g_click = ClickState{base, hwnd, msg.wParam, msg.time, msg.pt};
+    } else if (!MessageInRange(message, first, last)) {
+        return HwStatus::Skip;
+    }
+
+    if (IsHooked(WH_MOUSE)) {
+        // message.c: MOUSEHOOKSTRUCTEX, the point in screen coordinates, before anything else happens to the message
+        MOUSEHOOKSTRUCTEX hook{};
+        hook.pt = msg.pt;
+        hook.hwnd = hwnd;
+        hook.wHitTestCode = static_cast<UINT>(hittest);
+        hook.dwExtraInfo = raw.extra;
+        hook.mouseData = static_cast<DWORD>(wparam) & 0xffff0000u;
+        if (CallHooks(WH_MOUSE, remove ? HC_ACTION : HC_NOREMOVE, message, reinterpret_cast<LPARAM>(&hook), sizeof hook)) {
+            accept();
+            return HwStatus::Consumed;
+        }
+    }
+
+    if (hittest == HTERROR || hittest == HTNOWHERE) {
+        SendMessageInternal(hwnd, WM_SETCURSOR, reinterpret_cast<WPARAM>(hwnd), MAKELONG(static_cast<WORD>(hittest), base));
+        accept();
+        return HwStatus::Consumed;
+    }
+
+    if (remove) accept();
+
+    auto result = [&] {
+        msg.message = message;
+        msg.wParam = wparam;
+        msg.lParam = lparam;
+        *out = msg;
+    };
+    if (!remove || captured) {
+        result();
+        return HwStatus::Deliver;
+    }
+
+    bool eat = false;
+    if (IsButtonDownMessage(base)) {
+        SendParentNotify(hwnd, static_cast<WORD>(base), msg.pt);
+        // activate the window if needed
+        if (Win(hwnd) && hwnd != t.active) {
+            const HWND top = TopLevelOf(hwnd);
+            WindowObj* tw = Win(top);
+            if (tw && (tw->style & (WS_POPUP | WS_CHILD)) != WS_CHILD) {
+                const LRESULT ret = SendMessageInternal(hwnd, WM_MOUSEACTIVATE, reinterpret_cast<WPARAM>(top),
+                                                        MAKELONG(static_cast<WORD>(hittest), base));
+                switch (ret) {
+                case MA_NOACTIVATEANDEAT:
+                    eat = true;
+                    break;
+                case MA_NOACTIVATE:
+                    break;
+                case MA_ACTIVATEANDEAT:
+                    eat = true;
+                    [[fallthrough]];
+                case MA_ACTIVATE:
+                case 0:
+                    if (!SetActiveWindowInternal(top, true)) eat = true;
+                    break;
+                default:
+                    WARN(user, "unknown WM_MOUSEACTIVATE code %lld", static_cast<long long>(ret));
+                    break;
+                }
+            }
+        }
+    }
+    // Windows sends the normal mouse message as the message parameter of WM_SETCURSOR even for non-client messages
+    if (Win(hwnd)) SendMessageInternal(hwnd, WM_SETCURSOR, reinterpret_cast<WPARAM>(hwnd), MAKELONG(static_cast<WORD>(hittest), base));
+    result();
+    return eat ? HwStatus::Consumed : HwStatus::Deliver;
 }
 
 class Sink final : public winexbox::IEventSink {
 public:
+    // Driver events carry the host's clock; the message time is the layer's tick count (what GetTickCount shows).
     void OnInput(const winexbox::InputEvent& ev) override {
         LockGuard lock;
-        if (!StateIfAny()) return;
-        RouteInput(ev);
+        if (!StateIfAny()) {
+            TRACE(user, "input event %d dropped: no window was ever created", static_cast<int>(ev.kind));
+            return;
+        }
+        RouteInput(ev, Now(), false);
     }
     void OnWindowEvent(winexbox::WindowId hwnd, WindowEvent ev, const winexbox::Rect&) override {
         LockGuard lock;
@@ -484,8 +823,6 @@ int CharOf(UINT vk, const BYTE* state) {
 
 winexbox::IEventSink* SinkObject() { return &g_sink; }
 
-void InstallEventSink() {}
-
 void WakeThread(UserThread* t, DWORD qs_bits) {
     if (!t) return;
     t->changed_bits |= qs_bits;
@@ -537,7 +874,7 @@ LRESULT SendMessageInternal(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, bool ansi
     }
     hwnd = w->handle;
     if (w->tid == GetCurrentThreadId() || (w->flags & (kWinIsDesktop | kWinIsMsgParent)))
-        return CallWindowProcInternal(hwnd, msg, wp, lp, ansi);
+        return CallWindowProcHooked(hwnd, msg, wp, lp, ansi, true);
     UserThread* target = FindUserThreadById(w->tid);
     if (!target || target->exiting) return 0;
     auto* m = new SentMsg{hwnd, msg, wp, lp, ansi};
@@ -612,8 +949,6 @@ BOOL WINAPI NtUserPeekMessage(MSG* msg, HWND hwnd, UINT first, UINT last, UINT f
         return FALSE;
     }
     if (msg) *msg = m;
-    if (m.message == WM_NULL && m.wParam == 0x57A1 && (flags & PM_REMOVE))
-        SetActiveWindowInternal(reinterpret_cast<HWND>(m.lParam), true);
     return TRUE;
 }
 
@@ -632,7 +967,6 @@ BOOL WINAPI NtUserGetMessage(MSG* msg, HWND hwnd, UINT first, UINT last) {
         WaitForQueue(t, 0, nullptr, INFINITE, false, false);
     }
     if (msg) *msg = m;
-    if (m.message == WM_NULL && m.wParam == 0x57A1) SetActiveWindowInternal(reinterpret_cast<HWND>(m.lParam), true);
     return m.message != WM_QUIT;
 }
 
@@ -669,11 +1003,9 @@ LRESULT WINAPI NtUserMessageCall(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
     case abi::McDesktopWindowProc:
         return DefWindowProcInternal(hwnd, msg, wparam, lparam, ansi != 0);
     case abi::McScrollBarWndProc:
-    case abi::McPopupMenuWndProc: {
-        static volatile LONG reported = 0;   // plain flag
-        if (!InterlockedExchange(&reported, 1)) FIXME(user, "scroll bar / popup menu window procedures are not implemented");
-        return DefWindowProcInternal(hwnd, msg, wparam, lparam, ansi != 0);
-    }
+        return ScrollBarWndProcInternal(hwnd, msg, wparam, lparam, ansi != 0);   // win_scroll.cpp
+    case abi::McPopupMenuWndProc:
+        return MenuPopupWndProc(hwnd, msg, wparam, lparam, ansi != 0);   // win_menu.cpp
     case abi::McCallWindowProc: {
         auto* p = static_cast<abi::WinProcParams*>(result_info);
         if (!p || !p->func) return FALSE;
@@ -810,7 +1142,7 @@ BOOL WINAPI NtUserTranslateMessage(const MSG* msg, UINT flags) {
     (void)flags;
     if (!msg || msg->message < WM_KEYFIRST || msg->message > WM_KEYLAST) return FALSE;
     if (msg->message != WM_KEYDOWN && msg->message != WM_SYSKEYDOWN) return TRUE;
-    const int ch = CharOf(static_cast<UINT>(msg->wParam), S().key_state);
+    const int ch = CharOf(static_cast<UINT>(msg->wParam), S().input_key_state);
     if (ch) PostMessageInternal(msg->hwnd, msg->message == WM_KEYDOWN ? WM_CHAR : WM_SYSCHAR, static_cast<WPARAM>(ch), msg->lParam);
     return TRUE;
 }
@@ -840,7 +1172,7 @@ UINT_PTR WINAPI NtUserSetTimer(HWND hwnd, UINT_PTR id, UINT timeout, TIMERPROC p
     for (Timer& tm : t->timers)
         if (tm.hwnd == hwnd && tm.id == id && tm.msg == WM_TIMER) {
             tm.timeout = timeout;
-            tm.next = GetTickCount64() + timeout;
+            tm.next = TimerNow() + timeout;
             tm.proc = proc;
             WakeThread(t, 0);
             return id ? id : 1;
@@ -850,7 +1182,7 @@ UINT_PTR WINAPI NtUserSetTimer(HWND hwnd, UINT_PTR id, UINT timeout, TIMERPROC p
     tm.id = id;
     tm.msg = WM_TIMER;
     tm.timeout = timeout;
-    tm.next = GetTickCount64() + timeout;
+    tm.next = TimerNow() + timeout;
     tm.proc = proc;
     t->timers.push_back(tm);
     WakeThread(t, 0);   // a thread blocked in GetMessage recomputes its deadline
@@ -890,7 +1222,7 @@ UINT_PTR WINAPI NtUserSetSystemTimer(HWND hwnd, UINT_PTR id, UINT timeout) {
     for (Timer& tm : t->timers)
         if (tm.hwnd == w->handle && tm.id == id && tm.msg == abi::kWmSysTimer) {
             tm.timeout = timeout;
-            tm.next = GetTickCount64() + timeout;
+            tm.next = TimerNow() + timeout;
             return id;
         }
     Timer tm;
@@ -898,7 +1230,7 @@ UINT_PTR WINAPI NtUserSetSystemTimer(HWND hwnd, UINT_PTR id, UINT timeout) {
     tm.id = id;
     tm.msg = abi::kWmSysTimer;
     tm.timeout = timeout;
-    tm.next = GetTickCount64() + timeout;
+    tm.next = TimerNow() + timeout;
     t->timers.push_back(tm);
     WakeThread(t, 0);
     return id;
@@ -907,6 +1239,7 @@ UINT_PTR WINAPI NtUserSetSystemTimer(HWND hwnd, UINT_PTR id, UINT timeout) {
 BOOL WINAPI NtUserKillSystemTimer(HWND hwnd, UINT_PTR id) { return KillTimerImpl(hwnd, id, abi::kWmSysTimer); }
 
 ULONG_PTR WINAPI NtUserGetThreadState(int cls) {
+    if (cls == abi::TsInputState) PumpDriver();
     LockGuard lock;
     UserThread& t = CurrentUserThread();
     switch (cls) {
@@ -915,7 +1248,7 @@ ULONG_PTR WINAPI NtUserGetThreadState(int cls) {
     case abi::TsCaptureWindow: return reinterpret_cast<ULONG_PTR>(Win(t.capture) ? t.capture : nullptr);
     case abi::TsDefaultImeWindow:
     case abi::TsDefaultInputContext: return 0;
-    case abi::TsInputState: return (QueueBits(t) & QS_INPUT) != 0;
+    case abi::TsInputState: return QueueBits(t) & (QS_KEY | QS_MOUSEBUTTON);
     case abi::TsCursor: return winexbox::CursorId{} + (Driver() ? Driver()->CursorCurrent() : 0);
     case abi::TsExtraInfo: return t.info ? static_cast<ULONG_PTR>(t.info->message_extra) : 0;
     case abi::TsInSendMessage: return t.send_depth ? ISMEX_SEND : ISMEX_NOSEND;
@@ -987,14 +1320,17 @@ DWORD WINAPI NtUserWaitForInputIdle(HANDLE process, DWORD timeout, BOOL wow) {
     return 0;   // every GUI thread of this process waits for input as soon as it pumps
 }
 
+// GetKeyState and GetKeyboardState report the state as of the last input message the application took off its
+// queue (a handler for WM_KEYDOWN sees that key down), GetAsyncKeyState the hardware's.
 SHORT WINAPI NtUserGetKeyState(INT vkey) {
     LockGuard lock;
     if (vkey < 0 || vkey > 255) return 0;
-    const BYTE k = S().key_state[vkey];
+    const BYTE k = S().input_key_state[vkey];
     return static_cast<SHORT>(((k & 0x80) ? 0xff80 : 0) | (k & 0x01));
 }
 
 SHORT WINAPI NtUserGetAsyncKeyState(INT key) {
+    PumpDriver();
     LockGuard lock;
     if (key < 0 || key > 255) return 0;
     return (S().key_state[key] & 0x80) ? static_cast<SHORT>(0x8000) : 0;
@@ -1003,14 +1339,14 @@ SHORT WINAPI NtUserGetAsyncKeyState(INT key) {
 BOOL WINAPI NtUserGetKeyboardState(BYTE* state) {
     LockGuard lock;
     if (!state) return FALSE;
-    std::memcpy(state, S().key_state, 256);
+    std::memcpy(state, S().input_key_state, 256);
     return TRUE;
 }
 
 BOOL WINAPI NtUserSetKeyboardState(BYTE* state) {
     LockGuard lock;
     if (!state) return FALSE;
-    std::memcpy(S().key_state, state, 256);
+    std::memcpy(S().input_key_state, state, 256);
     return TRUE;
 }
 
@@ -1103,10 +1439,17 @@ UINT WINAPI NtUserMapVirtualKeyEx(UINT code, UINT type, HKL layout) {
     case MAPVK_VSC_TO_VK:
     case MAPVK_VSC_TO_VK_EX: {
         const UINT vk = VkOfScan(code);
-        if (type == MAPVK_VSC_TO_VK && (vk == VK_LSHIFT || vk == VK_RSHIFT)) return VK_SHIFT;
-        if (type == MAPVK_VSC_TO_VK && (vk == VK_LCONTROL || vk == VK_RCONTROL)) return VK_CONTROL;
-        if (type == MAPVK_VSC_TO_VK && (vk == VK_LMENU || vk == VK_RMENU)) return VK_MENU;
-        return vk == VK_SHIFT ? VK_LSHIFT : vk;
+        if (type == MAPVK_VSC_TO_VK) {   // the side-less key
+            if (vk == VK_LSHIFT || vk == VK_RSHIFT) return VK_SHIFT;
+            if (vk == VK_LCONTROL || vk == VK_RCONTROL) return VK_CONTROL;
+            if (vk == VK_LMENU || vk == VK_RMENU) return VK_MENU;
+            return vk;
+        }
+        // _EX: the table holds the side-less keys for the shared scan codes, the left one is the answer
+        if (vk == VK_SHIFT) return VK_LSHIFT;
+        if (vk == VK_CONTROL) return VK_LCONTROL;
+        if (vk == VK_MENU) return VK_LMENU;
+        return vk;
     }
     case MAPVK_VK_TO_CHAR: {
         const KeyMap* k = KeyByVk(code);
@@ -1171,15 +1514,24 @@ UINT WINAPI NtUserSendInput(UINT count, INPUT* inputs, int size) {
         return 0;
     }
     State& s = S();
+    RECT screen;
+    ScreenRect(&screen);
     for (UINT i = 0; i < count; ++i) {
         const INPUT& in = inputs[i];
         winexbox::InputEvent ev;
         if (in.type == INPUT_KEYBOARD) {
+            const DWORD time = in.ki.time ? in.ki.time : Now();
             if (in.ki.dwFlags & KEYEVENTF_UNICODE) {
                 if (!(in.ki.dwFlags & KEYEVENTF_KEYUP)) {
                     UserThread* t = ForegroundThread();
-                    HWND f = t ? (t->focus ? t->focus : t->active) : nullptr;
-                    if (f) PostInput(f, WM_CHAR, in.ki.wScan, 1, Now());
+                    HWND f = t ? (Win(t->focus) ? t->focus : t->active) : nullptr;
+                    if (Win(f)) {
+                        QueuedMsg q;
+                        q.msg = MSG{f, WM_CHAR, in.ki.wScan, 1, time, s.cursor};
+                        QueueInput(t, q);
+                    } else {
+                        TRACE(user, "SendInput: unicode character %04x dropped: no focus or active window", in.ki.wScan);
+                    }
                 }
                 continue;
             }
@@ -1187,36 +1539,39 @@ UINT WINAPI NtUserSendInput(UINT count, INPUT* inputs, int size) {
             ev.vk = in.ki.wVk;
             ev.scan = in.ki.wScan;
             ev.flags = (in.ki.dwFlags & KEYEVENTF_EXTENDEDKEY) ? winexbox::kInputExtendedKey : 0;
-            ev.time_ms = in.ki.time;
-            RouteInput(ev);
+            RouteInput(ev, time, true);
         } else if (in.type == INPUT_MOUSE) {
             const DWORD f = in.mi.dwFlags;
+            const DWORD time = in.mi.time ? in.mi.time : Now();
             POINT p = s.cursor;
             if (f & MOUSEEVENTF_MOVE) {
                 if (f & MOUSEEVENTF_ABSOLUTE) {
-                    p.x = static_cast<LONG>(static_cast<long long>(in.mi.dx) * s.screen_w / 65536);
-                    p.y = static_cast<LONG>(static_cast<long long>(in.mi.dy) * s.screen_h / 65536);
+                    p.x = static_cast<LONG>(static_cast<long long>(in.mi.dx) * (screen.right - screen.left) / 65536) + screen.left;
+                    p.y = static_cast<LONG>(static_cast<long long>(in.mi.dy) * (screen.bottom - screen.top) / 65536) + screen.top;
                 } else {
                     p.x += in.mi.dx;
                     p.y += in.mi.dy;
                 }
                 ev.kind = winexbox::InputKind::MouseMove;
                 ev.x = p.x; ev.y = p.y;
-                RouteInput(ev);
+                RouteInput(ev, time, true);
+                p = s.cursor;
             }
             ev.x = p.x; ev.y = p.y;
             auto button = [&](DWORD down_flag, DWORD up_flag, winexbox::MouseButton b) {
-                if (f & down_flag) { ev.kind = winexbox::InputKind::MouseButtonDown; ev.button = b; RouteInput(ev); }
-                if (f & up_flag) { ev.kind = winexbox::InputKind::MouseButtonUp; ev.button = b; RouteInput(ev); }
+                if (f & down_flag) { ev.kind = winexbox::InputKind::MouseButtonDown; ev.button = b; RouteInput(ev, time, true); }
+                if (f & up_flag) { ev.kind = winexbox::InputKind::MouseButtonUp; ev.button = b; RouteInput(ev, time, true); }
             };
             button(MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, winexbox::MouseButton::Left);
             button(MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, winexbox::MouseButton::Right);
             button(MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, winexbox::MouseButton::Middle);
-            if (f & MOUSEEVENTF_WHEEL) {
+            button(MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP,
+                   in.mi.mouseData == XBUTTON2 ? winexbox::MouseButton::X2 : winexbox::MouseButton::X1);
+            if (f & (MOUSEEVENTF_WHEEL | MOUSEEVENTF_HWHEEL)) {
                 ev.kind = winexbox::InputKind::MouseWheel;
                 ev.wheel_delta = static_cast<std::int32_t>(static_cast<int>(in.mi.mouseData));
-                ev.flags = 0;
-                RouteInput(ev);
+                ev.flags = (f & MOUSEEVENTF_HWHEEL) ? winexbox::kInputHorizontal : 0;
+                RouteInput(ev, time, true);
             }
         } else {
             FIXME(user, "SendInput type %lu", in.type);
@@ -1302,10 +1657,6 @@ BOOL WINAPI NtUserGetCaretPos(POINT* point) {
 }
 
 UINT WINAPI NtUserGetCaretBlinkTime() { return 530; }
-
-HWND WINAPI NtUserGetOpenClipboardWindow() {
-    return nullptr;   // nobody can open the clipboard (NtUserOpenClipboard is Todo)
-}
 
 }  // namespace sys
 }  // namespace win10xbox::user

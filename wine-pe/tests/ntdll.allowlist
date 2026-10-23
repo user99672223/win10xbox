@@ -1,0 +1,18 @@
+# Wine ntdll conformance units that must pass through the layer with 0 failures
+# (tests/winetest/run_ntdll.cmake, ctest integration.winetest_ntdll on the Windows
+# jobs; docs/slices/wt-ntdll.md has the rest, with the failing assertion lines).
+#
+#   <unit> <minimum number of assertions executed>
+#
+# A listed unit fails the test when it does not print Wine's summary line (crash or
+# timeout), has any failure, or executes fewer assertions than the floor (a unit
+# that silently stops early must not pass). Floors are about half of what a unit
+# executes today. Add a unit here when it passes; never remove one. (rtlstr, change and
+# time are not here: docs/slices/wt-ntdll.md and docs/slices/probe.md say why.)
+alpc       700
+env        300
+error      700
+large_int  300
+path       500
+rtlbitmap  200
+string     1000000

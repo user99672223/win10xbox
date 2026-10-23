@@ -182,17 +182,59 @@ jobs:
           # Every guest the package is meant to carry to the console (host-uwp/CMakeLists.txt
           # HOST_UWP_GUESTS), and the packaged default launch.json naming the GUI guest.
           $expected = @('window.exe', 'hello.exe', 'hello_cui.exe', 'guest_hello.exe', 'guest_cpuid.exe',
-                        'guest_sleep.exe', 'guest_dll.dll', 'smoke_cui.exe', 'drv_client.exe')
+                        'guest_sleep.exe', 'guest_dll.dll', 'smoke_cui.exe', 'drv_client.exe',
+                        'guest_window2.exe', 'guest_window_input.exe', 'guest_window_input2.exe',
+                        'guest_window_scroll.exe', 'guest_window_text.exe', 'guest_window_hooks.exe', 'guest_window_nc.exe', 'smoke.exe',
+                        'guest_spawn.exe', 'guest_dialog.exe', 'guest_comctl.exe', 'guest_clipboard.exe',
+                        'guest_seh.exe', 'guest_seh_dll.dll', 'guest_gdi_bitmap.exe', 'guest_window_menu.exe', 'guest_xinput.exe')
           $missing = @($expected | Where-Object { -not (Test-Path "$stage/payload/guest/$_") })
           Write-Host ("bundled guests: " + (@(Get-ChildItem "$stage/payload/guest" -File | ForEach-Object { $_.Name }) -join ', '))
           if ($missing.Count -gt 0) {
             Write-Host "::error::the package is missing bundled guest(s): $($missing -join ', ')"
             exit 1
           }
+          # Our own builtin DLLs (guest-dlls/): the XInput DLL under its three names.
+          $ownDlls = @('xinput1_4.dll', 'xinput1_3.dll', 'xinput9_1_0.dll')
+          $missingDlls = @($ownDlls | Where-Object { -not (Test-Path "$stage/payload/builtin/$_") })
+          if ($missingDlls.Count -gt 0) {
+            Write-Host "::error::the package is missing builtin DLL(s) of our own: $($missingDlls -join ', ')"
+            exit 1
+          }
           if (-not (Select-String -Path "$stage/payload/launch.json" -Pattern '"guest": "window.exe"' -Quiet)) {
             Write-Host "::error::payload/launch.json in the package does not run window.exe"
             exit 1
           }
+
+      # Package contents: list what makeappx actually put in the .msix, check every guest of
+      # payload/guests.txt (and every tests/guest/*.c) is in it, report sizes, and keep the package
+      # under the console sideload budget (Dev Mode installs; 2 GB hard cap, we fail above 500 MB).
+      - name: Verify package contents + size report
+        if: ${{ !cancelled() && hashFiles('build-uwp/AppPackages/*.msix') != '' }}
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $msix = Get-ChildItem build-uwp/AppPackages -Filter *.msix | Select-Object -First 1
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($msix.FullName)
+          $entries = @($zip.Entries | ForEach-Object { [uri]::UnescapeDataString($_.FullName) })
+          $groups = $zip.Entries | Group-Object { ([uri]::UnescapeDataString($_.FullName) -split '/')[0..1] -join '/' } |
+            ForEach-Object { [pscustomobject]@{ Dir = $_.Name; Files = $_.Count; MB = [math]::Round(($_.Group | Measure-Object Length -Sum).Sum / 1MB, 2) } }
+          $zip.Dispose()
+          $groups | Sort-Object MB -Descending | Format-Table -AutoSize | Out-String | Write-Host
+          $want = @(Get-Content build-uwp/AppX/payload/guests.txt | Where-Object { $_ })
+          foreach ($c in Get-ChildItem tests/guest -Filter *.c) {
+            $n = if ($c.BaseName -eq 'dll') { 'guest_dll.dll' } elseif ($c.BaseName -eq 'window') { 'window.exe' } else { "guest_$($c.BaseName).exe" }
+            if ($want -notcontains $n) { $want += $n }
+          }
+          $missing = @($want | Where-Object { $entries -notcontains "payload/guest/$_" })
+          Write-Host "guests expected in package: $($want.Count); missing: $($missing.Count)"
+          $mb = [math]::Round($msix.Length / 1MB, 1)
+          $lines = @('### host-uwp package contents', "- package size: $mb MB (budget 500 MB)", "- guests: $($want -join ', ')", '', '| dir | files | MB |', '|---|---|---|')
+          $lines += @($groups | ForEach-Object { "| $($_.Dir) | $($_.Files) | $($_.MB) |" })
+          $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($entries -notcontains 'payload/guests.txt') { Write-Host '::error::payload/guests.txt manifest missing from package'; exit 1 }
+          if (-not ($entries | Where-Object { $_ -like 'payload/builtin/*.dll' })) { Write-Host '::error::no Wine builtins in package'; exit 1 }
+          if ($missing.Count -gt 0) { Write-Host "::error::guest(s) missing from the .msix: $($missing -join ', ')"; exit 1 }
+          if ($mb -gt 500) { Write-Host "::error::package is $mb MB, over the 500 MB sideload budget"; exit 1 }
 
       # Upload whenever a package exists, even if the selftest step failed (the job is then
       # red, but the owner still gets the .msix to look at). No package (the build failed)
@@ -401,6 +443,134 @@ jobs:
         if: ${{ !cancelled() }}
         with:
           name: host-uwp-run-evidence
+          path: |
+            uwp-evidence
+            uwp-activate.rc
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------------------------------------------------
+  # `launcher`: GATING. The on-console launcher (host-uwp/launcher.cpp, docs/HANDOFF.md "Launcher") on the runner's CoreWindow.
+  #
+  # Installs the same signed .msix as `run`, writes LocalState\launch.json with "picker": true and the test hook
+  # "autoselect": "hello_cui.exe" (the launcher chooses that entry itself, no gamepad needed), activates the app and asserts on
+  # LocalState\launcher_result.txt: the guest ran (ran=yes), its exit code was captured (42) and its stdout reached the result
+  # screen's tail (the launcher's "last 20 lines"). The list and result screens go through the real presenter on the runner's
+  # CoreWindow; only the gamepad/keyboard navigation itself is not driven here.
+  #
+  # Unlike `run` (an experiment) this job is not continue-on-error: `run` has installed and activated the package on
+  # windows-latest, which is what makes this a usable gate.
+  # ---------------------------------------------------------------------------------------------------------------------
+  launcher:
+    needs: msix
+    if: ${{ !cancelled() && needs.msix.result == 'success' }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tests/appcontainer
+      - uses: actions/download-artifact@v4
+        with:
+          name: host-uwp-msix
+          path: msix
+      - uses: ilammy/msvc-dev-cmd@v1
+        with: { arch: x64 }
+
+      - name: Build the activation helper (tests/appcontainer/uwp_activate.cpp)
+        shell: cmd
+        run: |
+          cl /nologo /O2 /MT /EHsc /std:c++17 /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS /Fouwp_activate.obj /Feuwp_activate.exe tests\appcontainer\uwp_activate.cpp /link ole32.lib
+          if errorlevel 1 exit /b 1
+
+      - name: Trust the certificate and install the package
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $msix = Get-ChildItem -Path msix -Recurse -Filter *.msix | Select-Object -First 1
+          $cer = Get-ChildItem -Path msix -Recurse -Filter *.cer | Select-Object -First 1
+          if (-not $msix -or -not $cer) { Write-Host '::error::the host-uwp-msix artifact holds no .msix/.cer'; exit 1 }
+          foreach ($store in 'Cert:\LocalMachine\TrustedPeople', 'Cert:\LocalMachine\Root') {
+            try { Import-Certificate -FilePath $cer.FullName -CertStoreLocation $store | Out-Null; Write-Host "certificate imported into $store" }
+            catch { Write-Host "::warning::could not import the certificate into ${store}: $($_.Exception.Message)" }
+          }
+          $installed = $false
+          for ($attempt = 1; $attempt -le 2 -and -not $installed; $attempt++) {
+            try { Add-AppxPackage -Path $msix.FullName -ErrorAction Stop; $installed = $true; Write-Host "Add-AppxPackage: SUCCEEDED (attempt $attempt)" }
+            catch {
+              $msg = $_.Exception.Message
+              Write-Host "::warning::Add-AppxPackage FAILED (attempt $attempt): $msg"
+              if ($attempt -eq 1 -and $msg -match '0x80073CFF') {
+                New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Appx' -Force | Out-Null
+                New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Appx' -Name AllowAllTrustedApps -Value 1 -PropertyType DWord -Force | Out-Null
+              } else { break }
+            }
+          }
+          if (-not $installed) { Write-Host '::error::the package could not be installed'; exit 1 }
+
+      # LocalState\launch.json: the picker with the test hook. The folder may not exist before the first run, and a folder
+      # made by this user is not writable by the AppContainer unless it is granted (ALL APPLICATION PACKAGES, S-1-15-2-1).
+      - name: Write LocalState launch.json (picker + autoselect hello_cui.exe)
+        shell: powershell
+        run: |
+          $pkg = Get-AppxPackage -Name win10xbox.uwp
+          $ls = Join-Path $env:LOCALAPPDATA ("Packages\" + $pkg.PackageFamilyName + "\LocalState")
+          New-Item -ItemType Directory -Force -Path $ls | Out-Null
+          $json = '{ "picker": true, "autoselect": "hello_cui.exe", "expect_exit_code": 42, "exit_when_done": true, "timeout_sec": 180 }'
+          Set-Content -Path (Join-Path $ls 'launch.json') -Value $json -Encoding ascii
+          & icacls $ls /grant '*S-1-15-2-1:(OI)(CI)F' /T | Out-Host
+          Write-Host "LocalState: $ls"
+          Get-Content (Join-Path $ls 'launch.json') | Out-Host
+
+      - name: Launch by AUMID and wait for the app to end
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $pkg = Get-AppxPackage -Name win10xbox.uwp
+          $aumid = "$($pkg.PackageFamilyName)!App"
+          & .\uwp_activate.exe $aumid --package-full-name $pkg.PackageFullName --timeout 240
+          $rc = $LASTEXITCODE
+          Write-Host "uwp_activate exit status: $rc (0 ended, 10 activation refused, 11 still running at the timeout, 12 COM setup failed)"
+          Set-Content -Path uwp-activate.rc -Value $rc
+          exit 0
+
+      - name: Collect the evidence and assert on launcher_result.txt
+        id: assert
+        if: ${{ !cancelled() }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $pkg = Get-AppxPackage -Name win10xbox.uwp
+          $ls = Join-Path $env:LOCALAPPDATA ("Packages\" + $pkg.PackageFamilyName + "\LocalState")
+          New-Item -ItemType Directory -Force -Path uwp-evidence | Out-Null
+          if (Test-Path $ls) { Get-ChildItem -Path $ls -File | ForEach-Object { Copy-Item -Path $_.FullName -Destination uwp-evidence -Force; Write-Host ("  {0,-24} {1,10:N0} bytes" -f $_.Name, $_.Length) } }
+          foreach ($f in 'status.txt', 'launcher_result.txt') {
+            $p = Join-Path $ls $f
+            if (Test-Path $p) { Write-Host "--- $f ---"; Get-Content -Path $p | ForEach-Object { Write-Host $_ } } else { Write-Host "--- ${f}: MISSING ---" }
+          }
+          foreach ($f in 'crash.txt') { $p = Join-Path $ls $f; if (Test-Path $p) { Write-Host "--- $f (first 60 lines) ---"; Get-Content -Path $p -TotalCount 60 | ForEach-Object { Write-Host $_ } } }
+          $p = Join-Path $ls 'trace.log'
+          if (Test-Path $p) { Write-Host '--- trace.log (lines mentioning the launcher or display, last 60) ---'; Select-String -Path $p -Pattern 'launcher|display:' | Select-Object -Last 60 | ForEach-Object { Write-Host $_.Line } }
+          $result = Join-Path $ls 'launcher_result.txt'
+          $text = if (Test-Path $result) { Get-Content -Path $result -Raw } else { '' }
+          $fail = @()
+          if (-not $text) { $fail += 'LocalState\launcher_result.txt was not written (the launcher did not run the entry)' }
+          else {
+            if ($text -notmatch '(?m)^guest=hello_cui\.exe\s*$') { $fail += 'result is not for hello_cui.exe' }
+            if ($text -notmatch '(?m)^ran=yes\s*$') { $fail += 'the guest did not run (ran=yes missing)' }
+            if ($text -notmatch '(?m)^exit_code=42\s*$') { $fail += 'exit code 42 was not captured' }
+            if ($text -notmatch '(?m)^\s+\| hello from guest\s*$') { $fail += 'the guest stdout (hello from guest) is not in the result tail' }
+          }
+          $lines = @('### host-uwp launcher (picker + autoselect on the runner CoreWindow)')
+          if ($fail.Count -eq 0) { $lines += '- PASS: hello_cui.exe launched from the picker, exit code 42 and its stdout captured in launcher_result.txt' }
+          else { $fail | ForEach-Object { $lines += "- FAIL: $_"; Write-Host "::error::$_" } }
+          $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($fail.Count -gt 0) { exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: host-uwp-launcher-evidence
           path: |
             uwp-evidence
             uwp-activate.rc

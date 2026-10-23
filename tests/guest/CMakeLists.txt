@@ -24,6 +24,10 @@ win10xbox_add_guest(guest_cpuid)
 add_executable(guest_sleep sleep.c)
 win10xbox_add_guest(guest_sleep)
 
+# CreateProcess through the layer (NtCreateUserProcess): runs guest_hello.exe and itself as children.
+add_executable(guest_spawn spawn.c)
+win10xbox_add_guest(guest_spawn)
+
 add_library(guest_dll SHARED dll.c)
 win10xbox_add_guest(guest_dll)
 
@@ -43,13 +47,130 @@ win10xbox_add_guest(guest_window2)
 add_executable(guest_window_input window_input.c)
 target_link_libraries(guest_window_input PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window_input)
+# The non-client guest (tests/guest/window_nc.c): frame geometry, hit testing, caption drag and the close button,
+# driven by the host's injected input.
+add_executable(guest_window_nc window_nc.c)
+target_link_libraries(guest_window_nc PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_window_nc)
+# Input semantics beyond the plain sequence (tests/guest/window_input2.c): hit test / cursor / activation
+# sequencing, double clicks, capture, children, the keyboard state and the US layout. Host-injected (the same hook) plus
+# SendInput from the guest.
+add_executable(guest_window_input2 window_input2.c)
+target_link_libraries(guest_window_input2 PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_window_input2)
+# Hooks and timers (tests/guest/window_hooks.c): thread-local WH_MOUSE / WH_KEYBOARD / WH_GETMESSAGE hooks fed by
+# host-injected input (WIN10XBOX_TEST_INJECT_INPUT), and SetTimer cadence measured with GetTickCount64.
+add_executable(guest_window_hooks window_hooks.c)
+target_link_libraries(guest_window_hooks PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_window_hooks)
 # The text guest: TextOutW/DrawTextW with the stock system font, glyph pixels read back with GetPixel
 # (tests/guest/window_text.c). Its integration test is DISABLED until the text rendering slice lands.
 add_executable(guest_window_text window_text.c)
 target_link_libraries(guest_window_text PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window_text)
 
+# msctf.dll stand-in for the native-GUI machine folder (tests/guest/msctf_stub.c); staged by prepare_machine.cmake into
+# its Windows/System32 only, so no other machine sees it.
+add_library(msctf_stub SHARED msctf_stub.c)
+set_target_properties(msctf_stub PROPERTIES OUTPUT_NAME msctf PREFIX ""
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/native-gui-stubs
+  LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/native-gui-stubs
+  ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib/guest)
+
+# GDI bitmap operations (tests/guest/gdi_bitmap.c): DIB sections, BitBlt/StretchBlt between memory and window DCs,
+# AlphaBlend/TransparentBlt through msimg32, LoadImage of the BITMAP resources of gdi_bitmap.rc (a generated copy of
+# gdi_bitmap.rc.in whose .bmp paths are absolute: windres and rc.exe resolve relative names differently).
+set(W10X_BMP_DIR ${CMAKE_CURRENT_SOURCE_DIR}/gdi_bitmap_res)
+configure_file(gdi_bitmap.rc.in ${CMAKE_CURRENT_BINARY_DIR}/gdi_bitmap.rc @ONLY)
+add_executable(guest_gdi_bitmap gdi_bitmap.c ${CMAKE_CURRENT_BINARY_DIR}/gdi_bitmap.rc)
+set_source_files_properties(${CMAKE_CURRENT_BINARY_DIR}/gdi_bitmap.rc PROPERTIES
+  OBJECT_DEPENDS "${W10X_BMP_DIR}/rgb24.bmp;${W10X_BMP_DIR}/pal8.bmp")
+target_link_libraries(guest_gdi_bitmap PRIVATE user32 gdi32 msimg32)
+win10xbox_add_guest(guest_gdi_bitmap)
+# Menus (tests/guest/window_menu.c): the menu API, the menu bar of a window, popup menus and TrackPopupMenu, driven by
+# host-injected clicks (WIN10XBOX_TEST_INJECT_INPUT, tests/integration/CMakeLists.txt). Like window_input it cannot do
+# anything useful without that injection, so there is no native smoke test.
+add_executable(guest_window_menu window_menu.c)
+target_link_libraries(guest_window_menu PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_window_menu)
+# The XInput guest (tests/guest/xinput.c): imports xinput1_4.dll (guest-dlls/xinput, our own builtin DLL) and reads the
+# pad state the host holds, which host-win32's WIN10XBOX_TEST_INJECT_INPUT "pad" command sets. Nothing to see without
+# that injection, so there is no native smoke test.
+add_executable(guest_xinput xinput.c)
+target_link_libraries(guest_xinput PRIVATE xinput1_4 user32)
+win10xbox_add_guest(guest_xinput)
+# Exception handling coverage (seh.cpp + the DLL it throws across): C++ throw/catch, SEH, vectored handlers.
+# __try/__except is native on MSVC. For clang's mingw target it is used when a configure-time compile+link of a
+# __try/__except program with -fms-extensions succeeds (SEH_NATIVE); otherwise seh.cpp falls back to a vectored
+# handler that restores a captured context.
+add_library(guest_seh_dll SHARED seh_dll.cpp)
+win10xbox_add_guest(guest_seh_dll)
+add_executable(guest_seh seh.cpp)
+target_link_libraries(guest_seh PRIVATE guest_seh_dll)
+win10xbox_add_guest(guest_seh)
+if(NOT MSVC)
+  include(CheckCXXSourceCompiles)
+  set(CMAKE_REQUIRED_FLAGS "-fms-extensions -g")
+  # The probe mirrors seh.cpp's SehRun (a filter that calls a function, the result passed back by value) so a
+  # compiler that cannot handle the construct is detected here and not in the guest build.
+  check_cxx_source_compiles("
+    #include <windows.h>
+    struct R { int a; unsigned long b; };
+    static R* g_cur; static bool g_flag;
+    static LONG filt(EXCEPTION_POINTERS* ep) { g_cur->b = ep->ExceptionRecord->ExceptionCode; return EXCEPTION_EXECUTE_HANDLER; }
+    static R run(void (*fn)(void*), void* arg, bool flag) {
+      R r = {}; g_cur = &r; g_flag = flag;
+      __try { fn(arg); } __except (filt(GetExceptionInformation())) { }
+      g_cur = 0; return r;
+    }
+    static void thrower(void*) { RaiseException(1, 0, 0, 0); }
+    int main() { R r = run(thrower, 0, false); return r.b == 1 ? 0 : 1; }"
+    WIN10XBOX_CLANG_SEH_TRY)
+  unset(CMAKE_REQUIRED_FLAGS)
+  if(WIN10XBOX_CLANG_SEH_TRY)
+    target_compile_options(guest_seh PRIVATE -fms-extensions)
+    target_compile_definitions(guest_seh PRIVATE SEH_NATIVE=1)
+  endif()
+endif()
+# The scroll bar guest (tests/guest/window_scroll.c): SetScrollInfo/GetScrollInfo, non-client scroll bars, ScrollWindowEx,
+# ScrollDC, and a click injected by the host on the vertical bar's down arrow (WM_VSCROLL SB_LINEDOWN).
+add_executable(guest_window_scroll window_scroll.c)
+target_link_libraries(guest_window_scroll PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_window_scroll)
+# The clipboard guest (tests/guest/clipboard.c): user32 clipboard API -> win32u syscalls -> core/user/win_clipboard.cpp.
+add_executable(guest_clipboard clipboard.c)
+target_link_libraries(guest_clipboard PRIVATE user32)
+win10xbox_add_guest(guest_clipboard)
+# The dialog guest: DialogBoxParamW with a DIALOG resource (dialog.rc); the host clicks OK (tests/guest/dialog.c).
+enable_language(RC)
+add_executable(guest_dialog dialog.c dialog.rc)
+target_link_libraries(guest_dialog PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_dialog)
+# Wine's builtin comctl32 (ListView/TreeView/Progress/Trackbar/StatusBar) through the layer (tests/guest/comctl.c).
+add_executable(guest_comctl comctl.c)
+target_link_libraries(guest_comctl PRIVATE user32 gdi32 comctl32)
+win10xbox_add_guest(guest_comctl)
+
+# The networking guest (tests/guest/net.c): Wine's ws2_32 -> \\Device\\Afd -> core/afd -> host Winsock, over loopback.
+add_executable(guest_net net.c)
+target_link_libraries(guest_net PRIVATE ws2_32)
+win10xbox_add_guest(guest_net)
+
+# Audio (docs/slices/audio.md): WASAPI and XAudio2 guests. Exit 42 = a device played the sound, 43 = the host has no
+# audio endpoint (the exact HRESULT is printed); tests/integration/audio_test.cmake requires the layer to agree with
+# the same program run directly on the host.
+add_executable(guest_wasapi wasapi.c)
+target_link_libraries(guest_wasapi PRIVATE ole32)
+win10xbox_add_guest(guest_wasapi)
+
+add_executable(guest_xaudio2 xaudio2.c)
+target_link_libraries(guest_xaudio2 PRIVATE ole32)
+win10xbox_add_guest(guest_xaudio2)
+
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
+add_test(NAME guest.seh COMMAND guest_seh)
+set_tests_properties(guest.seh PROPERTIES PASS_REGULAR_EXPRESSION "seh: done failures=0"
+  FAIL_REGULAR_EXPRESSION "seh: [a-z_.]+ FAILED;seh: FAIL line")
 add_test(NAME guest.hello COMMAND guest_hello)
 set_tests_properties(guest.hello PROPERTIES PASS_REGULAR_EXPRESSION "hello from guest")
 add_test(NAME guest.cpuid COMMAND guest_cpuid)
@@ -82,20 +203,5 @@ if(NOT CMAKE_CROSSCOMPILING_EMULATOR)
   set_tests_properties(guest.window_text PROPERTIES PASS_REGULAR_EXPRESSION "text: done")
 endif()
 
-# The audio probe (tests/guest/audio_probe.c): WASAPI + XAudio2, one PASS/FAIL line with the HRESULT per step. It is a
-# measurement and exits 0; integration.guest_audio_probe requires the layer's answers to equal the host's own.
-add_executable(guest_audio_probe audio_probe.c)
-win10xbox_add_guest(guest_audio_probe)
-# The two guest stubs of the audio bridge (core/audio): built as mmdevapi.dll / xaudio2_9.dll, NOT into bin/guest (a
-# native run of the probe would load the stub from its own directory); the integration test stages them into the
-# machine folder's Windows\builtin.
-set(WIN10XBOX_AUDIO_STUB_DIR ${CMAKE_BINARY_DIR}/bin/audio_stub)
-foreach(_stub mmdevapi:mmdevapi_stub.c xaudio2_9:xaudio2_stub.c)
-  string(REPLACE ":" ";" _p ${_stub})
-  list(GET _p 0 _dll)
-  list(GET _p 1 _src)
-  add_library(guest_audio_${_dll} SHARED ${CMAKE_SOURCE_DIR}/core/audio/guest/${_src})
-  set_target_properties(guest_audio_${_dll} PROPERTIES OUTPUT_NAME ${_dll} PREFIX ""
-    RUNTIME_OUTPUT_DIRECTORY ${WIN10XBOX_AUDIO_STUB_DIR} LIBRARY_OUTPUT_DIRECTORY ${WIN10XBOX_AUDIO_STUB_DIR}
-    ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib/audio_stub)
-endforeach()
+# Guests from the SQLite shell bring-up (tests/guest/sqlite).
+add_subdirectory(sqlite)

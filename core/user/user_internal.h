@@ -261,6 +261,13 @@ struct QueuedMsg {
     MSG msg{};
     ULONG_PTR extra = 0;
     bool hardware = false;
+    // Hardware input (win_message.cpp). A raw mouse message is what the driver reported: the base WM_* message,
+    // the screen position in `msg.pt`, MK_* flags (+ wheel delta / X button in the high word) in wParam and the
+    // top-level window (or capture window) it was routed to in `msg.hwnd`. The thread that dequeues it finishes
+    // the job as Wine's process_mouse_message does (hit test, activation, WM_SETCURSOR). Key messages are final.
+    bool raw = false;
+    std::uint32_t seq = 0;        // identifies a raw message across the lock being dropped
+    BYTE vk = 0;                  // key messages: the physical key (VK_LSHIFT, ...) for the keyboard state
 };
 struct Timer {
     HWND hwnd = nullptr;
@@ -306,6 +313,19 @@ struct UserThread {
     HWND focus = nullptr, active = nullptr, capture = nullptr;
     bool exiting = false;
     std::uint32_t send_depth = 0;           // InSendMessage
+    // hooks (win_hook.cpp): the hook procedure being called on this thread (CallNextHookEx continues from it)
+    HHOOK cur_hook = nullptr;
+    bool cur_hook_unicode = true;
+    std::uint32_t hook_depth = 0;
+};
+// A SetWindowsHookEx hook (win_hook.cpp). tid 0: every thread of the process. `owner` installed it.
+struct HookObj {
+    HHOOK handle = nullptr;
+    int id = 0;
+    HOOKPROC proc = nullptr;
+    DWORD tid = 0, owner = 0;
+    bool unicode = true;
+    bool removed = false;     // unhooked while a hook call was running: swept when the last call returns
 };
 // The calling thread's record, created on first use. Call with the lock held.
 UserThread& CurrentUserThread();
@@ -343,8 +363,15 @@ struct State {
     UINT process_dpi_context = abi::kDpiUnaware;
     bool process_dpi_set = false;
     UINT_PTR next_timer_id = 0x7fff;
+    // hooks, oldest first (the chain runs newest first); live hooks per WH_ id (index id - WH_MINHOOK)
+    std::vector<HookObj*> hooks;
+    int hook_count[16] = {};
+    std::uint32_t hook_calls_active = 0;
+    ULONG_PTR next_hook = 0;
     POINT cursor{};
-    BYTE key_state[256] = {};                 // async key state: 0x80 down, 0x01 toggled
+    BYTE key_state[256] = {};                 // async key state (GetAsyncKeyState): 0x80 down, 0x01 toggled; follows the hardware
+    BYTE input_key_state[256] = {};           // the state as of the last input message an application took (GetKeyState, TranslateMessage)
+    std::uint32_t input_seq = 0;
     DWORD last_input_time = 0;
     // display
     int screen_w = 0, screen_h = 0;
@@ -422,12 +449,17 @@ struct DrawTarget {
     HWND top = nullptr;                        // window DC: the top-level window that owns the surface
 };
 bool ResolveDrawTarget(DcObj* dc, DrawTarget* out);
+// The text cell of the DC's selected font: the built-in 8x16 face, scaled by a whole factor for
+// LOGFONT heights of 32 and up (font8x16.h).
+struct TextCell { int scale, width, height, ascent, descent; };
+TextCell TextCellOf(const DcObj* dc);
 POINT LogicalToDevice(const DcObj* dc, int x, int y);
 int LogicalToDeviceDx(const DcObj* dc, int dx);
 int LogicalToDeviceDy(const DcObj* dc, int dy);
 void NoteDrawn(DcObj* dc, const DrawTarget& t, RECT device_rect);   // dirty tracking
 // gdi_draw.cpp
 void FillTargetRect(const DrawTarget& t, RECT device_rect, std::uint32_t bgra);
+void DrawGlyphRun(const DrawTarget& t, RECT limit, int x, int y, const std::wstring& text, std::uint32_t fg);
 std::uint32_t ColorToPixel(COLORREF c);
 COLORREF PixelToColor(std::uint32_t px);
 
@@ -457,6 +489,10 @@ RECT WindowRectScreen(const WindowObj* w);
 RECT ClientRectScreen(const WindowObj* w);
 bool IsWindowReallyVisible(const WindowObj* w); // window and every ancestor WS_VISIBLE
 HWND WindowFromScreenPoint(POINT pt);
+HWND ShallowWindowFromPoint(POINT pt);          // Wine's shallow_window_from_point: the top-level window at pt, else the desktop
+// Every window containing screen point `pt` below `scope`, deepest child first, then siblings in z-order, then
+// `scope` itself last (the order of Wine's get_window_children_from_point request).
+void WindowsFromPoint(HWND scope, POINT pt, std::vector<HWND>* out);
 BOOL SetWindowPosInternal(HWND hwnd, HWND after, int x, int y, int cx, int cy, UINT flags);
 BOOL ShowWindowInternal(HWND hwnd, int cmd);
 BOOL DestroyWindowInternal(HWND hwnd);
@@ -466,6 +502,12 @@ void DestroyThreadWindows(UserThread* t);
 LRESULT DefWindowProcInternal(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, bool ansi);
 void SetWindowTextInternal(WindowObj* w, const WCHAR* text);
 void AdjustRectForStyle(RECT* rect, DWORD style, bool menu, DWORD ex_style);   // window from client
+// The non-client frame: thickness of the border (sizing frame plus the border line) around the caption and client,
+// the caption height (the caption's separator line included), and the rectangle of a caption button
+// (HTCLOSE / HTMAXBUTTON / HTMINBUTTON) in window coordinates; false when the window has no such button.
+int FrameInset(const WindowObj* w);
+int CaptionHeightOf(const WindowObj* w);
+bool CaptionButtonRect(const WindowObj* w, int hittest, RECT* out);
 void ForEachWindowPreorder(HWND root, const std::function<bool(WindowObj*)>& fn);
 
 // win_message.cpp
@@ -480,6 +522,16 @@ bool PostThreadMessageInternal(UserThread* t, HWND hwnd, UINT msg, WPARAM wp, LP
 void WakeThread(UserThread* t, DWORD qs_bits);
 void KillWindowTimers(HWND hwnd);
 void InstallEventSink();                       // driver -> input messages (lock held)
+
+// win_hook.cpp
+bool IsHooked(int id);                         // any live hook of this WH_ id (lock held)
+// Runs the hook chain `id` for the calling thread, newest hook first, until one does not call CallNextHookEx.
+// `lparam_size` > 0: lparam points at that many bytes, copied for the hook procedure and copied back after.
+// Returns the first hook's result (0 when there is none). Lock held on entry and exit, dropped around the call.
+LRESULT CallHooks(int id, int code, WPARAM wparam, LPARAM lparam, std::size_t lparam_size);
+// CallWindowProcInternal wrapped in WH_CALLWNDPROC / WH_CALLWNDPROCRET.
+LRESULT CallWindowProcHooked(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, bool ansi, bool sent_by_this_thread);
+void RemoveThreadHooks(DWORD tid);             // the thread exits
 
 // win_paint.cpp
 void InvalidateWindow(HWND hwnd, const RECT* client_rect, UINT rdw_flags);
@@ -497,10 +549,29 @@ void PaintNonClient(HWND hwnd);
 HDC BeginPaintInternal(HWND hwnd, PAINTSTRUCT* ps);
 BOOL EndPaintInternal(HWND hwnd, const PAINTSTRUCT* ps);
 
+// win_menu.cpp (menus; docs/GUI.md)
+int MenuBarHeight(const WindowObj* w);                              // SM_CYMENU when `w` shows a menu bar, else 0
+void MenuPaintBar(WindowObj* w, DcObj* dc, const DrawTarget& t);    // window DC target (device (0,0) = window top-left)
+bool MenuBarHitTest(const WindowObj* w, POINT screen_pt);
+void MenuBarClick(HWND hwnd, POINT screen_pt);                      // WM_NCLBUTTONDOWN on HTMENU; lock held, dropped while tracking
+void MenuDestroyWindowMenu(WindowObj* w);                           // WM_NCDESTROY
+BOOL MenuAttachToWindow(WindowObj* w, HMENU menu);                  // SetMenu: validates and stores the menu
+ULONG_PTR MenuItemCount(ULONG_PTR handle);
+BOOL MenuGetInfo(ULONG_PTR handle, MENUINFO* info);
+LRESULT MenuPopupWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, bool ansi);   // the `#32768` class procedure
+
 // win_sysparams.cpp
 int SystemMetric(int index);
 void ScreenRect(RECT* out);
 void WorkAreaRect(RECT* out);
 bool SysParamsInfo(UINT action, UINT val, void* ptr, UINT winini);
+
+// ---- Route B (config gui = Native): native_compose.cpp ---------------------------
+// True when the guest's windows are the host win32k's (ConfigureNativeGui succeeded). The host-facing API in
+// user.cpp then composes from the real windows instead of this module's.
+bool NativeGui();
+bool NativeComposeFrame(std::uint32_t* bgra, std::int32_t width, std::int32_t height, std::int32_t stride_bytes);
+void NativeScreenSize(std::int32_t* width, std::int32_t* height);
+std::uint64_t NativeFrameSerial();
 
 }  // namespace win10xbox::user::detail

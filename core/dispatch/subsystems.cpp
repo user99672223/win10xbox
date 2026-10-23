@@ -12,6 +12,9 @@
 #if WIN10XBOX_HAVE_CLOCK
 #include "win10xbox/clock.h"
 #endif
+#if WIN10XBOX_HAVE_AFD
+#include "win10xbox/afd.h"
+#endif
 #include <cstring>
 
 namespace win10xbox::dispatch::detail {
@@ -63,6 +66,7 @@ const ImplDef* SubsystemImpls() {
         W10X_IMPL(NtPrivilegeCheck, token::Tok_NtPrivilegeCheck),
         W10X_IMPL(NtAccessCheck, token::Tok_NtAccessCheck),
         W10X_IMPL(NtCompareTokens, token::Tok_NtCompareTokens),
+        W10X_IMPL(NtCreateLowBoxToken, token::Tok_NtCreateLowBoxToken),
 #endif
 #if WIN10XBOX_HAVE_CLOCK
         W10X_IMPL(NtQueryPerformanceCounter, clock::Clk_NtQueryPerformanceCounter),
@@ -71,6 +75,11 @@ const ImplDef* SubsystemImpls() {
         W10X_IMPL(NtDelayExecution, clock::Clk_NtDelayExecution),
         W10X_IMPL(NtQueryTimerResolution, clock::Clk_NtQueryTimerResolution),
         W10X_IMPL(NtSetTimerResolution, clock::Clk_NtSetTimerResolution),
+        W10X_IMPL(NtConvertBetweenAuxiliaryCounterAndPerformanceCounter,
+                  clock::Clk_NtConvertBetweenAuxiliaryCounterAndPerformanceCounter),
+#endif
+#if WIN10XBOX_HAVE_AFD
+        W10X_IMPL(NtDeviceIoControlFile, afd::Afd_NtDeviceIoControlFile),
 #endif
         {nullptr, nullptr},
     };
