@@ -1,4 +1,4 @@
-status: wip
+status: ready
 
 # Slice: wt-misc (small Wine conformance suites)
 
@@ -22,9 +22,9 @@ lines of its log. "Test failed: C" style truncations are Wine's own: the test pr
   Without it crypt32's DllMain fails (it needs `__wine_init_unix_call`, `NtQueryVirtualMemory(MemoryWineLoadUnixLib)`
   answered STATUS_DLL_NOT_FOUND), so crypt32, wintrust and setupapi (its tests import both) died with 0xC0000142 at
   load; ci run 39893860706 measured that. The gated test for it is `integration.winetest_crypt32` (and setupapi, wintrust).
-- wine-pe/dlls.txt: cabinet psapi userenv xmllite propsys dbghelp msxml3 setupapi urlmon wininet iertutil crypt32 ncrypt
+- wine-pe/dlls.txt: cabinet psapi xmllite propsys dbghelp msxml3 setupapi urlmon wininet iertutil crypt32 ncrypt
   wintrust, plus cryptnet, cryptui, imagehlp (delay imports of crypt32 and wintrust). bcrypt, mpr and cfgmgr32 were
-  already listed by MAIN. propsys belongs to -wt-media and is only listed. wine-pe run 39886857255 built them all.
+  already listed by MAIN. propsys belongs to -wt-media and is only listed. wine-pe run 39886857255 built them all (userenv included; see below why it is no longer listed).
 - tests/winetest/CMakeLists.txt on MAIN had the kernel32 and shell32 blocks interleaved (an unresolved merge: one
   `add_test(... kernel32.sh all` followed by the shell32 block, two `set_tests_properties` heads, two TIMEOUT lines);
   this branch repairs it (each block whole again).
@@ -79,10 +79,13 @@ which CryptAcquireContext and crypt32 use) is not in wine-pe/dlls.txt and not bu
 - msxml3: needs widl for xmlparser.idl -> xmlparser.h, which linux-cross does not have (the script skips with 77).
 - urlmon, wininet: network. iertutil: no tests.
 
-## Not tested here
+## userenv left out of wine-pe/dlls.txt
 
-kernel32's `environ` unit reported 11 failures against the baseline's 10 on both of this branch's linux-cross runs
-(environ.c:74 error 1332, :599 `C:\Windows` vs `C:\windows`, :739 ... GetComputerNameEx ERROR_MORE_DATA got 2). That
-baseline belongs to -wt-kernel32 and is not touched here.
+With userenv.dll in the machine, kernel32's environ unit (wine_conformance.kernel32.environ and
+integration.winetest_kernel32, baseline `environ run 10`) runs `GetUserProfileDirectory` and fails one assertion more
+(11 failures: environ.c:74 "Failed to get user profile dir, error 1332", ERROR_NONE_MAPPED), on both of this branch's
+first two linux-cross runs (39893860706, 39930191602), while MAIN (run 39931018449) passes with 10. userenv is not
+registered anyway (see above), so it is not built until the layer answers GetUserProfileDirectory (token user SID ->
+registry ProfileList). Its measurement above was taken with the DLL built.
 
-Run: pending.
+Run: the ci run of the push of this commit (URL in the session report).

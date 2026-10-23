@@ -72,7 +72,8 @@ programs/wineboot
 # --- wt-misc: DLLs under Wine conformance test (wine-pe/tests) + their imports
 cabinet
 psapi
-userenv
+# userenv is NOT built: with it present kernel32's environ test calls GetUserProfileDirectory (environ.c:74) and fails
+# with ERROR_NONE_MAPPED, one assertion more than main's baseline (docs/slices/wt-misc.md); needs the ProfileList registry data first.
 xmllite
 propsys
 dbghelp
