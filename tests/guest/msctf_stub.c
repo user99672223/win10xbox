@@ -1,5 +1,5 @@
 /* msctf_stub: stands in for msctf.dll in the native-GUI machine folder (docs/GUI.md, Route B).
- * The genuine imm32.dll delay-loads these Ctf*/TF_* entry points from msctf.dll; the genuine msctf.dll cannot be loaded
+ * The genuine imm32.dll delay-loads these Ctf and TF_ entry points from msctf.dll; the genuine msctf.dll cannot be loaded
  * on Wine's builtins (it needs api-ms-win-core-com and the C++ EH runtime), and without any msctf.dll Wine's
  * delay-load hook raises EXCEPTION_WINE_STUB on the first IME message. Every export does nothing and returns 0
  * (FALSE / S_OK / NULL), which is "no text service framework" for the IME dispatch paths. */
