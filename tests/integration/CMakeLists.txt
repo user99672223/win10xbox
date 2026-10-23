@@ -26,7 +26,7 @@ set(_prepare_args
 add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
-  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
+  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_named_objects guest_window guest_window2
                    guest_window_input guest_window_input2 guest_window_text)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
@@ -102,6 +102,16 @@ win10xbox_guest_test(guest_spawn "C:\\guest\\guest_spawn.exe" 42
   "spawn-child: argc=5" "spawn-child: argv\\[1\\]=\\[child\\]" "spawn-child: argv\\[2\\]=\\[a b\\]"
   "spawn-child: argv\\[3\\]=\\[c.d\\]" "spawn-child: argv\\[4\\]=\\[e\\]"
   "spawn-child: cwd=C:\\\\Windows" "spawn-child: mark=mark42" "spawn: child2 exit 7" "spawn: done")
+
+# Named objects across CreateProcess (docs/DISPATCHER.md "Object manager namespace"): the parent creates a named event,
+# a named section holding a string and a global event; lists both BaseNamedObjects directories; starts itself as the
+# child, which opens all three by name, reads the string and sets the events. The names map onto host objects under
+# the layer's prefix, so the child (another host process) finds them.
+win10xbox_guest_test(guest_named_objects "C:\\guest\\guest_named_objects.exe" 42
+  "named: created event, section and global event"
+  "named: .*BaseNamedObjects has w10x_no_event \\[Event\\]" "named: .*BaseNamedObjects has w10x_no_section \\[Section\\]"
+  "named: .*BaseNamedObjects has w10x_no_global \\[Event\\]"
+  "named-child: data=\\[named-objects-section-data-42\\]" "named: event set by the child" "named: child exit 7" "named: done")
 
 # The host-uwp-lite smoke guest (built in tests/guest, MSVC only): the program
 # that ran on the console, in both subsystems. It prints facts and returns 42.

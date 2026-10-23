@@ -8,6 +8,7 @@
 #include <intrin.h>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -334,6 +335,8 @@ const ImplDef* SubsystemImpls();
 const ImplDef* UserImpls();
 // nt_privileged.cpp: privileged syscalls, refused the way Windows refuses an unprivileged caller.
 const ImplDef* PrivilegedImpls();
+// nt_object.cpp: the object manager namespace (directory objects, symbolic links, named kernel objects).
+const ImplDef* ObjectImpls();
 // Subsystem groups compiled out: their Emulate entries pass through to the
 // host (registry/token/clock reads must work for Wine's loader_init) except
 // the names listed by NeverPassThrough().
@@ -374,6 +377,26 @@ std::wstring GuestWin32ToDevicePath(std::wstring_view guest_win32);
 // treat "path unknown" as "path equal".
 std::wstring HostPathOfHandle(HANDLE file, DWORD* error = nullptr);
 void SetFallbackDrive(wchar_t letter, const std::wstring& host_root);   // no-vfs builds only
+
+// ---- Object manager namespace (nt_object.cpp) -----------------------------------------------------------------
+// Builds the guest-visible directory layout and finds the host's named-object directory. Host view, from Initialize.
+void InitializeObjectNamespace();
+// NtClose / NtDuplicateObject of an emulated directory or symbolic link handle (ObjectKind::Directory / SymbolicLink).
+void CloseEmulatedDirectory(const EmulatedObject& o);
+HANDLE DuplicateEmulatedDirectory(const EmulatedObject& o, ACCESS_MASK access, ULONG options);
+// A host handle that names an object in a guest directory: forgotten on NtClose, copied by NtDuplicateObject.
+void ForgetNamedHandle(HANDLE h);
+void NoteDuplicatedNamedHandle(HANDLE src, HANDLE dup);
+// Creates a named host object with the guest's name translated (sections). `call(oa, out)` is the host's create with
+// every other argument bound; `oa` is what to hand it (null for the unnamed probe).
+NTSTATUS CreateNamedHostObject(const wchar_t* type, PHANDLE handle, POBJECT_ATTRIBUTES oa,
+                               const std::function<NTSTATUS(POBJECT_ATTRIBUTES, PHANDLE)>& call);
+
+// File names that go through the object manager tree: "\\BaseNamedObjects\\x", a name relative to one of our directory
+// handles, "\\DosDevices\\<link the guest created>\\NUL". 0: not ours, the file layer proceeds unchanged; 1: the open
+// fails with *status (a directory object or an unknown name is no file); 2: continue with *absolute (the name a link
+// led to, outside the tree).
+int ResolveFileNameThroughNamespace(const OBJECT_ATTRIBUTES* oa, NTSTATUS* status, std::wstring* absolute);
 
 // ---- Image sections and views (nt_section.cpp) ---------------------------------
 struct ImageSection {

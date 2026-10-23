@@ -135,11 +135,6 @@ constexpr ULONG kFileRenameInformationExBypassAccessCheck = 66;
 constexpr ULONG kFileLinkInformationEx = 72;
 constexpr ULONG kFileLinkInformationExBypassAccessCheck = 73;
 
-bool IsKnownDllsName(const OBJECT_ATTRIBUTES* oa) {
-    if (!oa || oa->RootDirectory) return false;
-    std::wstring_view n = OAName(oa);
-    return IStartsWith(n, L"\\KnownDlls");
-}
 
 }  // namespace
 
@@ -273,7 +268,44 @@ NTSTATUS RootRelativeGuestName(const OBJECT_ATTRIBUTES* in, std::wstring* nt) {
 }  // namespace
 #endif
 
+static NTSTATUS TranslateOAUnrouted(const OBJECT_ATTRIBUTES* in, TranslatedOA* out);
+
+// A name that goes through the object manager tree is resolved there first; what it leads to outside the tree
+// (a guest-made link to \Device\Null) is then translated like any other name.
 NTSTATUS TranslateOA(const OBJECT_ATTRIBUTES* in, TranslatedOA* out) {
+    out->attr = nullptr;
+    out->keep.reset();
+    NTSTATUS route_status = st::Success;
+    std::wstring absolute;
+    switch (ResolveFileNameThroughNamespace(in, &route_status, &absolute)) {
+    case 1:
+        return route_status;
+    case 2: {
+        struct Routed {
+            OBJECT_ATTRIBUTES oa;
+            UNICODE_STRING us;
+            std::wstring name;
+            TranslatedOA inner;
+        };
+        auto r = std::make_shared<Routed>();
+        r->name = std::move(absolute);
+        r->us.Buffer = r->name.data();
+        r->us.Length = static_cast<USHORT>(r->name.size() * sizeof(wchar_t));
+        r->us.MaximumLength = static_cast<USHORT>(r->us.Length + sizeof(wchar_t));
+        r->oa = *in;
+        r->oa.RootDirectory = nullptr;
+        r->oa.ObjectName = &r->us;
+        if (NTSTATUS s = TranslateOAUnrouted(&r->oa, &r->inner)) return s;
+        out->attr = r->inner.attr ? r->inner.attr : &r->oa;
+        out->keep = r;
+        return st::Success;
+    }
+    default:
+        return TranslateOAUnrouted(in, out);
+    }
+}
+
+static NTSTATUS TranslateOAUnrouted(const OBJECT_ATTRIBUTES* in, TranslatedOA* out) {
     out->attr = nullptr;
     out->keep.reset();
     if (!in || !in->ObjectName) return st::Success;
@@ -420,17 +452,6 @@ static NTSTATUS NTAPI Xl_NtSetInformationFile(HANDLE file, PIO_STATUS_BLOCK io, 
     return Host().NtSetInformationFile(file, io, out.data(), static_cast<ULONG>(out.size()), klass);
 }
 
-static NTSTATUS NTAPI Xl_NtOpenDirectoryObject(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr) {
-    // E3: no KnownDlls, so Wine's loader searches the file system through the VFS.
-    if (IsKnownDllsName(attr)) return st::ObjectNameNotFound;
-    return Host().NtOpenDirectoryObject(handle, access, attr);
-}
-
-static NTSTATUS NTAPI Xl_NtOpenSymbolicLinkObject(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr) {
-    if (IsKnownDllsName(attr)) return st::ObjectNameNotFound;
-    return Host().NtOpenSymbolicLinkObject(handle, access, attr);
-}
-
 // ---- Byte-range locks -------------------------------------------------------
 // Wine's kernelbase (LockFile/LockFileEx) calls NtLockFile with IoStatusBlock == NULL, which Wine's own ntdll accepts
 // and Windows' does not: the I/O manager probes the pointer and answers STATUS_ACCESS_VIOLATION. SQLite's win32 VFS
@@ -486,8 +507,6 @@ const ImplDef* FileImpls() {
         {"NtDeleteFile", reinterpret_cast<void*>(&Xl_NtDeleteFile)},
         {"NtQueryInformationFile", reinterpret_cast<void*>(&Xl_NtQueryInformationFile)},
         {"NtSetInformationFile", reinterpret_cast<void*>(&Xl_NtSetInformationFile)},
-        {"NtOpenDirectoryObject", reinterpret_cast<void*>(&Xl_NtOpenDirectoryObject)},
-        {"NtOpenSymbolicLinkObject", reinterpret_cast<void*>(&Xl_NtOpenSymbolicLinkObject)},
         {"NtLockFile", reinterpret_cast<void*>(&Xl_NtLockFile)},
         {"NtUnlockFile", reinterpret_cast<void*>(&Xl_NtUnlockFile)},
         {nullptr, nullptr},

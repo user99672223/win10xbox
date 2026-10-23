@@ -414,7 +414,9 @@ const std::uint8_t* MainImageInfo() { return g_main_image ? g_main_image->info :
 NTSTATUS NTAPI Xl_NtCreateSection(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr, PLARGE_INTEGER size,
                                   ULONG protect, ULONG attributes, HANDLE file) {
     if (!(attributes & kSecImage) || !file)
-        return Host().NtCreateSection(handle, access, attr, size, protect, attributes, file);
+        return CreateNamedHostObject(L"Section", handle, attr, [&](POBJECT_ATTRIBUTES o, PHANDLE out) {
+            return Host().NtCreateSection(out, access, o, size, protect, attributes, file);
+        });
     if (OAName(attr).size()) FIXME(dispatch, "named image section %.*ls not supported, creating it unnamed",
                                    static_cast<int>(OAName(attr).size()), OAName(attr).data());
     std::shared_ptr<ImageSection> sec;
@@ -432,7 +434,9 @@ static NTSTATUS NTAPI Xl_NtCreateSectionEx(PHANDLE handle, ACCESS_MASK access, P
                                            PLARGE_INTEGER size, ULONG protect, ULONG attributes, HANDLE file,
                                            PVOID ext, ULONG ext_count) {
     if (!(attributes & kSecImage) || !file)
-        return Host().NtCreateSectionEx(handle, access, attr, size, protect, attributes, file, ext, ext_count);
+        return CreateNamedHostObject(L"Section", handle, attr, [&](POBJECT_ATTRIBUTES o, PHANDLE out) {
+            return Host().NtCreateSectionEx(out, access, o, size, protect, attributes, file, ext, ext_count);
+        });
     if (ext_count) FIXME(dispatch, "image section extended parameters ignored (%lu)", ext_count);
     return Xl_NtCreateSection(handle, access, attr, size, protect, attributes, file);
 }

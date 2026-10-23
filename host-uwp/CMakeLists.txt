@@ -217,7 +217,7 @@ set_target_properties(window_guest PROPERTIES OUTPUT_NAME "window")
 
 # Every other guest of the repo, so the package carries them all to the console (HANDOFF.md
 # "Standing testing rule"). Console programs; output names as in the main tree.
-foreach(_g hello cpuid sleep spawn)
+foreach(_g hello cpuid sleep spawn named_objects)
   add_executable(guest_${_g} "${WIN10XBOX_ROOT}/tests/guest/${_g}.c")
 endforeach()
 add_library(guest_dll SHARED "${WIN10XBOX_ROOT}/tests/guest/dll.c")
@@ -242,7 +242,7 @@ set_target_properties(smoke_guest PROPERTIES OUTPUT_NAME "smoke")
 
 set(HOST_UWP_GUESTS window_guest hello_guest hello_guest_cui guest_hello guest_cpuid guest_sleep guest_dll
     smoke_guest_cui drv_client guest_window2 guest_window_input guest_window_input2 guest_window_text smoke_guest
-    guest_spawn)
+    guest_spawn guest_named_objects)
 
 # ---------------------------------------------------------------------------
 # The selftest: the launch.json parser (launch_config.cpp has no Windows or layer

@@ -121,7 +121,7 @@ bool CpuSiteHandler(loader::SiteKind kind, loader::ScanRegs* regs, void* ctx);
 // NtQueryObject can route them. Host handles are passed through unchanged.
 // Guest-visible handle values for emulated objects are host event handles
 // (so waits and inheritance behave) tagged in this table.
-enum class ObjectKind : std::uint8_t { RegistryKey, Token, ImageSection, Device, Directory, Other };
+enum class ObjectKind : std::uint8_t { RegistryKey, Token, ImageSection, Device, Directory, SymbolicLink, Other };
 struct EmulatedObject { ObjectKind kind; std::uint64_t id; void* extra; };
 HANDLE RegisterEmulatedObject(ObjectKind kind, std::uint64_t id, void* extra = nullptr);
 bool   LookupEmulatedObject(HANDLE h, EmulatedObject* out);
