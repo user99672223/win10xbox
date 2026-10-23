@@ -318,6 +318,26 @@ void Host::Impl::RecordAllRun(bool timed_out, long exit_code, const std::string&
 }
 
 // The end of an all-programs chain: the header of report.txt (once) and the summary screen.
+// "major.minor.build" from ntdll!RtlGetVersion. Resolved once, and first from RunWorker before any guest runs: once a guest
+// is loaded the process's "ntdll.dll" can be the guest's Wine one, which answered "unknown" in the all-programs report.
+static std::string OsBuildString()
+{
+    static const std::string os = []
+    {
+        std::string r = "unknown";
+        using RtlGetVersionFn = LONG(WINAPI*)(PRTL_OSVERSIONINFOW);
+        if (HMODULE nt = GetModuleHandleW(L"ntdll.dll"))
+            if (auto fn = reinterpret_cast<RtlGetVersionFn>(GetProcAddress(nt, "RtlGetVersion")))
+            {
+                RTL_OSVERSIONINFOW vi = {};
+                vi.dwOSVersionInfoSize = sizeof vi;
+                if (fn(&vi) == 0) r = Fmt("%lu.%lu.%lu", vi.dwMajorVersion, vi.dwMinorVersion, vi.dwBuildNumber);
+            }
+        return r;
+    }();
+    return os;
+}
+
 void Host::Impl::FinishAllChain()
 {
     const std::wstring path = info.local_state + L"\\report.txt";
@@ -341,15 +361,7 @@ void Host::Impl::FinishAllChain()
                                    static_cast<unsigned>(blocks.size()), pass, fail, exited, timeout, crash, skipped);
     if (body.rfind("# win10xbox report", 0) != 0)
     {
-        std::string os = "unknown";
-        using RtlGetVersionFn = LONG(WINAPI*)(PRTL_OSVERSIONINFOW);
-        if (HMODULE nt = GetModuleHandleW(L"ntdll.dll"))
-            if (auto fn = reinterpret_cast<RtlGetVersionFn>(GetProcAddress(nt, "RtlGetVersion")))
-            {
-                RTL_OSVERSIONINFOW vi = {};
-                vi.dwOSVersionInfoSize = sizeof vi;
-                if (fn(&vi) == 0) os = Fmt("%lu.%lu.%lu", vi.dwMajorVersion, vi.dwMinorVersion, vi.dwBuildNumber);
-            }
+        const std::string os = OsBuildString();
         std::string head = "# win10xbox report\n";
         head += "os_build=" + os + "\n";
         head += "package=" + info.package_full_name + "\n";
@@ -417,6 +429,7 @@ void Host::Impl::RunWorker()
 {
     try
     {
+        (void)OsBuildString();   // before any guest owns the process
         // With the launcher a guest is followed by a restart of the whole app (core allows one guest per
         // process, docs/HANDOFF.md "Launcher"): RequestRestartAsync ends this process on success. Only when
         // the restart is refused does the worker go round in this process (the old behaviour, whose next
@@ -948,10 +961,13 @@ void Host::Impl::RunImpl()
                 {
                     const std::string arg = NextRestartArg();
                     diag::Line("launcher: guest timed out, restarting the app for the next program (argument \"%s\")", arg.c_str());
+                    report.Set("launcher.restart", "requested after the timeout: " + arg);
                     report.Flush();
                     diag::FlushLog();
                     const std::string why = restart_fn(arg);   // does not return when granted
                     diag::Line("launcher: restart after the timeout failed: %s", why.c_str());
+                    report.Set("launcher.restart", "FAILED after the timeout: " + why);
+                    report.Flush();
                 }
                 FinishAllChain();
             }
