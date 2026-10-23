@@ -127,6 +127,14 @@ HANDLE RegisterEmulatedObject(ObjectKind kind, std::uint64_t id, void* extra = n
 bool   LookupEmulatedObject(HANDLE h, EmulatedObject* out);
 void   UnregisterEmulatedObject(HANDLE h);
 
+// ---- Layer-provided entries of the object manager namespace ---------------------------------------------------------
+// The driver host (drivers/host/namespace.cpp) keeps the devices and the DOS-device links that drivers create. The
+// links are mirrored into the namespace the guest sees (docs/DISPATCHER.md "Object manager namespace"), so that
+// NtQueryDirectoryObject(\??) lists them and NtOpenSymbolicLinkObject opens them like any other link. `path` is the link's
+// NT name (\??\Name, \DosDevices\Name or \GLOBAL??\Name); registering an existing name replaces it.
+void RegisterNamespaceLink(const std::wstring& path, const std::wstring& target);
+void UnregisterNamespaceLink(const std::wstring& path);
+
 // ---- Wine unix-call providers --------------------------------------------
 // Wine's PE ntdll calls its unix side through __wine_unix_call_dispatcher with
 // the enum in dlls/ntdll/unixlib.h (load_so_dll, unwind_builtin_dll,

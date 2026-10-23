@@ -1054,7 +1054,17 @@ NTSTATUS CreateNamedHostObject(const wchar_t* type, PHANDLE handle, POBJECT_ATTR
 }
 
 int ResolveFileNameThroughNamespace(const OBJECT_ATTRIBUTES* oa, NTSTATUS* status, std::wstring* absolute) {
-    if (!oa || !GuestReadable(oa, sizeof(OBJECT_ATTRIBUTES)) || oa->Length != sizeof(OBJECT_ATTRIBUTES)) return 0;
+    // Every file open comes through here: look at the cheap things first. (The callers already read the name.)
+    if (!oa || !oa->ObjectName) return 0;
+    if (oa->RootDirectory) {
+        if (!OurHandle(oa->RootDirectory, nullptr)) return 0;
+    } else {
+        const UNICODE_STRING* n = oa->ObjectName;
+        if (n->Length < 3 * sizeof(wchar_t) || !n->Buffer || n->Buffer[0] != L'\\') return 0;
+        const wchar_t c = static_cast<wchar_t>(std::towupper(n->Buffer[1]));
+        if (c != L'B' && c != L'S' && c != L'K' && c != L'O' && c != L'?' && c != L'D' && c != L'G') return 0;
+    }
+    if (!GuestReadable(oa, sizeof(OBJECT_ATTRIBUTES)) || oa->Length != sizeof(OBJECT_ATTRIBUTES)) return 0;
     ParsedOA p = ParseOA(oa);
     if (p.status || p.null_oa || p.null_name || p.empty_name) return 0;
     bool ours = p.root_ours;
@@ -1083,6 +1093,29 @@ int ResolveFileNameThroughNamespace(const OBJECT_ATTRIBUTES* oa, NTSTATUS* statu
     *status = r.Found() ? st::ObjectTypeMismatch : st::ObjectNameNotFound;
     return 1;
 }
+
+// ---- links provided by other modules (the driver host) -----------------------------------------------------------------------
+
+static std::wstring KernelLinkPath(const std::wstring& path) {
+    constexpr std::wstring_view dos = L"\\DosDevices\\";
+    if (path.size() > dos.size() && ob::NameEquals(std::wstring_view(path).substr(0, dos.size()), dos, true))
+        return L"\\??\\" + path.substr(dos.size());
+    return path;
+}
+
+}  // namespace win10xbox::dispatch::detail
+
+namespace win10xbox::dispatch {
+
+void RegisterNamespaceLink(const std::wstring& path, const std::wstring& target) {
+    detail::g_tree.AddKernelNode(detail::KernelLinkPath(path), detail::Kind::SymbolicLink, target);
+}
+
+void UnregisterNamespaceLink(const std::wstring& path) { detail::g_tree.RemoveKernelNode(detail::KernelLinkPath(path)); }
+
+}  // namespace win10xbox::dispatch
+
+namespace win10xbox::dispatch::detail {
 
 // ---- start-up ---------------------------------------------------------------------------------------------------------------
 

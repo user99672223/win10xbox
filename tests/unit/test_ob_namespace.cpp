@@ -420,4 +420,41 @@ TEST(ob_entry_points_enumerate_named_event) {
     close(dir);
 }
 
+TEST(ob_links_registered_by_other_modules) {
+    auto open_link = Impl<FnCreateDir>("NtOpenSymbolicLinkObject");
+    auto open_dir = Impl<FnCreateDir>("NtOpenDirectoryObject");
+    auto query_link = Impl<FnQueryLink>("NtQuerySymbolicLinkObject");
+    auto query_dir = Impl<FnQueryDir>("NtQueryDirectoryObject");
+    auto close = Impl<FnClose>("NtClose");
+    CHECK(open_link && open_dir && query_link && query_dir && close);
+    if (!open_link || !open_dir || !query_link || !query_dir || !close) return;
+
+    // The driver host mirrors the DOS-device links drivers create.
+    RegisterNamespaceLink(L"\\DosDevices\\W10xUnitDevice", L"\\Device\\W10xUnitDevice");
+    Name link(L"\\??\\W10xUnitDevice");
+    HANDLE h = nullptr;
+    CHECK_EQ(open_link(&h, 1, &link.oa), kSuccess);
+    wchar_t buf[64];
+    UNICODE_STRING out{0, sizeof buf, buf};
+    ULONG len = 0;
+    CHECK_EQ(query_link(h, &out, &len), kSuccess);
+    CHECK_EQ(Str(out), std::wstring(L"\\Device\\W10xUnitDevice"));
+    close(h);
+
+    Name dos(L"\\??");
+    HANDLE dir = nullptr;
+    CHECK_EQ(open_dir(&dir, 1, &dos.oa), kSuccess);
+    alignas(8) char buffer[16384];
+    ULONG context = 0, ret = 0;
+    CHECK_EQ(query_dir(dir, buffer, sizeof buffer, FALSE, TRUE, &context, &ret), kSuccess);
+    bool listed = false;
+    for (auto* r = reinterpret_cast<Row*>(buffer); r->Name.Buffer; ++r)
+        listed = listed || (Str(r->Name) == L"W10xUnitDevice" && Str(r->TypeName) == L"SymbolicLink");
+    CHECK(listed);
+    close(dir);
+
+    UnregisterNamespaceLink(L"\\DosDevices\\W10xUnitDevice");
+    CHECK_EQ(open_link(&h, 1, &link.oa), kNameNotFound);
+}
+
 }  // namespace
