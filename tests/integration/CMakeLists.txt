@@ -14,10 +14,16 @@ set(WIN10XBOX_BUILTIN_DIR ${CMAKE_SOURCE_DIR}/wine-pe/out/builtin CACHE PATH "Wi
 # The GUI tests run on a second folder with the console's DLL set (builtins + NLS, "*": "builtin,native"); see
 # prepare_machine.cmake (BUILTIN_ONLY_MACHINE) and docs/TESTING.md for why.
 set(WIN10XBOX_BUILTIN_MACHINE_DIR ${CMAKE_BINARY_DIR}/bin/machine-builtin)
+# Route B's folder: the same, plus the native GUI DLLs and "gui": "native" (prepare_machine.cmake NATIVE_GUI_MACHINE).
+set(WIN10XBOX_NATIVE_GUI_MACHINE_DIR ${CMAKE_BINARY_DIR}/bin/machine-native-gui)
+# Route B + Direct3D 11: the native-GUI set plus the native D3D runtime (prepare_machine.cmake D3D_MACHINE).
+set(WIN10XBOX_D3D_MACHINE_DIR ${CMAKE_BINARY_DIR}/bin/machine-native-d3d)
 set(_default_json ${CMAKE_SOURCE_DIR}/machine/machine.default.json)
 set(_prepare_args
   -DMACHINE=${WIN10XBOX_MACHINE_DIR}
   -DBUILTIN_ONLY_MACHINE=${WIN10XBOX_BUILTIN_MACHINE_DIR}
+  -DNATIVE_GUI_MACHINE=${WIN10XBOX_NATIVE_GUI_MACHINE_DIR}
+  -DD3D_MACHINE=${WIN10XBOX_D3D_MACHINE_DIR}
   -DBUILTIN_DIR=${WIN10XBOX_BUILTIN_DIR}
   -DGUEST_DIR=${CMAKE_BINARY_DIR}/bin/guest
   -DDEFAULT_JSON=${_default_json}
@@ -437,6 +443,69 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   unset(_gitcfg)
   unset(_git)
   unset(_repo)
+endif()
+
+# Route B (docs/GUI.md "Route B: native win32k"): the same window.c on the machine folder machine-native-gui
+# (machine.json "gui": "native"; Wine builtins + the six native GUI DLLs, see prepare_machine.cmake
+# NATIVE_GUI_MACHINE): the guest loads the NATIVE user32/gdi32/gdi32full/win32u from the machine folder, every
+# win32u syscall is passed through by name to the host's own win32u.dll, win32k's user-mode callbacks reach the
+# guest's user32 through the trampolines, and the screenshot is composed from the real window. Needs the native
+# DLLs, so it is registered only for a native Windows build (the Windows CI job stages them from the runner's
+# System32); a cross build run under Wine has no Windows DLLs and does not register it at all (the CI skip gate
+# fails on skipped tests). Without the DLLs in the machine folder it still SKIPs rather than failing obscurely.
+if(NOT CMAKE_CROSSCOMPILING)
+add_test(NAME integration.guest_window_native
+  COMMAND ${CMAKE_COMMAND}
+    -DHOST=$<TARGET_FILE:win10xbox>
+    -DMACHINE=${WIN10XBOX_NATIVE_GUI_MACHINE_DIR}
+    -DPROGRAM=C:\\guest\\guest_window.exe
+    -DEXPECT_EXIT=42
+    "-DEXPECT_REGEX=window: class registered;window: created hwnd=;window: painted;window: pixel\\(10,10\\)=00dc5000 pixel\\(30,30\\)=000000ff;window: done"
+    "-DEXPECT_TRACE_REGEX=gui native: [0-9]+ win32u syscalls pass through;gui native: the guest's win32u syscalls go to the host's win32k;host path [^)]*[Ss]ystem32.[Uu][Ss][Ee][Rr]32.dll;host path [^)]*[Ss]ystem32.[Ww][Ii][Nn]32[Uu].dll;win32u.dll: [0-9]+ of [0-9]+ syscall thunks renumbered;PEB.KernelCallbackTable: the guest's user32 installed;user-mode callback #[0-9]+;native compose: [1-9][0-9]* guest window"
+    "-DFORBID_TRACE_REGEX=host state reached under the guest TLS view"
+    -DDEBUG_SPEC=+dispatch,+modules,+process,+user
+    -DREQUIRE=Windows/System32/user32.dll
+    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
+set_tests_properties(integration.guest_window_native PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "guest_e2e"
+  TIMEOUT 180
+  # The screen pixels as 0xAARRGGBB from the BMP's B,G,R,A bytes: RGB(0,80,220) is ff0050dc, RGB(255,0,0) ffff0000.
+  # WIN10XBOX_WINEDEBUG: Wine's own loader warnings ("No implementation for ntdll.dll.X", failed DllMains).
+  ENVIRONMENT "WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_native.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=110,110,ff0050dc|130,130,ffff0000")
+endif()
+
+# Route B + Direct3D 11 (docs/DECISIONS.md G1): Dear ImGui's example_win32_directx11 (tests/guest/imgui_d3d11.cpp,
+# built when CI provides the Dear ImGui source) on machine-native-d3d: native user32/gdi32/win32u and the native
+# d3d11/dxgi/d3dcompiler_47/d3d10warp as guest code, every win32u syscall -- the D3DKMT ones (NtGdiDdDDI*) included --
+# passed through by name to the host's win32u. It runs WIN10XBOX_IMGUI_FRAMES frames, exits 0, and the screenshot
+# (composed from the real window) must show the ImGui window region non-uniform: at least 3 colours on a 40-pixel
+# grid, the example's clear colour (0.45, 0.55, 0.60) = ff738c99 among them.
+if(NOT CMAKE_CROSSCOMPILING AND WIN10XBOX_HAVE_IMGUI_GUEST)
+add_dependencies(prepare_machine guest_imgui_d3d11)
+add_test(NAME integration.guest_imgui_d3d11
+  COMMAND ${CMAKE_COMMAND}
+    -DHOST=$<TARGET_FILE:win10xbox>
+    -DMACHINE=${WIN10XBOX_D3D_MACHINE_DIR}
+    -DPROGRAM=C:\\guest\\guest_imgui_d3d11.exe
+    -DEXPECT_EXIT=0
+    "-DEXPECT_REGEX=imgui: D3D11CreateDeviceAndSwapChain\\(driver type [0-9]\\) -> 00000000;imgui: adapter ;imgui: frame 1 presented;imgui: done frames=60"
+    "-DEXPECT_TRACE_REGEX=gui native: [0-9]+ win32u syscalls pass through;host path [^)]*[Ss]ystem32.[Dd]3[Dd]11.dll;host path [^)]*[Ss]ystem32.[Dd][Xx][Gg][Ii].dll"
+    "-DFORBID_TRACE_REGEX=host state reached under the guest TLS view"
+    -DDEBUG_SPEC=+dispatch,+modules,+process,+user
+    -DREQUIRE=Windows/System32/d3d11.dll
+    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
+set_tests_properties(integration.guest_imgui_d3d11 PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "guest_e2e"
+  TIMEOUT 240
+  ENVIRONMENT "WIN10XBOX_IMGUI_FRAMES=60;WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_imgui_d3d11.bmp;WIN10XBOX_EXPECT_SCREENSHOT_VARIED=110,140,1010,760,40,3,ff738c99")
 endif()
 
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")

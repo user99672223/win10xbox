@@ -154,3 +154,23 @@ endif()
 
 # Guests from the SQLite shell bring-up (tests/guest/sqlite).
 add_subdirectory(sqlite)
+# Dear ImGui's example_win32_directx11, unmodified, as a guest of route B + Direct3D 11 (tests/guest/imgui_d3d11.cpp
+# wraps it; docs/DECISIONS.md G1). The Dear ImGui release source is not vendored: CI fetches it on the Windows runner
+# (ci.yml, "Fetch Dear ImGui") and passes its root as WIN10XBOX_IMGUI_DIR (environment or cache). MSVC only, like
+# the example's own build_win32.bat; without the source the target and its test do not exist.
+set(WIN10XBOX_IMGUI_DIR "$ENV{WIN10XBOX_IMGUI_DIR}" CACHE PATH "Dear ImGui release source root (guest_imgui_d3d11)")
+if(MSVC AND WIN10XBOX_IMGUI_DIR AND EXISTS "${WIN10XBOX_IMGUI_DIR}/examples/example_win32_directx11/main.cpp")
+  set(_im "${WIN10XBOX_IMGUI_DIR}")
+  add_executable(guest_imgui_d3d11 imgui_d3d11.cpp
+    ${_im}/imgui.cpp ${_im}/imgui_demo.cpp ${_im}/imgui_draw.cpp ${_im}/imgui_tables.cpp ${_im}/imgui_widgets.cpp
+    ${_im}/backends/imgui_impl_dx11.cpp ${_im}/backends/imgui_impl_win32.cpp)
+  target_include_directories(guest_imgui_d3d11 PRIVATE ${_im} ${_im}/backends)
+  target_compile_definitions(guest_imgui_d3d11 PRIVATE UNICODE _UNICODE)
+  target_compile_options(guest_imgui_d3d11 PRIVATE /W3)   # third-party code: not held to the project's /W4
+  target_link_libraries(guest_imgui_d3d11 PRIVATE d3d11 dxgi d3dcompiler user32 gdi32 imm32)
+  win10xbox_add_guest(guest_imgui_d3d11)
+  set(WIN10XBOX_HAVE_IMGUI_GUEST ON CACHE INTERNAL "guest_imgui_d3d11 is built")
+  message(STATUS "guest_imgui_d3d11: Dear ImGui from ${_im}")
+else()
+  set(WIN10XBOX_HAVE_IMGUI_GUEST OFF CACHE INTERNAL "guest_imgui_d3d11 is built")
+endif()

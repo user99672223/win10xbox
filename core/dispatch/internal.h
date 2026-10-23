@@ -349,6 +349,60 @@ bool NeverPassThrough(const char* name);
 // lists unimplemented ones as 0); returns 0 if no correction.
 std::uint32_t NargsOverride(const char* name);
 
+// ---- Dispatch by name, and route B (native user32/gdi32/win32u on the host's win32k) ----
+// Rewrites the `mov eax, imm32` of every rewritten thunk in `patched` (loader::RewriteSyscallStubs) to the
+// table's id for the thunk's name, so a thunk dispatches by NAME whatever build its DLL comes from (dispatcher.cpp).
+// A name with no entry gets an id no entry has (FIXME, "unknown syscall"); with the native GUI active, a
+// NtUser*/NtGdi* name the host's win32u.dll exports gets a pass-through entry of its own instead. Returns how
+// many ids changed. The thunks must still be writable or protectable.
+std::size_t RenumberSyscallThunks(const std::vector<loader::StubPatch>& patched, const wchar_t* module);
+// Every win32u entry becomes PassThrough to the same-named export of `win32u` (the host's win32u.dll), or Todo
+// without one, and NtCallbackReturn passes through to the host kernel (dispatcher.cpp).
+NTSTATUS UseHostWin32u(HMODULE win32u);
+bool NativeGuiActive();
+// win32k_native.cpp. Loads the host's user32/gdi32/win32u (before the PEB take-over: LoadLibrary walks
+// PEB->Ldr), connects the process to win32k, switches the win32u table over (UseHostWin32u) and resolves the
+// host GUI functions core/user's native composer uses. Called by process::Launch when config gui is Native.
+NTSTATUS ConfigureNativeGui();
+// The guest ntdll's user32-facing exports replaced in native mode (RtlInitializeNtUserPfn & co.,
+// NtdllDefWindowProc_*, NtdllDialogWndProc_*, CsrClientConnectToServer) and their replacements, which fit
+// the NATIVE user32 (win32k_native.cpp). ApplyRtlForwarding patches them.
+struct NamedTarget { const char* name; const void* fn; };
+std::vector<NamedTarget> NativeUserOverrides();
+// Traces what RtlInitializeNtUserPfn received, once registered (host view).
+void NoteNativeUserPfn();
+// Called by win10xbox_dispatch before every win32u pass-through: once the guest's user32 has written its own
+// table into PEB.KernelCallbackTable, replaces it with our per-index trampolines, which route each user-mode
+// callback by thread (guest thread: the guest's user32 in the guest TLS view; any other thread: the host's
+// user32). Host view only.
+void NoteNativeWin32uCall();
+// User-mode callbacks routed to the guest's user32 / to the host's so far.
+std::uint64_t NativeCallbacksToGuest();
+std::uint64_t NativeCallbacksToHost();
+// core/user/native_compose.cpp: the guest finished a paint (NtUserEndPaint passed through). Snapshots the
+// guest's windows for user::ComposeFrame and the screenshot. Host view only.
+void NativeGuestPainted();
+// The host's user32/gdi32 entry points core/user's native composer needs, resolved by ConfigureNativeGui
+// while PEB->Ldr was still the host's (GetModuleHandle afterwards would find the GUEST's copies).
+struct HostGui {
+    decltype(&::EnumWindows) EnumWindows;
+    decltype(&::GetWindowThreadProcessId) GetWindowThreadProcessId;
+    decltype(&::IsWindowVisible) IsWindowVisible;
+    decltype(&::IsIconic) IsIconic;
+    decltype(&::GetWindowRect) GetWindowRect;
+    decltype(&::GetWindowDC) GetWindowDC;
+    decltype(&::ReleaseDC) ReleaseDC;
+    decltype(&::GetSystemMetrics) GetSystemMetrics;
+    decltype(&::CreateCompatibleDC) CreateCompatibleDC;
+    decltype(&::CreateDIBSection) CreateDIBSection;
+    decltype(&::SelectObject) SelectObject;
+    decltype(&::BitBlt) BitBlt;
+    decltype(&::DeleteDC) DeleteDC;
+    decltype(&::DeleteObject) DeleteObject;
+    decltype(&::GdiFlush) GdiFlush;
+};
+const HostGui* HostGuiFunctions();   // null unless ConfigureNativeGui succeeded
+
 // ---- Handles ------------------------------------------------------------------
 inline bool IsCurrentProcess(HANDLE h) { return h == reinterpret_cast<HANDLE>(-1) || (h && GetProcessId(h) == GetCurrentProcessId()); }
 inline bool IsCurrentThreadHandle(HANDLE h) {
@@ -483,5 +537,21 @@ struct ForwardResult { std::size_t forwarded = 0, skipped = 0; };
 ForwardResult ApplyRtlForwarding(const loader::MappedImage& guest_ntdll);
 // Writes a 5-byte rel32 jmp at `from` to `to` via a near trampoline. Exposed for tests.
 bool PatchJump(void* from, const void* to);
+// Adds to the guest ntdll's export table every CODE export of the host ntdll that Wine's ntdll does not have,
+// each as a jump to the host function, so a native DLL's imports of them resolve instead of binding to Wine's
+// raising stubs ("No implementation for ntdll.dll.X"): the native user32 imports ~20 of them. The new
+// directory and the jumps live in one allocation within 4 GiB above the image (export RVAs are 32-bit).
+// The image must still be writable. Returns how many names were added.
+std::size_t ExtendGuestNtdllExports(const loader::MappedImage& guest_ntdll);
+// native_imports.cpp. Route B: called by MapImageView for every image; with the native GUI active, extends the
+// guest (Wine) kernelbase's export table with what native DLLs import from it and Wine lacks (jumps to Wine's
+// kernel32 export of the name, else to the host kernelbase's). Remembers the guest kernel32 for that.
+void NoteNativeGuestImage(const loader::MappedImage& img, const std::wstring& host_path);
+// native_d3d.cpp. Route B + Direct3D: called by win10xbox_dispatch around every win32u pass-through (host view).
+// Before NtUserDestroyWindow: compose the guest's windows (NativeGuestPainted). After a NtGdiDdDDI* (D3DKMT) call:
+// trace each name the first time, and compose after present-type calls (throttled).
+void NativeWin32uBefore(const char* name);
+void NativeWin32uAfter(const char* name, std::uint64_t result);
+std::uint64_t NativeD3dkmtCalls();
 
 }  // namespace win10xbox::dispatch::detail

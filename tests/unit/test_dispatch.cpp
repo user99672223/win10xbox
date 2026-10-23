@@ -142,6 +142,49 @@ TEST(dispatch_call_with_args) {
     CHECK_EQ(CallWithArgs(reinterpret_cast<void*>(&Sum12), a, 4), 10);   // missing args are 0
 }
 
+// Dispatch by name: a thunk from another build's DLL (a native win32u/ntdll) carries that build's id in its
+// `mov eax, imm32`; RenumberSyscallThunks rewrites it to the table's id for the thunk's NAME. A name with no
+// entry gets an id that no entry has, so it can never land in whatever entry its foreign id collides with.
+TEST(dispatch_renumber_thunks_by_name) {
+    CHECK_EQ(Initialize(), 0);
+    auto* page = static_cast<std::uint8_t*>(VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    CHECK(page != nullptr);
+    if (!page) return;
+    // Windows 24-byte thunk: mov r10,rcx; mov eax,id; test [7FFE0308h],1; jne; syscall; ret; int 2Eh; ret
+    auto make = [&](std::uint8_t* t, std::uint32_t id) {
+        const std::uint8_t bytes[24] = {0x4C, 0x8B, 0xD1, 0xB8, 0, 0, 0, 0, 0xF6, 0x04, 0x25, 0x08,
+                                        0x03, 0xFE, 0x7F, 0x01, 0x75, 0x03, 0x0F, 0x05, 0xC3, 0xCD, 0x2E, 0xC3};
+        std::memcpy(t, bytes, sizeof bytes);
+        std::memcpy(t + 4, &id, 4);
+    };
+    auto id_at = [](const std::uint8_t* t) { std::uint32_t v; std::memcpy(&v, t + 4, 4); return v; };
+    const std::uint32_t close_id = IdOf("NtClose"), user_id = IdOf("NtUserCreateWindowEx");
+    CHECK(close_id < 0x1000);
+    CHECK(user_id >= 0x1000 && user_id < 0x1800);
+    make(page, 0x106F);          // the native 26100 win32u's NtUserCreateWindowEx id, here on NtClose's thunk
+    make(page + 32, 0x106F);     // the native NtUserCreateWindowEx thunk itself
+    make(page + 64, 0x0123);     // a name the table does not have
+    make(page + 96, close_id);   // already right: left alone
+    std::vector<loader::StubPatch> patched = {
+        {"NtClose", 0x106F, page},
+        {"NtUserCreateWindowEx", 0x106F, page + 32},
+        {"NtNoSuchSyscallAnywhere", 0x0123, page + 64},
+        {"NtClose", close_id, page + 96},
+    };
+    DWORD old;
+    VirtualProtect(page, 4096, PAGE_EXECUTE_READ, &old);   // like a finalized image: protected around the write
+    CHECK_EQ(detail::RenumberSyscallThunks(patched, L"test"), static_cast<std::size_t>(3));
+    CHECK_EQ(id_at(page), close_id);
+    CHECK_EQ(id_at(page + 32), user_id);
+    CHECK_EQ(id_at(page + 64), 0x1FFFu);
+    CHECK(Lookup(0x1FFF) == nullptr);
+    CHECK_EQ(id_at(page + 96), close_id);
+    MEMORY_BASIC_INFORMATION mbi{};
+    VirtualQuery(page, &mbi, sizeof mbi);
+    CHECK(mbi.Protect == PAGE_EXECUTE_READ);
+    VirtualFree(page, 0, MEM_RELEASE);
+}
+
 TEST(dispatch_asm_entry_passthrough_qpc) {
     Initialize();
     CHECK_EQ(SetPolicy("NtQueryPerformanceCounter", Policy::PassThrough), 0);
