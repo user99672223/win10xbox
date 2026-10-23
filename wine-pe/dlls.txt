@@ -60,6 +60,8 @@ wtsapi32
 ole32
 oleaut32
 combase
+coml2     # hard import of ole32 (7zr.exe imports ole32/oleaut32)
+shcore    # hard import of shlwapi and so of shell32 (7zr.exe imports shell32)
 
 # --- helpers / programs ----------------------------------------------------
 programs/services

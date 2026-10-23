@@ -126,6 +126,7 @@ NTSTATUS FallbackTranslateNt(std::wstring_view guest, std::wstring* host) {
 
 constexpr ULONG kFileNameInformation = 9;
 constexpr ULONG kFileNormalizedNameInformation = 48;
+constexpr ULONG kFileBasicInformation = 4;
 constexpr ULONG kFileRenameInformation = 10;
 constexpr ULONG kFileLinkInformation = 11;
 constexpr ULONG kFileRenameInformationBypassAccessCheck = 56;
@@ -413,6 +414,29 @@ static NTSTATUS NTAPI Xl_NtSetInformationFile(HANDLE file, PIO_STATUS_BLOCK io, 
     case kFileRenameInformationEx: case kFileRenameInformationExBypassAccessCheck:
     case kFileLinkInformationEx: case kFileLinkInformationExBypassAccessCheck:
         break;
+    case kFileBasicInformation: {
+        // Wine's SetFileAttributesW opens the file with SYNCHRONIZE only and sets FileBasicInformation on that handle
+        // (its server checks no access there); Windows wants FILE_WRITE_ATTRIBUTES on the handle. When the host
+        // refuses, set the information through a handle of the same file that has it (what ReOpenFile does).
+        NTSTATUS s = Host().NtSetInformationFile(file, io, buffer, length, klass);
+        if (s != st::AccessDenied) return s;
+        UNICODE_STRING empty = {};
+        OBJECT_ATTRIBUTES oa = {};
+        oa.Length = sizeof oa;
+        oa.RootDirectory = file;
+        oa.ObjectName = &empty;
+        oa.Attributes = 0x40;   // OBJ_CASE_INSENSITIVE
+        HANDLE again = nullptr;
+        IO_STATUS_BLOCK open_io = {};
+        constexpr ULONG kShareAll = 7, kOpenReparsePoint = 0x200000, kSynchronousIoNonalert = 0x20,
+                        kBackupIntent = 0x4000;
+        if (Host().NtOpenFile(&again, FILE_WRITE_ATTRIBUTES | SYNCHRONIZE, &oa, &open_io, kShareAll,
+                              kOpenReparsePoint | kSynchronousIoNonalert | kBackupIntent) != st::Success)
+            return s;
+        s = Host().NtSetInformationFile(again, io, buffer, length, klass);
+        Host().NtClose(again);
+        return s;
+    }
     default:
         return Host().NtSetInformationFile(file, io, buffer, length, klass);
     }

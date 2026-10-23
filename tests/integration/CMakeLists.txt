@@ -480,6 +480,30 @@ win10xbox_guest_tls_test(guest_view_violation_detected 42 "+dispatch,+modules"
   "host state reached under the guest TLS view [0-9]+ times \\(last: dispatch::ExportCache\\), [1-9][0-9]* trace lines dropped"
   "")
 
+# ---- Real program: 7-Zip's 7zr.exe (docs/TESTING.md, "Real programs") --------------------------------------------
+# Built from the official source by tools/ci/build_7zip.ps1 (a named step of ci.yml's windows job, which leaves it at
+# <machine>/guest/7zr.exe before ctest runs). Registered only where that step exists (MSVC) or with
+# -DWIN10XBOX_REAL_PROGRAMS=ON after putting a 7zr.exe into the machine folder; never on linux-cross's skip floor.
+# real7z: 7zr a / t / l / x round trip (SHA-256 of every extracted file); real7z_bench: 7zr b -mmt1.
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  foreach(_mode roundtrip bench)
+    if(_mode STREQUAL "roundtrip")
+      set(_t integration.real7z)
+    else()
+      set(_t integration.real7z_bench)
+    endif()
+    add_test(NAME ${_t}
+      COMMAND ${CMAKE_COMMAND} -DHOST=$<TARGET_FILE:win10xbox> -DMACHINE=${WIN10XBOX_BUILTIN_MACHINE_DIR}
+        -DMODE=${_mode} -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR} -P ${CMAKE_CURRENT_SOURCE_DIR}/real7z.cmake)
+    set_tests_properties(${_t} PROPERTIES
+      FIXTURES_REQUIRED w10x_machine
+      SKIP_RETURN_CODE 77
+      SKIP_REGULAR_EXPRESSION "SKIP:"
+      LABELS "guest_e2e;real7z"
+      TIMEOUT 900)
+  endforeach()
+endif()
+
 # The SQLite shell and the regression guests its bring-up needed (tests/guest/sqlite).
 include(${CMAKE_CURRENT_LIST_DIR}/sqlite_tests.cmake)
 

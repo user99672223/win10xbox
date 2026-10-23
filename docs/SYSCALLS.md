@@ -53,7 +53,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0024 | NtOpenThreadToken | 4 | Emulate | token |
 | 0x0025 | NtQueryInformationThread | 5 | Translate | ThreadAmILastThread counts guest threads only |
 | 0x0026 | NtOpenProcess | 4 | PassThrough |  |
-| 0x0027 | NtSetInformationFile | 5 | Translate | FileRenameInformation*/FileLinkInformation*: the target name goes through the VFS |
+| 0x0027 | NtSetInformationFile | 5 | Translate | FileRenameInformation*/FileLinkInformation*: the target name goes through the VFS; FileBasicInformation on a SYNCHRONIZE-only handle (Wine SetFileAttributesW) is set through a FILE_WRITE_ATTRIBUTES reopen |
 | 0x0028 | NtMapViewOfSection | 10 | Translate | views of our image sections are mapped by core/loader |
 | 0x0029 | NtAccessCheckAndAuditAlarm | 11 | PassThrough |  |
 | 0x002a | NtUnmapViewOfSection | 2 | Translate | views of our image sections are mapped by core/loader |
