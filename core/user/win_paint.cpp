@@ -113,6 +113,7 @@ void Compose(const std::vector<RetainedLayer>& layers, std::uint32_t* bgra, std:
             for (int x = r.left; x < r.right; ++x) dst[x] = src[x - l.screen.left] | 0xff000000u;
         }
     }
+    ComposeCursor(bgra, width, height, stride);
 }
 
 std::vector<RetainedLayer> LiveLayers() {
@@ -303,6 +304,7 @@ void PaintNonClient(HWND hwnd) {
             DrawGlyphRun(t, text_box, text_box.left, caption.top + (cap - 1 - 16) / 2, w->text,
                          ColorToPixel(SysColor(active ? COLOR_CAPTIONTEXT : COLOR_INACTIVECAPTIONTEXT)));
         }
+        MenuPaintBar(w, dc, t);   // win_menu.cpp: the menu bar, if any
         NoteDrawn(dc, t, RECT{0, 0, ww, wh});
     }
     ReleaseDCInternal(hwnd, hdc);

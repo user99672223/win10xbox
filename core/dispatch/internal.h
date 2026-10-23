@@ -2,12 +2,15 @@
 // Not a public header: only core/dispatch/*.cpp and tests/unit/test_dispatch.cpp
 // include it.
 #pragma once
+#include "win10xbox/config.h"
 #include "win10xbox/dispatch.h"
 #include "win10xbox/loader.h"
+#include "win10xbox/probe.h"
 #include "win10xbox/trace.h"
 #include <intrin.h>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -140,6 +143,9 @@ struct ThreadState {
     // through SetSyscallLastError and the dispatcher writes that value instead.
     std::uint32_t syscall_error;
     std::uint32_t syscall_error_set;
+    // The start address the guest asked for (the EXE entry for the main thread, NtCreateThreadEx's StartRoutine
+    // otherwise): what ThreadQuerySetWin32StartAddress reports. The host thread itself starts in GuestThreadProc.
+    void*         win32_start;
 };
 static_assert(offsetof(ThreadState, host_tls) == 0x00);
 static_assert(offsetof(ThreadState, host_fls) == 0x08);
@@ -421,7 +427,15 @@ struct TranslatedOA {
 std::wstring_view OAName(const OBJECT_ATTRIBUTES* oa);
 // Guest OBJECT_ATTRIBUTES -> host. STATUS_SUCCESS (translated or untouched) or
 // an error the syscall should return (e.g. unmapped drive).
-NTSTATUS TranslateOA(const OBJECT_ATTRIBUTES* in, TranslatedOA* out);
+// `create_options`: the NtCreateFile/NtOpenFile options (FILE_DIRECTORY_FILE decides the status of "file\\").
+NTSTATUS TranslateOA(const OBJECT_ATTRIBUTES* in, TranslatedOA* out, ULONG create_options = 0);
+// The mount-point or symbolic-link reparse buffer `in` (REPARSE_DATA_BUFFER) with its substitute name replaced by
+// `map(name)`, laid out the way NTFS demands (substitute name first, print name right behind it, both terminated).
+// False, with *out untouched, when the buffer is another kind of reparse point, a relative symbolic link, malformed,
+// or `map` leaves the name alone: the caller then uses `in` as it is.
+bool RewriteReparseTarget(const std::uint8_t* in, std::size_t len,
+                          const std::function<bool(std::wstring_view, std::wstring*)>& map,
+                          std::vector<std::uint8_t>* out);
 // Guest NT path ("\??\C:\x") -> host NT path. Same contract as vfs::TranslateNtPath.
 NTSTATUS TranslateGuestNtPath(std::wstring_view guest, std::wstring* host);
 // Host Win32 path -> guest Win32 path; returns false when outside every mapping.
@@ -530,6 +544,11 @@ inline constexpr std::uint16_t kDbgStrdup = 1461;            // __wine_dbg_strdu
 }  // namespace wine_ordinal
 std::uint64_t NtdllUnixLibHandle();
 void RegisterNtdllUnixLib();
+// ws2_32's resolver unix calls on host Winsock (unix_ws2_32.cpp); the table is in unix_calls.cpp.
+NTSTATUS WINAPI Ws2UnixGetAddrInfo(void* args);
+NTSTATUS WINAPI Ws2UnixGetHostByAddr(void* args);
+NTSTATUS WINAPI Ws2UnixGetHostByName(void* args);
+NTSTATUS WINAPI Ws2UnixGetNameInfo(void* args);
 std::uint64_t UnixLibHandleByName(std::wstring_view module_name);   // 0 if none
 // Replacements patched over the guest ntdll's __wine_dbg_* exports.
 struct WineDebugChannel { unsigned char flags; char name[15]; };
@@ -539,6 +558,16 @@ extern "C" int __cdecl w10x_wine_dbg_output(const char* str);
 extern "C" const char* __cdecl w10x_wine_dbg_strdup(const char* str);
 // Replacement for the guest ntdll's RtlCreateHeap (the host's heap, with Wine's "no maximum means growable").
 extern "C" PVOID NTAPI w10x_RtlCreateHeap(ULONG flags, PVOID base, SIZE_T reserve, SIZE_T commit, PVOID lock, PVOID params);
+
+// ---- Firmware tables (firmware.cpp, D18) ---------------------------------------------
+// Builds the synthetic SMBIOS table from config::machine_identity and the host's topology; `vendor` is the 12-character
+// CPU vendor (the string CPUID leaf 0 serves). Call before the guest runs.
+void BuildFirmwareTables(const std::string& vendor);
+// The raw SMBIOS data (RawSMBIOSData) for an identity; BuildFirmwareTables serves the host's topology through it.
+std::vector<std::uint8_t> MakeSmbios(const config::Config::MachineIdentity& id, const std::string& vendor,
+                                     unsigned cores, unsigned threads, unsigned mhz, std::uint32_t id_edx);
+// NtQuerySystemInformation(SystemFirmwareTableInformation): true when answered here (*status is the result).
+bool QuerySystemFirmwareTable(PVOID buffer, ULONG length, PULONG ret_len, NTSTATUS* status);
 
 // ---- Function-level forwarding (rtl_forward.cpp) -----------------------------
 struct ForwardResult { std::size_t forwarded = 0, skipped = 0; };

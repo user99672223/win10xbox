@@ -36,6 +36,16 @@ DWORD Now() {
     return static_cast<DWORD>((((static_cast<ULONGLONG>(high) << 32) | low) * multiplier) >> 24);
 }
 
+// The clock of the timers: milliseconds from the performance counter. GetTickCount64 only advances every
+// ~15.6 ms on Windows, which would put every deadline up to a tick late or early.
+ULONGLONG TimerNow() {
+    LARGE_INTEGER freq, count;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&count);
+    return static_cast<ULONGLONG>(count.QuadPart / freq.QuadPart) * 1000 +
+           static_cast<ULONGLONG>(count.QuadPart % freq.QuadPart) * 1000 / static_cast<ULONGLONG>(freq.QuadPart);
+}
+
 void FillWinProcParams(abi::WinProcParams* p, WindowObj* w, UINT msg, WPARAM wp, LPARAM lp, bool ansi, int mapping) {
     WNDPROC func = w->proc.w ? w->proc.w : w->proc.a;
     if (!w->unicode && w->proc.a) func = w->proc.a;
@@ -89,7 +99,7 @@ void ProcessSentMessages(UserThread& t) {
             continue;
         }
         ++t.send_depth;
-        const LRESULT r = Win(m->hwnd) ? CallWindowProcInternal(m->hwnd, m->msg, m->wparam, m->lparam, m->ansi) : 0;
+        const LRESULT r = Win(m->hwnd) ? CallWindowProcHooked(m->hwnd, m->msg, m->wparam, m->lparam, m->ansi, false) : 0;
         --t.send_depth;
         m->result = r;
         m->done = true;
@@ -100,10 +110,11 @@ void ProcessSentMessages(UserThread& t) {
 // The earliest timer deadline of `t`, in milliseconds from now (INFINITE when none).
 DWORD NextTimerDelay(const UserThread& t) {
     if (t.timers.empty()) return INFINITE;
-    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG now = TimerNow();
     ULONGLONG best = ~0ull;
     for (const Timer& tm : t.timers) best = std::min(best, tm.next);
-    return best <= now ? 0 : static_cast<DWORD>(std::min<ULONGLONG>(best - now, 0x7ffffffe));
+    // +1: a wait that ends a fraction of a millisecond early would find nothing due and wait again for a whole tick
+    return best <= now ? 0 : static_cast<DWORD>(std::min<ULONGLONG>(best - now + 1, 0x7ffffffe));
 }
 
 UINT QueueBits(UserThread& t) {
@@ -116,7 +127,7 @@ UINT QueueBits(UserThread& t) {
         else bits |= QS_MOUSEBUTTON;
     }
     if (FindPaintWindow(&t)) bits |= QS_PAINT;
-    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG now = TimerNow();
     for (const Timer& tm : t.timers)
         if (tm.next <= now) { bits |= QS_TIMER; break; }
     return bits;
@@ -136,7 +147,7 @@ HwStatus ProcessMouseMessage(UserThread& t, const QueuedMsg& raw, MSG* out, HWND
 void AcceptInput(UserThread& t, const QueuedMsg& q);
 
 // One PeekMessage pass. Lock held; may drop it (sent messages, hit testing).
-bool PeekOnce(UserThread& t, MSG* out, HWND hwnd, UINT first, UINT last, UINT flags) {
+bool PeekOnceRaw(UserThread& t, MSG* out, HWND hwnd, UINT first, UINT last, UINT flags) {
     ProcessSentMessages(t);
     const bool remove = (flags & PM_REMOVE) != 0;
     const UINT qs = flags >> 16;   // PM_QS_*: 0 means everything
@@ -188,6 +199,15 @@ bool PeekOnce(UserThread& t, MSG* out, HWND hwnd, UINT first, UINT last, UINT fl
             }
             *out = q.msg;
             if (remove) AcceptInput(t, q);
+            if (IsHooked(WH_KEYBOARD) && q.vk &&
+                (q.msg.message == WM_KEYDOWN || q.msg.message == WM_KEYUP || q.msg.message == WM_SYSKEYDOWN ||
+                 q.msg.message == WM_SYSKEYUP) &&
+                CallHooks(WH_KEYBOARD, remove ? HC_ACTION : HC_NOREMOVE, LOWORD(q.msg.wParam), q.msg.lParam, 0)) {
+                // a hook ate the key (message.c process_keyboard_message): drop it, removed or not
+                if (!remove) AcceptInput(t, q);
+                i = 0;
+                continue;
+            }
             SetMessageInfo(t, *out, q.extra);
             return true;
         }
@@ -213,16 +233,29 @@ bool PeekOnce(UserThread& t, MSG* out, HWND hwnd, UINT first, UINT last, UINT fl
         }
     }
     if (want_timer) {
-        const ULONGLONG now = GetTickCount64();
+        const ULONGLONG now = TimerNow();
         for (Timer& tm : t.timers) {
             if (tm.next > now || !WindowMatches(hwnd, tm.hwnd) || !MessageInRange(tm.msg, first, last)) continue;
             *out = MSG{tm.hwnd, tm.msg, tm.id, reinterpret_cast<LPARAM>(tm.proc), Now(), s.cursor};
-            if (remove) tm.next = now + tm.timeout;
+            if (remove) {
+                // The next deadline follows the previous one, so a timer serviced a little late does not drift;
+                // one that fell behind by whole periods skips them (a single WM_TIMER stands for all of them).
+                tm.next += tm.timeout;
+                while (tm.next <= now) tm.next += tm.timeout;
+            }
             SetMessageInfo(t, *out, 0);
             return true;
         }
     }
     return false;
+}
+
+// PeekOnceRaw, then WH_GETMESSAGE for the message handed out (the hook may change it).
+bool PeekOnce(UserThread& t, MSG* out, HWND hwnd, UINT first, UINT last, UINT flags) {
+    if (!PeekOnceRaw(t, out, hwnd, first, last, flags)) return false;
+    if (IsHooked(WH_GETMESSAGE))
+        CallHooks(WH_GETMESSAGE, HC_ACTION, flags & PM_REMOVE, reinterpret_cast<LPARAM>(out), sizeof(MSG));
+    return true;
 }
 
 // Drains the display driver's input queue (lock NOT held: the sink takes it). One thread at a time, so
@@ -252,11 +285,23 @@ DWORD WaitForQueue(UserThread& t, DWORD count, const HANDLE* handles, DWORD time
     HANDLE driver_wake = d ? static_cast<HANDLE>(d->WakeHandle()) : nullptr;
     if (driver_wake) hs.push_back(driver_wake);
     const DWORD timer = NextTimerDelay(t);
-    if (timer < timeout) timeout = timer;
+    // The host's sleeps end on its clock tick (up to 15.6 ms late), which would put every WM_TIMER a tick behind and
+    // make the next one come too soon after it. A deadline further off than kSpinMs is waited for in a sleep that
+    // ends before it (the caller comes back with the rest); the last kSpinMs are spent polling.
+    constexpr DWORD kSpinMs = 16;
+    const bool spin = !(wait_all && count) && timer <= kSpinMs && timer < timeout;
+    const ULONGLONG spin_end = TimerNow() + timer;
+    if (timer < timeout) timeout = timer > kSpinMs ? timer - kSpinMs : timer;
     DWORD r;
     {
         UnlockScope unlock;
-        if (wait_all && count) {
+        if (spin) {
+            for (;;) {
+                r = WaitForMultipleObjectsEx(static_cast<DWORD>(hs.size()), hs.data(), FALSE, 0, alertable);
+                if (r != WAIT_TIMEOUT || TimerNow() >= spin_end) break;
+                SwitchToThread();
+            }
+        } else if (wait_all && count) {
             // MWMO_WAITALL: the handles all together, or the queue
             r = WaitForMultipleObjectsEx(count, handles, TRUE, 0, alertable);
             if (r == WAIT_TIMEOUT)
@@ -615,6 +660,20 @@ HwStatus ProcessMouseMessage(UserThread& t, const QueuedMsg& raw, MSG* out, HWND
         return HwStatus::Skip;
     }
 
+    if (IsHooked(WH_MOUSE)) {
+        // message.c: MOUSEHOOKSTRUCTEX, the point in screen coordinates, before anything else happens to the message
+        MOUSEHOOKSTRUCTEX hook{};
+        hook.pt = msg.pt;
+        hook.hwnd = hwnd;
+        hook.wHitTestCode = static_cast<UINT>(hittest);
+        hook.dwExtraInfo = raw.extra;
+        hook.mouseData = static_cast<DWORD>(wparam) & 0xffff0000u;
+        if (CallHooks(WH_MOUSE, remove ? HC_ACTION : HC_NOREMOVE, message, reinterpret_cast<LPARAM>(&hook), sizeof hook)) {
+            accept();
+            return HwStatus::Consumed;
+        }
+    }
+
     if (hittest == HTERROR || hittest == HTNOWHERE) {
         SendMessageInternal(hwnd, WM_SETCURSOR, reinterpret_cast<WPARAM>(hwnd), MAKELONG(static_cast<WORD>(hittest), base));
         accept();
@@ -815,7 +874,7 @@ LRESULT SendMessageInternal(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, bool ansi
     }
     hwnd = w->handle;
     if (w->tid == GetCurrentThreadId() || (w->flags & (kWinIsDesktop | kWinIsMsgParent)))
-        return CallWindowProcInternal(hwnd, msg, wp, lp, ansi);
+        return CallWindowProcHooked(hwnd, msg, wp, lp, ansi, true);
     UserThread* target = FindUserThreadById(w->tid);
     if (!target || target->exiting) return 0;
     auto* m = new SentMsg{hwnd, msg, wp, lp, ansi};
@@ -945,11 +1004,8 @@ LRESULT WINAPI NtUserMessageCall(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         return DefWindowProcInternal(hwnd, msg, wparam, lparam, ansi != 0);
     case abi::McScrollBarWndProc:
         return ScrollBarWndProcInternal(hwnd, msg, wparam, lparam, ansi != 0);   // win_scroll.cpp
-    case abi::McPopupMenuWndProc: {
-        static volatile LONG reported = 0;   // plain flag
-        if (!InterlockedExchange(&reported, 1)) FIXME(user, "popup menu window procedures are not implemented");
-        return DefWindowProcInternal(hwnd, msg, wparam, lparam, ansi != 0);
-    }
+    case abi::McPopupMenuWndProc:
+        return MenuPopupWndProc(hwnd, msg, wparam, lparam, ansi != 0);   // win_menu.cpp
     case abi::McCallWindowProc: {
         auto* p = static_cast<abi::WinProcParams*>(result_info);
         if (!p || !p->func) return FALSE;
@@ -1116,7 +1172,7 @@ UINT_PTR WINAPI NtUserSetTimer(HWND hwnd, UINT_PTR id, UINT timeout, TIMERPROC p
     for (Timer& tm : t->timers)
         if (tm.hwnd == hwnd && tm.id == id && tm.msg == WM_TIMER) {
             tm.timeout = timeout;
-            tm.next = GetTickCount64() + timeout;
+            tm.next = TimerNow() + timeout;
             tm.proc = proc;
             WakeThread(t, 0);
             return id ? id : 1;
@@ -1126,7 +1182,7 @@ UINT_PTR WINAPI NtUserSetTimer(HWND hwnd, UINT_PTR id, UINT timeout, TIMERPROC p
     tm.id = id;
     tm.msg = WM_TIMER;
     tm.timeout = timeout;
-    tm.next = GetTickCount64() + timeout;
+    tm.next = TimerNow() + timeout;
     tm.proc = proc;
     t->timers.push_back(tm);
     WakeThread(t, 0);   // a thread blocked in GetMessage recomputes its deadline
@@ -1166,7 +1222,7 @@ UINT_PTR WINAPI NtUserSetSystemTimer(HWND hwnd, UINT_PTR id, UINT timeout) {
     for (Timer& tm : t->timers)
         if (tm.hwnd == w->handle && tm.id == id && tm.msg == abi::kWmSysTimer) {
             tm.timeout = timeout;
-            tm.next = GetTickCount64() + timeout;
+            tm.next = TimerNow() + timeout;
             return id;
         }
     Timer tm;
@@ -1174,7 +1230,7 @@ UINT_PTR WINAPI NtUserSetSystemTimer(HWND hwnd, UINT_PTR id, UINT timeout) {
     tm.id = id;
     tm.msg = abi::kWmSysTimer;
     tm.timeout = timeout;
-    tm.next = GetTickCount64() + timeout;
+    tm.next = TimerNow() + timeout;
     t->timers.push_back(tm);
     WakeThread(t, 0);
     return id;
@@ -1193,7 +1249,7 @@ ULONG_PTR WINAPI NtUserGetThreadState(int cls) {
     case abi::TsDefaultImeWindow:
     case abi::TsDefaultInputContext: return 0;
     case abi::TsInputState: return QueueBits(t) & (QS_KEY | QS_MOUSEBUTTON);
-    case abi::TsCursor: return winexbox::CursorId{} + (Driver() ? Driver()->CursorCurrent() : 0);
+    case abi::TsCursor: return reinterpret_cast<ULONG_PTR>(ThreadCursor(t));
     case abi::TsExtraInfo: return t.info ? static_cast<ULONG_PTR>(t.info->message_extra) : 0;
     case abi::TsInSendMessage: return t.send_depth ? ISMEX_SEND : ISMEX_NOSEND;
     case abi::TsMessageTime: return t.info ? t.info->message_time : 0;
@@ -1307,42 +1363,6 @@ BOOL WINAPI NtUserSetCursorPos(INT x, INT y) {
     LockGuard lock;
     if (Driver()) Driver()->CursorSetPos(x, y);
     S().cursor = POINT{x, y};
-    return TRUE;
-}
-
-HCURSOR WINAPI NtUserSetCursor(HCURSOR cursor) {
-    LockGuard lock;
-    winexbox::IWinexboxDriver* d = Driver();
-    const HCURSOR prev = d ? reinterpret_cast<HCURSOR>(d->CursorCurrent()) : nullptr;
-    if (d) d->CursorSet(0, reinterpret_cast<winexbox::CursorId>(cursor));
-    return prev;
-}
-
-HCURSOR WINAPI NtUserGetCursor() {
-    LockGuard lock;
-    winexbox::IWinexboxDriver* d = Driver();
-    return d ? reinterpret_cast<HCURSOR>(d->CursorCurrent()) : nullptr;
-}
-
-namespace { LONG g_cursor_count = 0; }
-
-INT WINAPI NtUserShowCursor(BOOL show) {
-    return show ? InterlockedIncrement(&g_cursor_count) : InterlockedDecrement(&g_cursor_count);
-}
-
-BOOL WINAPI NtUserClipCursor(const RECT* rect) {
-    LockGuard lock;
-    winexbox::IWinexboxDriver* d = Driver();
-    if (!d) return FALSE;
-    if (!rect) return d->CursorClip(nullptr, true);
-    const winexbox::Rect r{rect->left, rect->top, rect->right, rect->bottom};
-    return d->CursorClip(&r, false);
-}
-
-BOOL WINAPI NtUserGetClipCursor(RECT* rect) {
-    LockGuard lock;
-    if (!rect) return FALSE;
-    ScreenRect(rect);
     return TRUE;
 }
 

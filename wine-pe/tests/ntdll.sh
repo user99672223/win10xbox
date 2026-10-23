@@ -82,7 +82,27 @@ cmd_build() {
         echo "#define WIN32_LEAN_AND_MEAN"
         echo "#include <windows.h>"
         echo "#define STANDALONE"
+        # `ntdll_test.exe <unit> --platform=windows`: Wine's harness takes the guest for Wine (our ntdll exports
+        # wine_get_version) and so expects Wine's known deficiencies in every todo_wine block; a unit whose
+        # behaviour is the Windows host's own (file: the host's NTFS) is run as on Windows. Wine's main() reads
+        # WINETEST_PLATFORM, which the guest cannot be given through its environment (it is the layer's), so a
+        # main() of ours sets it from the command line and takes the argument away: units look at argc (virtual,
+        # info, sync, pipe treat any extra argument as "I am the child process").
+        echo "#define main w10x_wine_main"
         echo "#include \"wine/test.h\""
+        echo "#undef main"
+        echo "#include <string.h>"
+        echo "int main(int argc, char **argv)"
+        echo "{"
+        echo "    int i, j;"
+        echo "    for (i = j = 1; i < argc; i++)"
+        echo "    {"
+        echo "        if (i > 1 && !strcmp(argv[i], \"--platform=windows\")) SetEnvironmentVariableA(\"WINETEST_PLATFORM\", \"windows\");"
+        echo "        else argv[j++] = argv[i];"
+        echo "    }"
+        echo "    argv[j] = NULL;"
+        echo "    return w10x_wine_main(j, argv);"
+        echo "}"
         for u in "${units[@]}"; do echo "extern void func_$u(void);"; done
         echo "const struct test winetest_testlist[] = {"
         for u in "${units[@]}"; do echo "    { \"$u\", func_$u },"; done

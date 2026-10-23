@@ -12,6 +12,9 @@
 #if WIN10XBOX_HAVE_CLOCK
 #include "win10xbox/clock.h"
 #endif
+#if WIN10XBOX_HAVE_AFD
+#include "win10xbox/afd.h"
+#endif
 #if WIN10XBOX_HAVE_TOKEN
 #include "win10xbox/token.h"
 #endif
@@ -249,6 +252,19 @@ std::wstring DefaultCurrentDirectory() {
 #endif
 }
 
+// D18: the machine identity is the one CPU story; the CPUID patch serves its brand, signature and RDRAND.
+void ApplyMachineIdentity(CpuPolicy& p) {
+    const auto& id = config::Current().machine_identity;
+    std::memset(p.brand, 0, sizeof(p.brand));
+    for (std::size_t i = 0; i < id.cpu_brand.size() && i < sizeof(p.brand) - 1; ++i)
+        p.brand[i] = id.cpu_brand[i] < 0x80 ? static_cast<char>(id.cpu_brand[i]) : '?';
+    p.family = id.cpu_family;
+    p.model = id.cpu_model;
+    p.stepping = id.cpu_stepping;
+    p.advertise_rdrand = id.advertise_rdrand;
+    p.hide_hypervisor = p.hide_hypervisor || id.hide_hypervisor_leaf;
+}
+
 // ---- machine.json "cpu" without the VFS module -----------------------------------------
 #if !WIN10XBOX_HAVE_VFS
 // Tiny extraction (the VFS module owns machine.json parsing in general):
@@ -287,6 +303,7 @@ void LoadCpuPolicy(const std::wstring& machine_root) {
         WARN(process, "machine.json cpu.vendor \"%s\" is not 12 characters, using the real vendor", p.vendor.c_str());
         p.vendor.clear();
     }
+    ApplyMachineIdentity(p);
     SetCpuPolicy(p);
     TRACE(process, "cpu policy: vendor=%s hide_hypervisor=%d", p.vendor.empty() ? "(real)" : p.vendor.c_str(),
           p.hide_hypervisor);
@@ -341,7 +358,9 @@ DWORD WINAPI GuestThreadProc(void* p) {
     std::uint32_t flags = gs->flags;
     const bool wait_for_peb = gs->wait_for_peb, clear_skip = gs->clear_skip_attach;
     delete gs;
-    if (!AttachThreadState(kThreadGuest | flags))
+    if (ThreadState* ts = AttachThreadState(kThreadGuest | flags))
+        ts->win32_start = start;
+    else
         WARN(process, "no thread state: guest/host TEB view switching disabled on this thread");
     if (clear_skip) {
         auto* tf = reinterpret_cast<USHORT*>(static_cast<std::uintptr_t>(__readgsqword(0x30)) + kTebSameTebFlags);
@@ -590,7 +609,10 @@ int Launch(const LaunchOptions& opts) {
     cfg.os_ubr = mi.windows.ubr;
 #endif
 #if WIN10XBOX_HAVE_REGISTRY
+    registry::SetHostNamespace(reinterpret_cast<registry::OpenDirectoryFn>(HostExport("NtOpenDirectoryObject")),
+                               reinterpret_cast<registry::CloseObjectFn>(HostExport("NtClose")));
     if ((s = registry::Initialize(root))) WARN(process, "registry::Initialize failed: %08lx", static_cast<unsigned long>(s));
+    else if ((s = registry::EnablePersistence())) WARN(process, "registry overlay file not loaded: %08lx", static_cast<unsigned long>(s));
 #endif
 #if WIN10XBOX_HAVE_CLOCK
     {
@@ -601,6 +623,7 @@ int Launch(const LaunchOptions& opts) {
         cs.frozen = mi.clock.frozen;
 #endif
         if ((s = clock::Initialize(cs))) WARN(process, "clock::Initialize failed: %08lx", static_cast<unsigned long>(s));
+        clock::EnsureSharedDataPage();   // the scanner serves the version block of KUSER_SHARED_DATA from it (D18)
     }
 #endif
 #if WIN10XBOX_HAVE_TOKEN
@@ -635,6 +658,7 @@ int Launch(const LaunchOptions& opts) {
             WARN(process, "machine.json cpu.vendor \"%s\" is not 12 characters, using the real vendor", cp.vendor.c_str());
             cp.vendor.clear();
         }
+        ApplyMachineIdentity(cp);
         SetCpuPolicy(cp);
         for (const auto& [name, value] : mi.syscall_overrides) {
             std::string n(name.begin(), name.end()), v(value.begin(), value.end());
@@ -672,7 +696,15 @@ int Launch(const LaunchOptions& opts) {
                 return static_cast<int>(s);
             }
         }
+        std::string vendor;
+        const CpuPolicy cp = GetCpuPolicy();
+        vendor = cp.vendor.empty() ? std::string("AuthenticAMD") : cp.vendor;
+        dispatch::detail::BuildFirmwareTables(vendor);
+        if (cp.advertise_rdrand) InstallRandomInstructionEmulation();
     }
+#if WIN10XBOX_HAVE_AFD
+    afd::PrimeHost();   // before the PEB take-over (see afd.h)
+#endif
     RegisterNtdllUnixLib();
 
     if ((s = MapGuestNtdll(root))) return static_cast<int>(s);
@@ -742,6 +774,9 @@ int WaitForGuest(DWORD timeout_ms) {
         DWORD code = 0;
         GetExitCodeThread(g.main_thread, &code);
         WARN(process, "guest main thread ended without ExitProcess (code %lu)", code);
+#if WIN10XBOX_HAVE_REGISTRY
+        registry::PersistOverlay();
+#endif
         g.exit_code = static_cast<LONG>(code);
         RestorePebFields();
     }
@@ -754,6 +789,11 @@ int WaitForGuest(DWORD timeout_ms) {
     InterlockedExchange(&g.exit_code, static_cast<LONG>(exit_code));
     InterlockedExchange(&g.exited, 1);
     TRACE(process, "guest exit, code %u", exit_code);
+#if WIN10XBOX_HAVE_REGISTRY
+    // What a program wrote to the registry outlives it (docs/DISPATCHER.md). Before the other threads are killed: one
+    // that dies inside a registry call would leave the registry's mutex held.
+    registry::PersistOverlay();
+#endif
     TerminateOtherGuestThreads(static_cast<NTSTATUS>(exit_code));
     RestorePebFields();
     ThreadState* self = CurrentThreadState();

@@ -32,6 +32,7 @@ RECT NcInsets(const WindowObj* w) {
     RECT r{0, 0, 0, 0};
     AdjustRectForStyle(&r, w->style, false, w->ex_style);
     RECT insets{-r.left, -r.top, r.right, r.bottom};
+    insets.top += MenuBarHeight(w);   // win_menu.cpp: SM_CYMENU below the caption when the window has a menu
     if (w->style & WS_VSCROLL) insets.right += SystemMetric(SM_CXVSCROLL);
     if (w->style & WS_HSCROLL) insets.bottom += SystemMetric(SM_CYHSCROLL);
     return insets;
@@ -80,6 +81,7 @@ LRESULT HitTest(WindowObj* w, POINT pt) {
     const RECT wr = WindowRectScreen(w), cr = ClientRectScreen(w);
     if (!PtInRectangle(wr, pt.x, pt.y)) return HTNOWHERE;
     if (PtInRectangle(cr, pt.x, pt.y)) return HTCLIENT;
+    if (MenuBarHitTest(w, pt)) return HTMENU;
     if (w->style & WS_MINIMIZE) return HTCAPTION;
     const int border = FrameInset(w);
     if ((w->style & WS_THICKFRAME) && !(w->style & WS_MAXIMIZE)) {
@@ -356,9 +358,12 @@ LRESULT DefWindowProcInternal(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, bool an
             if (SendMessageInternal(w->parent, WM_SETCURSOR, wp, lp)) return TRUE;
             if (!(w = Win(hwnd))) return FALSE;
         }
-        if (LOWORD(lp) == HTCLIENT && w->cls->cursor)
-            if (winexbox::IWinexboxDriver* d = Driver()) d->CursorSet(reinterpret_cast<winexbox::WindowId>(hwnd),
-                                                                       reinterpret_cast<winexbox::CursorId>(w->cls->cursor));
+        // Wine's handle_set_cursor: the class cursor over the client area; anywhere else the built-in arrow (the sizing
+        // cursors of the borders are not chosen)
+        if (UserThread* t = FindUserThread()) {
+            if (LOWORD(lp) == HTCLIENT && w->cls->cursor) SetThreadCursor(*t, w->cls->cursor);
+            else if (LOWORD(lp) != HTCLIENT) { t->cursor = nullptr; t->cursor_set = false; }
+        }
         return FALSE;
     case WM_SYSKEYDOWN:
         if (wp == VK_F4 && (HIWORD(lp) & KF_ALTDOWN)) PostMessageInternal(TopLevelOf(hwnd), WM_SYSCOMMAND, SC_CLOSE, 0);
@@ -394,6 +399,7 @@ LRESULT DefWindowProcInternal(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, bool an
         return 0;
     case WM_NCDESTROY:
         w->text.clear();
+        MenuDestroyWindowMenu(w);
         return 0;
     case WM_NCLBUTTONDOWN: {
         if (IsTopLevel(w) && FindUserThread() && FindUserThread()->active != hwnd) SetActiveWindowInternal(hwnd, true);
@@ -414,6 +420,9 @@ LRESULT DefWindowProcInternal(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, bool an
             break;
         case HTVSCROLL: case HTHSCROLL:
             ScrollNcLButtonDown(hwnd, lp);   // win_scroll.cpp: a click on a non-client scroll bar
+            break;
+        case HTMENU:
+            MenuBarClick(hwnd, PointOf(lp));   // win_menu.cpp: opens the item's popup (a modal loop)
             break;
         }
         return 0;

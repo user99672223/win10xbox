@@ -36,6 +36,10 @@ alpc, env, error, large_int, path, rtlbitmap, string. All 0 failures in both Deb
 * `change` passes on the Windows runners (82/82) but is not listed: `change.c:241` waits 0 ms for a directory
   notification right after `RemoveDirectory`, and under a Wine host it fails one run in two. Candidate once it has
   run stably on the runners.
+* `file` is not listed and cannot be: Windows itself fails 29 of its assertions on a runner (26 of them
+  `todo_wine ok(io.Status == 0xdeadbeef)`, where the runner's NTFS writes the status block of a failed rename or link).
+  It is gated by parity instead (`wine-pe/tests/ntdll.parity`, `tests/winetest/run_ntdll.cmake`): the layer must fail
+  no assertion that the same binary passes natively on the same runner. See docs/slices/wt-ntdll-file.md.
 * `rtlstr` is not listed: 2178627 assertions, 1 failure on the runners:
   `rtlstr.c:761: RtlDowncaseUnicodeString works wrong: U+037F is converted to U+037F, expected U+03F3`. The case
   table is Windows' own (`l_intl.nls` from the runner, served by `NtGetNlsSectionPtr`); Windows leaves U+037F alone,

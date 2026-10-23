@@ -1,0 +1,5 @@
+# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/media.sh --dll dwrite; numbers in docs/slices/wt-media.md)
+# measured on the CI linux-cross job (ci run 39930353399, head 14697fd); font tests need fonts in Windows\Fonts, none are staged
+analyzer crash 0
+font crash 0
+layout crash 0

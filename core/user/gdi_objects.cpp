@@ -587,6 +587,14 @@ std::uint32_t DibViewPixel(const DibView& v, int x, int y) {
                       static_cast<int>(v.colors.size()), v.masks);
 }
 
+std::uint32_t DibViewPixelRaw(const DibView& v, int x, int y) {
+    if (v.bpp != 32 || x < 0 || y < 0 || x >= v.width || y >= v.height) return DibViewPixel(v, x, y);
+    const int row = v.bottom_up ? v.height - 1 - y : y;
+    std::uint32_t px;
+    std::memcpy(&px, v.bits + static_cast<std::ptrdiff_t>(row) * v.stride + 4 * static_cast<std::ptrdiff_t>(x), 4);
+    return px;
+}
+
 std::uint32_t BitmapPixel(const BitmapObj& bmp, int x, int y) {
     if (x < 0 || y < 0 || x >= bmp.width || y >= bmp.height) return 0xff000000u;
     if (!bmp.dib) return bmp.pixels[static_cast<std::size_t>(y) * bmp.width + x] | 0xff000000u;

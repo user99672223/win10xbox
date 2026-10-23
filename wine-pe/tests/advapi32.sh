@@ -119,6 +119,7 @@ do_run() {
     for unit in $UNITS; do
         local log="$OUT/advapi32_$unit.log" t0 rc status=crashed ex=0 todo=0 fl=0 fails=0 sk=0 last=""
         t0=$(date +%s)
+        rm -f "$MACHINE/registry-overlay.bin"   # each unit starts from the registry of the hives (persistence)
         timeout -k 5 "$TIMEOUT" $EMULATOR "$HOST" --machine "$wmachine" 'C:\guest-wine\advapi32_test.exe' "$unit" \
             < /dev/null > "$log" 2>&1
         rc=$?

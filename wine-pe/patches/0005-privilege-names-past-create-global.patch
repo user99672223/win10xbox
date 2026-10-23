@@ -1,0 +1,65 @@
+win10xbox: LookupPrivilegeValue knows the privileges Windows 10 defines past SeCreateGlobalPrivilege
+
+advapi32's table of privilege names stops at SE_MAX_WELL_KNOWN_PRIVILEGE (30,
+SeCreateGlobalPrivilege), so LookupPrivilegeValueW("SeCreateSymbolicLinkPrivilege")
+failed with ERROR_NO_SUCH_PRIVILEGE where Windows returns LUID 35. The layer's
+token already carries SeIncreaseWorkingSetPrivilege (33) and SeTimeZonePrivilege
+(34) of a standard user; they had no name. Extend the table to 36
+(SeDelegateSessionUserImpersonatePrivilege) and use the new bound in the lookups.
+The number of the well-known privileges Wine's own tests iterate is unchanged.
+
+diff --git a/dlls/advapi32/security.c b/dlls/advapi32/security.c
+index 8310a4a..8a2baf7 100644
+--- a/dlls/advapi32/security.c
++++ b/dlls/advapi32/security.c
+@@ -452,7 +452,11 @@ done:
+     return ret;
+ } 
+ 
+-static const WCHAR * const WellKnownPrivNames[SE_MAX_WELL_KNOWN_PRIVILEGE + 1] =
++/* The privileges Windows 10 defines go up to SeDelegateSessionUserImpersonatePrivilege; winternl.h stops at
++ * SE_CREATE_GLOBAL_PRIVILEGE. A name Windows resolves (SeCreateSymbolicLinkPrivilege, ...) must resolve here too. */
++#define MAX_PRIVILEGE_ID 36
++
++static const WCHAR * const WellKnownPrivNames[MAX_PRIVILEGE_ID + 1] =
+ {
+     NULL,
+     NULL,
+@@ -485,12 +489,18 @@ static const WCHAR * const WellKnownPrivNames[SE_MAX_WELL_KNOWN_PRIVILEGE + 1] =
+     L"SeManageVolumePrivilege",
+     L"SeImpersonatePrivilege",
+     L"SeCreateGlobalPrivilege",
++    L"SeTrustedCredManAccessPrivilege",
++    L"SeRelabelPrivilege",
++    L"SeIncreaseWorkingSetPrivilege",
++    L"SeTimeZonePrivilege",
++    L"SeCreateSymbolicLinkPrivilege",
++    L"SeDelegateSessionUserImpersonatePrivilege",
+ };
+ 
+ const WCHAR *get_wellknown_privilege_name(const LUID *luid)
+ {
+     if (luid->HighPart || luid->LowPart < SE_MIN_WELL_KNOWN_PRIVILEGE ||
+-            luid->LowPart > SE_MAX_WELL_KNOWN_PRIVILEGE || !WellKnownPrivNames[luid->LowPart])
++            luid->LowPart > MAX_PRIVILEGE_ID || !WellKnownPrivNames[luid->LowPart])
+         return NULL;
+ 
+     return WellKnownPrivNames[luid->LowPart];
+@@ -518,7 +528,7 @@ LookupPrivilegeValueW( LPCWSTR lpSystemName, LPCWSTR lpName, PLUID lpLuid )
+         SetLastError(ERROR_NO_SUCH_PRIVILEGE);
+         return FALSE;
+     }
+-    for( i=SE_MIN_WELL_KNOWN_PRIVILEGE; i<=SE_MAX_WELL_KNOWN_PRIVILEGE; i++ )
++    for( i=SE_MIN_WELL_KNOWN_PRIVILEGE; i<=MAX_PRIVILEGE_ID; i++ )
+     {
+         if( !WellKnownPrivNames[i] )
+             continue;
+@@ -674,7 +684,7 @@ LookupPrivilegeNameW( LPCWSTR lpSystemName, PLUID lpLuid, LPWSTR lpName,
+         return FALSE;
+     }
+     if (lpLuid->HighPart || (lpLuid->LowPart < SE_MIN_WELL_KNOWN_PRIVILEGE ||
+-     lpLuid->LowPart > SE_MAX_WELL_KNOWN_PRIVILEGE))
++     lpLuid->LowPart > MAX_PRIVILEGE_ID))
+     {
+         SetLastError(ERROR_NO_SUCH_PRIVILEGE);
+         return FALSE;

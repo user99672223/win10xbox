@@ -67,6 +67,27 @@ static_assert(offsetof(WinProcParams, dpi_context) == 52);
 static_assert(offsetof(WinProcParams, procA) == 56);
 static_assert(sizeof(WinProcParams) == 72);
 
+// ---- struct win_hook_params (the CbCallWindowsHook callback: this header, the module name, then at the next
+// 16-byte boundary the data lparam points at, which user32 hands to the hook procedure) ----------------------------
+struct WinHookParams {
+    void* proc;
+    void* handle;
+    DWORD pid;
+    DWORD tid;
+    int id;
+    int code;
+    WPARAM wparam;
+    LPARAM lparam;
+    BOOL prev_unicode;
+    BOOL next_unicode;
+    WCHAR module[1];
+};
+static_assert(offsetof(WinHookParams, id) == 24);
+static_assert(offsetof(WinHookParams, wparam) == 32);
+static_assert(offsetof(WinHookParams, lparam) == 40);
+static_assert(offsetof(WinHookParams, prev_unicode) == 48);
+static_assert(offsetof(WinHookParams, module) == 56);
+
 // ---- DPI awareness contexts ---------------------------------------------------------
 constexpr UINT MakeDpiContext(UINT awareness, UINT version, UINT dpi, UINT flags) {
     return awareness | (version << 4) | (dpi << 8) | flags;
@@ -257,5 +278,37 @@ static_assert(offsetof(DcAttr, wnd_org) == 100);
 static_assert(offsetof(DcAttr, vport_ext) == 124);
 static_assert(offsetof(DcAttr, emf) == 168);
 static_assert(sizeof(DcAttr) == 192);
+
+// The menu structures user32 passes to NtUserThunkedMenuItemInfo / NtUserThunkedMenuInfo / NtUserGetMenuBarInfo.
+static_assert(sizeof(MENUITEMINFOW) == 80);
+static_assert(offsetof(MENUITEMINFOW, dwTypeData) == 56);
+static_assert(offsetof(MENUITEMINFOW, cch) == 64);
+static_assert(offsetof(MENUITEMINFOW, hbmpItem) == 72);
+static_assert(sizeof(MENUINFO) == 40);
+static_assert(sizeof(MENUBARINFO) == 48);
+
+// NtUserSetCursorIconData's argument (struct cursoricon_frame / cursoricon_desc in include/ntuser.h): the bitmaps of one
+// image, which the cursor object then owns.
+struct CursorIconFrame {
+    UINT width, height;
+    HBITMAP color;     // colour bitmap (null for a monochrome image: the mask is then twice as high)
+    HBITMAP alpha;     // premultiplied alpha DIB section of a 32 bpp image
+    HBITMAP mask;
+    POINT hotspot;
+};
+struct CursorIconDesc {
+    UINT flags;        // LR_*
+    UINT num_steps, num_frames, delay;
+    CursorIconFrame* frames;
+    DWORD* frame_seq;
+    DWORD* frame_rates;
+    HRSRC rsrc;
+};
+static_assert(sizeof(CursorIconFrame) == 40);
+static_assert(offsetof(CursorIconFrame, mask) == 24);
+static_assert(offsetof(CursorIconFrame, hotspot) == 32);
+static_assert(sizeof(CursorIconDesc) == 48);
+static_assert(offsetof(CursorIconDesc, frames) == 16);
+static_assert(offsetof(CursorIconDesc, rsrc) == 40);
 
 }  // namespace win10xbox::user::abi
