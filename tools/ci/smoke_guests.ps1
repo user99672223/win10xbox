@@ -3,15 +3,15 @@
 # windows job of ci.yml (desktop machine folder) and by host-win32-smoke.yml (console-like machine folder, with
 # -ConsoleConditions).
 #
-#   tools/ci/smoke_guests.ps1 -Bin build/bin -Machine build/bin/machine [-LogDir guest-smoke] [-ConsoleConditions] [-RealPrograms]
+#   tools/ci/smoke_guests.ps1 -Bin build/bin -Machine build/bin/machine [-LogDir guest-smoke] [-ConsoleConditions] [-RealPrograms] [-Sysinternals]
 #
 # The table below is the set of guests this repository builds, with the exit code each one returns when it ran to
 # completion (tests/guest/README.md, host-uwp-lite/README.md, tests/drivers). A guest in the table that was not built
 # or is missing from the machine folder FAILS the run. A guest in the machine folder that is not in the table is
 # listed (it is still gated by its ctest entry, if it has one) but does not fail this step, so a new guest never
 # breaks CI before someone decides its expected exit code here.
-# Rows marked Real = $true are programs that are not ours (Lua, built by tools/ci/build_lua.ps1 into the machine
-# folder's guest directory); they run, and fail when missing, only with -RealPrograms, which the workflows that
+# Rows marked Real = $true are programs that are not ours (Lua, built by tools/ci/build_lua.ps1, and the Sysinternals
+# Coreinfo64, fetched by tools/ci/fetch_sysinternals.ps1, into the machine folder's guest directory); they run, and fail when missing, only with -RealPrograms, which the workflows that
 # build them pass. Args = the guest's command-line arguments.
 param(
   [Parameter(Mandatory = $true)] [string] $Bin,
@@ -19,6 +19,7 @@ param(
   [string] $LogDir = 'guest-smoke',
   [switch] $ConsoleConditions,
   [switch] $RealPrograms,
+  [switch] $Sysinternals,
   [int] $TimeoutSeconds = 180
 )
 $ErrorActionPreference = 'Stop'
@@ -62,8 +63,14 @@ $table = @(
   @{ Name = 'lua_hello';       Host = $host_exe; Guest = 'lua.exe';             Driver = '';                  Exit = 42; Out = 'hello from lua\t42'; Real = $true
      Args = @('-e', "print('hello from lua', 6*7) os.exit(42)") },
   @{ Name = 'lua_smoke';       Host = $host_exe; Guest = 'lua.exe';             Driver = '';                  Exit = 42; Out = 'smoke: done fails=0'; Real = $true
-     Args = @('C:\guest\lua_smoke.lua', 'alpha', 'beta gamma') }
+     Args = @('C:\guest\lua_smoke.lua', 'alpha', 'beta gamma') },
+  @{ Name = 'coreinfo';        Host = $host_exe; Guest = 'Coreinfo64.exe';      Driver = '';                  Exit = 0;  Out = 'Logical to Physical Processor Map:'; Real = $true
+     Args = @('-accepteula'); Sysinfo = $true }
 )
+# Sysinternals Coreinfo64 (tools/ci/fetch_sysinternals.ps1, docs/slices/sysinfo.md) run only with -Sysinternals
+# (ci.yml's windows job) and, like the GUI guests, on the builtin-only machine folder the integration.prepare_machine
+# fixture leaves at <Bin>/machine-builtin.
+if (-not $Sysinternals) { $table = @($table | Where-Object { -not $_.Sysinfo }) }
 if (-not $RealPrograms) {
   Write-Host "real programs not run here (no -RealPrograms): $(($table | Where-Object { $_.Real } | ForEach-Object { $_.Name }) -join ', ')"
   $table = @($table | Where-Object { -not $_.Real })
@@ -79,7 +86,7 @@ if ($ConsoleConditions) {
 $fail = 0
 $rows = @()
 foreach ($t in $table) {
-  $guest_file = Join-Path $Machine (Join-Path 'guest' $t.Guest)
+  $guest_file = Join-Path $(if ($t.Sysinfo) { Join-Path $Bin 'machine-builtin' } else { $Machine }) (Join-Path 'guest' $t.Guest)
   $missing = @()
   if (-not (Test-Path $t.Host)) { $missing += $t.Host }
   if (-not (Test-Path $guest_file)) { $missing += $guest_file }
@@ -90,7 +97,8 @@ foreach ($t in $table) {
     $fail = 1
     continue
   }
-  $hostArgs = @('--machine', $Machine)
+  $mach = if ($t.Sysinfo) { Join-Path $Bin 'machine-builtin' } else { $Machine }
+  $hostArgs = @('--machine', $mach)
   if ($t.Driver) { $hostArgs += @('--driver', (Join-Path $drivers $t.Driver)) }
   $hostArgs += "C:\guest\$($t.Guest)"
   if ($t.Args) { $hostArgs += $t.Args }
@@ -112,6 +120,7 @@ foreach ($t in $table) {
   $rc = $p.ExitCode
   $stdout = if (Test-Path $out) { Get-Content $out -Raw } else { '' }
   if ($null -eq $stdout) { $stdout = '' }
+  $stdout = $stdout -replace "`0", ''   # Coreinfo64 writes UTF-16 to a redirected stdout; the NULs hide every anchor
   $ok = (-not $note) -and ($rc -eq $t.Exit) -and ((-not $t.Out) -or ($stdout -match $t.Out)) -and ((-not $fresh) -or (Test-Path $fresh))
   $why = @()
   if ($note) { $why += $note.Trim() }
@@ -134,6 +143,7 @@ foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$
 
 $known = $table | ForEach-Object { $_.Guest } | Select-Object -Unique
 if (-not $RealPrograms) { $known += 'lua.exe', 'sqlite3.exe' }   # not built here; not "unlisted" either
+if (-not $Sysinternals) { $known += 'Coreinfo64.exe', 'PsInfo64.exe' }   # not built here; not "unlisted" either
 $extra = @(Get-ChildItem (Join-Path $Machine 'guest') -Filter *.exe -ErrorAction SilentlyContinue |
            Where-Object { $known -notcontains $_.Name } | ForEach-Object { $_.Name })
 if ($extra.Count -gt 0) {

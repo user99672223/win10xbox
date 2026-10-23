@@ -194,6 +194,17 @@ jobs:
       - name: Build Lua 5.4.7 (real guest program)
         shell: pwsh
         run: ./tools/ci/build_lua.ps1 -Out build/bin/machine/guest
+      # One more program that is not ours: Sysinternals Coreinfo64.exe, downloaded from
+      # live.sysinternals.com and pinned by SHA-256 (tools/ci/fetch_sysinternals.ps1, verified on every run). Left in
+      # build/bin/machine/guest for integration.coreinfo (docs/slices/sysinfo.md).
+      - name: Cache the Sysinternals tools
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/sysinternals
+          key: sysinternals-coreinfo-4be1e87e
+      - name: Fetch Sysinternals Coreinfo64 (real guest programs)
+        shell: pwsh
+        run: ./tools/ci/fetch_sysinternals.ps1 -Out build/bin/machine/guest
       # Real GUI programs that are not ours (tools/ci/build_realgui.ps1): Microsoft's LearnWin32 Hello World and PuTTY
       # 0.85 (official tarball, cmake + cl /MT), pinned by SHA-256 and verified on every run. Left in
       # build/bin/machine/guest for integration.realgui_* (docs/TESTING.md, "Real GUI programs").
@@ -226,7 +237,7 @@ jobs:
       - name: Smoke - every bundled guest through the host
         if: ${{ !cancelled() }}
         shell: pwsh
-        run: ./tools/ci/smoke_guests.ps1 -Bin build/bin -Machine build/bin/machine -LogDir build/guest-smoke -RealPrograms
+        run: ./tools/ci/smoke_guests.ps1 -Bin build/bin -Machine build/bin/machine -LogDir build/guest-smoke -RealPrograms -Sysinternals
       # crash.txt / crash.dmp / entry-reached.txt: what host-win32/crash.cpp writes into build/bin when a guest run
       # (ctest or the smoke step) dies; *.bmp: the GUI tests' screenshots (WIN10XBOX_SCREENSHOT).
       - uses: actions/upload-artifact@v4
