@@ -1,5 +1,15 @@
 status: wip
 
+Handoff (wip, not yet run on CI):
+* Merged origin/claude/youthful-cerf-l7xxsb. Its win_cursor.cpp and gdi_bitmap/StretchDIBits work replaced this slice's own
+  cursor/icon code (win_cursoricon.cpp removed, its unit tests dropped); kept here: NtUserQueryDisplayConfig,
+  NtUserDisplayConfigGetDeviceInfo, host inject verb `waitflush`, fetch_doom.ps1 + ci.yml steps, WINEUSERNAME, LsaGetUserName patches.
+* Local Wine run: the whole demo runs, `timed 5026 gametics in 684 realtics (257 fps)`, last frame distinct=224, exit -1. No
+  unimplemented call seen in the err/fixme trace.
+* Untested on Windows: the whole gate (fetch_doom.ps1 download + SHA pins, the CI cache step, the real host heap, timing).
+* Commands: `cmake --build build-mingw -j16`; `WINEDEBUG=-all WINEPREFIX=$HOME/.wine-win10xbox ctest --test-dir build-mingw -R integration.doom_timedemo -V`.
+* Next: the CI loop (Windows MSVC run, check the pixel gate numbers and the screenshot artifact).
+
 # Slice: doom (Chocolate Doom through the layer)
 
 Goal: Chocolate Doom 3.1.1 (official win64 zip, pinned SHA-256) with the shareware `doom1.wad` (pinned SHA-256) runs

@@ -75,6 +75,7 @@ struct Rgn {
 Rgn CombineRgns(const Rgn& a, const Rgn& b, int mode);
 
 struct State;
+struct CursorObj;   // win_cursor.cpp
 
 // ---- GDI objects ---------------------------------------------------------------
 struct GdiObject {
@@ -313,6 +314,23 @@ struct UserThread {
     HWND focus = nullptr, active = nullptr, capture = nullptr;
     bool exiting = false;
     std::uint32_t send_depth = 0;           // InSendMessage
+    // hooks (win_hook.cpp): the hook procedure being called on this thread (CallNextHookEx continues from it)
+    HHOOK cur_hook = nullptr;
+    bool cur_hook_unicode = true;
+    std::uint32_t hook_depth = 0;
+    // the cursor SetCursor chose for this thread (win_cursor.cpp); `cursor_set` tells "never set" (the arrow) from
+    // SetCursor(NULL) (no cursor)
+    HCURSOR cursor = nullptr;
+    bool cursor_set = false;
+};
+// A SetWindowsHookEx hook (win_hook.cpp). tid 0: every thread of the process. `owner` installed it.
+struct HookObj {
+    HHOOK handle = nullptr;
+    int id = 0;
+    HOOKPROC proc = nullptr;
+    DWORD tid = 0, owner = 0;
+    bool unicode = true;
+    bool removed = false;     // unhooked while a hook call was running: swept when the last call returns
 };
 // The calling thread's record, created on first use. Call with the lock held.
 UserThread& CurrentUserThread();
@@ -350,7 +368,19 @@ struct State {
     UINT process_dpi_context = abi::kDpiUnaware;
     bool process_dpi_set = false;
     UINT_PTR next_timer_id = 0x7fff;
+    // hooks, oldest first (the chain runs newest first); live hooks per WH_ id (index id - WH_MINHOOK)
+    std::vector<HookObj*> hooks;
+    int hook_count[16] = {};
+    std::uint32_t hook_calls_active = 0;
+    ULONG_PTR next_hook = 0;
     POINT cursor{};
+    // cursor and icon objects (win_cursor.cpp): handle = (generation << 16) | (slot + 1), generation 1..0x7fff
+    std::vector<CursorObj*> cursors;
+    std::vector<WORD> cursor_gens;
+    std::vector<std::uint32_t> cursor_free;
+    int cursor_show = 0;                      // ShowCursor's count: the cursor is drawn while it is >= 0
+    bool clip_set = false;                    // ClipCursor
+    RECT clip{};
     BYTE key_state[256] = {};                 // async key state (GetAsyncKeyState): 0x80 down, 0x01 toggled; follows the hardware
     BYTE input_key_state[256] = {};           // the state as of the last input message an application took (GetKeyState, TranslateMessage)
     std::uint32_t input_seq = 0;
@@ -419,6 +449,8 @@ struct DibView {
 };
 bool MakeDibView(const BITMAPINFO* bmi, UINT coloruse, const void* bits, DibView* out);
 std::uint32_t DibViewPixel(const DibView& v, int x, int y);   // y counts from the top of the image
+// The same, but a 32 bpp source keeps its fourth byte (the alpha of a cursor or icon image) instead of 0xff.
+std::uint32_t DibViewPixelRaw(const DibView& v, int x, int y);
 // gdi_dc.cpp
 DcObj* DcGet(HDC hdc);
 HDC CreateDcObj(DcKind kind, HWND hwnd);
@@ -431,8 +463,6 @@ struct DrawTarget {
     HWND top = nullptr;                        // window DC: the top-level window that owns the surface
 };
 bool ResolveDrawTarget(DcObj* dc, DrawTarget* out);
-// The same, for a primitive that has no pixel-by-pixel path: a bitmap without a 32 bpp view logs a FIXME (nothing is drawn).
-bool ResolveOrWarn(DcObj* dc, DrawTarget* out, const char* what);
 // The text cell of the DC's selected font: the built-in 8x16 face, scaled by a whole factor for
 // LOGFONT heights of 32 and up (font8x16.h).
 struct TextCell { int scale, width, height, ascent, descent; };
@@ -456,13 +486,6 @@ std::wstring AtomName(ATOM atom);
 ATOM FindAtom(const WCHAR* name, std::size_t len);
 ULONG_PTR GetClassLongSize(HWND hwnd, INT offset, UINT size, bool ansi);
 WinProc ResolveWinProc(WNDPROC func, bool ansi);   // fills the other half for known builtin procs
-
-// win_cursoricon.cpp
-HICON CreateCursorIconHandle(bool is_icon);                    // NtUserCallOneParam(CreateCursorIcon)
-ULONG_PTR GetIconParam(HICON icon);                            // NtUserCallOneParam(GetIconParam)
-ULONG_PTR SetIconParam(HICON icon, const abi::FreeIconParams* params);   // NtUserCallTwoParam(SetIconParam)
-// win_message.cpp
-INT CursorShowCount();                                         // the ShowCursor display counter
 
 // win_window.cpp
 // HWND = (0x20 + slot) | (generation << 16), generation 1..0x7fff (win_window.cpp).
@@ -514,6 +537,24 @@ void WakeThread(UserThread* t, DWORD qs_bits);
 void KillWindowTimers(HWND hwnd);
 void InstallEventSink();                       // driver -> input messages (lock held)
 
+// win_hook.cpp
+bool IsHooked(int id);                         // any live hook of this WH_ id (lock held)
+// Runs the hook chain `id` for the calling thread, newest hook first, until one does not call CallNextHookEx.
+// `lparam_size` > 0: lparam points at that many bytes, copied for the hook procedure and copied back after.
+// Returns the first hook's result (0 when there is none). Lock held on entry and exit, dropped around the call.
+LRESULT CallHooks(int id, int code, WPARAM wparam, LPARAM lparam, std::size_t lparam_size);
+// CallWindowProcInternal wrapped in WH_CALLWNDPROC / WH_CALLWNDPROCRET.
+LRESULT CallWindowProcHooked(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, bool ansi, bool sent_by_this_thread);
+void RemoveThreadHooks(DWORD tid);             // the thread exits
+
+// win_cursor.cpp
+HCURSOR CreateCursorObject(bool is_icon);      // NtUserCallOneParam(CreateCursorIcon)
+bool SetThreadCursor(UserThread& t, HCURSOR cursor);   // NtUserSetCursor for `t`; false when the handle is not a cursor
+HCURSOR ThreadCursor(const UserThread& t);     // the handle if it is still valid, else null
+// Draws the cursor onto a composed frame (BGRA, alpha 0xff): the cursor of the thread that owns the window under the
+// pointer, only while the show count is >= 0. Lock held.
+void ComposeCursor(std::uint32_t* bgra, std::int32_t width, std::int32_t height, std::int32_t stride_bytes);
+
 // win_paint.cpp
 void InvalidateWindow(HWND hwnd, const RECT* client_rect, UINT rdw_flags);
 bool UpdateWindowNow(HWND hwnd, UINT rdw_flags);   // RDW_UPDATENOW / RDW_ERASENOW
@@ -530,10 +571,29 @@ void PaintNonClient(HWND hwnd);
 HDC BeginPaintInternal(HWND hwnd, PAINTSTRUCT* ps);
 BOOL EndPaintInternal(HWND hwnd, const PAINTSTRUCT* ps);
 
+// win_menu.cpp (menus; docs/GUI.md)
+int MenuBarHeight(const WindowObj* w);                              // SM_CYMENU when `w` shows a menu bar, else 0
+void MenuPaintBar(WindowObj* w, DcObj* dc, const DrawTarget& t);    // window DC target (device (0,0) = window top-left)
+bool MenuBarHitTest(const WindowObj* w, POINT screen_pt);
+void MenuBarClick(HWND hwnd, POINT screen_pt);                      // WM_NCLBUTTONDOWN on HTMENU; lock held, dropped while tracking
+void MenuDestroyWindowMenu(WindowObj* w);                           // WM_NCDESTROY
+BOOL MenuAttachToWindow(WindowObj* w, HMENU menu);                  // SetMenu: validates and stores the menu
+ULONG_PTR MenuItemCount(ULONG_PTR handle);
+BOOL MenuGetInfo(ULONG_PTR handle, MENUINFO* info);
+LRESULT MenuPopupWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, bool ansi);   // the `#32768` class procedure
+
 // win_sysparams.cpp
 int SystemMetric(int index);
 void ScreenRect(RECT* out);
 void WorkAreaRect(RECT* out);
 bool SysParamsInfo(UINT action, UINT val, void* ptr, UINT winini);
+
+// ---- Route B (config gui = Native): native_compose.cpp ---------------------------
+// True when the guest's windows are the host win32k's (ConfigureNativeGui succeeded). The host-facing API in
+// user.cpp then composes from the real windows instead of this module's.
+bool NativeGui();
+bool NativeComposeFrame(std::uint32_t* bgra, std::int32_t width, std::int32_t height, std::int32_t stride_bytes);
+void NativeScreenSize(std::int32_t* width, std::int32_t* height);
+std::uint64_t NativeFrameSerial();
 
 }  // namespace win10xbox::user::detail

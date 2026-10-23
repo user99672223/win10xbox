@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cwchar>
+#include <cwctype>
 #include <map>
 #include <memory>
 
@@ -122,14 +123,23 @@ std::wstring OverrideKey(std::wstring_view name) {
 // E1: Wine's ntdll/kernelbase/kernel32 always. And the GUI stack (E1 extended, docs/GUI.md): core/user
 // implements Wine's win32u contract (Wine's syscall numbering, ntuser.h's call codes), and native
 // user32/gdi32/win32u/imm32 are clients of a real win32k that an AppContainer guest does not have.
-bool IsAlwaysBuiltin(const std::wstring& key) {
-    return key == L"NTDLL" || key == L"KERNELBASE" || key == L"KERNEL32" || key == L"WIN32U" || key == L"USER32" ||
-           key == L"GDI32" || key == L"IMM32";
+// Route B (machine.json "gui": "native", or vfs::SetNativeGuiStack): the GUI stack follows dll_overrides like
+// any other DLL, because there the native user32/gdi32/win32u ARE the point (their win32u syscalls go to the
+// host's win32k). Namespace scope, trivially initialised; set before the guest starts. The layer's own XInput
+// (guest-dlls/xinput, under its three names) is always builtin: the native one is a client of the HID stack.
+bool g_native_gui_stack = false;
+bool IsGuiStack(const std::wstring& key) {
+    return key == L"WIN32U" || key == L"USER32" || key == L"GDI32" || key == L"IMM32";
+}
+bool IsAlwaysBuiltin(const std::wstring& key, bool native_gui = false) {
+    return key == L"NTDLL" || key == L"KERNELBASE" || key == L"KERNEL32" ||
+           key == L"XINPUT1_4" || key == L"XINPUT1_3" || key == L"XINPUT9_1_0" ||
+           (!native_gui && !g_native_gui_stack && IsGuiStack(key));
 }
 
 DllOverride OverrideImpl(const State& st, std::wstring_view name) {
     std::wstring key = OverrideKey(name);
-    if (IsAlwaysBuiltin(key)) return DllOverride::Builtin;
+    if (IsAlwaysBuiltin(key, st.info.gui == L"native")) return DllOverride::Builtin;
     for (const auto& o : st.overrides)
         if (o.first == key) return o.second;
     return st.default_override;
@@ -376,6 +386,13 @@ void ApplyConfig(const json::Value& root, State* st) {
         if (!GetBool(c, "hide_hypervisor", &o.hide_hypervisor)) bad("cpu", "hide_hypervisor");
         if (!GetStr(c, "vendor", &o.vendor)) bad("cpu", "vendor");
     }
+    if (const json::Value* g = root.Find("gui")) {
+        std::wstring v;
+        if (g->IsString()) v = Widen(g->str);
+        for (auto& ch : v) ch = static_cast<wchar_t>(std::towlower(ch));
+        if (v == L"emulated" || v == L"native") st->info.gui = v;
+        else WARN(vfs, "machine.json: \"gui\" must be \"emulated\" or \"native\", using the default");
+    }
     if (const json::Value* s = root.Find("syscall_overrides"); s && s->IsObject()) {
         for (const auto& m : s->members) {
             if (!m.second.IsString()) { WARN(vfs, "machine.json: syscall_overrides.%s is not a string", m.first.c_str()); continue; }
@@ -391,8 +408,8 @@ void ApplyConfig(const json::Value& root, State* st) {
             }
             std::wstring key = OverrideKey(Widen(m.first));
             if (key == L"*") { st->default_override = ov; continue; }
-            if (IsAlwaysBuiltin(key)) {
-                WARN(vfs, "machine.json: dll_overrides.%s ignored: ntdll/kernelbase/kernel32 and the GUI stack (win32u/user32/gdi32/imm32) are always builtin (E1)",
+            if (IsAlwaysBuiltin(key, st->info.gui == L"native")) {
+                WARN(vfs, "machine.json: dll_overrides.%s ignored: ntdll/kernelbase/kernel32, the GUI stack (win32u/user32/gdi32/imm32) and xinput1_x are always builtin (E1)",
                      m.first.c_str());
                 continue;
             }
@@ -567,6 +584,8 @@ MachineInfo GetMachineInfo() {
     return st ? st->info : MachineInfo();
 }
 
+void SetNativeGuiStack(bool native) { g_native_gui_stack = native; }
+
 DllOverride OverrideFor(std::wstring_view module_name) {
     auto st = Snap();
     if (!st) return IsAlwaysBuiltin(OverrideKey(module_name)) ? DllOverride::Builtin : DllOverride::NativeThenBuiltin;
@@ -689,7 +708,7 @@ NTSTATUS ValidateGuestNtFileName(std::wstring_view p, bool* dir_only) {
 
 }  // namespace
 
-NTSTATUS TranslateObjectAttributes(const OBJECT_ATTRIBUTES* in, TranslatedAttributes* out) {
+NTSTATUS TranslateObjectAttributes(const OBJECT_ATTRIBUTES* in, TranslatedAttributes* out, unsigned long create_options) {
     out->attr = OBJECT_ATTRIBUTES{};
     out->name = UNICODE_STRING{};
     out->storage.clear();
@@ -706,11 +725,12 @@ NTSTATUS TranslateObjectAttributes(const OBJECT_ATTRIBUTES* in, TranslatedAttrib
     NTSTATUS s = ValidateGuestNtFileName(guest, &dir_only);
     if (s != STATUS_SUCCESS && s != STATUS_NOT_SUPPORTED) return s;
     if (dir_only) {
-        // "file.txt\" names a directory component: an existing regular file answers NAME_INVALID.
+        // "file.txt\" names a directory component: an existing regular file answers NAME_INVALID (NOT_A_DIRECTORY when
+        // the caller asked for a directory).
         std::wstring file_host;
         if (TranslateNtPath(guest.substr(0, guest.size() - 1), &file_host) == STATUS_SUCCESS &&
             file_host.size() > 4 && FileExists(file_host.substr(4)))
-            return STATUS_OBJECT_NAME_INVALID;
+            return (create_options & 0x1) ? STATUS_NOT_A_DIRECTORY : STATUS_OBJECT_NAME_INVALID;   // FILE_DIRECTORY_FILE
     }
     s = TranslateNtPath(guest, &host);
     if (s == STATUS_NOT_SUPPORTED) return STATUS_SUCCESS;   // namespace we do not own: pass through

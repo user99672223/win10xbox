@@ -11,6 +11,9 @@
 //                         host's own token could do
 #include "nt_spawn.h"
 #include "win10xbox/config.h"
+#if WIN10XBOX_HAVE_REGISTRY
+#include "win10xbox/registry.h"
+#endif
 #include <algorithm>
 #include <cstring>
 #include <cwctype>
@@ -60,25 +63,24 @@ constexpr ULONG_PTR AllocNoWindow = static_cast<ULONG_PTR>(-2);   // CONSOLE_HAN
 }  // namespace rp
 
 // ---- guest memory ---------------------------------------------------------------------------------------------
-// How many of the `want` bytes at p can be accessed without faulting. Guest pointers are untrusted.
-std::size_t AccessibleBytes(const void* p, std::size_t want, bool writable) {
-    const auto a = reinterpret_cast<std::uintptr_t>(p);
-    if (!p) return 0;
-    constexpr DWORD kRead = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ |
-                            PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
-    constexpr DWORD kWrite = PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
-    std::size_t got = 0;
-    while (got < want) {
-        MEMORY_BASIC_INFORMATION mbi;
-        if (!VirtualQuery(reinterpret_cast<void*>(a + got), &mbi, sizeof mbi)) break;
-        if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) break;
-        if (!(mbi.Protect & (writable ? kWrite : kRead))) break;
-        got = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) + mbi.RegionSize - a;
+// Guest pointers are untrusted: everything read from or written to them goes through win10xbox/probe.h.
+// Readable / Writable are ProbeForRead / ProbeForWrite: the range is touched, not looked up.
+bool Readable(const void* p, std::size_t n) { return n == 0 || probe::ProbeRead(p, n) == 0; }
+bool Writable(const void* p, std::size_t n) { return n == 0 || probe::ProbeWrite(const_cast<void*>(p), n) == 0; }
+
+// Up to `cap` bytes at p, stopping at the first byte that cannot be read (a block of unknown length).
+std::vector<std::uint8_t> ReadAccessible(const void* p, std::size_t cap) {
+    std::vector<std::uint8_t> out;
+    const auto* src = static_cast<const std::uint8_t*>(p);
+    while (out.size() < cap) {
+        const auto a = reinterpret_cast<std::uintptr_t>(src + out.size());
+        const std::size_t chunk = std::min<std::size_t>(cap - out.size(), 0x1000 - (a & 0xFFF));
+        const std::size_t at = out.size();
+        out.resize(at + chunk);
+        if (probe::CopyFromUser(out.data() + at, src + at, chunk)) { out.resize(at); break; }
     }
-    return std::min(got, want);
+    return out;
 }
-bool Readable(const void* p, std::size_t n) { return AccessibleBytes(p, n, false) == n; }
-bool Writable(const void* p, std::size_t n) { return AccessibleBytes(p, n, true) == n; }
 
 template <class T> T Field(const std::uint8_t* base, std::uint32_t off) {
     T v;
@@ -87,15 +89,16 @@ template <class T> T Field(const std::uint8_t* base, std::uint32_t off) {
 }
 
 // A UNICODE_STRING inside the parameter block; its buffer is a pointer, or an offset when the block is not normalized.
-bool ParamString(const std::uint8_t* params, std::uint32_t off, bool normalized, std::wstring* out) {
+// `params` is our copy of the block, `user_params` where it came from (the offsets are relative to that).
+bool ParamString(const std::uint8_t* params, const std::uint8_t* user_params, std::uint32_t off, bool normalized,
+                 std::wstring* out) {
     out->clear();
     const auto us = Field<UNICODE_STRING>(params, off);
     if (!us.Length || !us.Buffer) return true;
     const auto* text = normalized ? reinterpret_cast<const std::uint8_t*>(us.Buffer)
-                                  : params + reinterpret_cast<std::uintptr_t>(us.Buffer);
-    if (!Readable(text, us.Length)) return false;
-    out->assign(reinterpret_cast<const wchar_t*>(text), us.Length / sizeof(wchar_t));
-    return true;
+                                  : user_params + reinterpret_cast<std::uintptr_t>(us.Buffer);
+    out->assign(us.Length / sizeof(wchar_t), L'\0');
+    return probe::CopyFromUser(out->data(), text, out->size() * sizeof(wchar_t)) == 0;
 }
 
 // ---- the host's process-creation API --------------------------------------------------------------------------
@@ -161,9 +164,11 @@ struct ChildRequest {
 };
 
 // The guest's environment block -> entries. `size` is EnvironmentSize in bytes, 0 when the caller did not set it.
-bool ParseEnvironment(const wchar_t* env, std::size_t size, std::vector<std::wstring>* out) {
+bool ParseEnvironment(const wchar_t* user_env, std::size_t size, std::vector<std::wstring>* out) {
     const std::size_t cap = size ? std::min<std::size_t>(size, 1u << 22) : (1u << 22);   // bytes
-    const std::size_t have = AccessibleBytes(env, cap, false) / sizeof(wchar_t);          // wchar_t units
+    const std::vector<std::uint8_t> copy = ReadAccessible(user_env, cap);
+    const wchar_t* env = reinterpret_cast<const wchar_t*>(copy.data());
+    const std::size_t have = copy.size() / sizeof(wchar_t);                               // wchar_t units
     std::size_t i = 0;
     while (i < have && env[i]) {
         std::size_t j = i;
@@ -175,13 +180,16 @@ bool ParseEnvironment(const wchar_t* env, std::size_t size, std::vector<std::wst
     return i < have;                   // found the final terminator
 }
 
+// PS_CREATE_INFO { Size; State; ... } written to the caller (best effort: a failing start reports its state).
+NTSTATUS WriteCreateInfo(void* create_info, std::uint32_t state) {
+    std::uint8_t info[kCreateInfoSize] = {};
+    const std::size_t size = kCreateInfoSize;
+    std::memcpy(info, &size, sizeof size);
+    std::memcpy(info + kCreateInfoState, &state, sizeof state);
+    return probe::CopyToUser(create_info, info, sizeof info);
+}
 void Fail(void* create_info, std::uint32_t state) {
-    if (create_info && Writable(create_info, kCreateInfoSize)) {
-        std::memset(create_info, 0, kCreateInfoSize);
-        const std::size_t size = kCreateInfoSize;
-        std::memcpy(create_info, &size, sizeof size);
-        std::memcpy(static_cast<std::uint8_t*>(create_info) + kCreateInfoState, &state, sizeof state);
-    }
+    if (create_info) (void)WriteCreateInfo(create_info, state);
 }
 
 // Reads the executable's headers and fills the SECTION_IMAGE_INFORMATION the caller asked for. Statuses are the ones
@@ -324,12 +332,18 @@ NTSTATUS NTAPI Xl_NtCreateUserProcess(PHANDLE process_handle, PHANDLE thread_han
         ERR(process, "NtCreateUserProcess: kernel32 process creation entry points are missing");
         return st::NotSupported;
     }
-    const auto* params = static_cast<const std::uint8_t*>(params_arg);
+    const auto* user_params = static_cast<const std::uint8_t*>(params_arg);
     auto* attrs = static_cast<PsAttributeList*>(attribute_list);
-    if (!process_handle || !thread_handle || !params || !attrs) return st::InvalidParameter;
+    if (!process_handle || !thread_handle || !user_params || !attrs) return st::InvalidParameter;
     if (!Writable(process_handle, sizeof(HANDLE)) || !Writable(thread_handle, sizeof(HANDLE)) ||
-        !Readable(params, rp::Size) || !Readable(attrs, sizeof(attrs->TotalLength)))
+        !Readable(user_params, rp::Size) || !Readable(attrs, sizeof(attrs->TotalLength)))
         return st::AccessViolation;
+    // The parameter block and the attribute list are read once; the code below works on these copies.
+    std::vector<std::uint8_t> params_copy(rp::Size);
+    if (probe::CopyFromUser(params_copy.data(), user_params, rp::Size)) return st::AccessViolation;
+    const std::uint8_t* params = params_copy.data();
+    SIZE_T total_length = 0;
+    if (probe::Load<SIZE_T>(&attrs->TotalLength, &total_length)) return st::AccessViolation;
     if (create_info && !Writable(create_info, kCreateInfoSize)) return st::AccessViolation;
     if (thread_flags & kThreadHideFromDebugger) {
         WARN(process, "NtCreateUserProcess: invalid thread flags %#lx", static_cast<unsigned long>(thread_flags));
@@ -343,19 +357,20 @@ NTSTATUS NTAPI Xl_NtCreateUserProcess(PHANDLE process_handle, PHANDLE thread_han
                                                            kProcessInheritHandles | kProcessSuspended)));
 
     // ---- the attribute list ------------------------------------------------------------------------------------
-    if (attrs->TotalLength < sizeof(attrs->TotalLength) ||
-        (attrs->TotalLength - sizeof(attrs->TotalLength)) % sizeof(PsAttribute) != 0)
+    if (total_length < sizeof(attrs->TotalLength) || (total_length - sizeof(attrs->TotalLength)) % sizeof(PsAttribute) != 0)
         return st::InvalidParameter;
-    const std::size_t count = (attrs->TotalLength - sizeof(attrs->TotalLength)) / sizeof(PsAttribute);
+    const std::size_t count = (total_length - sizeof(attrs->TotalLength)) / sizeof(PsAttribute);
     if (count > 64) return st::InvalidParameter;
-    if (!Readable(attrs, attrs->TotalLength)) return st::AccessViolation;
+    std::vector<PsAttribute> attr_copy(count);
+    if (count && probe::CopyFromUser(attr_copy.data(), attrs->Attributes, count * sizeof(PsAttribute)))
+        return st::AccessViolation;
 
     ChildRequest req;
     req.inherit_handles = (process_flags & kProcessInheritHandles) != 0;
     std::wstring image_nt;
     bool have_image = false;
     for (std::size_t i = 0; i < count; ++i) {
-        const PsAttribute& a = attrs->Attributes[i];
+        const PsAttribute& a = attr_copy[i];
         switch (a.Attribute & kAttrNumberMask) {
         case kPsParentProcess:
             if (a.ValuePtr && !IsCurrentProcess(static_cast<HANDLE>(a.ValuePtr))) req.parent = static_cast<HANDLE>(a.ValuePtr);
@@ -376,18 +391,20 @@ NTSTATUS NTAPI Xl_NtCreateUserProcess(PHANDLE process_handle, PHANDLE thread_han
         case kPsImageName:
             if (!a.ValuePtr || a.Size < sizeof(wchar_t) || (a.Size & 1) || a.Size > 32767 * sizeof(wchar_t))
                 return st::InvalidParameter;
-            if (!Readable(a.ValuePtr, a.Size)) return st::AccessViolation;
-            image_nt.assign(static_cast<const wchar_t*>(a.ValuePtr), a.Size / sizeof(wchar_t));
+            image_nt.assign(a.Size / sizeof(wchar_t), L'\0');
+            if (probe::CopyFromUser(image_nt.data(), a.ValuePtr, a.Size)) return st::AccessViolation;
             have_image = true;
             break;
         case kPsHandleList:
-            if (a.Size % sizeof(HANDLE) || (a.Size && !Readable(a.ValuePtr, a.Size))) return st::InvalidParameter;
+            if (a.Size % sizeof(HANDLE)) return st::InvalidParameter;
             req.has_handle_list = true;
-            req.handle_list.assign(static_cast<HANDLE*>(a.ValuePtr), static_cast<HANDLE*>(a.ValuePtr) + a.Size / sizeof(HANDLE));
+            req.handle_list.resize(a.Size / sizeof(HANDLE));
+            if (a.Size && probe::CopyFromUser(req.handle_list.data(), a.ValuePtr, a.Size)) return st::InvalidParameter;
             break;
         case kPsJobList:
-            if (a.Size % sizeof(HANDLE) || (a.Size && !Readable(a.ValuePtr, a.Size))) return st::InvalidParameter;
-            req.job_list.assign(static_cast<HANDLE*>(a.ValuePtr), static_cast<HANDLE*>(a.ValuePtr) + a.Size / sizeof(HANDLE));
+            if (a.Size % sizeof(HANDLE)) return st::InvalidParameter;
+            req.job_list.resize(a.Size / sizeof(HANDLE));
+            if (a.Size && probe::CopyFromUser(req.job_list.data(), a.ValuePtr, a.Size)) return st::InvalidParameter;
             break;
         case kPsMachineType:
             if (a.Value && a.Value != kMachineAmd64) {
@@ -416,8 +433,8 @@ NTSTATUS NTAPI Xl_NtCreateUserProcess(PHANDLE process_handle, PHANDLE thread_han
     // ---- the parameter block -----------------------------------------------------------------------------------------
     const bool normalized = (Field<ULONG>(params, rp::Flags) & rp::Normalized) != 0;
     req.image = NtPathToWin32(image_nt);
-    if (!ParamString(params, rp::CommandLine, normalized, &req.command_line) ||
-        !ParamString(params, rp::CurrentDirectory, normalized, &req.current_directory))
+    if (!ParamString(params, user_params, rp::CommandLine, normalized, &req.command_line) ||
+        !ParamString(params, user_params, rp::CurrentDirectory, normalized, &req.current_directory))
         return st::AccessViolation;
     if (!IsDriveAbsolute(req.image)) {
         WARN(process, "NtCreateUserProcess: %ls is not a drive-letter path", image_nt.c_str());
@@ -427,7 +444,7 @@ NTSTATUS NTAPI Xl_NtCreateUserProcess(PHANDLE process_handle, PHANDLE thread_han
         const auto env = Field<std::uintptr_t>(params, rp::Environment);
         if (env) {
             const auto* block = normalized ? reinterpret_cast<const wchar_t*>(env)
-                                           : reinterpret_cast<const wchar_t*>(params + env);
+                                           : reinterpret_cast<const wchar_t*>(user_params + env);
             if (!ParseEnvironment(block, Field<SIZE_T>(params, rp::EnvironmentSize), &req.env)) return st::AccessViolation;
             req.has_env = true;
         }
@@ -569,6 +586,9 @@ NTSTATUS NTAPI Xl_NtCreateUserProcess(PHANDLE process_handle, PHANDLE thread_han
           host_cwd.empty() ? L"<host's>" : host_cwd.c_str(), req.env.size(), static_cast<unsigned long>(flags), inherit,
           use_list ? inherit_list.size() : size_t(0));
     PROCESS_INFORMATION pi{};
+#if WIN10XBOX_HAVE_REGISTRY
+    registry::PersistOverlay();   // the child's Initialize loads what the parent wrote up to here
+#endif
     const BOOL created = g_api.CreateProcessW(host_exe.c_str(), command_line.data(), nullptr, nullptr, inherit, flags,
                                               req.has_env ? env_block.data() : nullptr,
                                               host_cwd.empty() ? nullptr : host_cwd.c_str(), &si.StartupInfo, &pi);
@@ -579,23 +599,20 @@ NTSTATUS NTAPI Xl_NtCreateUserProcess(PHANDLE process_handle, PHANDLE thread_han
         WARN(process, "NtCreateUserProcess: starting %ls failed with Win32 error %lu", host_exe.c_str(), error);
         return StatusFromWin32(error);
     }
-    if ((process_attr && (process_attr->Attributes & OBJ_INHERIT)))
-        SetHandleInformation(pi.hProcess, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
-    if ((thread_attr && (thread_attr->Attributes & OBJ_INHERIT)))
-        SetHandleInformation(pi.hThread, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    ULONG process_obj_attrs = 0, thread_obj_attrs = 0;   // best effort: attributes we cannot read inherit nothing
+    if (process_attr) (void)probe::Load<ULONG>(&process_attr->Attributes, &process_obj_attrs);
+    if (thread_attr) (void)probe::Load<ULONG>(&thread_attr->Attributes, &thread_obj_attrs);
+    if (process_obj_attrs & OBJ_INHERIT) SetHandleInformation(pi.hProcess, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    if (thread_obj_attrs & OBJ_INHERIT) SetHandleInformation(pi.hThread, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
 
     // ---- outputs ---------------------------------------------------------------------------------------------------------
-    *process_handle = pi.hProcess;
-    *thread_handle = pi.hThread;
-    if (create_info) {
-        std::memset(create_info, 0, kCreateInfoSize);
-        const std::size_t size = kCreateInfoSize;
-        std::memcpy(create_info, &size, sizeof size);
-        const std::uint32_t state = kPsCreateSuccess;
-        std::memcpy(static_cast<std::uint8_t*>(create_info) + kCreateInfoState, &state, sizeof state);
-    }
-    for (std::size_t i = 0; i < count; ++i) {
-        const PsAttribute& a = attrs->Attributes[i];
+    // They were probed before the child was started; a caller that unmaps one meanwhile gets the access violation,
+    // and the child it will never learn about is not left running.
+    NTSTATUS out_status = probe::Store<HANDLE>(process_handle, pi.hProcess);
+    if (out_status == st::Success) out_status = probe::Store<HANDLE>(thread_handle, pi.hThread);
+    if (out_status == st::Success && create_info) out_status = WriteCreateInfo(create_info, kPsCreateSuccess);
+    for (std::size_t i = 0; i < count && out_status == st::Success; ++i) {
+        const PsAttribute& a = attr_copy[i];
         const auto number = a.Attribute & kAttrNumberMask;
         std::size_t written = 0;
         if (number == kPsClientId) {
@@ -603,14 +620,20 @@ NTSTATUS NTAPI Xl_NtCreateUserProcess(PHANDLE process_handle, PHANDLE thread_han
             id.UniqueProcess = reinterpret_cast<PVOID>(static_cast<std::uintptr_t>(pi.dwProcessId));
             id.UniqueThread = reinterpret_cast<PVOID>(static_cast<std::uintptr_t>(pi.dwThreadId));
             written = std::min<std::size_t>(a.Size, sizeof id);
-            std::memcpy(a.ValuePtr, &id, written);
+            out_status = probe::CopyToUser(a.ValuePtr, &id, written);
         } else if (number == kPsImageInfo) {
             written = std::min<std::size_t>(a.Size, kImageInfoSize);
-            std::memcpy(a.ValuePtr, image_info, written);
+            out_status = probe::CopyToUser(a.ValuePtr, image_info, written);
         } else {
             continue;
         }
-        if (a.ReturnLength) *a.ReturnLength = written;
+        if (out_status == st::Success && a.ReturnLength) out_status = probe::Store<SIZE_T>(a.ReturnLength, written);
+    }
+    if (out_status != st::Success) {
+        TerminateProcess(pi.hProcess, static_cast<UINT>(out_status));
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        return out_status;
     }
     TRACE(process, "started pid %04lx tid %04lx: %ls", pi.dwProcessId, pi.dwThreadId, req.image.c_str());
     return st::Success;
@@ -726,6 +749,10 @@ SetSystemInfoAction ClassifySetSystemInformation(ULONG klass, const char** name,
 }
 
 NTSTATUS NTAPI Xl_NtSetSystemInformation(ULONG klass, PVOID info, ULONG length) {
+    // SystemTimeAdjustmentInformation: the kernel checks the structure's size (SYSTEM_SET_TIME_ADJUST_INFORMATION,
+    // 8 bytes) before it checks the privilege, so a wrong length is not an unprivileged caller's PRIVILEGE_NOT_HELD.
+    constexpr ULONG kSystemTimeAdjustmentInformation = 28;
+    if (klass == kSystemTimeAdjustmentInformation && length != 8) return st::InfoLengthMismatch;
     const char* name = nullptr;
     const char* privilege = nullptr;
     if (ClassifySetSystemInformation(klass, &name, &privilege) == SetSystemInfoAction::PassThrough) {

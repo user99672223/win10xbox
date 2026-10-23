@@ -1,0 +1,2 @@
+/* The compatibility manifest as a resource, for toolchains that do not merge a .manifest source file (mingw). */
+1 24 "identity.manifest"

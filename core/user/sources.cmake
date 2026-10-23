@@ -11,15 +11,19 @@ target_sources(win10xbox_core PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/gdi_objects.cpp
   ${CMAKE_CURRENT_LIST_DIR}/gdi_dc.cpp
   ${CMAKE_CURRENT_LIST_DIR}/gdi_draw.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/gdi_bitmap.cpp
   ${CMAKE_CURRENT_LIST_DIR}/win_class.cpp
   ${CMAKE_CURRENT_LIST_DIR}/win_window.cpp
   ${CMAKE_CURRENT_LIST_DIR}/win_defwnd.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/win_menu.cpp
   ${CMAKE_CURRENT_LIST_DIR}/win_message.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/win_hook.cpp
   ${CMAKE_CURRENT_LIST_DIR}/win_paint.cpp
   ${CMAKE_CURRENT_LIST_DIR}/win_sysparams.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/native_compose.cpp
   ${CMAKE_CURRENT_LIST_DIR}/win_scroll.cpp
   ${CMAKE_CURRENT_LIST_DIR}/win_clipboard.cpp
-  ${CMAKE_CURRENT_LIST_DIR}/win_cursoricon.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/win_cursor.cpp
 )
 target_include_directories(win10xbox_core PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 target_include_directories(win10xbox_core PUBLIC ${CMAKE_CURRENT_LIST_DIR}/../../winexbox/include)

@@ -22,6 +22,7 @@ apisetschema
 win32u
 user32
 gdi32
+msimg32      # AlphaBlend / TransparentBlt / GradientFill forward to gdi32 (docs/slices/gdibmp.md)
 
 # --- base services ---------------------------------------------------------
 advapi32
@@ -36,7 +37,6 @@ version
 imm32
 ws2_32
 winmm
-bcrypt             # RtlGenRandom-backed BCryptGenRandom for curl.exe (no unix lib: hashes/ciphers need gnutls)
 
 # --- imported by the Sysinternals Coreinfo64 / PsInfo64 guests (docs/slices/sysinfo.md) ---
 comdlg32
@@ -49,13 +49,19 @@ dnsapi
 nsi
 shcore      # shlwapi
 coml2       # ole32
-cryptbase   # advapi32's SystemFunction036 forward
 # --- imports of fastfetch.exe (docs/slices/fastfetch.md) and what they pull in ---
 cfgmgr32
 hid
 secur32
 winbrand
 wtsapi32
+# --- SDL2.dll (docs/slices/realsdl.md) static imports: setupapi (-> cfgmgr32, already built), winmm (-> msacm32) ---
+setupapi
+msacm32     # winmm static import
+
+# --- imports of wbemprox (docs/slices/identity.md); its other imports are listed above ---
+winspool.drv=winspool.drv
+compstui     # winspool.drv
 
 # --- imports of chocolate-doom.exe / SDL2.dll / SDL3.dll / libfluidsynth / libportaudio (docs/slices/doom.md) ---
 msacm32    # winmm's hard import
@@ -66,13 +72,36 @@ setupapi   # SDL2.dll, libportaudio.dll
 ole32
 oleaut32
 combase
-coml2     # hard import of ole32 (7zr.exe imports ole32/oleaut32)
-shcore    # hard import of shlwapi and so of shell32 (7zr.exe imports shell32)
 
 # --- helpers / programs ----------------------------------------------------
 programs/services
 wbemprox
 programs/wineboot
+
+# --- imaging / text (wine-pe/tests: windowscodecs, gdiplus, dwrite tests) ---
+propsys
+windowscodecs
+mlang
+gdiplus
+dwrite
+atl100        # __wine_register_resources (winecrt0) loads it for DllRegisterServer of propsys/windowscodecs (docs/slices/wt-media-atl.md)
+# --- wt-misc: DLLs under Wine conformance test (wine-pe/tests) + their imports
+cabinet
+psapi
+# userenv is NOT built: with it present kernel32's environ test calls GetUserProfileDirectory (environ.c:74) and fails
+# with ERROR_NONE_MAPPED, one assertion more than main's baseline (docs/slices/wt-misc.md); needs the ProfileList registry data first.
+xmllite
+dbghelp
+msxml3
+urlmon
+wininet
+iertutil
+crypt32
+ncrypt
+wintrust
+cryptnet    # crypt32 delay import
+cryptui     # wintrust delay import
+imagehlp    # wintrust delay import
 
 # --- console programs (wine-pe/programs/*.sh, ctest integration.wineprog_*) --
 programs/xcopy
@@ -93,3 +122,4 @@ programs/icacls
 programs/cacls
 programs/explorer         # wine-pe/programs/explorer.sh: explorer /desktop=shell,WxH
 programs/conhost          # wine-pe/programs/conhost.sh: console host (DECISIONS.md)
+programs/cmd              # C:\Windows\System32\cmd.exe: the command interpreter every Windows machine has (ntdll file.c:400 opens it; ComSpec points at it)

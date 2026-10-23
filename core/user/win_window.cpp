@@ -936,8 +936,6 @@ HWND WINAPI NtUserCreateWindowEx(DWORD ex_style, UNICODE_STRING* class_name, UNI
     if ((w->style & (WS_DLGFRAME | WS_THICKFRAME)) && !(w->style & (WS_CHILD | WS_POPUP))) w->ex_style |= WS_EX_WINDOWEDGE;
     if (!(w->style & (WS_CHILD | WS_POPUP))) w->flags |= kWinNeedSize;
     w->id = reinterpret_cast<ULONG_PTR>(cs.hMenu);
-    if (cs.hMenu && (w->style & (WS_CHILD | WS_POPUP)) != WS_CHILD)
-        FIXME(user, "window %p: menu %p is not drawn (no menu support yet)", hwnd, cs.hMenu);
     w->normal = RECT{cs.x, cs.y, cs.x + cs.cx, cs.y + cs.cy};
     w->window = w->client = w->normal;
     LinkAfter(w, (w->style & WS_CHILD) ? HWND_BOTTOM : HWND_TOP);
@@ -1195,12 +1193,6 @@ ULONG WINAPI NtUserAlterWindowStyle(HWND hwnd, UINT mask, UINT style) {
     if (!w) return 0;
     w->style = (w->style & ~mask) | (style & mask);
     return 1;
-}
-
-// No hooks are installed (SetWindowsHookEx is Todo), so no filter ever eats a message.
-BOOL WINAPI NtUserCallMsgFilter(MSG* msg, INT code) {
-    (void)msg; (void)code;
-    return FALSE;
 }
 
 // There is no IME: no input context exists.
@@ -1757,8 +1749,10 @@ BOOL WINAPI NtUserSetMenu(HWND hwnd, HMENU menu) {
     LockGuard lock;
     WindowObj* w = WinChecked(hwnd);
     if (!w || (w->style & (WS_CHILD | WS_POPUP)) == WS_CHILD) return FALSE;
-    if (menu) FIXME(user, "SetMenu(%p, %p): menus are not drawn (no menu support yet)", hwnd, menu);
-    w->id = reinterpret_cast<ULONG_PTR>(menu);
+    if (!MenuAttachToWindow(w, menu)) return FALSE;
+    // the client area shrinks by the menu bar (win32u NtUserSetMenu)
+    SetWindowPosInternal(w->handle, nullptr, 0, 0, 0, 0,
+                         SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED);
     return TRUE;
 }
 
@@ -1766,14 +1760,6 @@ HMENU WINAPI NtUserGetSystemMenu(HWND hwnd, BOOL revert) {
     (void)hwnd; (void)revert;
     NoteUnimplemented("NtUserGetSystemMenu (no menu support yet)");
     return nullptr;
-}
-
-BOOL WINAPI NtUserDrawMenuBar(HWND hwnd) {
-    LockGuard lock;
-    WindowObj* w = WinChecked(hwnd);
-    if (!w) return FALSE;
-    w->nc_pending = true;
-    return TRUE;
 }
 
 DWORD WINAPI NtUserGetWindowContextHelpId(HWND hwnd) {
@@ -1842,6 +1828,7 @@ ULONG_PTR WINAPI NtUserCallNoParam(ULONG code) {
     case abi::NoParamExitingThread: {
         if (UserThread* t = FindUserThread()) {
             t->exiting = true;
+            RemoveThreadHooks(t->tid);
             DestroyThreadWindows(t);
         }
         return 0;
@@ -1863,8 +1850,6 @@ ULONG_PTR WINAPI NtUserCallNoParam(ULONG code) {
 ULONG_PTR WINAPI NtUserCallOneParam(ULONG_PTR arg, ULONG code) {
     LockGuard lock;
     switch (code) {
-    case abi::OneParamCreateCursorIcon: return HandleToUlong(CreateCursorIconHandle(arg != 0));
-    case abi::OneParamGetIconParam: return GetIconParam(reinterpret_cast<HICON>(UlongToHandle(static_cast<ULONG>(arg))));
     case abi::OneParamGetSysColor: return SysColor(static_cast<int>(arg));
     case abi::OneParamGetSysColorBrush:
         if (static_cast<int>(arg) == 0x100 /* COLOR_55AA_BRUSH */) return HandleToUlong(S().stock[GRAY_BRUSH]);
@@ -1896,6 +1881,8 @@ ULONG_PTR WINAPI NtUserCallOneParam(ULONG_PTR arg, ULONG code) {
         std::memcpy(st, S().key_state, 256);
         return TRUE;
     }
+    case abi::OneParamGetMenuItemCount: return MenuItemCount(arg);
+    case abi::OneParamCreateCursorIcon: return HandleToUlong(CreateCursorObject(arg != 0));
     case abi::OneParamEnableThunkLock:
         return 0;   // the thunk lock exists for 16-bit code, which never runs here
     case abi::OneParamSetKeyboardAutoRepeat:
@@ -1943,14 +1930,11 @@ ULONG_PTR WINAPI NtUserCallTwoParam(ULONG_PTR arg1, ULONG_PTR arg2, ULONG code) 
         if (r) ScreenRect(r);
         return TRUE;
     }
-    case abi::TwoParamSetIconParam:
-        return SetIconParam(reinterpret_cast<HICON>(UlongToHandle(static_cast<ULONG>(arg1))), reinterpret_cast<const abi::FreeIconParams*>(arg2));
     case abi::TwoParamGetDialogProc:
     case abi::TwoParamAllocWinProc:
         return arg1;   // raw procedure pointers throughout (no WINPROC handles)
     case abi::TwoParamGetMenuInfo:
-        SetLastErr(ERROR_INVALID_MENU_HANDLE);
-        return FALSE;
+        return MenuGetInfo(arg1, reinterpret_cast<MENUINFO*>(arg2));
     }
     FIXME(user, "NtUserCallTwoParam code %lu", code);
     SetLastErr(ERROR_CALL_NOT_IMPLEMENTED);

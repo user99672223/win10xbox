@@ -4,6 +4,9 @@
 // are still writable). Non-image sections pass through to the host.
 #include "internal.h"
 #include "win10xbox/config.h"
+#if WIN10XBOX_HAVE_CLOCK
+#include "win10xbox/clock.h"
+#endif
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -287,7 +290,10 @@ void DumpGuestModules(const char* why) {
 void NoteGuestEntry(const CONTEXT* ctx) {
     if (!ctx) return;
     void* thunk = GuestEntryThunk();
-    if (!thunk || ctx->Rip != reinterpret_cast<DWORD64>(thunk)) return;   // not the main-thread launch continuation
+    DWORD64 rip = 0;
+    if (!thunk || probe::Load<DWORD64>(&ctx->Rip, &rip) != st::Success ||   // the host's NtContinue reports a bad context
+        rip != reinterpret_cast<DWORD64>(thunk))
+        return;                                                             // not the main-thread launch continuation
     static volatile LONG done = 0;
     if (InterlockedExchange(&done, 1)) return;                            // once per process
     TRACE(modules, "guest entry reached (RtlUserThreadStart at %p)", thunk);
@@ -330,15 +336,36 @@ NTSTATUS MapImageView(const std::shared_ptr<ImageSection>& sec, const MapOptions
     std::vector<std::string> unmatched;
     view->stubs = loader::RewriteSyscallStubs(view->image, SyscallEntryAddress(), &patched, &unmatched);
     view->stubs_rewritten = view->stubs != 0;
+    // Dispatch by name: a native DLL's thunks carry its own build's ids (no-op for Wine's builtins).
+    if (!patched.empty()) RenumberSyscallThunks(patched, view->image.path.c_str());
     if (view->stubs_rewritten || !unmatched.empty())
         TRACE(dispatch, "%ls: %zu syscall stubs rewritten, %zu unmatched", view->image.path.c_str(), view->stubs,
               unmatched.size());
     for (auto& u : unmatched) WARN(dispatch, "%ls: stub %s not rewritten", view->image.path.c_str(), u.c_str());
+    // What an unmatched export actually is (a forwarder, or which bytes), for the first few: on a native win32u
+    // these are the calls that would reach the kernel without the dispatcher.
+    for (std::size_t i = 0; i < unmatched.size() && i < 6 && !patched.empty(); ++i) {
+        std::string fwd;
+        const auto* p = static_cast<const std::uint8_t*>(loader::FindExport(view->image.base, unmatched[i].c_str(), &fwd));
+        if (!fwd.empty()) { TRACE(dispatch, "  %s: forwarder to %s", unmatched[i].c_str(), fwd.c_str()); continue; }
+        if (!p) continue;
+        char hex[32 * 3 + 1] = {};
+        for (int b = 0; b < 32; ++b) std::snprintf(hex + 3 * b, 4, "%02X ", p[b]);
+        TRACE(dispatch, "  %s at %p: %s", unmatched[i].c_str(), static_cast<const void*>(p), hex);
+    }
 
     loader::ScanOptions so;
     so.patch_cpuid = config::Current().patch_cpuid;
     so.patch_rdtsc = true;
     so.patch_syscall = !view->stubs_rewritten;   // rewritten thunks no longer hold `syscall`
+#if WIN10XBOX_HAVE_CLOCK
+    if (clock::VirtualSharedData()) {   // D18: the version block of KUSER_SHARED_DATA says 10.0.19045, not the host's build
+        so.patch_kuser_reads = true;
+        so.kuser_lo = 0x7FFE0000ull + clock::usd::kNtBuildNumber;
+        so.kuser_hi = 0x7FFE0000ull + clock::usd::kNtMinorVersion + 4;
+        so.kuser_addresses = true;
+    }
+#endif
     so.handler = &CpuSiteHandler;
     loader::ScanResult sr;
     NTSTATUS ss = loader::ScanAndPatch(view->image, so, &sr);
@@ -415,13 +442,22 @@ NTSTATUS NTAPI Xl_NtCreateSection(PHANDLE handle, ACCESS_MASK access, POBJECT_AT
                                   ULONG protect, ULONG attributes, HANDLE file) {
     if (!(attributes & kSecImage) || !file)
         return Host().NtCreateSection(handle, access, attr, size, protect, attributes, file);
-    if (OAName(attr).size()) FIXME(dispatch, "named image section %.*ls not supported, creating it unnamed",
-                                   static_cast<int>(OAName(attr).size()), OAName(attr).data());
+    // The attributes are optional, the handle is not; both are caller memory.
+    if (NTSTATUS ps = probe::ProbeWrite(handle, sizeof(HANDLE))) return ps;
+    probe::ObjectAttributes cap;
+    if (attr)
+        if (NTSTATUS cs = probe::CaptureObjectAttributes(attr, &cap)) return cs;
+    const std::wstring_view name = cap.name.view();
+    if (name.size()) FIXME(dispatch, "named image section %.*ls not supported, creating it unnamed",
+                           static_cast<int>(name.size()), name.data());
     std::shared_ptr<ImageSection> sec;
     if (NTSTATUS s = CreateImageSectionFromFile(file, &sec)) return s;
     HANDLE h = NewSectionHandle(sec);
     if (!h) return st::NoMemory;
-    *handle = h;
+    if (NTSTATUS ws = probe::Store<HANDLE>(handle, h)) {
+        Xl_NtClose(h);   // the caller's slot vanished: do not leak the section
+        return ws;
+    }
     TRACE(dispatch, "image section %p for %ls", h, sec->host_path.c_str());
     TRACE(modules, "section %p: %ls (%zu bytes, host path %ls)", h, ImageLabel(sec.get()).c_str(), sec->bytes.size(),
           sec->host_path.empty() ? L"<unknown>" : sec->host_path.c_str());
@@ -442,19 +478,32 @@ static NTSTATUS MapOurs(const std::shared_ptr<ImageSection>& sec, HANDLE process
         FIXME(dispatch, "mapping an image section into another process");
         return st::NotSupported;
     }
+    // The base address is read and written back, the view size is optional: probed before anything is mapped.
+    PVOID preferred = nullptr;
+    if (NTSTATUS ps = probe::ProbeWrite(base, sizeof(PVOID))) return ps;
+    if (NTSTATUS ps = probe::Load<PVOID>(base, &preferred)) return ps;
+    if (view_size)
+        if (NTSTATUS ps = probe::ProbeWrite(view_size, sizeof(SIZE_T))) return ps;
     MapOptions opts;
-    opts.preferred = base ? *base : nullptr;
+    opts.preferred = preferred;
     ImageView* view = nullptr;
     NTSTATUS s = MapImageView(sec, opts, &view);
     if (!NtSuccess(s)) {
         WARN(modules, "map of %ls failed: %08lx", ImageLabel(sec.get()).c_str(), static_cast<unsigned long>(s));
         return s;
     }
-    *base = view->image.base;
-    if (view_size) *view_size = view->image.size;
-    TRACE(modules, "map %ls at %p, %zu bytes%s", ImageLabel(sec.get()).c_str(), view->image.base, view->image.size,
-          view->image.relocated ? ", relocated" : "");
-    return view->image.relocated ? st::ImageNotAtBase : st::Success;
+    void* const mapped_base = view->image.base;
+    const SIZE_T mapped_size = view->image.size;
+    const bool relocated = view->image.relocated;
+    NTSTATUS ws = probe::Store<PVOID>(base, mapped_base);
+    if (ws == st::Success && view_size) ws = probe::Store<SIZE_T>(view_size, mapped_size);
+    if (ws != st::Success) {
+        UnmapView(mapped_base);   // the caller's output vanished: do not leave an unreachable view behind
+        return ws;
+    }
+    TRACE(modules, "map %ls at %p, %zu bytes%s", ImageLabel(sec.get()).c_str(), mapped_base, mapped_size,
+          relocated ? ", relocated" : "");
+    return relocated ? st::ImageNotAtBase : st::Success;
 }
 
 NTSTATUS NTAPI Xl_NtMapViewOfSection(HANDLE section, HANDLE process, PVOID* base, ULONG_PTR zero_bits,
@@ -465,10 +514,30 @@ NTSTATUS NTAPI Xl_NtMapViewOfSection(HANDLE section, HANDLE process, PVOID* base
                                      protect);
 }
 
+// MEM_EXTENDED_PARAMETER { DWORD64 Type:8, Reserved:56; union { ... ULONG ULong; } } is 16 bytes. An image machine
+// (MemExtendedParameterImageMachine) other than this process's (AMD64) cannot be honoured: Windows answers
+// STATUS_NOT_SUPPORTED for it on an x64 process, 0 meaning "the section's own machine".
+static NTSTATUS CheckImageMachineParameters(PVOID ext, ULONG ext_count) {
+    constexpr ULONG kMemExtendedParameterImageMachine = 6;
+    if (!ext) return st::Success;
+    for (ULONG i = 0; i < ext_count; ++i) {
+        std::uint64_t e[2];
+        if (NTSTATUS s = probe::CopyFromUser(e, static_cast<const std::uint8_t*>(ext) + 16 * static_cast<size_t>(i), sizeof e))
+            return s;
+        if ((e[0] & 0xFF) == kMemExtendedParameterImageMachine && static_cast<ULONG>(e[1]) != 0 &&
+            static_cast<ULONG>(e[1]) != IMAGE_FILE_MACHINE_AMD64)
+            return st::NotSupported;
+    }
+    return st::Success;
+}
+
 static NTSTATUS NTAPI Xl_NtMapViewOfSectionEx(HANDLE section, HANDLE process, PVOID* base, PLARGE_INTEGER offset,
                                               PSIZE_T view_size, ULONG alloc_type, ULONG protect, PVOID ext,
                                               ULONG ext_count) {
-    if (auto sec = SectionFromHandle(section)) return MapOurs(sec, process, base, view_size);
+    if (auto sec = SectionFromHandle(section)) {
+        if (NTSTATUS s = CheckImageMachineParameters(ext, ext_count)) return s;
+        return MapOurs(sec, process, base, view_size);
+    }
     return Host().NtMapViewOfSectionEx(section, process, base, offset, view_size, alloc_type, protect, ext, ext_count);
 }
 
@@ -485,21 +554,23 @@ static NTSTATUS NTAPI Xl_NtUnmapViewOfSectionEx(HANDLE process, PVOID base, ULON
 static NTSTATUS NTAPI Xl_NtQuerySection(HANDLE section, ULONG klass, PVOID buffer, SIZE_T length, PSIZE_T ret_len) {
     auto sec = SectionFromHandle(section);
     if (!sec) return Host().NtQuerySection(section, klass, buffer, length, ret_len);
+    // Both caller buffers are probed before either is written.
+    if (NTSTATUS ps = probe::ProbeWrite(buffer, length)) return ps;
+    if (ret_len)
+        if (NTSTATUS ps = probe::ProbeWrite(ret_len, sizeof(SIZE_T))) return ps;
     switch (klass) {
     case 0: {   // SectionBasicInformation
         struct { PVOID BaseAddress; ULONG Attributes; LARGE_INTEGER Size; } info{};
         info.Attributes = kSecImage | kSecFile;
         info.Size.QuadPart = sec->size_of_image;
         if (length < sizeof(info)) return st::InfoLengthMismatch;
-        std::memcpy(buffer, &info, sizeof(info));
-        if (ret_len) *ret_len = sizeof(info);
-        return st::Success;
+        if (NTSTATUS ws = probe::CopyToUser(buffer, &info, sizeof(info))) return ws;
+        return probe::StoreIfPresent<SIZE_T>(ret_len, sizeof(info));
     }
     case 1:     // SectionImageInformation
         if (length < sizeof(sec->info)) return st::InfoLengthMismatch;
-        std::memcpy(buffer, sec->info, sizeof(sec->info));
-        if (ret_len) *ret_len = sizeof(sec->info);
-        return st::Success;
+        if (NTSTATUS ws = probe::CopyToUser(buffer, sec->info, sizeof(sec->info))) return ws;
+        return probe::StoreIfPresent<SIZE_T>(ret_len, sizeof(sec->info));
     default:
         FIXME(dispatch, "NtQuerySection class %lu on an image section", klass);
         return st::InvalidInfoClass;

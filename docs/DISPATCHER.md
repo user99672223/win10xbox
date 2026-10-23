@@ -18,6 +18,7 @@ interface: `core/include/win10xbox/dispatch.h`.
 | `core/dispatch/nt_spawn.cpp` | child processes (`NtCreateUserProcess`) and the refusals around process creation, debugging and `NtSetSystemInformation` |
 | `core/dispatch/subsystems.cpp` | registry / token / clock entry points wired as `Emulate` |
 | `core/dispatch/unix_calls.cpp` | Wine unix-call providers, Wine debug-channel replacements |
+| `core/dispatch/unix_ws2_32.cpp` | ws2_32's name-resolution unix calls on host Winsock |
 | `core/dispatch/rtl_forward.inc` / `.cpp` | function-level forwarding of guest ntdll exports (E2) |
 | `core/dispatch/cpu_sites.cpp` | scanner site handler: cpuid, rdtsc(p), raw syscall |
 | `core/dispatch/process.cpp` | `process::Launch`, guest threads, guest exit |
@@ -32,7 +33,7 @@ with exactly the state the kernel would see at `syscall`:
 
 | Register / memory | Meaning |
 |---|---|
-| `eax` | syscall id (Windows 10 x64 numbering, as in Wine's table) |
+| `eax` | syscall id: the table's id for the thunk's name (Wine's numbering; native thunks are renumbered at map time, see "Dispatch by name") |
 | `r10`, `rdx`, `r8`, `r9` | args 0-3 |
 | `[rsp]` | return address into the guest caller (the thunk was `call`ed) |
 | `[rsp+0x28+8*(i-4)]` | stack arg `i` (above the caller's 0x20 shadow space) |
@@ -150,6 +151,50 @@ thread-safe initialisation for every function-local static in `core/`, and
 several of them (`Threads()`, `Objects()`, `ExportCache()`, the `trace`
 singletons) are first touched from guest threads created at arbitrary times, so
 their initialisation is not provably ordered before concurrency.
+
+### User-mode callbacks in native GUI mode
+
+With `gui = native` (docs/GUI.md "Route B: native win32k") win32u syscalls go to the host's real win32k,
+which calls back into user mode: the kernel enters the **host** ntdll's `KiUserCallbackDispatcher` on the
+thread that made the syscall, below that syscall's frame on the same stack, and it calls
+`PEB.KernelCallbackTable[i](args, len)`. The callback normally ends in `NtCallbackReturn`, which makes the
+kernel discard the callback's stack and complete the *original* syscall. `core/dispatch/win32k_native.cpp`
+puts 512 trampolines in the PEB once the guest's user32 has installed its table (checked before every win32u
+pass-through); trampoline `i` routes by thread: a thread without a guest `ThreadState` (host-uwp's CoreWindow,
+a composer thread) gets the host's user32 `host_table[i]` exactly as before; a guest thread gets
+`CallInGuestView(guest_table[i], args, len)`.
+
+The sequence on a guest thread, with `ThreadState::depth` (asm = `core/asm/syscall_entry.{S,asm}`):
+
+| step | where | depth | TEB TLS/FLS |
+|---|---|---|---|
+| guest calls `NtUserX` | guest | 0 | guest |
+| asm entry: `++depth` (0->1), `SwapIn` | asm | 1 | host |
+| `win10xbox_dispatch` -> host win32u thunk -> `syscall` | host | 1 | host |
+| kernel callback -> `KiUserCallbackDispatcher` -> trampoline `i` | host | 1 | host |
+| `CallInGuestView`: `LeaveToGuestView()` saves `d = 1`, `depth = 0`, `SwapOut` | window | 0 | guest |
+| guest user32 `__fnXXX` -> window procedure (nested syscalls repeat this table one level down) | guest | 0 | guest |
+| guest calls `NtCallbackReturn` (Wine ntdll thunk) -> asm entry: `++depth` (0->1), `SwapIn` | asm | 1 | host |
+| dispatcher: PassThrough to the host's `NtCallbackReturn`; the kernel unwinds to the original syscall | host | 1 | host |
+| the host win32u thunk returns into `win10xbox_dispatch`, which returns to the asm | host | 1 | host |
+| asm exit: `--depth` (1->0), `SwapOut` | guest | 0 | guest |
+
+**Invariant: at every kernel transition the depth counter and the installed TLS view agree with the frame the
+kernel resumes.** `NtCallbackReturn` enters through the asm stub, which raises depth to exactly the value the
+interrupted syscall's frame had when it entered the kernel (1 for a direct guest syscall, n+1 when the syscall
+was made at depth n), and installs the host view, which is what that frame had too. So when the kernel
+abandons the callback stack (the trampoline, `CallInGuestView` with its saved `d`, the stub frame of
+`NtCallbackReturn`) nothing that was abandoned still has to be undone: `ReenterHostView(d)` is skipped, but the
+asm entry of `NtCallbackReturn` already did its work, and `guest_tls`/`guest_fls` in the `ThreadState` hold the
+same thread's guest pointers. The `kThreadGuestView` flag stays set, as after `NtContinue`; `GuestViewActive()`
+also requires `depth == 0`, so it reports correctly. A callback that **returns** to the trampoline instead
+takes the ordinary way: `ReenterHostView(d)` restores depth and the host view, the trampoline returns the
+status to `KiUserCallbackDispatcher`, and the host ntdll makes the `NtCallbackReturn` itself. Nothing between
+the swap and the guest call is host code (`CallInGuestView` resolves the target first), and the per-callback
+trace line is written before it, from the host view. Rules this relies on: nothing may hold a lock or own a
+resource across a win32u pass-through (the kernel may unwind through the trampoline frames, never through
+`win10xbox_dispatch`'s), and `NtCallbackReturn` stays PassThrough in native mode (Emulate in emulated mode,
+where core/user runs the callback itself).
 
 ### The TLS slot we hold
 
@@ -290,8 +335,9 @@ objects, DCs, drawing).
 | `NtMakePermanentObject` | pass-through |
 | `NtRaiseHardError` | `err:process: hard error ...` with the string parameters, answers `ResponseOk`. |
 | `NtContinue(Ex)`, `NtRaiseException`, `NtSetContextThread` (self) | switch to the guest TEB view, then pass. |
-| registry `Nt*Key*` | `registry::Reg_Nt*` |
+| registry `Nt*Key*` | `registry::Reg_Nt*`; `NtFlushKey` also saves the overlay file, see "Registry persistence" |
 | `NtOpenKeyTransacted`, `NtOpenKeyTransactedEx` | `registry::Reg_NtOpenKeyTransacted(Ex)`: the transaction handle is traced and ignored, the open is the plain `NtOpenKey(Ex)`. `NtCreateKeyTransacted` is unchanged (`STATUS_NOT_IMPLEMENTED`). |
+| `NtQueryObject` (key handle) | `registry::Reg_NtQueryObject`: a key handle is no host object. `ObjectBasicInformation` and `ObjectNameInformation` (`STATUS_KEY_DELETED` for a deleted key, `STATUS_INFO_LENGTH_MISMATCH` for a short buffer); other classes `STATUS_NOT_IMPLEMENTED`. Other handles go to the host as before. |
 | `NtLoadKey2` | `registry::Reg_NtLoadKey2`: `NtLoadKeyEx` with the flags and no trust key, event, access or root handle. |
 | `NtQueryDefaultLocale`, `NtSetDefaultLocale`, `NtQueryDefaultUILanguage`, `NtSetDefaultUILanguage` | `nt_nls.cpp` locale state: set stores, query answers, nothing on the host changes. Starts at en-US (0x0409). Zero LCID or LANGID is `STATUS_INVALID_PARAMETER`. |
 | token `Nt*Token*`, `NtAccessCheck`, `NtPrivilegeCheck`, `NtQuerySecurityObject` (token handles) | `token::Tok_Nt*` |
@@ -343,8 +389,9 @@ knows the machine folder and `machine.json` but not drives mapped at run time by
 outside the machine folder given to the first `win10xbox.exe`); every child boots its own Wine ntdll, so a child costs a
 full start (a second or so under Wine); there is no process tree or session sharing, so Wine-only mechanisms that need
 wineserver (`CreateProcess` of a Unix binary, `winevdm`) do not apply; the machine folder must provide the program: the
-builtin set built by `wine-pe` does not contain `cmd.exe`, so `CreateProcess("cmd.exe ...")` and `system()` find
-nothing until a `cmd.exe` is staged. `NtCreateProcessEx` (an empty process to be filled in with `NtWriteVirtualMemory` and
+builtin set built by `wine-pe` carries Wine's `cmd.exe` (`programs/cmd` in `wine-pe/dlls.txt`; the VFS serves it as
+`C:\Windows\System32\cmd.exe` from `Windows\builtin`, integration.cmd_builtin), so `CreateProcess("cmd.exe ...")`,
+`system()` and the `ComSpec` the guest environment names find it. `NtCreateProcessEx` (an empty process to be filled in with `NtWriteVirtualMemory` and
 a later thread) and the legacy `NtCreateThread` (caller-allocated stack and arbitrary `CONTEXT`; guest threads enter
 Wine's per-thread loader init, E4) answer `STATUS_NOT_SUPPORTED` with a FIXME; nothing in Windows 10 user mode calls them.
 
@@ -353,6 +400,17 @@ Windows asks for) answer `STATUS_PRIVILEGE_NOT_HELD` and so does every class not
 (59, settable without a privilege, changes a counter) reaches the host. `kernelbase!SetSystemTimeAdjustment` and the time
 zone setters therefore fail with `ERROR_PRIVILEGE_NOT_HELD`, as they do for an unprivileged Windows user, and the virtual
 clock and the machine identity stay the layer's.
+
+## Registry persistence (D13)
+
+1. Hives stay read-only; every guest write lands in the in-memory overlay. The overlay is also kept in one file, `<machine>\registry-overlay.bin` (the `SaveOverlay` format), which `process::Launch` loads right after `registry::Initialize` (`registry::EnablePersistence`) when it exists.
+2. Only differences from what `Initialize` itself seeded (fidelity values, COM classes) are written, so a later `machine.json` edit still shows; a process that changed nothing writes nothing.
+3. `registry::PersistOverlay` saves when the overlay changed since the last load or save: on `NtFlushKey` (a valid handle), in `GuestExit` (before the other guest threads are killed), and in `Xl_NtCreateUserProcess` just before the child host process is created, so the child's `Initialize` loads the parent's writes.
+4. Writes after that save reach a running child (or any other process) only through a later flush or at exit; the child's own writes reach the parent only through the file, which the parent re-reads only at its next start.
+5. Concurrent processes: last writer wins per save (the whole overlay is replaced, not merged). The file is written to `registry-overlay.bin.tmp`, flushed and renamed over the old one (`MoveFileExW`), so a reader sees the old or the new file; `registry-overlay.lock`, opened without sharing, serialises load and save across processes (a dead holder releases it; after 10 s a waiter goes on without it).
+6. A machine folder that is read-only, or a file that cannot be replaced, logs one `FIXME` and nothing persists; no registry call fails because of it (`NtFlushKey` still answers success). The console's LocalState machine folder is writable (D15), so it persists there with no `machine.json` setting.
+7. Not covered: a process that dies without `NtTerminateProcess` (a host crash) loses its writes since the last flush; volatile keys are not persisted; the unit test `registry_overlay_persist_atomic_lock` and `integration.guest_regpersist_write` / `_read` gate it.
+8. Unit tests that call `Initialize` alone never touch the file: persistence starts with `EnablePersistence`, which only the dispatcher calls.
 
 ## Wine "unix side"
 
@@ -458,6 +516,7 @@ looks up `Peb->ImageBaseAddress`.
 <machine>\Windows\builtin\*.dll           Wine PE builtins (wine-pe/out/builtin), ntdll.dll required
 <machine>\Windows\System32\*.dll          native DLLs (machine/import_windows_dlls.ps1)
 <machine>\Windows\System32\config\        registry hives (optional)
+<machine>\registry-overlay.bin             the registry overlay (written by the layer, "Registry persistence"), + .lock
 <machine>\Windows\Temp\
 <machine>\Users\User\AppData\Local\Temp\  <machine>\Users\User\AppData\Roaming\
 <machine>\ProgramData\  <machine>\Program Files\  <machine>\Program Files (x86)\
@@ -513,3 +572,15 @@ for diagnosis; `tests/host_exit` gates that nothing a DLL does at detach can cha
 
 win32u (`WIN32U_SYSCALL` lines in the generated table, ids 0x1000+) goes
 through the same entry; the table already reserves ids up to 0x1FFF.
+
+## Dispatch by name
+
+The id a thunk loads is that DLL build's numbering: Wine's for the builtins (which is what the table is keyed
+by), a Windows build's for a native `win32u.dll` (build 26100: `NtUserCreateWindowEx` = 0x106F, which in
+Wine's numbering is another function). `MapImageView` therefore calls `RenumberSyscallThunks` right after
+`loader::RewriteSyscallStubs`: every rewritten thunk's `mov eax, imm32` (thunk+4) is set to the table id for
+the thunk's **name** (VirtualProtect around the four bytes; the loader's protected-range bookkeeping is
+unchanged). For Wine's DLLs this changes nothing. A name with no entry gets id 0x1FFF, which no entry has, so it
+dispatches as "unknown syscall" with a FIXME at map time naming it, and never as whatever entry its foreign id
+collides with. In native GUI mode a `NtUser*`/`NtGdi*` name the host's `win32u.dll` exports gets an entry of its
+own instead (ids 0x1800.., PassThrough, 20 arguments copied), because route B forwards the whole win32u surface.

@@ -184,10 +184,13 @@ TEST(syscalls_process_set_system_information_classification) {
 
 TEST(syscalls_process_set_system_information_through_the_entry) {
     Syscall set("NtSetSystemInformation");
-    std::uint32_t value = 0;
+    std::uint64_t value = 0;
     // The privileged ones never reach the host, whatever its token could do.
     for (ULONG klass : {9u, 21u, 28u, 31u, 38u, 44u, 56u, 80u, 93u, 200u})
         CHECK_MSG(set(klass, &value, sizeof value) == kPrivilegeNotHeld, "class %lu", klass);
+    // SystemTimeAdjustmentInformation is 8 bytes: the size is checked before the privilege.
+    CHECK_EQ(set(28u, &value, 7u), st::InfoLengthMismatch);
+    CHECK_EQ(set(28u, &value, 9u), st::InfoLengthMismatch);
     // SystemComPlusPackage reaches the host. A bad length makes the host's answer independent of its token.
     using Fn = NTSTATUS(NTAPI*)(ULONG, PVOID, ULONG);
     auto host = reinterpret_cast<Fn>(HostExport("NtSetSystemInformation"));

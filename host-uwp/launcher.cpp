@@ -6,6 +6,8 @@
 
 #include "host_util.h"
 
+#include "win10xbox/gamepad.h"
+
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Gaming.Input.h>
 
@@ -272,21 +274,83 @@ void Launcher::OnKey(unsigned vk)
     }
 }
 
+namespace
+{
+    // Windows.Gaming.Input -> the layer's gamepad store (win10xbox/gamepad.h), which the guest's XInput reads.
+    // XINPUT_GAMEPAD_* bits: DPAD_UP 1, DOWN 2, LEFT 4, RIGHT 8, START 0x10, BACK 0x20, LEFT_THUMB 0x40,
+    // RIGHT_THUMB 0x80, LEFT_SHOULDER 0x100, RIGHT_SHOULDER 0x200, A 0x1000, B 0x2000, X 0x4000, Y 0x8000.
+    namespace wgi = winrt::Windows::Gaming::Input;
+
+    std::uint16_t XInputButtons(wgi::GamepadButtons b)
+    {
+        const struct { wgi::GamepadButtons from; std::uint16_t to; } map[] = {
+            {wgi::GamepadButtons::DPadUp, 0x0001}, {wgi::GamepadButtons::DPadDown, 0x0002},
+            {wgi::GamepadButtons::DPadLeft, 0x0004}, {wgi::GamepadButtons::DPadRight, 0x0008},
+            {wgi::GamepadButtons::Menu, 0x0010}, {wgi::GamepadButtons::View, 0x0020},
+            {wgi::GamepadButtons::LeftThumbstick, 0x0040}, {wgi::GamepadButtons::RightThumbstick, 0x0080},
+            {wgi::GamepadButtons::LeftShoulder, 0x0100}, {wgi::GamepadButtons::RightShoulder, 0x0200},
+            {wgi::GamepadButtons::A, 0x1000}, {wgi::GamepadButtons::B, 0x2000},
+            {wgi::GamepadButtons::X, 0x4000}, {wgi::GamepadButtons::Y, 0x8000}};
+        std::uint16_t out = 0;
+        for (const auto& m : map)
+            if ((static_cast<unsigned>(b) & static_cast<unsigned>(m.from)) != 0) out = static_cast<std::uint16_t>(out | m.to);
+        return out;
+    }
+
+    std::int16_t Stick(double v)   // -1..1 -> the signed-short range
+    {
+        v = std::max(-1.0, std::min(1.0, v));
+        return static_cast<std::int16_t>(v < 0 ? v * 32768.0 : v * 32767.0);
+    }
+
+    std::uint8_t Trigger(double v) { return static_cast<std::uint8_t>(std::max(0.0, std::min(1.0, v)) * 255.0 + 0.5); }
+
+    std::uint16_t g_last_left_motor = 0, g_last_right_motor = 0;   // the vibration last handed to the pad
+}
+
 void Launcher::PollGamepad()
 {
     unsigned now = 0;
     try
     {
-        namespace wgi = winrt::Windows::Gaming::Input;
         const auto pads = wgi::Gamepad::Gamepads();
-        if (pads.Size() == 0) return;
+        if (pads.Size() == 0)
+        {
+            win10xbox::input::DisconnectGamepad(0);
+            return;
+        }
         pad_seen_ = true;
-        const wgi::GamepadReading r = pads.GetAt(0).GetCurrentReading();
+        const wgi::Gamepad pad = pads.GetAt(0);
+        const wgi::GamepadReading r = pad.GetCurrentReading();
         const unsigned b = static_cast<unsigned>(r.Buttons);
         if ((b & static_cast<unsigned>(wgi::GamepadButtons::DPadUp)) != 0 || r.LeftThumbstickY > 0.6) now |= kPadUp;
         if ((b & static_cast<unsigned>(wgi::GamepadButtons::DPadDown)) != 0 || r.LeftThumbstickY < -0.6) now |= kPadDown;
         if ((b & static_cast<unsigned>(wgi::GamepadButtons::A)) != 0) now |= kPadA;
         if ((b & static_cast<unsigned>(wgi::GamepadButtons::B)) != 0) now |= kPadB;
+
+        // The first pad is the guest's XInput user 0.
+        W10xPadState st{};
+        st.buttons = XInputButtons(r.Buttons);
+        st.thumb_lx = Stick(r.LeftThumbstickX);
+        st.thumb_ly = Stick(r.LeftThumbstickY);
+        st.thumb_rx = Stick(r.RightThumbstickX);
+        st.thumb_ry = Stick(r.RightThumbstickY);
+        st.left_trigger = Trigger(r.LeftTrigger);
+        st.right_trigger = Trigger(r.RightTrigger);
+        win10xbox::input::SetGamepadState(0, st);
+
+        // What the guest asked for with XInputSetState, handed to the pad when it changes.
+        std::uint16_t left = 0, right = 0;
+        win10xbox::input::GetGamepadVibration(0, &left, &right);
+        if (left != g_last_left_motor || right != g_last_right_motor)
+        {
+            g_last_left_motor = left;
+            g_last_right_motor = right;
+            wgi::GamepadVibration v{};
+            v.LeftMotor = left / 65535.0;
+            v.RightMotor = right / 65535.0;
+            pad.Vibration(v);
+        }
     }
     catch (...)
     {

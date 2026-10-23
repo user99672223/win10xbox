@@ -151,24 +151,18 @@ int LogicalToDeviceDy(const DcObj* dc, int dy) {
     return static_cast<int>(std::lround(static_cast<double>(dy) * a->vport_ext.cy / a->wnd_ext.cy));
 }
 
-bool ResolveOrWarn(DcObj* dc, DrawTarget* out, const char* what) {
-    if (ResolveDrawTarget(dc, out)) return true;
-    if (dc->kind == DcKind::Memory) {
-        auto* bmp = GdiGetT<BitmapObj>(dc->bitmap, abi::kObjBitmap);
-        if (bmp && (bmp->bpp == 1 || bmp->dib))
-            FIXME(gdi, "%s into a %d bpp bitmap is not drawn (only blits and DIB copies reach those)", what,
-                  bmp->dib ? bmp->dib_header.biBitCount : bmp->bpp);
-    }
-    return false;
-}
-
 bool ResolveDrawTarget(DcObj* dc, DrawTarget* out) {
     out->clip = Rgn{};
     out->top = nullptr;
     RECT base{};
     if (dc->kind == DcKind::Memory) {
         auto* bmp = GdiGetT<BitmapObj>(dc->bitmap, abi::kObjBitmap);
-        if (!bmp || !BitmapTarget(*bmp, &out->px)) return false;   // blits and DIB copies have a pixel-by-pixel path
+        if (!bmp || !BitmapTarget(*bmp, &out->px)) {
+            if (bmp && (bmp->bpp == 1 || bmp->dib)) {
+                FIXME(gdi, "drawing into a %d bpp bitmap is not supported", bmp->dib ? bmp->dib_header.biBitCount : bmp->bpp);
+            }
+            return false;
+        }
         out->origin = POINT{0, 0};
         base = RECT{0, 0, bmp->width, bmp->height};
         out->clip.Set(base);

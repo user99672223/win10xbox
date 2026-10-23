@@ -113,6 +113,7 @@ void Compose(const std::vector<RetainedLayer>& layers, std::uint32_t* bgra, std:
             for (int x = r.left; x < r.right; ++x) dst[x] = src[x - l.screen.left] | 0xff000000u;
         }
     }
+    ComposeCursor(bgra, width, height, stride);
 }
 
 std::vector<RetainedLayer> LiveLayers() {
@@ -303,6 +304,7 @@ void PaintNonClient(HWND hwnd) {
             DrawGlyphRun(t, text_box, text_box.left, caption.top + (cap - 1 - 16) / 2, w->text,
                          ColorToPixel(SysColor(active ? COLOR_CAPTIONTEXT : COLOR_INACTIVECAPTIONTEXT)));
         }
+        MenuPaintBar(w, dc, t);   // win_menu.cpp: the menu bar, if any
         NoteDrawn(dc, t, RECT{0, 0, ww, wh});
     }
     ReleaseDCInternal(hwnd, hdc);
@@ -434,6 +436,7 @@ int ReleaseDCInternal(HWND hwnd, HDC hdc) {
 // ---- Host-facing ----------------------------------------------------------------------------------
 
 bool ComposeFrame(std::uint32_t* bgra, std::int32_t width, std::int32_t height, std::int32_t stride_bytes) {
+    if (detail::NativeGui()) return detail::NativeComposeFrame(bgra, width, height, stride_bytes);   // route B
     if (!bgra || width <= 0 || height <= 0) return false;
     detail::LockGuard lock;
     if (!detail::StateIfAny()) return false;
@@ -442,6 +445,8 @@ bool ComposeFrame(std::uint32_t* bgra, std::int32_t width, std::int32_t height, 
 }
 
 bool ComposeLastPaintedFrame(std::uint32_t* bgra, std::int32_t width, std::int32_t height, std::int32_t stride_bytes) {
+    // Route B: the native composer keeps the last frame of the guest's real windows itself.
+    if (detail::NativeGui()) return detail::NativeComposeFrame(bgra, width, height, stride_bytes);
     if (!bgra || width <= 0 || height <= 0) return false;
     detail::LockGuard lock;
     detail::State* s = detail::StateIfAny();
