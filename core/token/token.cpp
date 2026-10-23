@@ -22,6 +22,7 @@
 //    the caller's own buffer, as the kernel does.
 //  * One SRWLOCK protects every table and every token.
 #include "win10xbox/token.h"
+#include "win10xbox/probe.h"
 #include "win10xbox/trace.h"
 
 #include <algorithm>
@@ -128,6 +129,32 @@ Sid CopySid(const void* p) {
     return Sid(b, b + SidLen(p));
 }
 
+// ---- caller memory -----------------------------------------------------------------
+// Everything a token call reads from the caller is copied once, here, through win10xbox/probe.h; the rest of the
+// module works on the copies. A pointer that cannot be read is STATUS_ACCESS_VIOLATION, as in the kernel.
+
+constexpr ULONG kMaxCapturedEntries = 0x1000;   // SE_MAXIMUM_GROUP_LIMIT: more is STATUS_INVALID_PARAMETER
+
+// A SID, copied whole (the length comes from its sub-authority count). Only readability is checked here:
+// SidValid says whether the copy is a SID.
+NTSTATUS CaptureSid(const void* user, Sid* out) {
+    std::uint8_t head[2];
+    if (NTSTATUS st = probe::CopyFromUser(head, user, sizeof head)) return st;
+    out->assign(8 + 4 * static_cast<size_t>(head[1]), 0);
+    return probe::CopyFromUser(out->data(), user, out->size());
+}
+
+// TOKEN_GROUPS / TOKEN_PRIVILEGES: the count, then the entries.
+template <class Entry>
+NTSTATUS CaptureArray(const void* user, size_t first_entry_offset, std::vector<Entry>* out) {
+    ULONG count;
+    if (NTSTATUS st = probe::CopyFromUser(&count, user, sizeof count)) return st;
+    if (count > kMaxCapturedEntries) return kInvalidParameter;
+    out->resize(count);
+    return probe::CopyFromUser(out->data(), static_cast<const std::uint8_t*>(user) + first_entry_offset,
+                               count * sizeof(Entry));
+}
+
 bool ParseSid(const std::wstring& str, Sid* out) {
     // "S-R-A-S1-S2-..."
     if (str.size() < 5 || (str[0] != L'S' && str[0] != L's') || str[1] != L'-') return false;
@@ -202,12 +229,14 @@ struct Blob {
     void Put64(size_t at, std::uint64_t v) { std::memcpy(&d[at], &v, 8); }
     void Ptr(size_t slot, size_t target) { fix.emplace_back(slot, target); }
     size_t size() const { return d.size(); }
-    void Emit(void* dst) const {
-        std::memcpy(dst, d.data(), d.size());
+    // Relocates the image for `dst` and copies it into the caller's buffer.
+    NTSTATUS Emit(void* dst) const {
+        std::vector<std::uint8_t> image(d);
         for (const auto& f : fix) {
             const std::uint64_t p = reinterpret_cast<std::uintptr_t>(dst) + f.second;
-            std::memcpy(static_cast<std::uint8_t*>(dst) + f.first, &p, 8);
+            std::memcpy(&image[f.first], &p, 8);
         }
+        return probe::CopyToUser(dst, image.data(), image.size());
     }
 };
 
@@ -735,6 +764,59 @@ bool ParseSd(const void* sd, SdView* v) {
     return true;
 }
 
+// A caller's security descriptor, copied into a self-relative image of its own (owner and DACL; the group and the
+// SACL play no part in an access check). An absolute descriptor is flattened, so ParseSd only ever reads the copy.
+// A revision other than 1 yields a header-only image that ParseSd refuses.
+NTSTATUS CaptureSd(const void* user, std::vector<std::uint8_t>* flat) {
+    constexpr size_t kSelfRelativeHeader = 20;
+    std::uint8_t h[sizeof(SECURITY_DESCRIPTOR)] = {};
+    if (!user) return kInvalidSecurityDescr;
+    if (NTSTATUS st = probe::CopyFromUser(h, user, kSelfRelativeHeader)) return st;
+    flat->assign(kSelfRelativeHeader, 0);
+    if (h[0] != 1) { (*flat)[0] = h[0]; return kSuccess; }
+    WORD control;
+    std::memcpy(&control, h + 2, 2);
+    const auto* base = static_cast<const std::uint8_t*>(user);
+    const std::uint8_t* owner = nullptr;
+    const std::uint8_t* dacl = nullptr;
+    const bool dacl_present = (control & 0x0004) != 0;
+    if (control & 0x8000) {   // SE_SELF_RELATIVE
+        std::uint32_t o, d;
+        std::memcpy(&o, h + 4, 4);
+        std::memcpy(&d, h + 16, 4);
+        owner = o ? base + o : nullptr;
+        dacl = (dacl_present && d) ? base + d : nullptr;
+    } else {
+        if (NTSTATUS st = probe::CopyFromUser(h + kSelfRelativeHeader, base + kSelfRelativeHeader,
+                                              sizeof(SECURITY_DESCRIPTOR) - kSelfRelativeHeader))
+            return st;
+        const auto* a = reinterpret_cast<const SECURITY_DESCRIPTOR*>(h);
+        owner = static_cast<const std::uint8_t*>(a->Owner);
+        dacl = dacl_present ? reinterpret_cast<const std::uint8_t*>(a->Dacl) : nullptr;
+    }
+    (*flat)[0] = 1;
+    const WORD out_control = static_cast<WORD>(0x8000 | (dacl_present ? 0x0004 : 0));
+    std::memcpy(flat->data() + 2, &out_control, 2);
+    if (owner) {
+        Sid sid;
+        if (NTSTATUS st = CaptureSid(owner, &sid)) return st;
+        const std::uint32_t off = static_cast<std::uint32_t>(flat->size());
+        flat->insert(flat->end(), sid.begin(), sid.end());
+        std::memcpy(flat->data() + 4, &off, 4);
+    }
+    if (dacl) {
+        WORD size;
+        if (NTSTATUS st = probe::CopyFromUser(&size, dacl + 2, 2)) return st;
+        if (size < 8) size = 8;   // the header alone: the evaluator rejects what it finds in it
+        std::vector<std::uint8_t> acl(size);
+        if (NTSTATUS st = probe::CopyFromUser(acl.data(), dacl, size)) return st;
+        const std::uint32_t off = static_cast<std::uint32_t>(flat->size());
+        flat->insert(flat->end(), acl.begin(), acl.end());
+        std::memcpy(flat->data() + 16, &off, 4);
+    }
+    return kSuccess;
+}
+
 ACCESS_MASK MapGeneric(ACCESS_MASK m, const GENERIC_MAPPING* gm) {
     if (m & kGenericRead)    m |= gm->GenericRead;
     if (m & kGenericWrite)   m |= gm->GenericWrite;
@@ -805,11 +887,14 @@ std::vector<std::uint8_t> BuildTokenSd(const TokenObj& t, SECURITY_INFORMATION s
 
 // ---- helpers for Adjust* ---------------------------------------------------------------
 NTSTATUS OpenCommon(ACCESS_MASK want, ULONG attrs, PHANDLE out, const TokPtr& tok) {
-    if (!out) return kAccessViolation;
+    if (NTSTATUS st = probe::ProbeWrite(out, sizeof(HANDLE))) return st;   // NULL included
     const ACCESS_MASK mapped = MapTokenAccess(want);
     if (mapped & ~kTokenAllAccess) return kAccessDenied;   // SYNCHRONIZE, ACCESS_SYSTEM_SECURITY, ...
     const TokenId id = AddHandleLocked(tok, mapped, (attrs & 0x2) != 0);   // OBJ_INHERIT
-    *out = HandleValue(id);
+    if (NTSTATUS st = probe::Store<HANDLE>(out, HandleValue(id))) {
+        g_handles.erase(id);   // the caller's slot vanished: do not leak the handle
+        return st;
+    }
     return kSuccess;
 }
 
@@ -873,7 +958,7 @@ NTSTATUS Tok_NtOpenProcessTokenEx(HANDLE /*ProcessHandle*/, ACCESS_MASK DesiredA
     EnsureReady();
     Lock l;
     const NTSTATUS st = OpenCommon(DesiredAccess, HandleAttributes, TokenHandle, g_primary);
-    TRACE(token, "access=%08lx -> %p (0x%08lx)", (unsigned long)DesiredAccess, TokenHandle ? *TokenHandle : nullptr, (unsigned long)st);
+    TRACE(token, "access=%08lx (0x%08lx)", (unsigned long)DesiredAccess, (unsigned long)st);
     return st;
 }
 
@@ -900,6 +985,9 @@ NTSTATUS Tok_NtQueryInformationToken(HANDLE TokenHandle, TOKEN_INFORMATION_CLASS
                                      PVOID TokenInformation, ULONG TokenInformationLength, PULONG ReturnLength) {
     EnsureReady();
     const ULONG cls = static_cast<ULONG>(TokenInformationClass);
+    if (NTSTATUS st = probe::ProbeWrite(TokenInformation, TokenInformationLength)) return st;
+    if (ReturnLength)
+        if (NTSTATUS st = probe::ProbeWrite(ReturnLength, sizeof(ULONG), sizeof(ULONG))) return st;
     Blob b;
     {
         Lock l;
@@ -912,11 +1000,10 @@ NTSTATUS Tok_NtQueryInformationToken(HANDLE TokenHandle, TOKEN_INFORMATION_CLASS
             return st;
         }
     }
-    if (ReturnLength) *ReturnLength = static_cast<ULONG>(b.size());
+    if (ReturnLength)
+        if (NTSTATUS st = probe::Store<ULONG>(ReturnLength, static_cast<ULONG>(b.size()))) return st;
     if (TokenInformationLength < b.size()) return kBufferTooSmall;
-    if (!TokenInformation) return kAccessViolation;
-    b.Emit(TokenInformation);
-    return kSuccess;
+    return b.Emit(TokenInformation);
 }
 
 NTSTATUS Tok_NtSetInformationToken(HANDLE TokenHandle, TOKEN_INFORMATION_CLASS TokenInformationClass, PVOID TokenInformation, ULONG Length) {
@@ -928,13 +1015,22 @@ NTSTATUS Tok_NtSetInformationToken(HANDLE TokenHandle, TOKEN_INFORMATION_CLASS T
     if (cls == cSessionId) need = kTokAdjustSessionId;
     NTSTATUS st = Resolve(TokenHandle, need, &t);
     if (st != kSuccess) return st;
+    // The caller's buffer is copied once; SIDs and ACLs it points at are copied where they are used.
     if (!TokenInformation) return kAccessViolation;
+    if (NTSTATUS ps = probe::ProbeRead(TokenInformation, Length)) return ps;
+    std::vector<std::uint8_t> info_copy(Length);
+    if (NTSTATUS ps = probe::CopyFromUser(info_copy.data(), TokenInformation, Length)) return ps;
+    TokenInformation = info_copy.data();
     auto touch = [&] { t->modified_id = NextLuid(); };
 
     switch (cls) {
     case cOwner: {
         if (Length < 8) return kInfoLengthMismatch;
-        const void* sid = *static_cast<void* const*>(TokenInformation);
+        const void* user_sid = *static_cast<void* const*>(TokenInformation);
+        Sid sid_copy;
+        if (!user_sid) return kInvalidSid;
+        if (NTSTATUS ps = CaptureSid(user_sid, &sid_copy)) return ps;
+        const void* sid = sid_copy.data();
         if (!SidValid(sid)) return kInvalidSid;
         bool ok = SidEq(t->user, sid);
         for (const auto& g : t->groups) if (g.attrs & kGrpOwner && SidEq(g.sid, sid)) ok = true;
@@ -945,7 +1041,11 @@ NTSTATUS Tok_NtSetInformationToken(HANDLE TokenHandle, TOKEN_INFORMATION_CLASS T
     }
     case cPrimaryGroup: {
         if (Length < 8) return kInfoLengthMismatch;
-        const void* sid = *static_cast<void* const*>(TokenInformation);
+        const void* user_sid = *static_cast<void* const*>(TokenInformation);
+        Sid sid_copy;
+        if (!user_sid) return kInvalidSid;
+        if (NTSTATUS ps = CaptureSid(user_sid, &sid_copy)) return ps;
+        const void* sid = sid_copy.data();
         if (!SidValid(sid)) return kInvalidSid;
         bool ok = SidEq(t->primary_group, sid);
         for (const auto& g : t->groups) if (SidEq(g.sid, sid)) ok = true;
@@ -959,9 +1059,11 @@ NTSTATUS Tok_NtSetInformationToken(HANDLE TokenHandle, TOKEN_INFORMATION_CLASS T
         const auto* acl = *static_cast<const std::uint8_t* const*>(TokenInformation);
         if (!acl) { t->default_dacl.clear(); touch(); return kSuccess; }
         WORD size;
-        std::memcpy(&size, acl + 2, 2);
+        if (NTSTATUS ps = probe::CopyFromUser(&size, acl + 2, 2)) return ps;
         if (size < 8) return kInvalidParameter;
-        t->default_dacl.assign(acl, acl + size);
+        std::vector<std::uint8_t> acl_copy(size);
+        if (NTSTATUS ps = probe::CopyFromUser(acl_copy.data(), acl, size)) return ps;
+        t->default_dacl = std::move(acl_copy);
         touch();
         return kSuccess;
     }
@@ -986,7 +1088,11 @@ NTSTATUS Tok_NtSetInformationToken(HANDLE TokenHandle, TOKEN_INFORMATION_CLASS T
         return kSuccess;
     case cIntegrityLevel: {
         if (Length < 16) return kInfoLengthMismatch;
-        const void* sid = *static_cast<void* const*>(TokenInformation);
+        const void* user_sid = *static_cast<void* const*>(TokenInformation);
+        Sid sid_copy;
+        if (!user_sid) return kInvalidSid;
+        if (NTSTATUS ps = CaptureSid(user_sid, &sid_copy)) return ps;
+        const void* sid = sid_copy.data();
         if (!SidValid(sid) || static_cast<const std::uint8_t*>(sid)[1] != 1 || SidLen(sid) != 12) return kInvalidSid;
         const auto* b = static_cast<const std::uint8_t*>(sid);
         std::uint64_t auth = 0;
@@ -1009,11 +1115,23 @@ NTSTATUS Tok_NtSetInformationToken(HANDLE TokenHandle, TOKEN_INFORMATION_CLASS T
 NTSTATUS Tok_NtAdjustPrivilegesToken(HANDLE TokenHandle, BOOLEAN DisableAllPrivileges, PTOKEN_PRIVILEGES NewState,
                                      ULONG BufferLength, PTOKEN_PRIVILEGES PreviousState, PULONG ReturnLength) {
     EnsureReady();
+    // Captured before the lock: the new state, and the probes of the two outputs.
+    std::vector<LUID_AND_ATTRIBUTES> requested;
+    if (!DisableAllPrivileges) {
+        if (!NewState) return kInvalidParameter;
+        if (NTSTATUS ps = CaptureArray(NewState, offsetof(TOKEN_PRIVILEGES, Privileges), &requested)) return ps;
+    }
+    if (PreviousState) {
+        if (NTSTATUS ps = probe::ProbeWrite(PreviousState, BufferLength)) return ps;
+        if (ReturnLength)
+            if (NTSTATUS ps = probe::ProbeWrite(ReturnLength, sizeof(ULONG), sizeof(ULONG))) return ps;
+    } else if (ReturnLength) {
+        if (NTSTATUS ps = probe::ProbeWrite(ReturnLength, sizeof(ULONG), sizeof(ULONG))) return ps;
+    }
     Lock l;
     TokPtr t;
     NTSTATUS st = Resolve(TokenHandle, kTokAdjustPrivileges | (PreviousState ? kTokQuery : 0), &t);
     if (st != kSuccess) return st;
-    if (!DisableAllPrivileges && !NewState) return kInvalidParameter;
 
     std::vector<Priv> next = t->privs;
     std::vector<Priv> prev;           // old attributes of every privilege that changes
@@ -1028,8 +1146,8 @@ NTSTATUS Tok_NtAdjustPrivilegesToken(HANDLE TokenHandle, BOOLEAN DisableAllPrivi
             }
         }
     } else {
-        for (DWORD i = 0; i < NewState->PrivilegeCount; ++i) {
-            const LUID_AND_ATTRIBUTES& e = NewState->Privileges[i];
+        for (size_t i = 0; i < requested.size(); ++i) {
+            const LUID_AND_ATTRIBUTES& e = requested[i];
             auto it = std::find_if(next.begin(), next.end(), [&](const Priv& p) { return LuidEq(p.luid, e.Luid); });
             if (it == next.end()) { missing = true; continue; }
             const std::uint32_t old = it->attrs;
@@ -1047,13 +1165,14 @@ NTSTATUS Tok_NtAdjustPrivilegesToken(HANDLE TokenHandle, BOOLEAN DisableAllPrivi
 
     const ULONG needed = static_cast<ULONG>(4 + 12 * prev.size());
     if (PreviousState) {
-        if (ReturnLength) *ReturnLength = needed;
+        if (ReturnLength)
+            if (NTSTATUS ws = probe::Store<ULONG>(ReturnLength, needed)) return ws;
         if (BufferLength < needed) return kBufferTooSmall;   // nothing is changed
         Blob b;
         BuildPrivileges(b, prev);
-        b.Emit(PreviousState);
+        if (NTSTATUS ws = b.Emit(PreviousState)) return ws;
     } else if (ReturnLength) {
-        *ReturnLength = 0;
+        if (NTSTATUS ws = probe::Store<ULONG>(ReturnLength, 0)) return ws;
     }
     if (!prev.empty()) {
         t->privs = std::move(next);
@@ -1066,11 +1185,28 @@ NTSTATUS Tok_NtAdjustPrivilegesToken(HANDLE TokenHandle, BOOLEAN DisableAllPrivi
 NTSTATUS Tok_NtAdjustGroupsToken(HANDLE TokenHandle, BOOLEAN ResetToDefault, PTOKEN_GROUPS NewState, ULONG BufferLength,
                                  PTOKEN_GROUPS PreviousState, PULONG ReturnLength) {
     EnsureReady();
+    // Captured before the lock: the new groups (every SID in them) and the probes of the two outputs.
+    std::vector<Group> requested;
+    if (!ResetToDefault) {
+        if (!NewState) return kInvalidParameter;
+        std::vector<SID_AND_ATTRIBUTES> entries;
+        if (NTSTATUS ps = CaptureArray(NewState, offsetof(TOKEN_GROUPS, Groups), &entries)) return ps;
+        for (const SID_AND_ATTRIBUTES& e : entries) {
+            Group g;
+            g.attrs = e.Attributes;
+            if (NTSTATUS ps = CaptureSid(e.Sid, &g.sid)) return ps;
+            requested.push_back(std::move(g));
+        }
+    }
+    if (PreviousState) {
+        if (NTSTATUS ps = probe::ProbeWrite(PreviousState, BufferLength)) return ps;
+    }
+    if (ReturnLength)
+        if (NTSTATUS ps = probe::ProbeWrite(ReturnLength, sizeof(ULONG), sizeof(ULONG))) return ps;
     Lock l;
     TokPtr t;
     NTSTATUS st = Resolve(TokenHandle, kTokAdjustGroups | (PreviousState ? kTokQuery : 0), &t);
     if (st != kSuccess) return st;
-    if (!ResetToDefault && !NewState) return kInvalidParameter;
 
     std::vector<Group> next = t->groups;
     std::vector<Group> prev;
@@ -1082,11 +1218,11 @@ NTSTATUS Tok_NtAdjustGroupsToken(HANDLE TokenHandle, BOOLEAN ResetToDefault, PTO
             if (want != g.attrs) { prev.push_back(g); g.attrs = want; }
         }
     } else {
-        for (DWORD i = 0; i < NewState->GroupCount; ++i) {
-            const SID_AND_ATTRIBUTES& e = NewState->Groups[i];
-            auto it = std::find_if(next.begin(), next.end(), [&](const Group& g) { return SidEq(g.sid, e.Sid); });
+        for (size_t i = 0; i < requested.size(); ++i) {
+            const Group& e = requested[i];
+            auto it = std::find_if(next.begin(), next.end(), [&](const Group& g) { return SidEq(g.sid, e.sid); });
             if (it == next.end()) { missing = true; continue; }
-            const bool want_on = (e.Attributes & kGrpEnabled) != 0;
+            const bool want_on = (e.attrs & kGrpEnabled) != 0;
             if (!want_on && (it->attrs & kGrpMandatory)) return kCantDisableMandatory;
             if (want_on && (it->attrs & kGrpUseForDenyOnly)) return kInvalidParameter;
             const std::uint32_t old = it->attrs;
@@ -1097,11 +1233,12 @@ NTSTATUS Tok_NtAdjustGroupsToken(HANDLE TokenHandle, BOOLEAN ResetToDefault, PTO
     Blob b;
     BuildGroups(b, prev);
     if (PreviousState) {
-        if (ReturnLength) *ReturnLength = static_cast<ULONG>(b.size());
+        if (ReturnLength)
+            if (NTSTATUS ws = probe::Store<ULONG>(ReturnLength, static_cast<ULONG>(b.size()))) return ws;
         if (BufferLength < b.size()) return kBufferTooSmall;
-        b.Emit(PreviousState);
+        if (NTSTATUS ws = b.Emit(PreviousState)) return ws;
     } else if (ReturnLength) {
-        *ReturnLength = 0;
+        if (NTSTATUS ws = probe::Store<ULONG>(ReturnLength, 0)) return ws;
     }
     if (!prev.empty()) {
         t->groups = std::move(next);
@@ -1113,7 +1250,20 @@ NTSTATUS Tok_NtAdjustGroupsToken(HANDLE TokenHandle, BOOLEAN ResetToDefault, PTO
 NTSTATUS Tok_NtDuplicateToken(HANDLE ExistingTokenHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes,
                               BOOLEAN EffectiveOnly, TOKEN_TYPE TokenType, PHANDLE NewTokenHandle) {
     EnsureReady();
-    if (!NewTokenHandle) return kAccessViolation;
+    if (NTSTATUS ps = probe::ProbeWrite(NewTokenHandle, sizeof(HANDLE))) return ps;
+    // The attributes are optional; their quality-of-service block is followed, so it is read here, once.
+    probe::ObjectAttributes cap;
+    SECURITY_QUALITY_OF_SERVICE qos{};
+    bool have_qos = false;
+    if (ObjectAttributes) {
+        if (NTSTATUS ps = probe::CaptureObjectAttributes(ObjectAttributes, &cap)) return ps;
+        if (cap.oa.SecurityQualityOfService) {
+            if (NTSTATUS ps = probe::Load<SECURITY_QUALITY_OF_SERVICE>(
+                    static_cast<const SECURITY_QUALITY_OF_SERVICE*>(cap.oa.SecurityQualityOfService), &qos))
+                return ps;
+            have_qos = true;
+        }
+    }
     const std::uint32_t type = static_cast<std::uint32_t>(TokenType);
     if (type != kTokenPrimary && type != kTokenImpersonation) return kInvalidParameter;
     Lock l;
@@ -1124,13 +1274,12 @@ NTSTATUS Tok_NtDuplicateToken(HANDLE ExistingTokenHandle, ACCESS_MASK DesiredAcc
     std::uint32_t level = src->type == kTokenImpersonation ? src->imp_level : kSecImpersonation;
     bool effective_only = EffectiveOnly != 0;
     ULONG attrs = 0;
-    if (ObjectAttributes && ObjectAttributes->Length >= sizeof(OBJECT_ATTRIBUTES)) {
-        attrs = ObjectAttributes->Attributes;
-        const auto* q = static_cast<const SECURITY_QUALITY_OF_SERVICE*>(ObjectAttributes->SecurityQualityOfService);
-        if (q && q->Length == sizeof(SECURITY_QUALITY_OF_SERVICE)) {
-            if (q->ImpersonationLevel > kSecDelegation) return kInvalidParameter;
-            level = static_cast<std::uint32_t>(q->ImpersonationLevel);
-            if (q->EffectiveOnly) effective_only = true;
+    if (ObjectAttributes) {
+        attrs = cap.oa.Attributes;
+        if (have_qos && qos.Length == sizeof(SECURITY_QUALITY_OF_SERVICE)) {
+            if (qos.ImpersonationLevel > kSecDelegation) return kInvalidParameter;
+            level = static_cast<std::uint32_t>(qos.ImpersonationLevel);
+            if (qos.EffectiveOnly) effective_only = true;
         }
     }
     if (type == kTokenPrimary && src->type == kTokenImpersonation && src->imp_level < kSecImpersonation)
@@ -1156,7 +1305,27 @@ NTSTATUS Tok_NtDuplicateToken(HANDLE ExistingTokenHandle, ACCESS_MASK DesiredAcc
 NTSTATUS Tok_NtFilterToken(HANDLE ExistingTokenHandle, ULONG Flags, PTOKEN_GROUPS SidsToDisable,
                            PTOKEN_PRIVILEGES PrivilegesToDelete, PTOKEN_GROUPS RestrictedSids, PHANDLE NewTokenHandle) {
     EnsureReady();
-    if (!NewTokenHandle) return kAccessViolation;
+    if (NTSTATUS ps = probe::ProbeWrite(NewTokenHandle, sizeof(HANDLE))) return ps;
+    // The three optional lists are copied once, every SID in them included.
+    auto capture_groups = [](const TOKEN_GROUPS* user, std::vector<Group>* out) -> NTSTATUS {
+        std::vector<SID_AND_ATTRIBUTES> entries;
+        if (NTSTATUS ps = CaptureArray(user, offsetof(TOKEN_GROUPS, Groups), &entries)) return ps;
+        for (const SID_AND_ATTRIBUTES& e : entries) {
+            Group g;
+            g.attrs = e.Attributes;
+            if (NTSTATUS ps = CaptureSid(e.Sid, &g.sid)) return ps;
+            out->push_back(std::move(g));
+        }
+        return kSuccess;
+    };
+    std::vector<Group> to_disable, restricted_in;
+    std::vector<LUID_AND_ATTRIBUTES> to_delete;
+    if (SidsToDisable)
+        if (NTSTATUS ps = capture_groups(SidsToDisable, &to_disable)) return ps;
+    if (PrivilegesToDelete)
+        if (NTSTATUS ps = CaptureArray(PrivilegesToDelete, offsetof(TOKEN_PRIVILEGES, Privileges), &to_delete)) return ps;
+    if (RestrictedSids)
+        if (NTSTATUS ps = capture_groups(RestrictedSids, &restricted_in)) return ps;
     Lock l;
     TokPtr src;
     NTSTATUS st = Resolve(ExistingTokenHandle, kTokDuplicate, &src);
@@ -1168,8 +1337,8 @@ NTSTATUS Tok_NtFilterToken(HANDLE ExistingTokenHandle, ULONG Flags, PTOKEN_GROUP
     t->token_id = NextLuid();
     t->modified_id = NextLuid();
     if (SidsToDisable) {
-        for (DWORD i = 0; i < SidsToDisable->GroupCount; ++i) {
-            const void* sid = SidsToDisable->Groups[i].Sid;
+        for (const Group& d : to_disable) {
+            const void* sid = d.sid.data();
             for (auto& g : t->groups)
                 if (SidEq(g.sid, sid)) { g.attrs = (g.attrs & ~(kGrpEnabled | kGrpEnabledByDefault)) | kGrpUseForDenyOnly; }
             if (SidEq(t->user, sid)) { /* user SID cannot be disabled via groups; real NT turns it deny-only */ }
@@ -1185,16 +1354,16 @@ NTSTATUS Tok_NtFilterToken(HANDLE ExistingTokenHandle, ULONG Flags, PTOKEN_GROUP
                        [](const Priv& p) { return p.luid.LowPart != pChangeNotify; }), t->privs.end());
     }
     if (PrivilegesToDelete) {
-        for (DWORD i = 0; i < PrivilegesToDelete->PrivilegeCount; ++i) {
-            const LUID l2 = PrivilegesToDelete->Privileges[i].Luid;
+        for (const LUID_AND_ATTRIBUTES& d : to_delete) {
+            const LUID l2 = d.Luid;
             t->privs.erase(std::remove_if(t->privs.begin(), t->privs.end(),
                            [&](const Priv& p) { return LuidEq(p.luid, l2); }), t->privs.end());
         }
     }
     if (RestrictedSids) {
-        for (DWORD i = 0; i < RestrictedSids->GroupCount; ++i) {
-            if (!SidValid(RestrictedSids->Groups[i].Sid)) return kInvalidSid;
-            t->restricted.push_back({CopySid(RestrictedSids->Groups[i].Sid), kGrpStd});
+        for (const Group& r : restricted_in) {
+            if (!SidValid(r.sid.data())) return kInvalidSid;
+            t->restricted.push_back({r.sid, kGrpStd});
         }
     }
     return OpenCommon(kTokenAllAccess, 0, NewTokenHandle, t);
@@ -1239,15 +1408,25 @@ NTSTATUS Tok_NtPrivilegeCheck(HANDLE ClientToken, PPRIVILEGE_SET RequiredPrivile
     // NT insists on an impersonation token here; the process token is accepted
     // too (callers commonly pass whatever OpenProcessToken gave them).
     EnsureReady();
-    if (!RequiredPrivileges || !Result) return kAccessViolation;
+    if (NTSTATUS ps = probe::ProbeWrite(Result, sizeof(BOOLEAN))) return ps;
+    // PRIVILEGE_SET { ULONG PrivilegeCount; ULONG Control; LUID_AND_ATTRIBUTES Privilege[] }: copied, then the
+    // attributes (PRIVILEGE_USED_FOR_ACCESS) are written back.
+    constexpr size_t kPrivilegeOffset = offsetof(PRIVILEGE_SET, Privilege);
+    ULONG control;
+    std::vector<LUID_AND_ATTRIBUTES> required;
+    if (!RequiredPrivileges) return kAccessViolation;
+    if (NTSTATUS ps = probe::Load<ULONG>(&RequiredPrivileges->Control, &control)) return ps;
+    if (NTSTATUS ps = CaptureArray(RequiredPrivileges, kPrivilegeOffset, &required)) return ps;
+    if (NTSTATUS ps = probe::ProbeWrite(RequiredPrivileges->Privilege, required.size() * sizeof(LUID_AND_ATTRIBUTES)))
+        return ps;
     Lock l;
     TokPtr t;
     NTSTATUS st = Resolve(ClientToken, kTokQuery, &t);
     if (st != kSuccess) return st;
-    const bool all_necessary = (RequiredPrivileges->Control & 1) != 0;   // PRIVILEGE_SET_ALL_NECESSARY
+    const bool all_necessary = (control & 1) != 0;   // PRIVILEGE_SET_ALL_NECESSARY
     DWORD held = 0;
-    for (DWORD i = 0; i < RequiredPrivileges->PrivilegeCount; ++i) {
-        LUID_AND_ATTRIBUTES& e = RequiredPrivileges->Privilege[i];
+    for (size_t i = 0; i < required.size(); ++i) {
+        LUID_AND_ATTRIBUTES& e = required[i];
         e.Attributes &= ~kPrvUsedForAccess;
         for (const auto& p : t->privs) {
             if (LuidEq(p.luid, e.Luid) && (p.attrs & kPrvEnabled)) {
@@ -1257,9 +1436,12 @@ NTSTATUS Tok_NtPrivilegeCheck(HANDLE ClientToken, PPRIVILEGE_SET RequiredPrivile
             }
         }
     }
-    const DWORD n = RequiredPrivileges->PrivilegeCount;
-    *Result = all_necessary ? (held == n) : (n == 0 || held > 0);
-    return kSuccess;
+    const DWORD n = static_cast<DWORD>(required.size());
+    if (!required.empty())
+        if (NTSTATUS ws = probe::CopyToUser(RequiredPrivileges->Privilege, required.data(),
+                                            required.size() * sizeof(LUID_AND_ATTRIBUTES)))
+            return ws;
+    return probe::Store<BOOLEAN>(Result, all_necessary ? (held == n) : (n == 0 || held > 0));
 }
 
 NTSTATUS Tok_NtAccessCheck(PSECURITY_DESCRIPTOR SecurityDescriptor, HANDLE ClientToken, ACCESS_MASK DesiredAccess,
@@ -1271,19 +1453,34 @@ NTSTATUS Tok_NtAccessCheck(PSECURITY_DESCRIPTOR SecurityDescriptor, HANDLE Clien
     // object ACEs, restricted-SID second pass. NT requires an impersonation
     // token; the process token is accepted too.
     EnsureReady();
-    if (!GrantedAccess || !AccessStatus) return kAccessViolation;
+    // Everything the caller supplied is copied first, the outputs are probed, and only the copies are evaluated.
+    if (NTSTATUS ps = probe::ProbeWrite(GrantedAccess, sizeof(ACCESS_MASK), sizeof(ULONG))) return ps;
+    if (NTSTATUS ps = probe::ProbeWrite(AccessStatus, sizeof(NTSTATUS), sizeof(ULONG))) return ps;
     if (!GenericMapping) return kInvalidParameter;
+    GENERIC_MAPPING mapping;
+    if (NTSTATUS ps = probe::Load<GENERIC_MAPPING>(GenericMapping, &mapping)) return ps;
+    GenericMapping = &mapping;
+    std::vector<std::uint8_t> sd_image;
+    if (NTSTATUS ps = CaptureSd(SecurityDescriptor, &sd_image)) return ps;
     SdView sd;
-    if (!ParseSd(SecurityDescriptor, &sd)) return kInvalidSecurityDescr;
+    if (!ParseSd(sd_image.data(), &sd)) return kInvalidSecurityDescr;
     if (!sd.owner || !SidValid(sd.owner)) return kInvalidSecurityDescr;
 
     if (PrivilegeSet && PrivilegeSetLength) {
-        if (*PrivilegeSetLength < sizeof(PRIVILEGE_SET)) {
-            *PrivilegeSetLength = sizeof(PRIVILEGE_SET);
+        ULONG set_length;
+        if (NTSTATUS ps = probe::Load<ULONG>(PrivilegeSetLength, &set_length)) return ps;
+        if (set_length < sizeof(PRIVILEGE_SET)) {
+            if (NTSTATUS ws = probe::Store<ULONG>(PrivilegeSetLength, sizeof(PRIVILEGE_SET))) return ws;
             return kBufferTooSmall;
         }
-        std::memset(PrivilegeSet, 0, sizeof(PRIVILEGE_SET));
+        const PRIVILEGE_SET none{};
+        if (NTSTATUS ws = probe::Store<PRIVILEGE_SET>(PrivilegeSet, none)) return ws;
     }
+    auto finish = [&](ACCESS_MASK granted_mask, NTSTATUS access_status) -> NTSTATUS {
+        if (NTSTATUS ws = probe::Store<ACCESS_MASK>(GrantedAccess, granted_mask)) return ws;
+        if (NTSTATUS ws = probe::Store<NTSTATUS>(AccessStatus, access_status)) return ws;
+        return kSuccess;
+    };
 
     Lock l;
     TokPtr t;
@@ -1293,7 +1490,7 @@ NTSTATUS Tok_NtAccessCheck(PSECURITY_DESCRIPTOR SecurityDescriptor, HANDLE Clien
     const bool maximum = (DesiredAccess & kMaximumAllowed) != 0;
     const ACCESS_MASK desired = MapGeneric(DesiredAccess & ~kMaximumAllowed, GenericMapping);
 
-    auto deny = [&](NTSTATUS why) { *GrantedAccess = 0; *AccessStatus = why; return kSuccess; };
+    auto deny = [&](NTSTATUS why) { return finish(0, why); };
 
     if (desired & kAccessSystemSecurity) {
         bool held = false;
@@ -1305,9 +1502,7 @@ NTSTATUS Tok_NtAccessCheck(PSECURITY_DESCRIPTOR SecurityDescriptor, HANDLE Clien
     if (!sd.dacl_present || !sd.dacl) {
         // NULL DACL: everything is granted (ACCESS_SYSTEM_SECURITY was checked above).
         granted = maximum ? (MapGeneric(kGenericAll, GenericMapping) | 0x001F0000) : desired;
-        *GrantedAccess = granted;
-        *AccessStatus = kSuccess;
-        return kSuccess;
+        return finish(granted, kSuccess);
     }
     if (SidAppliesAllow(*t, sd.owner)) granted |= (kReadControl | kWriteDac);
 
@@ -1342,19 +1537,15 @@ NTSTATUS Tok_NtAccessCheck(PSECURITY_DESCRIPTOR SecurityDescriptor, HANDLE Clien
     granted &= ~kAccessSystemSecurity | (desired & kAccessSystemSecurity);
     if (maximum) {
         if ((desired & ~granted) != 0) return deny(kAccessDenied);
-        *GrantedAccess = granted;
-        *AccessStatus = granted ? kSuccess : kAccessDenied;
-        return kSuccess;
+        return finish(granted, granted ? kSuccess : kAccessDenied);
     }
     if ((desired & ~granted) != 0) return deny(kAccessDenied);
-    *GrantedAccess = desired;
-    *AccessStatus = kSuccess;
-    return kSuccess;
+    return finish(desired, kSuccess);
 }
 
 NTSTATUS Tok_NtCompareTokens(HANDLE FirstTokenHandle, HANDLE SecondTokenHandle, PBOOLEAN Equal) {
     EnsureReady();
-    if (!Equal) return kAccessViolation;
+    if (NTSTATUS ps = probe::ProbeWrite(Equal, sizeof(BOOLEAN))) return ps;
     Lock l;
     TokPtr a, b;
     NTSTATUS st = Resolve(FirstTokenHandle, kTokQuery, &a);
@@ -1383,8 +1574,7 @@ NTSTATUS Tok_NtCompareTokens(HANDLE FirstTokenHandle, HANDLE SecondTokenHandle, 
              same_groups(a->groups, b->groups) && same_groups(a->restricted, b->restricted) &&
              same_privs(a->privs, b->privs);
     }
-    *Equal = eq ? TRUE : FALSE;
-    return kSuccess;
+    return probe::Store<BOOLEAN>(Equal, eq ? TRUE : FALSE);
 }
 
 NTSTATUS Tok_NtCreateLowBoxToken(PHANDLE NewTokenHandle, HANDLE ExistingTokenHandle, ACCESS_MASK DesiredAccess,
@@ -1392,8 +1582,7 @@ NTSTATUS Tok_NtCreateLowBoxToken(PHANDLE NewTokenHandle, HANDLE ExistingTokenHan
                                  PSID_AND_ATTRIBUTES Capabilities, ULONG HandleCount, HANDLE* Handles) {
     (void)DesiredAccess; (void)ObjectAttributes; (void)Handles;
     EnsureReady();
-    if (!NewTokenHandle) return kAccessViolation;
-    *NewTokenHandle = nullptr;
+    if (NTSTATUS ps = probe::Store<HANDLE>(NewTokenHandle, nullptr)) return ps;   // probes, and clears
     if (!PackageSid || (CapabilityCount && !Capabilities) || CapabilityCount > 0x1000 || HandleCount > 0x1000)
         return kInvalidParameter;
     {
@@ -1423,11 +1612,11 @@ NTSTATUS Tok_NtQuerySecurityObject(HANDLE Handle, SECURITY_INFORMATION SecurityI
     if ((SecurityInformation & 0x8) && !(granted & kAccessSystemSecurity)) return kAccessDenied;
     if ((SecurityInformation & (0x1 | 0x2 | 0x4 | 0x10)) && !(granted & kReadControl)) return kAccessDenied;
     const auto sd = BuildTokenSd(*t, SecurityInformation & ~0x8u);
-    if (LengthNeeded) *LengthNeeded = static_cast<ULONG>(sd.size());
+    if (NTSTATUS ps = probe::ProbeWrite(SecurityDescriptor, Length)) return ps;
+    if (LengthNeeded)
+        if (NTSTATUS ws = probe::Store<ULONG>(LengthNeeded, static_cast<ULONG>(sd.size()))) return ws;
     if (Length < sd.size()) return kBufferTooSmall;
-    if (!SecurityDescriptor) return kAccessViolation;
-    std::memcpy(SecurityDescriptor, sd.data(), sd.size());
-    return kSuccess;
+    return probe::CopyToUser(SecurityDescriptor, sd.data(), sd.size());
 }
 
 NTSTATUS Close(HANDLE TokenHandle) {

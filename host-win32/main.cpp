@@ -27,6 +27,7 @@
 // list before that happens and attributes addresses against both.
 #include "win10xbox/core.h"
 #include "win10xbox/dispatch.h"
+#include "win10xbox/gamepad.h"
 #include "win10xbox/trace.h"
 #include "win10xbox/user.h"
 #include "win10xbox/vfs.h"
@@ -375,7 +376,10 @@ private:
 // WIN10XBOX_TEST_INJECT_INPUT=<script>: a scripted user for the GUI tests (tests/guest/window_input.c). Commands are
 // separated by ';': sleep N (ms), move X,Y (screen coordinates), ldown / lup / rdown / rup (at the last moved position),
 // wheel D (WHEEL_DELTA units), waitwin N (until a window is painted, at most N ms), shot (screenshot now + distinct
-// colour count), quit N (end the process with exit code N), key 0xVK (key down, then up; the scan code is set 1 for 'A'..'Z', else 0). Each command
+// colour count), quit N (end the process with exit code N), key 0xVK (key down, then up; the scan code is set 1 for 'A'..'Z', else 0),
+// pad BUTTONS LX LY RX RY LT RT (the host's gamepad 0, which the guest's XInput reads: XINPUT_GAMEPAD_* bits in hex,
+// four signed 16-bit sticks, two trigger bytes; the first one connects the pad), padwait N (until the guest has
+// polled the pad, at most N ms). Each command
 // logs one "host-win32: inject" line on stderr. The thread touches no guest state: the loader initialisation it runs
 // on creation completes before Launch takes over the PEB, and after that it only calls the driver, whose InjectInput
 // is thread-safe. It is detached and no exception leaves it.
@@ -450,6 +454,46 @@ bool RunInjectCommand(winexbox::IWinexboxDriver* display, const std::string& cmd
         events.push_back(ev);
         ev.kind = winexbox::InputKind::KeyUp;
         events.push_back(ev);
+    } else if (verb == "pad") {
+        // pad BUTTONS LX LY RX RY LT RT: seven numbers, the first in hex (with or without 0x), the rest in C syntax.
+        long v[7] = {0, 0, 0, 0, 0, 0, 0};
+        size_t pos = 0;
+        int n = 0;
+        while (n < 7 && pos < arg.size()) {
+            const size_t end = arg.find_first_of(" \t", pos);
+            const std::string tok = arg.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+            pos = end == std::string::npos ? arg.size() : arg.find_first_not_of(" \t", end);
+            if (pos == std::string::npos) pos = arg.size();
+            char* stop = nullptr;
+            v[n] = std::strtol(tok.c_str(), &stop, n == 0 ? 16 : 0);
+            if (tok.empty() || *stop != '\0') { ok = false; break; }
+            ++n;
+        }
+        ok = ok && n == 7 && v[0] >= 0 && v[0] <= 0xFFFF && v[1] >= -32768 && v[1] <= 32767 && v[2] >= -32768 &&
+             v[2] <= 32767 && v[3] >= -32768 && v[3] <= 32767 && v[4] >= -32768 && v[4] <= 32767 && v[5] >= 0 &&
+             v[5] <= 255 && v[6] >= 0 && v[6] <= 255;
+        if (ok) {
+            W10xPadState st{};
+            st.buttons = static_cast<std::uint16_t>(v[0]);
+            st.thumb_lx = static_cast<std::int16_t>(v[1]);
+            st.thumb_ly = static_cast<std::int16_t>(v[2]);
+            st.thumb_rx = static_cast<std::int16_t>(v[3]);
+            st.thumb_ry = static_cast<std::int16_t>(v[4]);
+            st.left_trigger = static_cast<std::uint8_t>(v[5]);
+            st.right_trigger = static_cast<std::uint8_t>(v[6]);
+            win10xbox::input::SetGamepadState(0, st);
+        }
+    } else if (verb == "padwait") {
+        // padwait N: until the guest has read the pad (an XInputGetState that found it connected), at most N ms.
+        ok = ParseInt(arg, a) && a >= 0;
+        if (ok) {
+            const DWORD t0 = GetTickCount();
+            while (win10xbox::input::GamepadPolls() == 0 && GetTickCount() - t0 < static_cast<DWORD>(a)) Sleep(20);
+            std::fprintf(stderr, "host-win32: padwait: polls=%llu after %lu ms%s\n",
+                         static_cast<unsigned long long>(win10xbox::input::GamepadPolls()),
+                         static_cast<unsigned long>(GetTickCount() - t0),
+                         win10xbox::input::GamepadPolls() == 0 ? " (TIMEOUT: the guest never polled)" : "");
+        }
     } else if (verb == "waitwin") {
         // waitwin N: until the guest has created a window and flushed pixels, at most N ms (the first top-level
         // window of a real GUI program, tests integration.realgui_*). Logs how it ended; `shot` follows regardless.

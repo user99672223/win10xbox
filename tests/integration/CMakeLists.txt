@@ -24,6 +24,7 @@ set(_prepare_args
   -DBUILTIN_DIR=${WIN10XBOX_BUILTIN_DIR}
   -DGUEST_DIR=${CMAKE_BINARY_DIR}/bin/guest
   -DMSCTF_STUB=${CMAKE_BINARY_DIR}/bin/native-gui-stubs/msctf.dll
+  -DGUEST_DLL_DIR=${WIN10XBOX_GUEST_DLL_DIR}
   -DDEFAULT_JSON=${_default_json}
   -P ${CMAKE_CURRENT_SOURCE_DIR}/prepare_machine.cmake)
 
@@ -32,7 +33,8 @@ add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
 if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
                    guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog guest_comctl
-                   guest_seh guest_window_scroll guest_clipboard msctf_stub)
+                   guest_seh guest_window_scroll guest_clipboard guest_net msctf_stub guest_gdi_bitmap
+                   guest_window_hooks guest_window_menu guest_xinput xinput1_4)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -192,6 +194,21 @@ win10xbox_guest_test(guest_window_input2 "C:\\guest\\guest_window_input2.exe" 42
 set_tests_properties(integration.guest_window_input2 PROPERTIES
   ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=sleep 3000\\;move 150,150\\;ldown\\;lup\\;ldown\\;lup\\;rdown\\;rup\\;wheel -120\\;key 0x42"
   FAIL_REGULAR_EXPRESSION "FAIL ")
+# Hooks and timers (tests/guest/window_hooks.c): WH_MOUSE x2, WH_KEYBOARD and WH_GETMESSAGE hooks on the guest's own
+# thread see the host-injected input before the window procedure does, a hook returning 1 eats a message, an unhooked
+# hook stops seeing keys; SetTimer fires every `elapse` ms (50 ms x20 within 950..1400 ms, never closer than 40 ms),
+# clamps to 10 ms, KillTimer drops a pending WM_TIMER, a TIMERPROC is called by DispatchMessage.
+win10xbox_guest_test(guest_window_hooks "C:\\guest\\guest_window_hooks.exe" 42
+  "hooks: PASS injected input arrived" "hooks: PASS WH_MOUSE sees LBUTTONDOWN before the window procedure"
+  "hooks: PASS WH_MOUSE chain runs newest first and CallNextHookEx reaches the older hook"
+  "hooks: PASS WH_KEYBOARD sees vk 41 down and up" "hooks: PASS hook returning 1 eats WM_RBUTTONDOWN"
+  "hooks: PASS UnhookWindowsHookEx stops WH_KEYBOARD" "hooks: PASS WH_GETMESSAGE sees every message with PM_REMOVE"
+  "hooks: PASS SetTimer 50 ms cadence" "hooks: PASS SetTimer minimum is 10 ms"
+  "hooks: PASS KillTimer removes the pending WM_TIMER" "hooks: PASS TIMERPROC is called through DispatchMessage"
+  "hooks: PASS message time is the tick count" "hooks: [0-9]+ passed, 0 failed" "hooks: done")
+set_tests_properties(integration.guest_window_hooks PROPERTIES
+  ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=sleep 2000\\;move 150,150\\;ldown\\;lup\\;key 0x41\\;rdown\\;rup\\;key 0x42"
+  FAIL_REGULAR_EXPRESSION "FAIL ")
 # The text GUI guest (tests/guest/window_text.c): a 400x300 WS_POPUP window at (100,100), client origin = screen
 # origin (100,100). It draws "HI" at client (20,20) and "Hello/Xbox" into (20,60)-(380,120) with the stock system
 # font, then reads the glyph pixels back with GetPixel and exits 42. The screenshot checks three of them at screen
@@ -203,6 +220,37 @@ win10xbox_guest_test(guest_window_text "C:\\guest\\guest_window_text.exe" 42
   "text: done")
 set_tests_properties(integration.guest_window_text PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_text.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=121,123,ff000000|123,123,ffffffff|131,123,ff000000")
+# Menus (tests/guest/window_menu.c, core/user/win_menu.cpp): CreateMenu / CreatePopupMenu / SetMenu, the menu bar the
+# window reserves under its caption (client height shrinks by SM_CYMENU = 20), the bar pixels, and the host clicking
+# "File" then "Exit" (WM_COMMAND id=102) and then an item of TrackPopupMenu(TPM_RETURNCMD). The window is at (100,100)
+# 400x300 with the Windows 10 frame (8 px) and caption (23 px): the bar is (108,131)-(492,151), the item "File"
+# (108,131)-(156,150), the popup below it at (108,151): Open (109,154)-(219,176), Exit (109,185)-(219,207). The
+# TrackPopupMenu popup opens at (300,250): its first item is at y 253..275. The screenshot shows the bar background
+# (COLOR_MENU f0f0f0) and the top pixel row of the "F" glyph (COLOR_MENUTEXT) at (116,134).
+win10xbox_guest_test(guest_window_menu "C:\\guest\\guest_window_menu.exe" 42
+  "menu: api items=4 id0=101 checked=1 grayed=1"
+  "menu: client height before=[0-9]+ after=[0-9]+ delta=20 SM_CYMENU=20"
+  "menu: bar rect=108,131,492,151" "menu: item File rect=108,131,156,150"
+  "menu: pixels bg=00f0f0f0 glyph=00000000"
+  "menu: WM_INITMENUPOPUP popup=1"
+  "menu: popup items open=109,154,219,176 exit=109,185,219,207"
+  "menu: WM_COMMAND id=102" "menu: TrackPopupMenu returned 101"
+  "menu: loops enter=2 exit=2 init=2" "menu: done")
+set_tests_properties(integration.guest_window_menu PROPERTIES
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_menu.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=300,140,fff0f0f0|116,134,ff000000;WIN10XBOX_TEST_INJECT_INPUT=waitwin 60000\\;sleep 2000\\;move 132,140\\;ldown\\;lup\\;sleep 1500\\;move 128,196\\;ldown\\;lup\\;sleep 2500\\;move 320,264\\;ldown\\;lup"
+  FAIL_REGULAR_EXPRESSION "FAIL ")
+# XInput (tests/guest/xinput.c): the guest imports the layer's own xinput1_4.dll (guest-dlls/xinput, a builtin next to
+# Wine's) and reads the gamepad the HOST holds, through the "xinput1_4" unix library. The host script connects a neutral
+# pad, waits (padwait) until the guest has read it, then presses A with stick and trigger values: the guest sees its packet
+# number move and the injected values, users 1..3 stay ERROR_DEVICE_NOT_CONNECTED (1167).
+win10xbox_guest_test(guest_xinput "C:\\guest\\guest_xinput.exe" 42
+  "xinput: screen=[0-9]+x[0-9]+" "xinput: caps ok type=1 subtype=1" "xinput: idle packet=[0-9]+ buttons=0x0000"
+  "xinput: packet changed [0-9]+ -> [0-9]+" "xinput: buttons=0x1000 lx=1000 ly=-2000 rx=3000 ry=-4000 lt=128 rt=255"
+  "xinput: users 1\\.\\.3 not connected \\(1167 1167 1167\\)" "xinput: set state ok, battery type=1 level=3, bad index=160"
+  "xinput: done")
+set_tests_properties(integration.guest_xinput PROPERTIES
+  ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=pad 0 0 0 0 0 0 0\\;padwait 30000\\;sleep 300\\;pad 1000 1000 -2000 3000 -4000 128 255"
+  FAIL_REGULAR_EXPRESSION "xinput: FAIL")
 # Scroll bars (tests/guest/window_scroll.c, core/user/win_scroll.cpp): range/position round trip, HTVSCROLL hit test,
 # ScrollWindowEx / ScrollDC pixels, and a host-injected click on the vertical bar's down arrow that must arrive as
 # WM_VSCROLL SB_LINEDOWN + SB_ENDSCROLL. The screenshot shows the bar's track colour (COLOR_SCROLLBAR, ffc8c8c8) at
@@ -246,6 +294,22 @@ win10xbox_guest_test(guest_comctl "C:\\guest\\guest_comctl.exe" 42
   "comctl: label pixels drawn=[1-9][0-9]*" "comctl: done")
 set_tests_properties(integration.guest_comctl PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_comctl.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=255,205,ffffffff|285,114,fff0f0f0|125,245,ff00a000|275,245,ffe6e6e6")
+# GDI bitmaps (tests/guest/gdi_bitmap.c, docs/slices/gdibmp.md): the guest checks every pixel itself and exits 42
+# only if all checks passed; the screenshot is the window part (400x300 at screen (100,100), client origin = screen
+# origin + (100,100)): a 32 bpp DIB section blitted at (10,10) (pixel (3,2) = RGB(96,64,128)), a 24 bpp one at
+# (30,10) (pixel (4,2) = RGB(120,130,162), top-left (0,0) = RGB(200,30,0)), an 8 bpp palettized one at (50,10),
+# NOTSRCCOPY at (70,10), SRCINVERT at (90,10) and (110,10), a 2x StretchBlt at (10,40), AlphaBlend (130,10), TransparentBlt
+# (150,10), LoadImage of a 24 bpp resource at (10,70) and an 8 bpp one at (40,70).
+win10xbox_guest_test(guest_gdi_bitmap "C:\\guest\\guest_gdi_bitmap.exe" 42
+  "bmp: setup ok" "bmp: srccopy ok" "bmp: alpha-128 ok" "bmp: transparent-px ok" "bmp: getdibits-topleft ok"
+  "bmp: stretchdibits-2 ok" "bmp: dib1-top0 ok" "bmp: dib24-gdi-bits-seen ok" "bmp: dib8-setcolortable ok"
+  "bmp: window created" "bmp: win-dib32-srccopy ok" "bmp: win-srcinvert ok" "bmp: win-stretch2x-all ok"
+  "bmp: win-readback-bits ok" "bmp: win-alphablend-128 ok" "bmp: win-transparent-px ok"
+  "bmp: loadimage24-getobject ok" "bmp: loadimage24-pixels ok" "bmp: loadimage8-pixels ok" "bmp: window drawn"
+  "bmp: failures=0" "bmp: done")
+set_tests_properties(integration.guest_gdi_bitmap PROPERTIES
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_gdi_bitmap.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=113,112,ff604080|134,112,ff7882a2|130,110,ffc81e00|151,110,ff00ff00|153,111,ffff0000|173,112,ff9fbf7f|193,112,ff9f4f80|213,112,ffff0f00|117,145,ff604080|118,144,ff804080|234,112,ff96644b|250,110,ff070809|252,112,ff010203|110,170,ff0a14fa|115,173,ffd2c861|141,170,ff00ff00|143,173,ff0000ff"
+  FAIL_REGULAR_EXPRESSION "FAIL ")
 unset(_guest_machine)
 
 # Route B (docs/GUI.md "Route B: native win32k"): the same window.c on the machine folder machine-native-gui
@@ -280,6 +344,19 @@ set_tests_properties(integration.guest_window_native PROPERTIES
   # WIN10XBOX_WINEDEBUG: Wine's own loader warnings ("No implementation for ntdll.dll.X", failed DllMains).
   ENVIRONMENT "WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_native.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=110,110,ff0050dc|130,130,ffff0000")
 endif()
+
+# ---- Networking: Wine's ws2_32 over core/afd (host Winsock) -----------------------------------------------------
+# tests/guest/net.c runs an echo server thread and a client over TCP loopback. Builtin-only machine folder: a native
+# ws2_32 would talk to the real AFD and bypass the code under test.
+set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+set(_guest_no_user32 ON)
+win10xbox_guest_test(guest_net "C:\\guest\\guest_net.exe" 42
+  "net: WSAStartup ok" "net: gethostname ok" "net: getaddrinfo localhost -> 127\\.0\\.0\\.1" "net: listening"
+  "net: connected" "net: FIONBIO ok" "net: sent 35 bytes" "net: received 35 bytes: hello from the guest over loopback"
+  "net: done")
+set_tests_properties(integration.guest_net PROPERTIES FAIL_REGULAR_EXPRESSION "net: FAILED")
+unset(_guest_no_user32)
+unset(_guest_machine)
 
 # ---- Real programs: the first guests that are not ours ----------------------------------------------------------
 # Lua 5.4.7, built from the upstream tarball with MSVC by tools/ci/build_lua.ps1 (a named step of ci.yml's windows
@@ -316,7 +393,8 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   unset(_guest_forbid_trace)
 
   # Sysinternals Coreinfo64.exe (tools/ci/fetch_sysinternals.ps1, pinned by SHA-256), a system-information program:
-  # it reads the CPU topology through NtQuerySystemInformation. PsInfo64 is not gated here (docs/slices/sysinfo.md).
+  # it reads the CPU topology through NtQuerySystemInformation. PsInfo64 (also pinned) reports the system's name, uptime
+  # and kernel version; it needs Wine's ws2_32 (core/afd, docs/slices/net.md).
   # The anchors are lines every runner prints whatever its CPU vendor is (docs/slices/sysinfo.md).
   # It imports comdlg32/shell32, whose native copies cannot load on the shared
   # machine folder (docs/slices/sysinfo.md), so they run on the builtin-only one, like the GUI guests below.
@@ -325,6 +403,10 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   win10xbox_guest_test(coreinfo "C:\\guest\\Coreinfo64.exe" 0
     "Logical to Physical Processor Map:"
     "Logical Processor to Socket Map:")
+  win10xbox_guest_test(psinfo "C:\\guest\\PsInfo64.exe" 0
+    "System information for "
+    "Uptime:"
+    "Kernel version:")
   unset(_guest_args)
   unset(_guest_machine)
 endif()
@@ -341,6 +423,50 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
   set(_guest_args "--pipe;--logo;none;-s;OS:Kernel:CPU:Memory:Locale:Uptime")
   win10xbox_guest_test(fastfetch "C:\\guest\\fastfetch.exe" 0 "OS: " "Kernel: " "CPU: " "Memory: ")
+  unset(_guest_args)
+  unset(_guest_machine)
+endif()
+
+# ---- SDL2: a real third-party DLL and a GUI program on top of it ------------------------------------------------------
+# sdl_rects.exe (tests/guest/sdl2/sdl_rects.c) is linked against the official SDL2 2.30.9 x64 release; SDL2.dll sits next to
+# it in <machine>/guest (tools/ci/build_sdl_guest.ps1, a named ci.yml step of the windows job). A borderless 320x240 window
+# at (100,100), software surface: blue clear + red rect (20,20,60,60) + green rect (120,40,50,50), pixels read back through
+# GetPixel, exit 42. The screenshot is checked at screen = client + (100,100). Builtin-only folder, like the GUI tests above.
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  win10xbox_guest_test(real_sdl2 "C:\\guest\\sdl_rects.exe" 42
+    "sdl: init video=windows" "sdl: surface 320x240" "sdl: pixels 00dc5000 000000ff 0000ff00" "sdl: done")
+  set_tests_properties(integration.real_sdl2 PROPERTIES
+    ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/real_sdl2.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=105,105,ff0050dc|130,130,ffff0000|230,150,ff00ff00")
+  unset(_guest_machine)
+endif()
+
+# ---- Tiny C Compiler 0.9.27: a compiler that runs through the layer, and the program it writes ---------------------
+# tools/ci/fetch_tcc.ps1 (the official prebuilt win64 zip, pinned SHA-256) leaves tcc.exe, libtcc.dll, include/ and lib/
+# in <machine>/guest/tcc before ctest runs (docs/slices/realtcc.md). tcc_compile writes C:\Users\User\tcc_hello.exe
+# (GUEST_FILE: deleted before, required after) and tcc_hello_runs runs that exe, so it DEPENDS on tcc_compile;
+# tcc_run is tcc's in-memory mode (-run: the program is relocated into VirtualAlloc'd memory and called).
+# It runs on the builtin-only folder like fastfetch: tcc.exe loads libtcc.dll, user32 and advapi32, and on the
+# shared folder those pull the runner's native sechost/ucrtbase under Wine's user32 and the first call dies on
+# EXCEPTION_WINE_STUB (0x80000100); measured in the first run of this slice.
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  configure_file(${CMAKE_SOURCE_DIR}/tests/guest/tcc/hello.c ${CMAKE_BINARY_DIR}/bin/guest/tcc_hello.c COPYONLY)
+  set(_guest_args "-v")
+  win10xbox_guest_test(tcc_version "C:\\guest\\tcc\\tcc.exe" 0 "tcc version 0\\.9\\.27")
+  set(_guest_args "-o;C:\\Users\\User\\tcc_hello.exe;C:\\guest\\tcc_hello.c")
+  set(_guest_file "Users/User/tcc_hello.exe")
+  win10xbox_guest_test(tcc_compile "C:\\guest\\tcc\\tcc.exe" 0)
+  unset(_guest_file)
+  unset(_guest_args)
+  set(_guest_no_user32 ON)   # tcc's exe imports only kernel32 and msvcrt
+  win10xbox_guest_test(tcc_hello_runs "C:\\Users\\User\\tcc_hello.exe" 42
+    "hello from tcc 42" "argc=1 sizeof\\(void\\*\\)=8")
+  unset(_guest_no_user32)
+  set_tests_properties(integration.tcc_hello_runs PROPERTIES DEPENDS integration.tcc_compile)
+  set(_guest_args "-run;C:\\guest\\tcc_hello.c")
+  win10xbox_guest_test(tcc_run "C:\\guest\\tcc\\tcc.exe" 42
+    "hello from tcc 42" "argc=1 sizeof\\(void\\*\\)=8")
   unset(_guest_args)
   unset(_guest_machine)
 endif()

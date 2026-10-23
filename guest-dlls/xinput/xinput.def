@@ -1,0 +1,8 @@
+EXPORTS
+    XInputEnable
+    XInputGetBatteryInformation
+    XInputGetCapabilities
+    XInputGetKeystroke
+    XInputGetState
+    XInputSetState
+    XInputGetStateEx @100

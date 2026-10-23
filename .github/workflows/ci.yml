@@ -268,15 +268,15 @@ jobs:
       - name: Fetch Python 3.12 embeddable (real guest program)
         shell: pwsh
         run: ./tools/ci/fetch_python.ps1 -Out build/bin/machine/guest/python
-      # One more program that is not ours: Sysinternals Coreinfo64.exe, downloaded from
+      # Two more programs that are not ours: Sysinternals Coreinfo64.exe and PsInfo64.exe, downloaded from
       # live.sysinternals.com and pinned by SHA-256 (tools/ci/fetch_sysinternals.ps1, verified on every run). Left in
-      # build/bin/machine/guest for integration.coreinfo (docs/slices/sysinfo.md).
+      # build/bin/machine/guest for integration.coreinfo / integration.psinfo (docs/slices/sysinfo.md).
       - name: Cache the Sysinternals tools
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/sysinternals
-          key: sysinternals-coreinfo-4be1e87e
-      - name: Fetch Sysinternals Coreinfo64 (real guest programs)
+          key: sysinternals-coreinfo-4be1e87e-psinfo-983270da
+      - name: Fetch Sysinternals Coreinfo64 and PsInfo64 (real guest programs)
         shell: pwsh
         run: ./tools/ci/fetch_sysinternals.ps1 -Out build/bin/machine/guest
       # The second real program, and the first prebuilt one: fastfetch 2.70.0, the project's official release zip
@@ -290,6 +290,17 @@ jobs:
       - name: Fetch fastfetch 2.70.0 (real guest program)
         shell: pwsh
         run: ./tools/ci/fetch_fastfetch.ps1 -Out build/bin/machine/guest
+      # Tiny C Compiler 0.9.27, the official prebuilt win64 zip (tools/ci/fetch_tcc.ps1: pinned SHA-256, verified on
+      # every run, restored from the cache or downloaded), left in build/bin/machine/guest/tcc for integration.tcc_*
+      # (docs/slices/realtcc.md): the compiler runs through the layer, and so does the exe it produces.
+      - name: Cache the Tiny C Compiler zip
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/tcc-src
+          key: tcc-0.9.27-win64-34a721949a2583fdff725312da092fa0f5f1f284b702e6f811c6954714faabb2
+      - name: Fetch Tiny C Compiler 0.9.27 (real guest program)
+        shell: pwsh
+        run: ./tools/ci/fetch_tcc.ps1 -Out build/bin/machine/guest/tcc
       # The third prebuilt program: ninja 1.12.1, the project's official ninja-win.zip (tools/ci/fetch_ninja.ps1: pinned
       # SHA-256, verified on every run), left at build/bin/machine/guest/ninja.exe for integration.ninja_*
       # (docs/slices/realninja.md). Its build rules run the lua.exe built above.
@@ -312,6 +323,17 @@ jobs:
       - name: Build real GUI programs (PuTTY, Hello World)
         shell: pwsh
         run: ./tools/ci/build_realgui.ps1 -Out build/bin/machine/guest
+      # A real SDL2 program: the OFFICIAL SDL2 2.30.9 x64 prebuilt release (pinned SHA-256, verified on every run),
+      # sdl_rects.exe compiled against it with cl /MT; SDL2.dll is left next to it in build/bin/machine/guest
+      # for integration.real_sdl2 (docs/slices/realsdl.md).
+      - name: Cache the SDL2 release zip
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/sdl2-src
+          key: sdl2-devel-2.30.9-8c91d91e5bcb997d062ec2b553c53832ebf95654d4aa35e8c02a954d4ce752ae
+      - name: Build the SDL2 guest (SDL2 2.30.9 prebuilt, pinned)
+        shell: pwsh
+        run: ./tools/ci/build_sdl_guest.ps1 -Out build/bin/machine/guest
       # curl 8.11.1's curl.exe from the release tarball (pinned SHA-256, checked on every run; the cache key carries
       # it), CMake + MSVC, no TLS -> build/bin/machine/guest/curl.exe; run by integration.real_curl_* (--version and
       # file:// reads, no network).

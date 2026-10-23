@@ -22,6 +22,7 @@ apisetschema
 win32u
 user32
 gdi32
+msimg32      # AlphaBlend / TransparentBlt / GradientFill forward to gdi32 (docs/slices/gdibmp.md)
 
 # --- base services ---------------------------------------------------------
 advapi32
@@ -54,6 +55,9 @@ hid
 secur32
 winbrand
 wtsapi32
+# --- SDL2.dll (docs/slices/realsdl.md) static imports: setupapi (-> cfgmgr32, already built), winmm (-> msacm32) ---
+setupapi
+msacm32     # winmm static import
 
 # --- COM -------------------------------------------------------------------
 ole32

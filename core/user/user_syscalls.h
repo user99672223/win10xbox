@@ -37,7 +37,6 @@ LONG WINAPI NtUserSetWindowLong(HWND hwnd, INT offset, LONG newval, BOOL ansi);
 LONG_PTR WINAPI NtUserSetWindowLongPtr(HWND hwnd, INT offset, LONG_PTR newval, BOOL ansi);
 WORD WINAPI NtUserSetWindowWord(HWND hwnd, INT offset, WORD newval);
 ULONG WINAPI NtUserAlterWindowStyle(HWND hwnd, UINT mask, UINT style);
-BOOL WINAPI NtUserCallMsgFilter(MSG* msg, INT code);
 UINT_PTR WINAPI NtUserQueryInputContext(HANDLE handle, UINT attr);
 ULONG_PTR WINAPI NtUserCallHwnd(HWND hwnd, DWORD code);
 ULONG_PTR WINAPI NtUserCallHwndParam(HWND hwnd, DWORD_PTR param, DWORD code);
@@ -80,6 +79,25 @@ void WINAPI NtUserNotifyWinEvent(DWORD event, HWND hwnd, LONG object_id, LONG ch
 BOOL WINAPI NtUserShowOwnedPopups(HWND owner, BOOL show);
 HICON WINAPI NtUserInternalGetWindowIcon(HWND hwnd, UINT type);
 
+// ---- win_menu.cpp ----
+HMENU WINAPI NtUserCreateMenu();
+HMENU WINAPI NtUserCreatePopupMenu();
+BOOL WINAPI NtUserDestroyMenu(HMENU handle);
+BOOL WINAPI NtUserRemoveMenu(HMENU handle, UINT id, UINT flags);
+BOOL WINAPI NtUserDeleteMenu(HMENU handle, UINT id, UINT flags);
+DWORD WINAPI NtUserCheckMenuItem(HMENU handle, UINT id, UINT flags);
+BOOL WINAPI NtUserEnableMenuItem(HMENU handle, UINT id, UINT flags);
+BOOL WINAPI NtUserSetMenuDefaultItem(HMENU handle, UINT item, UINT bypos);
+BOOL WINAPI NtUserHiliteMenuItem(HWND hwnd, HMENU handle, UINT item, UINT hilite);
+BOOL WINAPI NtUserGetMenuItemRect(HWND hwnd, HMENU handle, UINT item, RECT* rect);
+INT WINAPI NtUserMenuItemFromPoint(HWND hwnd, HMENU handle, int x, int y);
+BOOL WINAPI NtUserGetMenuBarInfo(HWND hwnd, LONG id, LONG item, MENUBARINFO* info);
+UINT WINAPI NtUserThunkedMenuItemInfo(HMENU handle, UINT pos, UINT flags, UINT method, MENUITEMINFOW* info,
+                                      UNICODE_STRING* str);
+BOOL WINAPI NtUserThunkedMenuInfo(HMENU handle, const MENUINFO* info);
+BOOL WINAPI NtUserTrackPopupMenuEx(HMENU handle, UINT flags, INT x, INT y, HWND hwnd, TPMPARAMS* params);
+BOOL WINAPI NtUserEndMenu();
+
 // ---- win_message.cpp ----
 BOOL WINAPI NtUserGetMessage(MSG* msg, HWND hwnd, UINT first, UINT last);
 BOOL WINAPI NtUserPeekMessage(MSG* msg, HWND hwnd, UINT first, UINT last, UINT flags);
@@ -94,6 +112,13 @@ UINT_PTR WINAPI NtUserSetTimer(HWND hwnd, UINT_PTR id, UINT timeout, TIMERPROC p
 BOOL WINAPI NtUserKillTimer(HWND hwnd, UINT_PTR id);
 UINT_PTR WINAPI NtUserSetSystemTimer(HWND hwnd, UINT_PTR id, UINT timeout);
 BOOL WINAPI NtUserKillSystemTimer(HWND hwnd, UINT_PTR id);
+// ---- win_hook.cpp ----
+HHOOK WINAPI NtUserSetWindowsHookEx(HINSTANCE inst, UNICODE_STRING* module, DWORD tid, INT id, HOOKPROC proc,
+                                    BOOL ansi);
+BOOL WINAPI NtUserUnhookWindowsHookEx(HHOOK handle);
+BOOL WINAPI NtUserUnhookWindowsHook(INT id, HOOKPROC proc);
+LRESULT WINAPI NtUserCallNextHookEx(HHOOK hhook, INT code, WPARAM wparam, LPARAM lparam);
+BOOL WINAPI NtUserCallMsgFilter(MSG* msg, INT code);
 ULONG_PTR WINAPI NtUserGetThreadState(int cls);
 DWORD WINAPI NtUserGetQueueStatus(UINT flags);
 BOOL WINAPI NtUserWaitMessage();
@@ -311,6 +336,12 @@ INT WINAPI NtGdiStretchDIBitsInternal(HDC hdc, INT x_dst, INT y_dst, INT width_d
                                       INT y_src, INT width_src, INT height_src, const void* bits, const BITMAPINFO* bmi,
                                       UINT coloruse, DWORD rop, UINT max_info, UINT max_bits, HANDLE xform);
 
+// ---- gdi_bitmap.cpp ----
+BOOL WINAPI NtGdiAlphaBlend(HDC hdc_dst, INT x_dst, INT y_dst, INT width_dst, INT height_dst, HDC hdc_src, INT x_src,
+                            INT y_src, INT width_src, INT height_src, DWORD blend_function, HANDLE xform);
+BOOL WINAPI NtGdiTransparentBlt(HDC hdc, INT x_dst, INT y_dst, INT width_dst, INT height_dst, HDC hdc_src, INT x_src,
+                                INT y_src, INT width_src, INT height_src, UINT color);
+
 }  // namespace win10xbox::user::sys
 #include "win_scroll.h"   // the scroll bar syscalls (prototypes)
 
@@ -329,6 +360,10 @@ INT WINAPI NtGdiStretchDIBitsInternal(HDC hdc, INT x_dst, INT y_dst, INT width_d
     X(NtUserSetProp) X(NtUserGetProp) X(NtUserRemoveProp) X(NtUserGetWindowPlacement) X(NtUserSetWindowPlacement) \
     X(NtUserSetWindowFNID) X(NtUserGetGUIThreadInfo) X(NtUserFlashWindowEx) X(NtUserIsChildWindowDpiMessageEnabled) \
     X(NtUserGetTitleBarInfo) X(NtUserSetMenu) X(NtUserGetSystemMenu) X(NtUserDrawMenuBar) \
+    X(NtUserCreateMenu) X(NtUserCreatePopupMenu) X(NtUserDestroyMenu) X(NtUserRemoveMenu) X(NtUserDeleteMenu) \
+    X(NtUserCheckMenuItem) X(NtUserEnableMenuItem) X(NtUserSetMenuDefaultItem) X(NtUserHiliteMenuItem) \
+    X(NtUserGetMenuItemRect) X(NtUserMenuItemFromPoint) X(NtUserGetMenuBarInfo) X(NtUserThunkedMenuItemInfo) \
+    X(NtUserThunkedMenuInfo) X(NtUserTrackPopupMenuEx) X(NtUserEndMenu) \
     \
     X(NtUserGetWindowContextHelpId) X(NtUserSetWindowContextHelpId) X(NtUserNotifyWinEvent) \
     X(NtUserShowOwnedPopups) X(NtUserInternalGetWindowIcon) \
@@ -349,6 +384,7 @@ INT WINAPI NtGdiStretchDIBitsInternal(HDC hdc, INT x_dst, INT y_dst, INT width_d
     X(NtUserGetClipboardFormatName) X(NtUserGetClipboardOwner) X(NtUserGetClipboardViewer) \
     X(NtUserGetOpenClipboardWindow) X(NtUserGetClipboardSequenceNumber) X(NtUserSetClipboardViewer) \
     X(NtUserChangeClipboardChain) X(NtUserAddClipboardFormatListener) X(NtUserRemoveClipboardFormatListener) \
+    X(NtUserSetWindowsHookEx) X(NtUserUnhookWindowsHookEx) X(NtUserUnhookWindowsHook) X(NtUserCallNextHookEx) \
     X(NtUserBeginPaint) X(NtUserEndPaint) X(NtUserGetDC) X(NtUserGetDCEx) X(NtUserGetWindowDC) X(NtUserReleaseDC) \
     X(NtUserInvalidateRect) X(NtUserInvalidateRgn) X(NtUserValidateRect) X(NtUserValidateRgn) X(NtUserRedrawWindow) \
     X(NtUserGetUpdateRect) X(NtUserGetUpdateRgn) X(NtUserExcludeUpdateRgn) X(NtUserWindowFromDC) \
@@ -384,4 +420,5 @@ INT WINAPI NtGdiStretchDIBitsInternal(HDC hdc, INT x_dst, INT y_dst, INT width_d
     X(NtGdiPatBlt) X(NtGdiBitBlt) X(NtGdiStretchBlt) \
     X(NtGdiGetPixel) X(NtGdiSetPixel) X(NtGdiRectangle) X(NtGdiEllipse) X(NtGdiMoveTo) \
     X(NtGdiLineTo) X(NtGdiPolyPolyDraw) X(NtGdiFillRgn) X(NtGdiFrameRgn) X(NtGdiInvertRgn) X(NtGdiExtTextOutW) \
-    X(NtGdiSetDIBitsToDeviceInternal) X(NtGdiStretchDIBitsInternal)
+    X(NtGdiSetDIBitsToDeviceInternal) X(NtGdiStretchDIBitsInternal) \
+    X(NtGdiAlphaBlend) X(NtGdiTransparentBlt)

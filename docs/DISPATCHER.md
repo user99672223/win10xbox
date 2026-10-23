@@ -18,6 +18,7 @@ interface: `core/include/win10xbox/dispatch.h`.
 | `core/dispatch/nt_spawn.cpp` | child processes (`NtCreateUserProcess`) and the refusals around process creation, debugging and `NtSetSystemInformation` |
 | `core/dispatch/subsystems.cpp` | registry / token / clock entry points wired as `Emulate` |
 | `core/dispatch/unix_calls.cpp` | Wine unix-call providers, Wine debug-channel replacements |
+| `core/dispatch/unix_ws2_32.cpp` | ws2_32's name-resolution unix calls on host Winsock |
 | `core/dispatch/rtl_forward.inc` / `.cpp` | function-level forwarding of guest ntdll exports (E2) |
 | `core/dispatch/cpu_sites.cpp` | scanner site handler: cpuid, rdtsc(p), raw syscall |
 | `core/dispatch/process.cpp` | `process::Launch`, guest threads, guest exit |

@@ -4,6 +4,7 @@
 #pragma once
 #include "win10xbox/dispatch.h"
 #include "win10xbox/loader.h"
+#include "win10xbox/probe.h"
 #include "win10xbox/trace.h"
 #include <intrin.h>
 #include <cstddef>
@@ -529,6 +530,11 @@ NTSTATUS NTAPI Xl_NtClose(HANDLE);
 // ---- Unix calls / Wine debug (unix_calls.cpp) ------------------------------------
 std::uint64_t NtdllUnixLibHandle();
 void RegisterNtdllUnixLib();
+// ws2_32's resolver unix calls on host Winsock (unix_ws2_32.cpp); the table is in unix_calls.cpp.
+NTSTATUS WINAPI Ws2UnixGetAddrInfo(void* args);
+NTSTATUS WINAPI Ws2UnixGetHostByAddr(void* args);
+NTSTATUS WINAPI Ws2UnixGetHostByName(void* args);
+NTSTATUS WINAPI Ws2UnixGetNameInfo(void* args);
 std::uint64_t UnixLibHandleByName(std::wstring_view module_name);   // 0 if none
 // Replacements patched over the guest ntdll's __wine_dbg_* exports.
 struct WineDebugChannel { unsigned char flags; char name[15]; };

@@ -1,0 +1,9 @@
+# Wine ntdll conformance units that Windows itself does not pass on a runner, gated against a native run of the same
+# binary instead of against 0 failures (tests/winetest/run_ntdll.cmake, header: PARITY; docs/slices/wt-ntdll-file.md).
+#
+#   <unit> <minimum number of assertions executed through the layer>
+#
+# A listed unit runs as on Windows (--platform=windows), must complete, execute at least the floor, and fail no
+# assertion in two layer runs that the native run on the same runner passes. Add a unit here only with the failing
+# lines of its native run recorded in its slice doc.
+file 1300

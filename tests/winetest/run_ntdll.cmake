@@ -16,6 +16,15 @@
 # they never fail the test; their outcome, counts and first failing assertions go to
 # <RESULTS_DIR>/summary.md and to the output, which is the todo list in
 # docs/slices/wt-ntdll.md.
+#
+# PARITY (-DPARITY=<wine-pe/tests/ntdll.parity>, "<unit> <floor>" lines): units that cannot reach 0 failures on a
+# Windows runner because Windows itself fails some of their assertions (the file unit: 26 of its 29 failures there
+# are the runner's own, see docs/slices/wt-ntdll-file.md). They run as on Windows (--platform=windows: Wine's harness
+# takes the guest for Wine, because its ntdll exports wine_get_version, and every todo_wine block would EXPECT a
+# failure) and are gated against the same binary run natively on the same runner, without the layer: the unit must
+# print its summary line, execute at least the floor of assertions, and fail no assertion (source line), in both of
+# two runs through the layer, that Windows itself passes. Only where that comparison exists (a Windows host, no
+# EMULATOR).
 # Exits 77 (SKIP) when the Wine builtins, the NLS data or the guest are missing.
 if(NOT TIMEOUT)
   set(TIMEOUT 120)
@@ -51,6 +60,19 @@ function(w10x_summarize label unit log rc)
       message("  ${label}: ${_f}")
     endif()
   endforeach()
+endfunction()
+
+# The source lines ("file.c:1719") of a unit log's failed assertions, in *out*.
+function(w10x_failing_keys log out)
+  file(READ "${log}" _text LIMIT 400000)
+  string(REGEX MATCHALL "[A-Za-z0-9_]+\\.c:[0-9]+: Test failed" _fails "${_text}")
+  set(_keys "")
+  foreach(_f IN LISTS _fails)
+    string(REGEX MATCH "^[A-Za-z0-9_]+\\.c:[0-9]+" _key "${_f}")
+    list(APPEND _keys "${_key}")
+  endforeach()
+  list(REMOVE_DUPLICATES _keys)
+  set(${out} "${_keys}" PARENT_SCOPE)
 endfunction()
 
 function(w10x_skip msg)
@@ -96,6 +118,23 @@ foreach(_l IN LISTS _alines)
   set(_floor_${CMAKE_MATCH_1} ${CMAKE_MATCH_2})
 endforeach()
 
+# The parity list: "<unit> <floor>" lines, as the allowlist.
+set(_parity "")
+if(PARITY AND EXISTS "${PARITY}")
+  file(STRINGS "${PARITY}" _plines)
+  foreach(_l IN LISTS _plines)
+    string(STRIP "${_l}" _l)
+    if(_l STREQUAL "" OR _l MATCHES "^#")
+      continue()
+    endif()
+    if(NOT _l MATCHES "^([A-Za-z0-9_]+)[ \t]+([0-9]+)$")
+      message(FATAL_ERROR "${PARITY}: cannot parse '${_l}' (want '<unit> <min executed>')")
+    endif()
+    list(APPEND _parity "${CMAKE_MATCH_1}")
+    set(_pfloor_${CMAKE_MATCH_1} ${CMAKE_MATCH_2})
+  endforeach()
+endif()
+
 file(MAKE_DIRECTORY "${MACHINE}/guest-wine" "${RESULTS_DIR}")
 file(COPY_FILE "${EXE}" "${MACHINE}/guest-wine/ntdll_test.exe" ONLY_IF_DIFFERENT)
 
@@ -105,13 +144,6 @@ if(EMULATOR AND _machine MATCHES "^/")
 endif()
 string(REPLACE "/" "\\" _machine "${_machine}")
 
-# Units that run as on Windows (`--platform=windows`, see wine-pe/tests/ntdll.sh): Wine's harness takes the guest for
-# Wine, because its ntdll exports wine_get_version, and every todo_wine block then EXPECTS a failure. The file unit's
-# behaviour is the host's NTFS, which is Windows: with the platform "wine" every todo_wine that Windows passes would
-# count as a failure ("Test succeeded inside todo block": 107 of the 157 failures the unit printed), and the unit could
-# never reach 0.
-set(_windows_platform_units file)
-
 set(_re "([0-9]+) tests executed \\(([0-9]+) marked as todo, ([0-9]+) as flaky, ([0-9]+) failures?\\), ([0-9]+) skipped")
 set(ENV{WIN10XBOX_DEBUG} "-all")   # relay tracing would bury the test output
 
@@ -119,23 +151,28 @@ set(_problems "")
 set(_table "| unit | gate | outcome | executed | failed | todo | skipped | exit | s |\n|---|---|---|---:|---:|---:|---:|---:|---:|\n")
 set(_todo "")
 set(_gated_ok 0)
+set(_parity_ok 0)
 
 foreach(_u IN LISTS _units)
   list(FIND _allowed "${_u}" _idx)
+  list(FIND _parity "${_u}" _wp)
   if(_idx GREATER -1)
     set(_gated TRUE)
     set(_to ${TIMEOUT})
   else()
     set(_gated FALSE)
-    if(NOT SURVEY)
+    if(NOT SURVEY AND _wp EQUAL -1)
       continue()
     endif()
-    set(_to ${SURVEY_TIMEOUT})
+    if(_wp GREATER -1)
+      set(_to ${TIMEOUT})   # a parity unit is a gate
+    else()
+      set(_to ${SURVEY_TIMEOUT})
+    endif()
   endif()
 
   set(_log "${RESULTS_DIR}/${_u}.log")
   set(_platform_arg "")
-  list(FIND _windows_platform_units "${_u}" _wp)
   if(_wp GREATER -1)
     set(_platform_arg "--platform=windows")
   endif()
@@ -275,22 +312,57 @@ foreach(_u IN LISTS _units)
   string(APPEND _table "| ${_u} | ${_g} | ${_outcome} | ${_executed} | ${_failed} | ${_todo_n} | ${_skipped} | ${_rc} | ${_secs} |\n")
   file(WRITE "${RESULTS_DIR}/${_u}.tsv"
     "${_u}\t${_g}\t${_outcome}\t${_executed}\t${_failed}\t${_todo_n}\t${_skipped}\t${_rc}\t${_secs}\n")
-  # Diagnostics for the units that run as on Windows, never part of the verdict: the same binary on the host itself
-  # (no layer: what Windows answers on this runner, so a failing line here is the runner's or the test's, not the
-  # layer's), the layer a second time (does the unit repeat?), and the layer with Wine's own platform setting.
+  # Parity units (see the header): the same binary on the host itself, no layer, then the layer a second time.
   if(_wp GREATER -1)
+    set(_native_ok FALSE)
     if(NOT EMULATOR AND CMAKE_HOST_WIN32)
       execute_process(COMMAND "${EXE}" "${_u}" --platform=windows RESULT_VARIABLE _nrc
         OUTPUT_FILE "${RESULTS_DIR}/${_u}.native.log" ERROR_VARIABLE _nerr TIMEOUT 120)
       w10x_summarize("native" "${_u}" "${RESULTS_DIR}/${_u}.native.log" "${_nrc}")
+      file(READ "${RESULTS_DIR}/${_u}.native.log" _ntext LIMIT 400000)
+      if(_ntext MATCHES "${_re}")
+        set(_native_ok TRUE)
+      endif()
     endif()
     execute_process(COMMAND ${_cmd} RESULT_VARIABLE _rrc OUTPUT_FILE "${RESULTS_DIR}/${_u}.repeat.log"
       ERROR_VARIABLE _rerr TIMEOUT ${_cmake_to} ${_stdin})
     w10x_summarize("layer, second run" "${_u}" "${RESULTS_DIR}/${_u}.repeat.log" "${_rrc}")
-    set(_cmd_wine ${EMULATOR} "${HOST}" --machine "${_machine}" "C:\\guest-wine\\ntdll_test.exe" "${_u}")
-    execute_process(COMMAND ${_cmd_wine} RESULT_VARIABLE _wrc OUTPUT_FILE "${RESULTS_DIR}/${_u}.wineplatform.log"
-      ERROR_VARIABLE _werr TIMEOUT ${_cmake_to} ${_stdin})
-    w10x_summarize("layer, platform wine" "${_u}" "${RESULTS_DIR}/${_u}.wineplatform.log" "${_wrc}")
+    if(NOT EMULATOR AND CMAKE_HOST_WIN32)
+      set(_pv "ok")
+      if(NOT _native_ok)
+        set(_pv "FAIL: the native run did not finish, nothing to compare with (exit ${_nrc})")
+      elseif(NOT _outcome STREQUAL "ok")
+        set(_pv "FAIL: ${_outcome} (the unit must complete); last: ${_last} ${_layer_err}")
+      elseif(_executed LESS ${_pfloor_${_u}})
+        set(_pv "FAIL: ${_executed} assertions executed, floor ${_pfloor_${_u}}")
+      else()
+        w10x_failing_keys("${_log}" _fkeys)
+        w10x_failing_keys("${RESULTS_DIR}/${_u}.repeat.log" _rkeys)
+        w10x_failing_keys("${RESULTS_DIR}/${_u}.native.log" _nkeys)
+        set(_worse "")
+        foreach(_k IN LISTS _fkeys)
+          list(FIND _rkeys "${_k}" _in2)
+          list(FIND _nkeys "${_k}" _inn)
+          if(_in2 GREATER -1 AND _inn EQUAL -1)
+            list(APPEND _worse "${_k}")
+          elseif(_inn EQUAL -1)
+            message("  parity: ${_k} failed in one layer run only (flaky, not counted)")
+          endif()
+        endforeach()
+        if(_worse)
+          string(REPLACE ";" " " _worse "${_worse}")
+          set(_pv "FAIL: assertions that Windows passes and the layer fails: ${_worse}")
+        endif()
+      endif()
+      message("WINETEST parity ntdll:${_u} -> ${_pv}")
+      if(NOT _pv STREQUAL "ok")
+        list(APPEND _problems "ntdll:${_u} parity ${_pv}")
+      else()
+        math(EXPR _parity_ok "${_parity_ok} + 1")
+      endif()
+    else()
+      message("WINETEST parity ntdll:${_u} not gated: it is compared with a native run, which needs a Windows host")
+    endif()
   endif()
   if(NOT _gated AND NOT (_outcome STREQUAL "ok" AND _failed EQUAL 0))
     string(APPEND _todo "\n### ${_u}: ${_outcome}, ${_executed} executed, ${_failed} failed, ${_nseen} distinct failing lines in the first 300 kB\n")
@@ -321,4 +393,4 @@ list(LENGTH _allowed _nallowed)
 if(_gated_ok LESS _nallowed)
   message(FATAL_ERROR "only ${_gated_ok} of ${_nallowed} allowlisted units ran: is one missing from ntdll_test.units?")
 endif()
-message("PASS: ${_gated_ok} allowlisted ntdll units, 0 failures")
+message("PASS: ${_gated_ok} allowlisted ntdll units, 0 failures; ${_parity_ok} parity units")
