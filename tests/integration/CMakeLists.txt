@@ -847,6 +847,33 @@ set_tests_properties(integration.guest_d3d11_swap PROPERTIES
   ENVIRONMENT "WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_d3d11_swap.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=228,228,ffff0000|101,101,ff0000ff")
 endif()
 
+# The same program under the generic present-limit harness (WIN10XBOX_TEST_PRESENT_LIMIT, docs/TESTING.md): the layer
+# ends the guest with exit 42 after its 10th Present and prints the "present-limit:" line; the last composed frame
+# (window at 100,100, 256x256) must still be on the screenshot, non-uniform (blue clear + triangle).
+if(NOT CMAKE_CROSSCOMPILING AND TARGET guest_d3d11_swap)
+add_test(NAME integration.guest_d3d11_swap_limit
+  COMMAND ${CMAKE_COMMAND}
+    -DHOST=$<TARGET_FILE:win10xbox>
+    -DMACHINE=${WIN10XBOX_D3D_MACHINE_DIR}
+    -DPROGRAM=C:\\guest\\guest_d3d11_swap.exe
+    -DEXPECT_EXIT=42
+    -DSAVE_STDOUT=${CMAKE_BINARY_DIR}/bin/guest_d3d11_swap_limit.log
+    "-DEXPECT_REGEX=swap: CreateSwapChain -> 00000000;present-limit: 10 frames presented, 256x256, "
+    "-DEXPECT_TRACE_REGEX=dxgi: IDXGISwapChain::Present\\(1, 0x0\\) -> 0000000[0-9] \\(back buffer copied\\);present-limit: 10 frames presented"
+    "-DFORBID_TRACE_REGEX=host state reached under the guest TLS view;not handed to the compositor"
+    -DDEBUG_SPEC=+dispatch,+modules,+process,+user
+    -DREQUIRE=Windows/System32/d3d11.dll
+    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
+set_tests_properties(integration.guest_d3d11_swap_limit PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "guest_e2e"
+  TIMEOUT 240
+  ENVIRONMENT "WIN10XBOX_TEST_PRESENT_LIMIT=10;WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_d3d11_swap_limit.bmp;WIN10XBOX_EXPECT_SCREENSHOT_VARIED=100,100,356,356,8,2")
+endif()
+
 # Route B + Direct3D 11 (docs/DECISIONS.md G1): Dear ImGui's example_win32_directx11 (tests/guest/imgui_d3d11.cpp,
 # built when CI provides the Dear ImGui source) on machine-native-d3d: native user32/gdi32/win32u and the native
 # d3d11/dxgi/d3dcompiler_47/d3d10warp as guest code, every win32u syscall -- the D3DKMT ones (NtGdiDdDDI*) included --
