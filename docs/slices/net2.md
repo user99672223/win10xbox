@@ -24,3 +24,14 @@ Runs: https://github.com/user99672223/win10xbox/actions/runs/39978739313 and /39
 whose output did not fit the caller's buffer; no change in outcome). Untried ideas: SCH_CREDENTIALS instead of SCHANNEL_CRED, a
 server that does not send a session ticket (ctx.options |= ssl.OP_NO_TICKET), no ISC_REQ_EXTENDED_ERROR, check that the guest
 sends the whole call-2 token. Still unsupported: server credentials, client certificates, DTLS, channel bindings.
+
+ROOT-CAUSE LOOP (run https://github.com/user99672223/win10xbox/actions/runs/39986040044 and /39989343996, both windows jobs fail the same way):
+- The SSPI buffer contract is NOT the cause. Trace (`WIN10XBOX_DEBUG=-all,+schannel`, kept; guest_net2 runs with that spec) on the runner:
+  step 1 in 0 -> out 143 [16/138]; step 2 in 1213 [16/65 16/791 16/333 16/4] consumed whole, extra 0 -> out 126 [16/70 14/1 16/40]
+  (CKE+CCS+Finished, handed to the caller complete); step 3 in 242 [16/186 14/1 16/40], extra 0 -> 80090330. Local (Wine 9) has the same shape and passes.
+- Control: integration.net2_native (same guest_net2.exe, NOT through the layer, the runner's own SChannel, same Python server) PASSES on Windows.
+  So the server/SChannel pairing is fine and the fault is in how the layer drives the host SSPI or the bytes it carries (host-view thread state around
+  ISC, or the 242 bytes the guest recv hands over; the receive now goes through the pending-recv host thread in afd.cpp TryPendRecv).
+- Dropping ISC_REQ_EXTENDED_ERROR and SCH_CRED_NO_SERVERNAME_CHECK (now identical to the control): no change.
+- Next (not done, pushes used): dump the step-3 input as hex in the +schannel trace and have the server log sha256 of the bytes it writes
+  (ssl.MemoryBIO); try the native control with the receive forced through the pending path; run ISC on a thread that is not in host view.
