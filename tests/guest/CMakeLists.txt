@@ -196,6 +196,11 @@ add_executable(guest_net net.c)
 target_link_libraries(guest_net PRIVATE ws2_32)
 win10xbox_add_guest(guest_net)
 
+# The DLL/import closure of a program set (tests/guest/closure.c, docs/slices/gameclosure.md): LoadLibrary + GetProcAddress of
+# every import listed by tools/game/dump_imports.py, through the layer. integration.guest_closure*.
+add_executable(guest_closure closure.c)
+win10xbox_add_guest(guest_closure)
+
 # Audio (docs/slices/audio.md): WASAPI and XAudio2 guests. Exit 42 = a device played the sound, 43 = the host has no
 # audio endpoint (the exact HRESULT is printed); tests/integration/audio_test.cmake requires the layer to agree with
 # the same program run directly on the host.

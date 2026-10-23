@@ -44,6 +44,26 @@ if(TARGET guest_hello)
     add_dependencies(prepare_machine guest_d3d11_tri)
   endif()
 endif()
+# Import lists of the guests that run on the machine folders (tools/game/dump_imports.py), written into the guest folder
+# (<bin>/guest/<guest>.exe_imports.txt, staged with the guests as C:\guest): the input of integration.guest_closure*.
+find_program(WIN10XBOX_PYTHON NAMES python3 python)
+set(_closure_guests "")
+if(TARGET guest_closure AND WIN10XBOX_PYTHON)
+  foreach(_g guest_hello guest_xinput guest_net guest_net2 guest_wasapi guest_xaudio2 guest_d3d11_tri)
+    if(TARGET ${_g})
+      list(APPEND _closure_guests ${_g})
+    endif()
+  endforeach()
+  set(_closure_files "")
+  foreach(_g ${_closure_guests})
+    list(APPEND _closure_files $<TARGET_FILE:${_g}>)
+  endforeach()
+  add_custom_target(closure_lists
+    COMMAND ${WIN10XBOX_PYTHON} ${CMAKE_SOURCE_DIR}/tools/game/dump_imports.py ${_closure_files} ${CMAKE_BINARY_DIR}/bin/guest
+    COMMENT "Import lists of the guests for guest_closure" VERBATIM)
+  add_dependencies(closure_lists ${_closure_guests} guest_closure)
+  add_dependencies(prepare_machine closure_lists)
+endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
 
@@ -845,6 +865,33 @@ set_tests_properties(integration.guest_imgui_d3d11 PROPERTIES
   LABELS "guest_e2e"
   TIMEOUT 240
   ENVIRONMENT "WIN10XBOX_IMGUI_FRAMES=60;WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_imgui_d3d11.bmp")
+endif()
+
+# The DLL/import closure (docs/slices/gameclosure.md): tests/guest/closure.c LoadLibrary's and GetProcAddress's every import of the
+# guests listed above (tools/game/dump_imports.py, built into C:\guest) through the layer. Exit 42 = nothing missing; the
+# summary line must say 0 missing dlls, 0 missing symbols. The owner's game lists (docs/game/*_imports.txt) are run the same
+# way: docs/game/README.md.
+if(NOT CMAKE_CROSSCOMPILING AND TARGET guest_d3d11_tri AND _closure_guests)
+set(_guest_machine ${WIN10XBOX_D3D_MACHINE_DIR})
+set(_guest_args "C:\\guest")
+set(_guest_save_stdout ${CMAKE_BINARY_DIR}/bin/guest_closure.log)
+win10xbox_guest_test(guest_closure "C:\\guest\\guest_closure.exe" 42
+  "closure: [1-9][0-9]* modules, [1-9][0-9]* dlls, [1-9][0-9]* symbols, 0 missing dlls, 0 missing symbols")
+set_tests_properties(integration.guest_closure PROPERTIES TIMEOUT 240)
+unset(_guest_machine)
+unset(_guest_args)
+unset(_guest_save_stdout)
+endif()
+# Local (linux-cross, Wine) check of the same guest on the builtin-only folder, with the lists of the mingw guests.
+if(CMAKE_CROSSCOMPILING AND _closure_guests)
+set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+set(_guest_console ON)
+set(_guest_args "C:\\guest")
+win10xbox_guest_test(guest_closure_builtin "C:\\guest\\guest_closure.exe" 42
+  "closure: [1-9][0-9]* modules, [1-9][0-9]* dlls, [1-9][0-9]* symbols, 0 missing dlls, 0 missing symbols")
+unset(_guest_machine)
+unset(_guest_console)
+unset(_guest_args)
 endif()
 
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
