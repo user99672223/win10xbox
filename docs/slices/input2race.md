@@ -1,4 +1,4 @@
-status: wip
+status: ready
 
 # Slice: input2race (integration.guest_window_input2 intermittent failure, second round)
 
@@ -58,3 +58,24 @@ working tree only (`g_host_delay = nullptr` in `clock::Initialize`, the pre-fix 
 - new test, input2fix fix still undone, 1 core + 10 hogs: 16/16 passed (no NtDelayExecution call at all);
 - old test, current main (fixed clock), 2 cores + 2 hogs: 30/30 passed.
 - new test, current main, 1 core + 10 hogs: 16/16 passed (`badsleep` 0, as no Sleep is called). ctest -R guest_window_input2 and guest_sleep pass.
+
+## CI
+
+Run: https://github.com/user99672223/win10xbox/actions/runs/39933337736 (head f3b7eeb): linux-cross, windows (Debug),
+windows (RelWithDebInfo) all success; "ctest gate: 73 registered, 73 ran and passed, 0 DISABLED";
+`Test #23: integration.guest_window_input2 ... Passed 6.37 sec`. The linux-cross job needed two re-runs (not pushes) for
+causes outside this slice: two `apt-get install` (Wine .deb download) stalls in "Install Wine + ninja" (3 attempts of 7
+min each, twice), and once `integration.winetest_kernel32` at 313 s over the 300 s ctest timeout on a starved runner
+(actctx/comm/debugger children crash or time out as recorded in wine-pe/tests/kernel32.baseline; unrelated to input).
+
+## What runs through the layer
+
+`guest_window_input2.exe` (build-mingw/bin/guest, run by `integration.guest_window_input2`): 45 checks now, including
+`PASS thread 3 created its window`, `PASS thread 3's window is visible, owned by thread 3 and is the window at
+(950,550)`, `window_input2: thread 3 log [3:MM(50,50;own-thread=1) ]`, `window_input2: 45 passed, 0 failed`.
+Syscalls added or changed: none. DLLs added to wine-pe/dlls.txt: none.
+
+## What still fails
+
+Nothing known in this test. The residual risk is a Sleep regression, which `integration.guest_sleep` gates (took >= 90 ms).
+`integration.winetest_kernel32` runs close to the 300 s ctest timeout on a slow runner (someone should look at it).
