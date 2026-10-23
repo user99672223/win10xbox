@@ -1,0 +1,18 @@
+# Two rules, three edges (docs/slices/realninja.md). ninja on Windows does not prepend "cmd /c", so the commands
+# run the guest's lua.exe directly. The inputs are files that are always in C:\guest. Run as
+#   ninja.exe -C C:\guest -f ninja_build.ninja
+ninja_required_version = 1.10
+builddir = ninja_out
+
+rule copy
+  command = C:\guest\lua.exe C:\guest\ninja_tool.lua copy $in $out
+  description = COPY $out
+
+rule concat
+  command = C:\guest\lua.exe C:\guest\ninja_tool.lua concat $out $in
+  description = CONCAT $out
+
+build ninja_out/a.txt: copy ninja_tool.lua
+build ninja_out/b.txt: copy ninja_build.ninja
+build ninja_out/ab.txt: concat ninja_out/a.txt ninja_out/b.txt
+default ninja_out/ab.txt
