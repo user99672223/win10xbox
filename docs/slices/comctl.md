@@ -1,6 +1,10 @@
-status: wip
+status: ready
 
 # Slice: comctl32 (Wine builtin) controls through the layer
+
+ci.yml run: https://github.com/user99672223/win10xbox/actions/runs/39882077562 (windows Debug, windows RelWithDebInfo and
+linux-cross green, "Gate - nothing skipped" passed, `integration.guest_comctl` Passed in 3.39 s). It ran on commit 6110904;
+the head after it only changes this document.
 
 Gate: `integration.guest_comctl` (tests/guest/comctl.c) on the builtin-only machine folder. InitCommonControlsEx, then a
 report-view ListView (2 columns, 3 items) with its header, a TreeView and a smooth progress bar (position 50 of 100) as
@@ -28,3 +32,42 @@ as update region and could neither validate "everything but the header strip" no
 
 Not touched here: `NtUserSetScrollInfo`/`NtUserShowScrollBar` (slice -scroll) and `NtUserFindExistingCursorIcon` (returns
 0 with ERROR_CALL_NOT_IMPLEMENTED; LoadCursor of the class cursors fails quietly).
+
+## What runs through the layer
+
+`C:\guest\guest_comctl.exe` (tests/guest/comctl.c, MSVC/llvm-mingw build, no manifest so the v5 classes) on the
+builtin-only machine folder, against Wine 11.9's builtin `comctl32.dll`. Output from the job log:
+
+```
+comctl: init ok
+comctl: created lv=1 tv=1 pb=1 hdr=1
+comctl: lv count=3 cols=2 tv count=2 pb pos=50
+comctl: pixels lv=00ffffff hdr=00f0f0f0 pb_in=0000a000 pb_out=00e6e6e6
+comctl: label pixels drawn=154
+comctl: done
+```
+
+exit 42, and the screenshot pixels (255,205)=white (ListView background), (285,114)=f0f0f0 (header, right of the two
+columns), (125,245)=00a000 (progress fill), (275,245)=e6e6e6 (outside the fill) match. The progress bar uses
+PBM_SETBARCOLOR/PBM_SETBKCOLOR so the check does not depend on the system colours; the header and ListView background use
+the default system colours (COLOR_BTNFACE, COLOR_WINDOW).
+
+## Syscalls added or changed
+
+None added. `NtUserValidateRect`/`NtUserValidateRgn`/`NtUserRedrawWindow(RDW_VALIDATE)`, `NtUserBeginPaint` and the
+erase path of `NtUserRedrawWindow`/`NtUserGetUpdateRect` changed behaviour (see above).
+
+## DLLs added to wine-pe/dlls.txt
+
+None (comctl32 was already listed; it needs no uxtheme: Wine loads it only when a manifest asks for v6).
+
+## What still fails
+
+* v6 controls (a manifest/activation context) and themed drawing: not tried; WC_BUTTONW from comctl32 v6 is user32's
+  builtin button without one.
+* `NtUserSetScrollInfo`, `NtUserShowScrollBar` (28 and 2 calls in the trace): still Todo here, return 0; the -scroll
+  slice implements them. ListView/TreeView with more items than fit show no scroll bars until that lands.
+* `NtUserFindExistingCursorIcon` (18 calls, from the cursors comctl32's classes load): Todo, returns 0, the class cursor
+  stays NULL.
+* Update regions are still bounding rectangles: a hole in the middle of a parent's region is not representable, so a
+  parent covering an already painted child repaints the child afterwards (extra WM_PAINT, same final pixels).
