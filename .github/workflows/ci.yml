@@ -483,7 +483,12 @@ jobs:
               $fail = 1
             }
           }
+          # no endpoint on the host: Sound must print nothing (the layer answers E_NOTFOUND, fastfetch skips the module)
+          if (-not $hostAudio -and (Get-Content ff-Sound.out -Raw) -match '(?m)^Sound') { Write-Host "::error::fastfetch[Sound]: a Sound line without a host endpoint"; $fail = 1 }
+          # guest_wasapi's 43 (no endpoint) must not leak out as the step's exit code
+          $global:LASTEXITCODE = 0
           if ($fail) { exit 1 }
+          exit 0
       # crash.txt / crash.dmp / entry-reached.txt: what host-win32/crash.cpp writes into build/bin when a guest run
       # (ctest or the smoke step) dies; *.bmp: the GUI tests' screenshots (WIN10XBOX_SCREENSHOT).
       - uses: actions/upload-artifact@v4
