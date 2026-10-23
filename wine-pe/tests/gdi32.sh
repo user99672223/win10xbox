@@ -167,6 +167,7 @@ for u in "${UNIT_LIST[@]}"; do
     cp -f "$OUT/$name.exe" "$MACHINE/guest-wine/$name.exe"
     log="$RESULTS/$u.log"
     t0=$(date +%s)
+    rm -f "$MACHINE/registry-overlay.bin"   # each unit starts from the registry of the hives (persistence)
     timeout -k 5 "$TIMEOUT" $EMULATOR "$HOST" --machine "$win_machine" "C:\\guest-wine\\$name.exe" \
         < /dev/null > "$log" 2>&1
     rc=$?
