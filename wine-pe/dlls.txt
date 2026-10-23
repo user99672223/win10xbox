@@ -54,6 +54,11 @@ secur32
 winbrand
 wtsapi32
 
+# --- imports of wbemprox (docs/slices/identity.md); its other imports are listed above ---
+winspool.drv=winspool.drv
+setupapi
+compstui     # winspool.drv
+
 # --- COM -------------------------------------------------------------------
 ole32
 oleaut32

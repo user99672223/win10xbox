@@ -303,6 +303,136 @@ TEST(dispatch_cpuid_policy) {
     SetCpuPolicy(saved);
 }
 
+// D18: the CPUID patch serves the machine identity: brand string, family/model/stepping, RDRAND, no hypervisor.
+TEST(dispatch_cpuid_identity) {
+    CpuPolicy saved = GetCpuPolicy();
+    CpuPolicy p;
+    p.vendor = "AuthenticAMD";
+    p.hide_hypervisor = true;
+    std::strcpy(p.brand, "AMD 4700S 8-Core Processor");
+    p.family = 23; p.model = 136; p.stepping = 1;
+    p.advertise_rdrand = true;
+    SetCpuPolicy(p);
+    loader::ScanRegs r{};
+    r.rax = 1;
+    CHECK(CpuSiteHandler(loader::SiteKind::Cpuid, &r, nullptr));
+    CHECK_EQ(static_cast<std::uint32_t>(r.rax), 0x00880F81u);
+    CHECK((r.rcx & (1u << 30)) != 0);
+    CHECK((r.rcx & (1u << 31)) == 0);
+    r = {};
+    r.rax = 0x80000001u;
+    CHECK(CpuSiteHandler(loader::SiteKind::Cpuid, &r, nullptr));
+    CHECK_EQ(static_cast<std::uint32_t>(r.rax), 0x00880F81u);
+    char brand[49] = {};
+    for (std::uint32_t i = 0; i < 3; ++i) {
+        r = {};
+        r.rax = 0x80000002u + i;
+        CHECK(CpuSiteHandler(loader::SiteKind::Cpuid, &r, nullptr));
+        const std::uint32_t w[4] = {static_cast<std::uint32_t>(r.rax), static_cast<std::uint32_t>(r.rbx),
+                                    static_cast<std::uint32_t>(r.rcx), static_cast<std::uint32_t>(r.rdx)};
+        std::memcpy(brand + 16 * i, w, 16);
+    }
+    CHECK_EQ(std::string(brand), std::string("AMD 4700S 8-Core Processor"));
+    r = {};
+    r.rax = 0x40000000;
+    CHECK(CpuSiteHandler(loader::SiteKind::Cpuid, &r, nullptr));
+    CHECK(r.rax == 0 && r.rbx == 0 && r.rcx == 0 && r.rdx == 0);
+    SetCpuPolicy(saved);
+}
+
+// D18: RDRAND/RDSEED are advertised; on a host without them the #UD handler stands in (random bytes, CF=1, RIP past it).
+TEST(dispatch_rdrand_emulation) {
+    InstallRandomInstructionEmulation();
+    const std::uint8_t code[] = {0x0F, 0xC7, 0xF0,                // rdrand eax
+                                 0x48, 0x0F, 0xC7, 0xF1,          // rdrand rcx
+                                 0x0F, 0xC7, 0xF8,                // rdseed eax
+                                 0x90, 0, 0, 0, 0, 0, 0, 0};      // padding so the decoder may read 15 bytes
+    CONTEXT c{};
+    c.Rax = 0xFFFFFFFFFFFFFFFFull;
+    c.EFlags = 0x246;   // ZF, PF set
+    c.Rip = reinterpret_cast<DWORD64>(code);
+    CHECK(EmulateRandomInstruction(&c));
+    CHECK_EQ(c.Rip, reinterpret_cast<DWORD64>(code) + 3);
+    CHECK((c.Rax >> 32) == 0);                  // a 32-bit destination clears the upper half
+    CHECK((c.EFlags & 1u) == 1u && (c.EFlags & 0x44u) == 0);
+    CHECK(EmulateRandomInstruction(&c));
+    CHECK_EQ(c.Rip, reinterpret_cast<DWORD64>(code) + 7);
+    bool varied = false;   // 64 random bits are not all zero twice in a row
+    DWORD64 first = c.Rcx;
+    for (int i = 0; i < 4 && !varied; ++i) {
+        c.Rip = reinterpret_cast<DWORD64>(code) + 3;
+        CHECK(EmulateRandomInstruction(&c));
+        varied = c.Rcx != first;
+    }
+    CHECK(varied);
+    CHECK(EmulateRandomInstruction(&c));        // rdseed eax
+    c.Rip = reinterpret_cast<DWORD64>(code) + 10;   // nop: not ours
+    CHECK(!EmulateRandomInstruction(&c));
+}
+
+// D18: the synthetic SMBIOS table parses the way wbemprox and Windows tools parse it, and the NtQuerySystemInformation
+// answer follows the SYSTEM_FIRMWARE_TABLE_INFORMATION protocol (too small -> the needed size, then the table).
+TEST(dispatch_smbios_table) {
+    config::Config::MachineIdentity id;
+    const std::vector<std::uint8_t> t = detail::MakeSmbios(id, "AuthenticAMD", 8, 16, 3600, 0x178BFBFFu);
+    CHECK(t.size() > 8);
+    std::uint32_t len = 0;
+    std::memcpy(&len, t.data() + 4, 4);
+    CHECK_EQ(static_cast<std::size_t>(len) + 8, t.size());
+    CHECK_EQ(t[1], 3);
+    const std::uint8_t* p = t.data() + 8;
+    const std::uint8_t* end = t.data() + t.size();
+    int types[4] = {};
+    std::string version, vendor;
+    std::uint64_t proc_id = 0;
+    while (p + 4 <= end) {
+        const std::uint8_t type = p[0], flen = p[1];
+        CHECK(flen >= 4 && p + flen <= end);
+        const char* strs = reinterpret_cast<const char*>(p) + flen;
+        auto str = [&](unsigned idx) {
+            const char* s = strs;
+            for (unsigned i = 1; i < idx; ++i) s += std::strlen(s) + 1;
+            return std::string(s);
+        };
+        if (type == 4) {
+            version = str(p[0x10]);
+            vendor = str(p[7]);
+            std::memcpy(&proc_id, p + 8, 8);
+            CHECK_EQ(flen, 0x30);
+            CHECK_EQ(p[0x2A], 8);   // core count 2
+            CHECK_EQ(p[0x2E], 16);  // thread count 2
+        }
+        if (type == 0) ++types[0];
+        if (type == 1) ++types[1];
+        if (type == 4) ++types[2];
+        if (type == 127) { ++types[3]; break; }
+        const char* q = strs;
+        while (q + 1 < reinterpret_cast<const char*>(end) && (q[0] || q[1])) ++q;
+        p = reinterpret_cast<const std::uint8_t*>(q) + 2;
+    }
+    CHECK(types[0] == 1 && types[1] == 1 && types[2] == 1 && types[3] == 1);
+    CHECK_EQ(version, std::string("AMD 4700S 8-Core Processor"));
+    CHECK_EQ(vendor, std::string("AuthenticAMD"));
+    CHECK_EQ(proc_id, 0x178BFBFF00880F81ull);
+
+    detail::BuildFirmwareTables("AuthenticAMD");
+    std::vector<std::uint32_t> buf(4 + 4);
+    buf[0] = 0x52534D42; buf[1] = 1; buf[2] = 0;   // 'RSMB', get
+    ULONG ret = 0;
+    NTSTATUS status = 0;
+    CHECK(detail::QuerySystemFirmwareTable(buf.data(), 16, &ret, &status));
+    CHECK_EQ(status, static_cast<NTSTATUS>(0xC0000023));   // STATUS_BUFFER_TOO_SMALL
+    CHECK(ret > 16);
+    CHECK_EQ(buf[3], ret - 16);
+    std::vector<std::uint32_t> full((ret + 3) / 4);
+    full[0] = 0x52534D42; full[1] = 1;
+    CHECK(detail::QuerySystemFirmwareTable(full.data(), ret, &ret, &status));
+    CHECK_EQ(status, 0);
+    CHECK_EQ(reinterpret_cast<const std::uint8_t*>(full.data())[16 + 1], 3);   // SMBIOS major version
+    full[0] = 0x4D524946;   // 'FIRM': not ours
+    CHECK(!detail::QuerySystemFirmwareTable(full.data(), ret, &ret, &status));
+}
+
 TEST(dispatch_unix_calls) {
     Initialize();
     detail::RegisterNtdllUnixLib();

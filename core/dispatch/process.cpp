@@ -213,6 +213,19 @@ std::wstring DefaultCurrentDirectory() {
 #endif
 }
 
+// D18: the machine identity is the one CPU story; the CPUID patch serves its brand, signature and RDRAND.
+void ApplyMachineIdentity(CpuPolicy& p) {
+    const auto& id = config::Current().machine_identity;
+    std::memset(p.brand, 0, sizeof(p.brand));
+    for (std::size_t i = 0; i < id.cpu_brand.size() && i < sizeof(p.brand) - 1; ++i)
+        p.brand[i] = id.cpu_brand[i] < 0x80 ? static_cast<char>(id.cpu_brand[i]) : '?';
+    p.family = id.cpu_family;
+    p.model = id.cpu_model;
+    p.stepping = id.cpu_stepping;
+    p.advertise_rdrand = id.advertise_rdrand;
+    p.hide_hypervisor = p.hide_hypervisor || id.hide_hypervisor_leaf;
+}
+
 // ---- machine.json "cpu" without the VFS module -----------------------------------------
 #if !WIN10XBOX_HAVE_VFS
 // Tiny extraction (the VFS module owns machine.json parsing in general):
@@ -251,6 +264,7 @@ void LoadCpuPolicy(const std::wstring& machine_root) {
         WARN(process, "machine.json cpu.vendor \"%s\" is not 12 characters, using the real vendor", p.vendor.c_str());
         p.vendor.clear();
     }
+    ApplyMachineIdentity(p);
     SetCpuPolicy(p);
     TRACE(process, "cpu policy: vendor=%s hide_hypervisor=%d", p.vendor.empty() ? "(real)" : p.vendor.c_str(),
           p.hide_hypervisor);
@@ -563,6 +577,7 @@ int Launch(const LaunchOptions& opts) {
         cs.frozen = mi.clock.frozen;
 #endif
         if ((s = clock::Initialize(cs))) WARN(process, "clock::Initialize failed: %08lx", static_cast<unsigned long>(s));
+        clock::EnsureSharedDataPage();   // the scanner serves the version block of KUSER_SHARED_DATA from it (D18)
     }
 #endif
 #if WIN10XBOX_HAVE_TOKEN
@@ -594,6 +609,7 @@ int Launch(const LaunchOptions& opts) {
             WARN(process, "machine.json cpu.vendor \"%s\" is not 12 characters, using the real vendor", cp.vendor.c_str());
             cp.vendor.clear();
         }
+        ApplyMachineIdentity(cp);
         SetCpuPolicy(cp);
         for (const auto& [name, value] : mi.syscall_overrides) {
             std::string n(name.begin(), name.end()), v(value.begin(), value.end());
@@ -606,6 +622,13 @@ int Launch(const LaunchOptions& opts) {
 #else
     LoadCpuPolicy(root);
 #endif
+    {
+        std::string vendor;
+        const CpuPolicy cp = GetCpuPolicy();
+        vendor = cp.vendor.empty() ? std::string("AuthenticAMD") : cp.vendor;
+        dispatch::detail::BuildFirmwareTables(vendor);
+        if (cp.advertise_rdrand) InstallRandomInstructionEmulation();
+    }
     RegisterNtdllUnixLib();
 
     if ((s = MapGuestNtdll(root))) return static_cast<int>(s);

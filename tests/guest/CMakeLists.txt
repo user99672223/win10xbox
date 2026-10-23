@@ -21,6 +21,18 @@ win10xbox_add_guest(guest_hello)
 add_executable(guest_cpuid cpuid.c)
 win10xbox_add_guest(guest_cpuid)
 
+# The machine identity through every path a program can read it from (D18): CPUID, registry, SMBIOS, WMI, version.
+# It carries a Windows 10 compatibility manifest, or GetVersionExW and VerifyVersionInfoW answer 6.2.9200 as they do for
+# any unmanifested program on Windows 10: MSVC merges the .manifest file, windres compiles it from identity.rc.
+if(MSVC)
+  add_executable(guest_identity identity.c identity.manifest)
+else()
+  enable_language(RC)
+  add_executable(guest_identity identity.c identity.rc)
+endif()
+target_link_libraries(guest_identity PRIVATE ole32 oleaut32 advapi32)
+win10xbox_add_guest(guest_identity)
+
 add_executable(guest_sleep sleep.c)
 win10xbox_add_guest(guest_sleep)
 

@@ -89,7 +89,7 @@ endif()
 # Wine PE builtins (LGPL-2.1+; the wine-pe-builtin CI artifact). Optional.
 set(_nb 0)
 if(NOT "${BUILTIN_DIR}" STREQUAL "" AND IS_DIRECTORY "${BUILTIN_DIR}")
-  file(GLOB _dlls "${BUILTIN_DIR}/*.dll")
+  file(GLOB _dlls "${BUILTIN_DIR}/*.dll" "${BUILTIN_DIR}/*.drv")
   foreach(_f IN LISTS _dlls)
     get_filename_component(_n "${_f}" NAME)
     file(COPY_FILE "${_f}" "${STAGE}/payload/builtin/${_n}")

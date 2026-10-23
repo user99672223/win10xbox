@@ -592,14 +592,12 @@ void UpdateSharedDataNow() {
     Store32(base, usd::kTickCountLowDeprecated, static_cast<std::uint32_t>(ticks));
 }
 
-NTSTATUS StartSharedDataThread() {
-    EnsureInit();
-    AcquireSRWLockExclusive(&g_thread_lock);
-    NTSTATUS st = kStatusSuccess;
+// The page and its static fields (version, product type, architecture), written once, with the time fields as of
+// now. Caller holds g_thread_lock.
+static NTSTATUS EnsurePageLocked() {
     if (!g_page) {
         void* p = VirtualAlloc(nullptr, 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (!p) {
-            ReleaseSRWLockExclusive(&g_thread_lock);
             ERR(clock, "cannot allocate the shared data page (%lu)", GetLastError());
             return kStatusInsufficientResources;
         }
@@ -610,6 +608,25 @@ NTSTATUS StartSharedDataThread() {
         InitStaticSharedFields(g_page);
     }
     UpdateSharedDataNow();
+    return kStatusSuccess;
+}
+
+const void* EnsureSharedDataPage() {
+    EnsureInit();
+    AcquireSRWLockExclusive(&g_thread_lock);
+    EnsurePageLocked();
+    ReleaseSRWLockExclusive(&g_thread_lock);
+    return g_page;
+}
+
+NTSTATUS StartSharedDataThread() {
+    EnsureInit();
+    AcquireSRWLockExclusive(&g_thread_lock);
+    NTSTATUS st = EnsurePageLocked();
+    if (st != kStatusSuccess) {
+        ReleaseSRWLockExclusive(&g_thread_lock);
+        return st;
+    }
     if (!g_thread) {
         g_stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         g_thread = g_stop ? CreateThread(nullptr, 0, SharedDataThread, nullptr, 0, nullptr) : nullptr;

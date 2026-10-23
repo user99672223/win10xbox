@@ -27,7 +27,7 @@ add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
-                   guest_window_input guest_window_input2 guest_window_text)
+                   guest_window_input guest_window_input2 guest_window_text guest_identity)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -78,6 +78,22 @@ win10xbox_guest_test(guest_hello "C:\\guest\\guest_hello.exe" 42 "hello from gue
 # CPUID.1:ECX bit 31 (hypervisor present) clear: first hex digit 0-7.
 win10xbox_guest_test(guest_cpuid "C:\\guest\\guest_cpuid.exe" 0
   "cpuid\\.1\\.ecx=[0-7][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]" "vendor=${_vendor}")
+
+# The machine identity (D18) through every path a program can read it from (tests/guest/identity.c): CPUID leaves 0, 1,
+# 0x80000001..4 and 0x40000000, RDRAND, the registry's CentralProcessor\\0, the SMBIOS table of GetSystemFirmwareTable,
+# WMI Win32_Processor through COM, GetNativeSystemInfo, and the version through RtlGetVersion, GetVersionExW,
+# VerifyVersionInfoW, RtlGetNtVersionNumbers, the registry and KUSER_SHARED_DATA. Exit 42 only when they all agree on
+# AMD 4700S 8-Core Processor, family 23 model 136 stepping 1 and 10.0.19045.3803; every value is printed as path=value.
+# On the builtin-only folder (the console's DLL set): WMI is Wine's wbemprox over our SMBIOS table, and the runner's
+# native ole32/advapi32 cannot load under Wine's ntdll (see the GUI tests). WMI works under Wine, so the guest's
+# WIN10XBOX_TEST_NO_WMI=1 escape hatch is not used by any registration.
+set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+win10xbox_guest_test(guest_identity "C:\\guest\\guest_identity.exe" 42
+  "cpuid\\.brand=AMD 4700S 8-Core Processor" "registry\\.brand=AMD 4700S 8-Core Processor"
+  "smbios\\.brand=AMD 4700S 8-Core Processor" "wmi\\.name=AMD 4700S 8-Core Processor"
+  "version\\.KUSER_SHARED_DATA=10\\.0\\.19045" "identity=consistent")
+set_tests_properties(integration.guest_identity PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL ")
+unset(_guest_machine)
 
 # Regression guard for the Xbox kernel32-forwarder bug. WIN10XBOX_TEST_NO_HOST_PATHS
 # makes HostPathOfHandle fail the way GetFinalPathNameByHandleW does inside the

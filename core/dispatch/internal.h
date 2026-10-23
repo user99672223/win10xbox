@@ -2,6 +2,7 @@
 // Not a public header: only core/dispatch/*.cpp and tests/unit/test_dispatch.cpp
 // include it.
 #pragma once
+#include "win10xbox/config.h"
 #include "win10xbox/dispatch.h"
 #include "win10xbox/loader.h"
 #include "win10xbox/trace.h"
@@ -466,6 +467,16 @@ extern "C" unsigned char __cdecl w10x_wine_dbg_get_channel_flags(WineDebugChanne
 extern "C" int __cdecl w10x_wine_dbg_header(int cls, WineDebugChannel* channel, const char* function);
 extern "C" int __cdecl w10x_wine_dbg_output(const char* str);
 extern "C" const char* __cdecl w10x_wine_dbg_strdup(const char* str);
+
+// ---- Firmware tables (firmware.cpp, D18) ---------------------------------------------
+// Builds the synthetic SMBIOS table from config::machine_identity and the host's topology; `vendor` is the 12-character
+// CPU vendor (the string CPUID leaf 0 serves). Call before the guest runs.
+void BuildFirmwareTables(const std::string& vendor);
+// The raw SMBIOS data (RawSMBIOSData) for an identity; BuildFirmwareTables serves the host's topology through it.
+std::vector<std::uint8_t> MakeSmbios(const config::Config::MachineIdentity& id, const std::string& vendor,
+                                     unsigned cores, unsigned threads, unsigned mhz, std::uint32_t id_edx);
+// NtQuerySystemInformation(SystemFirmwareTableInformation): true when answered here (*status is the result).
+bool QuerySystemFirmwareTable(PVOID buffer, ULONG length, PULONG ret_len, NTSTATUS* status);
 
 // ---- Function-level forwarding (rtl_forward.cpp) -----------------------------
 struct ForwardResult { std::size_t forwarded = 0, skipped = 0; };

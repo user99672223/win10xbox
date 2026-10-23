@@ -4,6 +4,9 @@
 // are still writable). Non-image sections pass through to the host.
 #include "internal.h"
 #include "win10xbox/config.h"
+#if WIN10XBOX_HAVE_CLOCK
+#include "win10xbox/clock.h"
+#endif
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -339,6 +342,14 @@ NTSTATUS MapImageView(const std::shared_ptr<ImageSection>& sec, const MapOptions
     so.patch_cpuid = config::Current().patch_cpuid;
     so.patch_rdtsc = true;
     so.patch_syscall = !view->stubs_rewritten;   // rewritten thunks no longer hold `syscall`
+#if WIN10XBOX_HAVE_CLOCK
+    if (clock::VirtualSharedData()) {   // D18: the version block of KUSER_SHARED_DATA says 10.0.19045, not the host's build
+        so.patch_kuser_reads = true;
+        so.kuser_lo = 0x7FFE0000ull + clock::usd::kNtBuildNumber;
+        so.kuser_hi = 0x7FFE0000ull + clock::usd::kNtMinorVersion + 4;
+        so.kuser_addresses = true;
+    }
+#endif
     so.handler = &CpuSiteHandler;
     loader::ScanResult sr;
     NTSTATUS ss = loader::ScanAndPatch(view->image, so, &sr);
