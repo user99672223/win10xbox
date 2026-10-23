@@ -1,4 +1,4 @@
-status: wip
+status: ready
 
 # Slice `-seh`: guest SEH / vectored exception handling / C++ exceptions
 
@@ -34,4 +34,39 @@ take-over (only when the host ntdll is Wine's); the entries are unused until PEB
 
 ## Result
 
-Pending the ci run of the head commit.
+ci.yml run: https://github.com/user99672223/win10xbox/actions/runs/39884195071 (head f7981d9). All three jobs green
+including "Gate - nothing skipped" (`ctest gate: PASS (nothing skipped, nothing missing)` on each). linux-cross hit an
+apt mirror stall in "Install Wine + ninja" on its first attempt (no test ran) and passed on `gh run rerun --failed`;
+the two Windows jobs were green on the first attempt.
+
+`integration.guest_seh` (and the native smoke test `guest.seh`) passes on linux-cross (llvm-mingw guest, Wine host),
+windows (Debug) and windows (RelWithDebInfo) (MSVC guest, real Windows host). The guest exits 42 and prints, copied
+from the ctest-junit.xml of the windows jobs (MSVC `__try`):
+
+    seh: start (msvc __try)
+    seh: seh ok
+    seh: veh ok
+    seh: uef ok
+    seh: throw_catch ok
+    seh: dll_boundary ok
+    seh: done failures=0
+
+On llvm-mingw the guest prints the same section lines; the line is `seh: start (clang __try)` there (the configure-time
+probe accepts `-fms-extensions`, so `__try/__except` is native; seen in the log of the earlier, failing linux-cross
+run of the same build). The passing linux-cross run does not keep stdout, but `integration.guest_seh` requires every
+`seh: <name> ok` line and `seh: done failures=0` by regex, fails on any `seh: <name> FAILED`, and requires exit 42.
+
+What runs through the layer: `__try/__except` around an access violation (read and write), a divide by zero,
+`RaiseException` with parameters and an access violation raised in a DLL frame; `AddVectoredExceptionHandler` seeing
+an access violation and passing it on, a handler continuing execution after `RaiseException`,
+`RemoveVectoredExceptionHandler`; the unhandled-exception filter called from an `__except` filter; C++ throw/catch,
+rethrow, `std::exception_ptr`, throw out of and through a DLL frame (its destructor runs), catch inside the DLL.
+
+Syscalls added or changed: none. Layer change: `RegisterHostUnwindTables()` in core/dispatch/process.cpp (above).
+DLLs added to wine-pe/dlls.txt: none.
+
+Cut from the source guest because other slices own them: threads, TLS callbacks, `thread_local`, static-init order,
+`std::filesystem`, the stack-overflow section and the `/MD` variant.
+
+What still fails: nothing in this slice. `guest_seh` is not part of the host-uwp package or tools/ci/smoke_guests.ps1
+(gated by its ctest entries only).
