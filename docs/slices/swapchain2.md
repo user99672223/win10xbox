@@ -1,4 +1,4 @@
-status: in progress (CI loop 2)
+status: ready (run https://github.com/user99672223/win10xbox/actions/runs/40012429890 on 1797061, all 3 ci jobs green incl. integration.guest_d3d11_swap and integration.guest_imgui_d3d11; earlier run 40008623736 showed d3d11_swap green, imgui hidden-window cause)
 compose design (route B): guest windows are native host windows, so PrintWindow/BitBlt cannot see a D3D back buffer. Present copies back buffer 0 and calls user::NotifyClientFrame(hwnd from the swap-chain desc), stored per HWND in native_compose.cpp.
 ComposeLive overlays that frame at ClientToScreen(hwnd) over the window's GDI blit (replacing PrintWindow for it). The headless (non-native) compositor is unchanged.
 Fix: CollectGuestWindow also accepts a (possibly hidden: SW_SHOWDEFAULT inherits the launcher hide state, seen in CI)  same-process top-level window that has a stored client frame, even if its thread is not in GuestThreads() (the "0 guest window(s)" symptom); a TRACE names pid/tid/visibility of any frame whose window is still not composed.
