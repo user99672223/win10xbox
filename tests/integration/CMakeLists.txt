@@ -26,6 +26,7 @@ set(_prepare_args
   -DD3D_MACHINE=${WIN10XBOX_D3D_MACHINE_DIR}
   -DBUILTIN_DIR=${WIN10XBOX_BUILTIN_DIR}
   -DGUEST_DIR=${CMAKE_BINARY_DIR}/bin/guest
+  -DMSCTF_STUB=${CMAKE_BINARY_DIR}/bin/native-gui-stubs/msctf.dll
   -DDEFAULT_JSON=${_default_json}
   -P ${CMAKE_CURRENT_SOURCE_DIR}/prepare_machine.cmake)
 
@@ -34,7 +35,7 @@ add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
 if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
                    guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog guest_comctl
-                   guest_seh guest_window_scroll guest_clipboard)
+                   guest_seh guest_window_scroll guest_clipboard msctf_stub)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)

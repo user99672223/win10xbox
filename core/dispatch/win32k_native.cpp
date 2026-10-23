@@ -119,13 +119,13 @@ using PFN_CsrConnect = NTSTATUS(NTAPI*)(PCWSTR, ULONG, PVOID, PULONG, PBOOLEAN);
 PFN_CsrConnect g_host_csr_connect = nullptr;
 NTSTATUS NTAPI Native_CsrClientConnectToServer(PCWSTR dir, ULONG server, PVOID info, PULONG info_size,
                                                PBOOLEAN server_to_server) {
+    // The 4th/5th arguments are passed on untouched and never dereferenced here: this build's user32 passes the
+    // connection-info size by value (0x248), not as a PULONG, and the host ntdll of the same build takes it that way.
     HostModeScope scope;
-    const ULONG in_size = info_size ? *info_size : 0;
     const NTSTATUS s = g_host_csr_connect ? g_host_csr_connect(dir, server, info, info_size, server_to_server)
                                           : st::NotImplemented;
-    TRACE(dispatch, "CsrClientConnectToServer(%ls, server %lu, info %lu bytes) -> %08lx (host ntdll)%s",
-          dir ? dir : L"(null)", server, in_size, static_cast<unsigned long>(s),
-          server_to_server ? (*server_to_server ? ", server-to-server" : "") : "");
+    TRACE(dispatch, "CsrClientConnectToServer(server %lu, arg4 %p, arg5 %p) -> %08lx (host ntdll)", server,
+          static_cast<void*>(info_size), static_cast<void*>(server_to_server), static_cast<unsigned long>(s));
     return s;
 }
 
