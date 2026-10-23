@@ -1,10 +1,22 @@
-status: wip
+status: ready
 
 # Slice wt-ntdll-reg: registry fidelity, measured by Wine's ntdll `reg` unit
+
+Run: https://github.com/user99672223/win10xbox/actions/runs/39946665626 (ci.yml green on linux-cross, windows (Debug) and
+windows (RelWithDebInfo), head 08e1bfe).
 
 Yardstick: `dlls/ntdll/tests/reg.c` (Wine 11.9), run through the layer as `ntdll_test.exe reg` by
 `integration.winetest_ntdll` (docs/slices/wt-ntdll.md). Before this slice the unit never finished: it looped on
 `NtEnumerateKey` at `reg.c:1987` and the 20 s cap killed it after 134 distinct failing lines.
+
+What runs through the layer: `win10xbox --machine bin/machine-builtin C:\guest-wine\ntdll_test.exe reg` (Windows jobs, the
+`windows-<config>-logs` artifact, `winetest/ntdll/results/reg.log`). Both Windows jobs print
+
+    reg.c:2548: Test failed: Failed to set SE_RESTORE_NAME and SE_BACKUP_NAME privileges, skipping tests
+    reg: 1186 tests executed (13 marked as todo, 0 as flaky, 1 failure), 0 skipped.
+
+(the unit was `timeout`, 0 executed). The same unit on the linux-cross job (`wine_conformance.ntdll.reg`, Wine 9 host) is
+1186 executed, 1 failure: the baseline in tests/wine-tests/baseline.cmake is `run 1`.
 
 ## Why it looped
 
@@ -22,7 +34,7 @@ open-semantics tests):
 
 * Names. `""` without a root handle is `OBJECT_PATH_SYNTAX_BAD`; `\` is `OBJECT_TYPE_MISMATCH` (the root directory
   object is no key); `\\\` is `OBJECT_NAME_INVALID`; `\Registry\` and `\Registry\\` open `\Registry`. A name outside
-  `\Registry` is asked of the object manager the guest shares (`NtOpenDirectoryObject` on the host): `\Foobar` is
+  `\Registry` is asked of the object manager the guest shares (the host's `NtOpenDirectoryObject`): `\Foobar` is
   `OBJECT_NAME_NOT_FOUND`, `\Foobar\Machine` and `\Machine\Software\Classes` are `OBJECT_PATH_NOT_FOUND`, `\Device\Null`
   is `OBJECT_TYPE_MISMATCH`. `OBJECT_ATTRIBUTES.Length != sizeof` is `INVALID_PARAMETER` (reg.c:390 family).
 * `NtCreateKey` creates only the last component (a missing key on the way is `OBJECT_NAME_NOT_FOUND`; kernelbase's
@@ -56,21 +68,30 @@ open-semantics tests):
 
 ## Result
 
-`reg` unit on the Windows runners (Debug and RelWithDebInfo; "was" = killed by the 20 s cap after millions of failures):
+`reg` unit on the Windows runners (Debug and RelWithDebInfo; before: killed by the 20 s cap after millions of failures):
 
 | head | failures | what was left |
 |---|---:|---|
 | 9487143 (statuses, no probe) | 16 | 14 pointer assertions (the probe slice) and `\Device\Null` (`reg.c:337`, `:528`) |
 | c9fdfea (probe merged in) | 3 | `\Device\Null` twice and `reg.c:2548` below |
+| 08e1bfe | **1** | `reg.c:2548` only |
 
 `\Device\Null` is the object-manager part of `reg.c:337/528`: NtOpenKey answers `STATUS_OBJECT_TYPE_MISMATCH` for a device
 in the namespace. `NamespaceStatus` asks the host's `NtOpenDirectoryObject`, which says PATH_NOT_FOUND for a device as the
-last component, so a PATH_NOT_FOUND on a name with a parent is told from a missing directory by opening the parent. That
-did not work in the layer although it did in the unit tests (which pass on the runners): the registry module looked the
-function up with `GetModuleHandle("ntdll.dll")`, and once a guest runs, the process's module list names Wine's ntdll
-(dispatcher.cpp `HostNtdll`). The dispatcher now hands the host's `NtOpenDirectoryObject`/`NtClose` to the registry
-(`registry::SetHostNamespace`, process.cpp). The host's own `NtOpenKey` would be the better oracle, but the Wine 9 server that
-the linux-cross job runs on never answers an open of `\Foobar` (found here: the unit hung).
+last component, so a PATH_NOT_FOUND on a name with a parent is told from a missing directory by looking at the parent. The
+first version looked the function up with `GetModuleHandle("ntdll.dll")`: that passed in the unit tests, but once a guest
+runs the process's module list names Wine's ntdll (dispatcher.cpp `HostNtdll`) and the runners still answered
+PATH_NOT_FOUND. The dispatcher now hands the host's `NtOpenDirectoryObject`/`NtClose` to the registry
+(`registry::SetHostNamespace`, process.cpp). The host's own `NtOpenKey` would be the better oracle, but the Wine 9 server
+that the linux-cross job runs on never answers an open of `\Foobar` (found here: the unit hung).
+
+## Syscalls changed
+
+`NtOpenKey`, `NtOpenKeyEx` (and the transacted variants), `NtCreateKey`, `NtEnumerateKey`, `NtQueryKey`,
+`NtQueryValueKey` (class numbering), `NtSetValueKey` (link keys), `NtDeleteKey`, `NtRenameKey`, `NtNotifyChangeKey`
+(and `NtNotifyChangeMultipleKeys`), and `NtQueryObject` for key handles (new: `registry::Reg_NtQueryObject`, routed from
+`Xl_NtQueryObject`; docs/DISPATCHER.md). No policy changed (docs/SYSCALLS.md is unchanged). DLLs added to
+wine-pe/dlls.txt: none.
 
 ## Still failing
 
