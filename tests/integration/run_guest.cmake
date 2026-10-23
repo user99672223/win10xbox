@@ -2,16 +2,20 @@
 # code (cmake -P; ctest's PASS_REGULAR_EXPRESSION alone ignores exit codes).
 #   -DHOST=<win10xbox.exe> -DMACHINE=<machine dir> -DPROGRAM=<C:\guest\x.exe>
 #   -DEXPECT_EXIT=<n> -DEXPECT_REGEX=<regex;regex...> [-DEMULATOR=<wine>]
-#   [-DPROGRAM_ARGS=<arg;arg...>]   the guest's own command-line arguments, one list element each
+#   [-DPROGRAM_ARGS=<arg;arg...>]   the guest's own command-line arguments, one list element each ("\;" inside one)
 #   [-DFORBID_REGEX=<regex>] [-DDEBUG_SPEC=<WIN10XBOX_DEBUG spec>]
 # EXPECT_REGEX/FORBID_REGEX match the guest's stdout. The layer's own trace
 # output goes to stderr, so assertions about it use the TRACE variants:
 #   [-DEXPECT_TRACE_REGEX=<regex;regex...>] [-DFORBID_TRACE_REGEX=<regex>]
 #   [-DREQUIRE=<path relative to the machine folder>]: SKIP (77) when that file is absent, e.g. the native
 #   Windows DLLs a test needs (machine/import_windows_dlls.ps1 stages them on a Windows host only).
+# ('@SEMI@' in PROGRAM_ARGS stands for a ';' inside one argument.)
+# -DINPUT_FILE=<host file> is its stdin;
+# -DGUEST_FILE=<path under the machine folder, '/' separated> is deleted before the run and must exist after it.
 # -DREQUIRE_BUILTIN_DLLS=ON adds +modules to WIN10XBOX_DEBUG and fails unless every system DLL the guest
 # mapped (C:\Windows\System32\<x>.dll in the modules trace) came from <machine>\Windows\builtin, with
-# user32.dll among them; the list is printed either way.
+# user32.dll among them (unless -DNO_USER32=ON: a console program that never loads it); the list is printed either way.
+# user32.dll among them (unless -DREQUIRE_USER32=OFF: a console program); the list is printed either way.
 # Prints "SKIP: ..." and exits 77 (cmake >= 3.29) when the machine folder has
 # no Wine builtins or no Windows NLS data (c_1252.nls, staged by
 # machine/import_windows_dlls.ps1); the test sets both SKIP_RETURN_CODE 77 and
@@ -47,7 +51,14 @@ if(EMULATOR AND _machine MATCHES "^/")
   set(_machine "Z:${_machine}")
 endif()
 string(REPLACE "/" "\\" _machine "${_machine}")
-set(_cmd ${EMULATOR} "${HOST}" --machine "${_machine}" "${_program}" ${PROGRAM_ARGS})
+string(REPLACE "@SEMI@" "\\;" _args "${PROGRAM_ARGS}")   # '@SEMI@' stands for a ';' inside one argument
+if(GUEST_FILE)
+  file(REMOVE "${MACHINE}/${GUEST_FILE}")
+endif()
+set(_stdin "")
+if(INPUT_FILE)
+  set(_stdin INPUT_FILE "${INPUT_FILE}")
+endif()
 if(DEBUG_SPEC)
   set(ENV{WIN10XBOX_DEBUG} "${DEBUG_SPEC}")
 endif()
@@ -58,7 +69,10 @@ if(REQUIRE_BUILTIN_DLLS)
     set(ENV{WIN10XBOX_DEBUG} "$ENV{WIN10XBOX_DEBUG},+modules")
   endif()
 endif()
-execute_process(COMMAND ${_cmd} RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 120)
+# ${_args} is expanded right here, not through an intermediate list variable: set() joins the expanded elements
+# without their "\;" escape, so an argument that holds a ';' would be split in two.
+execute_process(COMMAND ${EMULATOR} "${HOST}" --machine "${_machine}" "${_program}" ${_args} ${_stdin}
+                RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 120)
 # Before the guest's output: ctest keeps only the first 1024 bytes of a passing test's output.
 set(_builtin_fail "")
 if(REQUIRE_BUILTIN_DLLS)
@@ -82,12 +96,17 @@ if(REQUIRE_BUILTIN_DLLS)
     string(REPLACE ";" " " _n "${_native}")
     string(APPEND _builtin_fail "guest mapped system DLLs from outside Windows\\builtin: ${_n}\n")
   endif()
-  string(TOLOWER "${_builtin}" _builtin_lc)
-  list(FIND _builtin_lc "user32.dll" _u32)
-  if(_u32 LESS 0)
-    string(APPEND _builtin_fail "no builtin user32.dll in the modules trace (is +modules on?)\n")
+  # A console guest never loads user32: skipped for -DNO_USER32=ON (the caller's _guest_no_user32) and for
+  # -DREQUIRE_USER32=OFF (the caller's _guest_console); both spellings are in use.
+  if(NOT NO_USER32 AND (NOT DEFINED REQUIRE_USER32 OR REQUIRE_USER32))
+    string(TOLOWER "${_builtin}" _builtin_lc)
+    list(FIND _builtin_lc "user32.dll" _u32)
+    if(_u32 LESS 0)
+      string(APPEND _builtin_fail "no builtin user32.dll in the modules trace (is +modules on?)\n")
+    endif()
   endif()
 endif()
+string(REPLACE "\r\n" "\n" out "${out}")   # text-mode stdout of a Windows console program
 message("${out}")
 if(err)
   message("--- stderr ---\n${err}")
@@ -113,6 +132,9 @@ foreach(re ${EXPECT_REGEX})
     string(APPEND _fail "stdout does not match '${re}'\n")
   endif()
 endforeach()
+if(GUEST_FILE AND NOT EXISTS "${MACHINE}/${GUEST_FILE}")
+  string(APPEND _fail "${MACHINE}/${GUEST_FILE} was not created\n")
+endif()
 if(FORBID_REGEX AND out MATCHES "${FORBID_REGEX}")
   string(APPEND _fail "stdout matches forbidden '${FORBID_REGEX}'\n")
 endif()

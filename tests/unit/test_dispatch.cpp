@@ -82,7 +82,7 @@ TEST(dispatch_policies_from_inc) {
     CHECK(pol("NtOpenDirectoryObject") == Policy::Translate);
     CHECK(pol("NtCreateSection") == Policy::Translate);
     CHECK(pol("NtTerminateProcess") == Policy::Emulate);
-    CHECK(pol("NtCreateUserProcess") == Policy::Todo);
+    CHECK(pol("NtCreateUserProcess") == Policy::Translate);
     CHECK(pol("NtShutdownSystem") == Policy::Emulate);   // privileged: test_syscalls_privileged.cpp
     const Entry* ck = LookupByName("NtCreateKey");
     CHECK(ck && (ck->policy == Policy::Emulate || ck->policy == Policy::PassThrough));
@@ -362,6 +362,23 @@ TEST(dispatch_unix_calls) {
     CHECK_EQ(UnixCallDispatcher(h, 0 /*unix_load_so_dll*/, nullptr), static_cast<NTSTATUS>(0xC0000135));
     CHECK_EQ(UnixCallDispatcher(h, 99, nullptr), kNotImplemented);
     CHECK_EQ(UnixCallDispatcher(12345, 0, nullptr), kNotImplemented);
+}
+
+TEST(dispatch_create_heap_growable) {
+    Initialize();
+    // Wine's HeapCreate(0, 0, 0) reaches RtlCreateHeap with flags 0 and no maximum; the heap must still grow past the
+    // host's default 1 MB reservation (git's malloc ran dry in one).
+    void* heap = detail::w10x_RtlCreateHeap(0, nullptr, 0, 0, nullptr, nullptr);
+    CHECK(heap != nullptr);
+    if (!heap) return;
+    bool all = true;
+    void* blocks[48] = {};
+    for (auto& b : blocks) {
+        b = HeapAlloc(heap, HEAP_ZERO_MEMORY, 100 * 1024);
+        all = all && b != nullptr;
+    }
+    CHECK(all);
+    HeapDestroy(heap);
 }
 
 TEST(dispatch_wine_debug_channels) {

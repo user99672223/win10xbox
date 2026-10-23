@@ -25,8 +25,9 @@ gdi32
 
 # --- base services ---------------------------------------------------------
 advapi32
+cryptbase        # advapi32 forwards SystemFunction036 (RtlGenRandom, msvcrt's rand_s) here: git.exe
 sechost
-cryptbase
+bcrypt             # CPython's os.urandom (BCryptGenRandom -> RtlGenRandom); no unix lib needed for that
 rpcrt4
 comctl32
 shell32
@@ -35,14 +36,55 @@ version
 imm32
 ws2_32
 winmm
+bcrypt             # RtlGenRandom-backed BCryptGenRandom for curl.exe (no unix lib: hashes/ciphers need gnutls)
+
+# --- imported by the Sysinternals Coreinfo64 / PsInfo64 guests (docs/slices/sysinfo.md) ---
+comdlg32
+pdh
+mpr
+netapi32
+netutils
+iphlpapi
+dnsapi
+nsi
+shcore      # shlwapi
+coml2       # ole32
+cryptbase   # advapi32's SystemFunction036 forward
+# --- imports of fastfetch.exe (docs/slices/fastfetch.md) and what they pull in ---
+cfgmgr32
+hid
+secur32
+winbrand
+wtsapi32
 
 # --- COM -------------------------------------------------------------------
 ole32
 oleaut32
 combase
-coml2
+coml2     # hard import of ole32 (7zr.exe imports ole32/oleaut32)
+shcore    # hard import of shlwapi and so of shell32 (7zr.exe imports shell32)
 
 # --- helpers / programs ----------------------------------------------------
 programs/services
 wbemprox
 programs/wineboot
+
+# --- console programs (wine-pe/programs/*.sh, ctest integration.wineprog_*) --
+programs/xcopy
+programs/findstr
+programs/sort
+programs/where
+programs/attrib
+programs/reg
+programs/hostname
+programs/whoami
+programs/chcp
+programs/more
+programs/fc
+programs/timeout
+programs/choice
+programs/expand
+programs/icacls
+programs/cacls
+programs/explorer         # wine-pe/programs/explorer.sh: explorer /desktop=shell,WxH
+programs/conhost          # wine-pe/programs/conhost.sh: console host (DECISIONS.md)

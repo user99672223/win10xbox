@@ -2,6 +2,7 @@
 // Fixture hives are synthetic (tests/fixtures/registry/machine, produced by
 // machine/hivex/mkfixture.cpp) -- never Microsoft files.
 #include "check.h"
+#include "win10xbox/config.h"
 #include "win10xbox/registry.h"
 
 #include <windows.h>
@@ -776,6 +777,41 @@ TEST(registry_missing_hives_use_machine_json) {
         CHECK_EQ(OpenStatus(L"\\Registry\\Machine\\HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0"), nt::kSuccess);
     }
     RemoveTree(dir);
+}
+
+// HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0 (what fastfetch's CPU module reads): the identity's brand and
+// family/model/stepping (D18), the host's own base clock, never a constant.
+TEST(registry_hardware_cpu_identity) {
+    Session s(FixtureRoot());
+    CHECK_EQ(s.init, nt::kSuccess);
+    const std::wstring cpu0 = L"\\Registry\\Machine\\HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0";
+    std::wstring str;
+    std::uint32_t dw = 0;
+    CHECK_EQ(reg::QueryString(cpu0, L"ProcessorNameString", &str), nt::kSuccess);
+    CHECK(str == win10xbox::config::Current().machine_identity.cpu_brand);
+    CHECK(!str.empty());
+    CHECK_EQ(reg::QueryString(cpu0, L"Identifier", &str), nt::kSuccess);
+    CHECK(str == L"AMD64 Family 23 Model 136 Stepping 1");
+    CHECK_EQ(reg::QueryString(cpu0, L"VendorIdentifier", &str), nt::kSuccess);
+    CHECK(!str.empty());
+
+    // ~MHz is the host's: read the same value from the host registry here and compare.
+    DWORD host = 0, type = 0, size = sizeof host;
+    HKEY k = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", 0, KEY_QUERY_VALUE, &k) ==
+        ERROR_SUCCESS) {
+        if (RegQueryValueExW(k, L"~MHz", nullptr, &type, reinterpret_cast<BYTE*>(&host), &size) != ERROR_SUCCESS ||
+            type != REG_DWORD)
+            host = 0;
+        RegCloseKey(k);
+    }
+    if (host) {
+        CHECK_EQ(reg::QueryDword(cpu0, L"~MHz", &dw), nt::kSuccess);
+        CHECK_EQ(dw, static_cast<std::uint32_t>(host));
+        CHECK(dw >= 100 && dw <= 10000);
+    } else {
+        CHECK(reg::QueryDword(cpu0, L"~MHz", &dw) != nt::kSuccess);   // no host answer: absent, not invented
+    }
 }
 
 TEST(registry_save_restore_and_load_key) {

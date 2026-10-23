@@ -40,6 +40,12 @@ struct Config {
     // machine.json "gui": "emulated" | "native" (process::Launch applies it; WIN10XBOX_GUI overrides both).
     Gui             gui              = Gui::Emulated;
 
+    // D1: may the guest start child processes? NtCreateUserProcess spawns a new HOST process running the host
+    // executable itself (GetModuleFileNameW(NULL)) on the child's image, so only a host that is a plain Win32
+    // program can turn it on (host-win32 does). The UWP host cannot create processes: it leaves this false and the
+    // syscall answers STATUS_NOT_SUPPORTED with a warning. See docs/DISPATCHER.md "Child processes".
+    bool            child_processes  = false;
+
     // Machine folder root (the virtual C:\). Hosts set this; D15.
     std::wstring    machine_root;
 

@@ -127,7 +127,7 @@ add_subdirectory(${WIN10XBOX_ROOT}/winexbox winexbox)
 
 # ---------------------------------------------------------------------------
 # The UWP host exe: AppContainer PE, CoreApplication view, headless display backend.
-#   C++/WinRT sources (include pch.h):  main.cpp App.cpp
+#   C++/WinRT sources (include pch.h):  main.cpp App.cpp launcher.cpp (the gamepad)
 #   everything else is plain Win32 + the win10xbox public API:
 #     host.cpp          the Host: worker flow from launch.json to the verdict (host.h)
 #     host_diag.cpp     trace.log, status.txt, crash filter (host_diag.h)
@@ -137,6 +137,7 @@ add_subdirectory(${WIN10XBOX_ROOT}/winexbox winexbox)
 #     host_shell.cpp    crash capture wired from the shell, first-run files (host_shell.h)
 #     crash.cpp         crash.txt / crash.dmp / entry-reached.txt: a copy of host-uwp-lite's
 #     presenter.cpp     D3D11 device thread + CoreWindow swap chain + screen.bmp (presenter.h)
+#     launcher.cpp      the on-console launcher: bitmap-font list + result screen, gamepad/keyboard (launcher.h)
 #     blit.cpp          the D3D11 upload + copy of the composed frame (blit.h; also in the blit test)
 # ---------------------------------------------------------------------------
 add_executable(host_uwp WIN32
@@ -151,6 +152,7 @@ add_executable(host_uwp WIN32
   crash.cpp
   presenter.cpp
   blit.cpp
+  launcher.cpp
   App.h
   host.h
   host_diag.h
@@ -161,6 +163,7 @@ add_executable(host_uwp WIN32
   crash.h
   presenter.h
   blit.h
+  launcher.h
   pch.h)
 set_target_properties(host_uwp PROPERTIES OUTPUT_NAME "win10xbox-uwp")
 target_include_directories(host_uwp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -214,7 +217,7 @@ set_target_properties(window_guest PROPERTIES OUTPUT_NAME "window")
 
 # Every other guest of the repo, so the package carries them all to the console (HANDOFF.md
 # "Standing testing rule"). Console programs; output names as in the main tree.
-foreach(_g hello cpuid sleep)
+foreach(_g hello cpuid sleep spawn)
   add_executable(guest_${_g} "${WIN10XBOX_ROOT}/tests/guest/${_g}.c")
 endforeach()
 add_library(guest_dll SHARED "${WIN10XBOX_ROOT}/tests/guest/dll.c")
@@ -227,8 +230,34 @@ set_target_properties(smoke_guest_cui PROPERTIES OUTPUT_NAME "smoke_cui")
 add_executable(drv_client "${WIN10XBOX_ROOT}/tests/drivers/drv_client.c")
 target_include_directories(drv_client PRIVATE "${WIN10XBOX_ROOT}/tests/drivers")
 
+# The remaining GUI guests of tests/guest (same output names as ci.yml's bin/guest), and the GUI
+# smoke variant, so the package carries every guest ci.yml builds (HANDOFF.md "Package contents").
+foreach(_g window2 window_input window_input2 window_text window_nc window_scroll clipboard)
+  add_executable(guest_${_g} "${WIN10XBOX_ROOT}/tests/guest/${_g}.c")
+  target_link_libraries(guest_${_g} PRIVATE user32 gdi32)
+endforeach()
+# The dialog guest carries a DIALOG resource (tests/guest/dialog.rc).
+enable_language(RC)
+add_executable(guest_dialog "${WIN10XBOX_ROOT}/tests/guest/dialog.c" "${WIN10XBOX_ROOT}/tests/guest/dialog.rc")
+target_link_libraries(guest_dialog PRIVATE user32 gdi32)
+# The common-controls guest (tests/guest/comctl.c) links comctl32.
+add_executable(guest_comctl "${WIN10XBOX_ROOT}/tests/guest/comctl.c")
+target_link_libraries(guest_comctl PRIVATE user32 gdi32 comctl32)
+# The exception-handling guest and the DLL it throws across (tests/guest/seh.cpp, seh_dll.cpp).
+add_library(guest_seh_dll SHARED "${WIN10XBOX_ROOT}/tests/guest/seh_dll.cpp")
+set_target_properties(guest_seh_dll PROPERTIES PREFIX "")
+add_executable(guest_seh "${WIN10XBOX_ROOT}/tests/guest/seh.cpp")
+target_link_libraries(guest_seh PRIVATE guest_seh_dll)
+add_executable(smoke_guest WIN32 "${WIN10XBOX_ROOT}/host-uwp-lite/smoke_guest.c")
+target_compile_definitions(smoke_guest PRIVATE SMOKE_GUI=1)
+set_target_properties(smoke_guest PROPERTIES OUTPUT_NAME "smoke")
+
 set(HOST_UWP_GUESTS window_guest hello_guest hello_guest_cui guest_hello guest_cpuid guest_sleep guest_dll
-    smoke_guest_cui drv_client)
+    smoke_guest_cui drv_client guest_window2 guest_window_input guest_window_input2 guest_window_text smoke_guest
+    guest_spawn guest_window_nc guest_dialog guest_comctl guest_seh guest_seh_dll guest_window_scroll guest_clipboard)
+    smoke_guest_cui drv_client guest_window2 guest_window_input guest_window_input2 guest_window_scroll guest_window_text smoke_guest
+    guest_spawn guest_window_nc guest_dialog guest_comctl)
+    guest_spawn guest_window_nc guest_dialog guest_comctl guest_clipboard)
 
 # ---------------------------------------------------------------------------
 # The selftest: the launch.json parser (launch_config.cpp has no Windows or layer
