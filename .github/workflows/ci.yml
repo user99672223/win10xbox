@@ -238,6 +238,10 @@ jobs:
       - name: Populate machine folder from the runner's System32 (never committed)
         shell: pwsh
         run: ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine -CI
+      # The natives only the Direct3D machine folder gets (machine/guest_dlls_d3d.txt), kept out of the shared machine folder.
+      - name: Stage the Direct3D machine's extra natives
+        shell: pwsh
+        run: ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine-d3d-extra -CI -ListFile machine/guest_dlls_d3d.txt
       # A real program that is not ours: 7-Zip 24.09's 7zr.exe from the official source tarball (pinned SHA-256, the
       # cache key carries it), nmake in CPP/7zip/Bundles/Alone7z -> build/bin/machine/guest/7zr.exe; run by
       # integration.real7z (tests/integration/real7z.cmake).

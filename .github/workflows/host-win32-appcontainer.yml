@@ -148,7 +148,7 @@ jobs:
           ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine -CI -ListFile $gui
           # Direct3D 11 (d3d11-* runs): the native runtime guest_d3d11_tri.exe loads by name (d3d10warp is WARP's user-mode driver).
           $d3d = Join-Path $env:RUNNER_TEMP 'native-d3d-dlls.txt'
-          Set-Content -Path $d3d -Value @('d3d11.dll', 'dxgi.dll', 'd3dcompiler_47.dll', 'd3d10warp.dll', 'dxcore.dll', 'dwmapi.dll', 'd3d12.dll', 'D3D12Core.dll', 'D3DSCache.dll', 'powrprof.dll', 'umpdc.dll')
+          Set-Content -Path $d3d -Value @('d3d11.dll', 'dxgi.dll', 'd3dcompiler_47.dll', 'd3d10warp.dll', 'dxcore.dll', 'dwmapi.dll', 'd3d12.dll', 'D3D12Core.dll', 'D3DSCache.dll', 'powrprof.dll', 'umpdc.dll', 'directxdatabasehelper.dll', 'kernel.appcore.dll')
           ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine -CI -ListFile $d3d
           $nb = @(Get-ChildItem "$machine/Windows/builtin" -Filter *.dll).Count
           $nn = @(Get-ChildItem "$machine/Windows/System32" -Filter *.nls).Count
