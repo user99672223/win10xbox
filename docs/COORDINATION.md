@@ -124,6 +124,7 @@ adding `owner: B` as the second line of its slice doc; otherwise leaves them alo
 
 ### Merged (acting-coordinator log)
 
+* `-nlspkg` merged by Session A at adde079 (slice CI: host-uwp https://github.com/user99672223/win10xbox/actions/runs/39998856104, wine-pe https://github.com/user99672223/win10xbox/actions/runs/39998179308, ci https://github.com/user99672223/win10xbox/actions/runs/39998017789; 76 NLS files in payload/nls). Main 518d537 was green on all six workflows before this merge.
 * `-doompkg` merged by Session A at 518d537 (slice CI: host-uwp https://github.com/user99672223/win10xbox/actions/runs/39994518461, ci https://github.com/user99672223/win10xbox/actions/runs/39994510420; Doom + timedemo in the package, 32.8 MB). Same push: guest_tebframe/guest_d3d11_tri added to HOST_UWP_GUESTS (the d3d merge at 3fdd1e6 left the host-uwp package assert red).
 * `-doom`, `-audio`, `-nowine`, `-om` merged by Session A via `-stage2` (25c4495; ci
   https://github.com/user99672223/win10xbox/actions/runs/39989749203 green on all three jobs, wine-pe

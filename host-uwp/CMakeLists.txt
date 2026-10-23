@@ -104,6 +104,8 @@ set(HOST_UWP_PACKAGE_VERSION "1.0.0.0" CACHE STRING
 # Extra files copied flat into payload\guest (e.g. the output of tools/ci/fetch_doom.ps1: chocolate-doom.exe, SDL2 DLLs,
 # doom1.wad). Empty = none. The sidecars in host-uwp/payload/guest/ are always staged.
 set(HOST_UWP_EXTRA_GUEST_DIR "" CACHE PATH "Directory whose files are staged into payload\\guest")
+set(HOST_UWP_NLS_DIR "${WIN10XBOX_ROOT}/wine-pe/out/nls" CACHE PATH
+    "Wine NLS data (*.nls) to bundle as payload\\nls (the wine-pe-nls artifact). Without it the package depends on the console's System32 for NLS")
 set(HOST_UWP_BUILTIN_DIR "${WIN10XBOX_ROOT}/wine-pe/out/builtin" CACHE PATH
     "Wine PE builtin DLLs to bundle in the package (the wine-pe-builtin artifact). Optional: without them the package is still produced and the owner drops the DLLs into LocalState\\machine\\Windows\\builtin")
 option(HOST_UWP_SKIP_WINMD "Skip midl (the package then lacks the WinRT metadata the Xbox launcher wants; CI debugging only)" OFF)
@@ -402,6 +404,7 @@ add_custom_target(stage_appx ALL
           "-DPAYLOAD_DIR=${CMAKE_CURRENT_SOURCE_DIR}/payload"
           "-DBUILTIN_DIR=${HOST_UWP_BUILTIN_DIR}"
           "-DEXTRA_GUEST_DIR=${HOST_UWP_EXTRA_GUEST_DIR}"
+          "-DNLS_DIR=${HOST_UWP_NLS_DIR}"
           "-DGUEST_DLL_DIR=${WIN10XBOX_GUEST_DLL_DIR}"
           "-DMACHINE_JSON=${WIN10XBOX_ROOT}/machine/machine.default.json"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/stage.cmake"
