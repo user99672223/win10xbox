@@ -31,10 +31,11 @@ set(_prepare_args
 add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
-  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
+  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_nowine guest_spawn guest_named_objects guest_window guest_window2
                    guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog guest_comctl
                    guest_seh guest_window_scroll guest_clipboard guest_net msctf_stub guest_gdi_bitmap
-                   guest_window_hooks guest_window_menu guest_xinput xinput1_4 guest_identity guest_cursor guest_regpersist)
+                   guest_window_hooks guest_window_menu guest_xinput xinput1_4 guest_identity guest_cursor
+                   guest_regpersist guest_wasapi guest_xaudio2)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -80,7 +81,7 @@ function(win10xbox_guest_test name program exit_code)
       "-DKEEP_REGISTRY_OVERLAY=${_guest_keep_overlay}"
       -DEXPECT_EXIT=${exit_code}
       "-DEXPECT_REGEX=${ARGN}"
-      "-DINPUT_FILE=${_guest_input}" "-DGUEST_FILE=${_guest_file}"
+      "-DINPUT_FILE=${_guest_input}" "-DGUEST_FILE=${_guest_file}" "-DRUN_TIMEOUT=${_guest_run_timeout}"
       -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
   set_tests_properties(integration.${name} PROPERTIES
@@ -128,6 +129,17 @@ unset(_guest_machine)
 # other guest sleeps, so nothing exercised it.
 win10xbox_guest_test(guest_sleep "C:\\guest\\guest_sleep.exe" 7 "guest slept")
 
+# Nothing of Wine is observable from the builtins (docs/slices/nowine.md, wine-pe/patches 0005-0007): tests/guest/nowine.c
+# walks the modules the process has loaded and checks every export name, version resource and read-only data section,
+# and that ntdll does not resolve the Wine version function. Builtin-only folder: every system DLL is one of ours.
+set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+set(_guest_console ON)
+win10xbox_guest_test(guest_nowine "C:\\guest\\guest_nowine.exe" 42
+  "nowine: ntdll.dll exports=" "nowine: kernelbase.dll exports=" "nowine: ntdll.dll does not resolve" "nowine: done modules=[0-9]+ hits=0")
+set_tests_properties(integration.guest_nowine PROPERTIES FAIL_REGULAR_EXPRESSION "nowine: HIT;nowine: FAIL")
+unset(_guest_console)
+unset(_guest_machine)
+
 # CreateProcess (docs/DISPATCHER.md "Child processes"): NtCreateUserProcess starts a new host process running the
 # host executable on the child's guest image. The parent (tests/guest/spawn.c) runs guest_hello.exe and waits for
 # its exit code 42 through the host handle, then runs itself with a quoted command line, a working directory and
@@ -137,6 +149,16 @@ win10xbox_guest_test(guest_spawn "C:\\guest\\guest_spawn.exe" 42
   "spawn-child: argc=5" "spawn-child: argv\\[1\\]=\\[child\\]" "spawn-child: argv\\[2\\]=\\[a b\\]"
   "spawn-child: argv\\[3\\]=\\[c.d\\]" "spawn-child: argv\\[4\\]=\\[e\\]"
   "spawn-child: cwd=C:\\\\Windows" "spawn-child: mark=mark42" "spawn: child2 exit 7" "spawn: done")
+
+# Named objects across CreateProcess (docs/DISPATCHER.md "Object manager namespace"): the parent creates a named event,
+# a named section holding a string and a global event; lists both BaseNamedObjects directories; starts itself as the
+# child, which opens all three by name, reads the string and sets the events. The names map onto host objects under
+# the layer's prefix, so the child (another host process) finds them.
+win10xbox_guest_test(guest_named_objects "C:\\guest\\guest_named_objects.exe" 42
+  "named: created event, section and global event"
+  "named: .*BaseNamedObjects has w10x_no_event \\[Event\\]" "named: .*BaseNamedObjects has w10x_no_section \\[Section\\]"
+  "named: .*BaseNamedObjects has w10x_no_global \\[Event\\]"
+  "named-child: data=\\[named-objects-section-data-42\\]" "named: event set by the child" "named: child exit 7" "named: done")
 
 # Exception handling (tests/guest/seh.cpp): C++ throw/catch across frames and a DLL boundary, SEH __try/__except
 # around an access violation / divide by zero / RaiseException / a fault in a DLL frame, vectored handlers, the
@@ -426,6 +448,29 @@ set_tests_properties(integration.guest_regpersist_write integration.guest_regper
 set_tests_properties(integration.guest_regpersist_read PROPERTIES DEPENDS integration.guest_regpersist_write)
 unset(_guest_no_user32)
 unset(_guest_machine)
+# ---- Audio: Wine's mmdevapi over core/dispatch/unix_mmdevapi.cpp (the host's WASAPI) -----------------------------------
+# tests/guest/wasapi.c and xaudio2.c exit 42 when a device played the sound and 43 when the host has no audio endpoint.
+# audio_test.cmake runs each one directly on the host (what the host really answers) and through the layer on the
+# builtin-only folder (Wine's mmdevapi, xaudio2_9 and the registry's MMDeviceEnumerator registration) and requires the
+# same verdict, in the no-endpoint case with the same HRESULT; nothing is faked either way (docs/slices/audio.md).
+foreach(_a wasapi xaudio2)
+  add_test(NAME integration.guest_${_a}
+    COMMAND ${CMAKE_COMMAND}
+      -DHOST=$<TARGET_FILE:win10xbox>
+      -DMACHINE=${WIN10XBOX_BUILTIN_MACHINE_DIR}
+      -DGUEST_EXE=$<TARGET_FILE:guest_${_a}>
+      -DPROBE_EXE=$<TARGET_FILE:guest_wasapi>
+      -DPROGRAM=C:\\guest\\guest_${_a}.exe
+      -DTAG=${_a}
+      -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/audio_test.cmake)
+  set_tests_properties(integration.guest_${_a} PROPERTIES
+    FIXTURES_REQUIRED w10x_machine
+    SKIP_RETURN_CODE 77
+    SKIP_REGULAR_EXPRESSION "SKIP:"
+    LABELS "guest_e2e"
+    TIMEOUT 240)
+endforeach()
 
 # ---- Real programs: the first guests that are not ours ----------------------------------------------------------
 # Lua 5.4.7, built from the upstream tarball with MSVC by tools/ci/build_lua.ps1 (a named step of ci.yml's windows
@@ -630,6 +675,37 @@ if(MSVC OR WIN10XBOX_REAL_GUI_PROGRAMS)
   unset(_guest_expect_trace)
   unset(_guest_forbid_trace)
   unset(_realgui_script)
+  unset(_guest_machine)
+endif()
+
+# ---- Chocolate Doom 3.1.1 (official win64 zip) with the shareware doom1.wad: the first game --------------------------
+# tools/ci/fetch_doom.ps1 (a named ci.yml step of the windows job) leaves chocolate-doom.exe, its SDL2 DLLs and doom1.wad
+# in <machine>/guest before ctest runs (docs/slices/doom.md). Registered where the Lua tests are: MSVC builds, or
+# -DWIN10XBOX_REAL_PROGRAMS=ON with those files staged; a missing binary FAILS (the host cannot start it), it never skips.
+# The game runs demo1 as fast as it can (-timedemo) in a 640x400 window on SDL2's software renderer, whose blits go
+# through GDI onto the window (core/user). Chocolate Doom ends a timedemo by reporting it through I_Error: the stats line
+# "timed N gametics in M realtics (F fps)" goes to STDERR (the trace checks below read the guest's stderr too) and the
+# process exits with -1. -nogui keeps I_Error from opening a message box that nobody would close.
+# Gates: exit -1 after the whole demo, the stats line, the host's `shot` seen at least 3 distinct colours in the frame
+# 300 frames into the demo (waitflush), and the frame at exit (WIN10XBOX_SCREENSHOT is rewritten when the process ends,
+# so the BMP is the last frame of the demo, deterministic) holds the status bar: pixels of its grey panel and of its red digits.
+# The window is centred on the 1920x1080 virtual screen at (685,309), client origin (693,340).
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  set(_guest_args "-iwad;C:\\guest\\doom1.wad;-nosound;-nomusic;-nomouse;-window;-geometry;640x400;-nogui;-timedemo;demo1")
+  set(_guest_debug "-all,err+all,fixme+all")
+  set(_guest_run_timeout 280)
+  set(_guest_expect_trace "timed [0-9]+ gametics in [0-9]+ realtics \\([0-9.]+ fps\\);shot: distinct=([3-9]|[1-9][0-9]+) written=1")
+  set(_guest_forbid_trace "TIMEOUT")
+  win10xbox_guest_test(doom_timedemo "C:\\guest\\chocolate-doom.exe" -1 "Chocolate Doom 3\\.1\\.1" "adding C:.guest.doom1\\.wad" "Playing demo demo1")
+  set_tests_properties(integration.doom_timedemo PROPERTIES
+    TIMEOUT 300
+    ENVIRONMENT "SDL_RENDER_DRIVER=software;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/doom_timedemo.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=715,694,ff303030|785,694,ff585858|707,689,ffc80000|735,704,ffbc0000;WIN10XBOX_TEST_INJECT_INPUT=waitflush 300 250000\\;shot")
+  unset(_guest_args)
+  unset(_guest_debug)
+  unset(_guest_run_timeout)
+  unset(_guest_expect_trace)
+  unset(_guest_forbid_trace)
   unset(_guest_machine)
 endif()
 

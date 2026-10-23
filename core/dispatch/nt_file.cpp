@@ -145,24 +145,6 @@ constexpr ULONG kFileLinkInformationExBypassAccessCheck = 73;
 constexpr ULONG kFileAllInformation = 18;
 constexpr ULONG kFileOpenByFileId = 0x00002000;   // CreateOptions: the name is an 8 or 16 byte file ID, not a path
 
-bool IsKnownDllsName(const OBJECT_ATTRIBUTES* oa) {
-    if (!oa || oa->RootDirectory) return false;
-    std::wstring_view n = OAName(oa);
-    return IStartsWith(n, L"\\KnownDlls");
-}
-
-// The same test on a caller's OBJECT_ATTRIBUTES, read once. *error is set when the memory cannot be read
-// (STATUS_ACCESS_VIOLATION); a Length the structure is not allowed to have is left to the host, which refuses it.
-bool IsKnownDllsName(const OBJECT_ATTRIBUTES* user, NTSTATUS* error) {
-    *error = st::Success;
-    if (!user) return false;
-    probe::ObjectAttributes cap;
-    const NTSTATUS cs = probe::CaptureObjectAttributes(user, &cap);
-    if (cs == st::InvalidParameter) return false;
-    if (cs) { *error = cs; return false; }
-    return IsKnownDllsName(&cap.oa);
-}
-
 }  // namespace
 
 std::wstring_view OAName(const OBJECT_ATTRIBUTES* oa) {
@@ -295,15 +277,53 @@ NTSTATUS RootRelativeGuestName(const OBJECT_ATTRIBUTES* in, std::wstring* nt) {
 }  // namespace
 #endif
 
+static NTSTATUS TranslateCaptured(const OBJECT_ATTRIBUTES* in, TranslatedOA* out, ULONG create_options);
+
+// The caller's attributes and name are read once, here; what follows works on the copy. Memory that cannot be
+// read is an access violation, a Length the structure may not have is the host's to refuse. A name that goes
+// through the object manager tree is then resolved there; what it leads to outside the tree (a guest-made link to
+// \Device\Null) is translated like any other name.
 NTSTATUS TranslateOA(const OBJECT_ATTRIBUTES* user_in, TranslatedOA* out, ULONG create_options) {
     out->attr = nullptr;
     out->keep.reset();
     if (!user_in) return st::Success;
-    // The caller's attributes and name are read once, here; what follows works on the copy. Memory that cannot be
-    // read is an access violation, a Length the structure may not have is the host's to refuse.
     probe::ObjectAttributes cap;
     if (NTSTATUS cs = probe::CaptureObjectAttributes(user_in, &cap)) return cs == st::InvalidParameter ? st::Success : cs;
     const OBJECT_ATTRIBUTES* in = &cap.oa;
+    if (!in->ObjectName) return st::Success;
+    NTSTATUS route_status = st::Success;
+    std::wstring absolute;
+    switch (ResolveFileNameThroughNamespace(in, &route_status, &absolute)) {
+    case 1:
+        return route_status;
+    case 2: {
+        struct Routed {
+            OBJECT_ATTRIBUTES oa;
+            UNICODE_STRING us;
+            std::wstring name;
+            TranslatedOA inner;
+        };
+        auto r = std::make_shared<Routed>();
+        r->name = std::move(absolute);
+        r->us.Buffer = r->name.data();
+        r->us.Length = static_cast<USHORT>(r->name.size() * sizeof(wchar_t));
+        r->us.MaximumLength = static_cast<USHORT>(r->us.Length + sizeof(wchar_t));
+        r->oa = *in;
+        r->oa.RootDirectory = nullptr;
+        r->oa.ObjectName = &r->us;
+        if (NTSTATUS s = TranslateCaptured(&r->oa, &r->inner, create_options)) return s;
+        out->attr = r->inner.attr ? r->inner.attr : &r->oa;
+        out->keep = r;
+        return st::Success;
+    }
+    default:
+        return TranslateCaptured(in, out, create_options);
+    }
+}
+
+static NTSTATUS TranslateCaptured(const OBJECT_ATTRIBUTES* in, TranslatedOA* out, ULONG create_options) {
+    out->attr = nullptr;
+    out->keep.reset();
     if (!in->ObjectName) return st::Success;
 #if WIN10XBOX_HAVE_VFS
     if (in->RootDirectory) {
@@ -493,7 +513,7 @@ static NTSTATUS NTAPI Xl_NtQueryInformationFile(HANDLE file, PIO_STATUS_BLOCK io
 // NT path in the "\\??\\C:\\..." form, which is what Wine's own ntdll answers for a file handle. The host answers
 // "\\Device\\HarddiskVolumeN\\<host path>"; give a file handle the guest's name instead. Other objects, and files
 // outside every guest drive, keep the host's answer.
-static NTSTATUS NTAPI Xl_NtQueryObject(HANDLE h, ULONG klass, PVOID buffer, ULONG length, PULONG ret_len) {
+NTSTATUS NTAPI QueryObjectHostFile(HANDLE h, ULONG klass, PVOID buffer, ULONG length, PULONG ret_len) {
     constexpr ULONG kObjectNameInformation = 1;
 #if WIN10XBOX_HAVE_REGISTRY
     if (registry::IsKeyHandle(h)) return registry::Reg_NtQueryObject(h, klass, buffer, length, ret_len);   // a key is no host object
@@ -721,21 +741,6 @@ static NTSTATUS NTAPI Xl_NtFsControlFile(HANDLE file, HANDLE event, PVOID apc, P
     return s;
 }
 
-static NTSTATUS NTAPI Xl_NtOpenDirectoryObject(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr) {
-    // E3: no KnownDlls, so Wine's loader searches the file system through the VFS.
-    NTSTATUS cs;
-    if (IsKnownDllsName(attr, &cs)) return st::ObjectNameNotFound;
-    if (cs) return cs;
-    return Host().NtOpenDirectoryObject(handle, access, attr);
-}
-
-static NTSTATUS NTAPI Xl_NtOpenSymbolicLinkObject(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr) {
-    NTSTATUS cs;
-    if (IsKnownDllsName(attr, &cs)) return st::ObjectNameNotFound;
-    if (cs) return cs;
-    return Host().NtOpenSymbolicLinkObject(handle, access, attr);
-}
-
 // ---- Byte-range locks -------------------------------------------------------
 // Wine's kernelbase (LockFile/LockFileEx) calls NtLockFile with IoStatusBlock == NULL, which Wine's own ntdll accepts
 // and Windows' does not: the I/O manager probes the pointer and answers STATUS_ACCESS_VIOLATION. SQLite's win32 VFS
@@ -797,9 +802,6 @@ const ImplDef* FileImpls() {
         {"NtDeleteFile", reinterpret_cast<void*>(&Xl_NtDeleteFile)},
         {"NtQueryInformationFile", reinterpret_cast<void*>(&Xl_NtQueryInformationFile)},
         {"NtSetInformationFile", reinterpret_cast<void*>(&Xl_NtSetInformationFile)},
-        {"NtQueryObject", reinterpret_cast<void*>(&Xl_NtQueryObject)},
-        {"NtOpenDirectoryObject", reinterpret_cast<void*>(&Xl_NtOpenDirectoryObject)},
-        {"NtOpenSymbolicLinkObject", reinterpret_cast<void*>(&Xl_NtOpenSymbolicLinkObject)},
         {"NtLockFile", reinterpret_cast<void*>(&Xl_NtLockFile)},
         {"NtUnlockFile", reinterpret_cast<void*>(&Xl_NtUnlockFile)},
         {"NtFsControlFile", reinterpret_cast<void*>(&Xl_NtFsControlFile)},

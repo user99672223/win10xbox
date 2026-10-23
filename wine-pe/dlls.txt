@@ -63,10 +63,24 @@ msacm32     # winmm static import
 winspool.drv=winspool.drv
 compstui     # winspool.drv
 
+# --- imports of chocolate-doom.exe / SDL2.dll / SDL3.dll / libfluidsynth / libportaudio (docs/slices/doom.md) ---
+msacm32    # winmm's hard import
+dsound     # libfluidsynth-3.dll's hard import
+setupapi   # SDL2.dll, libportaudio.dll
+
 # --- COM -------------------------------------------------------------------
 ole32
 oleaut32
 combase
+
+# --- audio (docs/slices/audio.md): mmdevapi talks to core/dispatch/unix_mmdevapi.cpp, xaudio2_9 (FAudio) sits on mmdevapi
+mmdevapi
+xaudio2_9
+# xaudio2_9 static imports (xaudio2 -> mfplat, mfreadwrite, propsys; mfplat -> rtworkq)
+mfplat
+mfreadwrite
+propsys
+rtworkq
 
 # --- helpers / programs ----------------------------------------------------
 programs/services

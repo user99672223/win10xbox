@@ -1,0 +1,27 @@
+Silence ERR when WINE_NO_DEBUG_MSGS is defined.
+
+include/wine/debug.h removes TRACE, WARN and FIXME under WINE_NO_TRACE_MSGS /
+WINE_NO_DEBUG_MSGS but keeps ERR "regardless of what is configured". The
+builtins are built with both macros so that no message text, function name or
+__wine_dbch_* channel name is left in the binaries; ERR would keep all of them.
+Behaviour is unchanged, only the diagnostic output of ERR is gone. Builds that
+do not define WINE_NO_DEBUG_MSGS are unaffected.
+
+diff --git a/include/wine/debug.h b/include/wine/debug.h
+index 8328524..7c7b4bc 100644
+--- a/include/wine/debug.h
++++ b/include/wine/debug.h
+@@ -73,8 +73,12 @@ struct __wine_debug_channel
+ # define __WINE_GET_DEBUGGING_FIXME(dbch) 0
+ #endif
+ 
+-/* define error macro regardless of what is configured */
++/* define error macro regardless of what is configured, except when no debug messages are wanted at all */
++#ifndef WINE_NO_DEBUG_MSGS
+ #define __WINE_GET_DEBUGGING_ERR(dbch)  ((dbch)->flags & (1 << __WINE_DBCL_ERR))
++#else
++#define __WINE_GET_DEBUGGING_ERR(dbch)  0
++#endif
+ 
+ #define __WINE_GET_DEBUGGING(dbcl,dbch)  __WINE_GET_DEBUGGING##dbcl(dbch)
+ 

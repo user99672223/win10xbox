@@ -240,6 +240,7 @@ void RegisterNtdllUnixLib() {
     RegisterUnixLib(L"ws2_32", kWs2Funcs, std::size(kWs2Funcs));
     RegisterUnixLib(L"crypt32", kCrypt32Funcs, std::size(kCrypt32Funcs));
 
+    RegisterMmdevapiUnixLib();   // only when PrimeAudio started the host audio thread
     RegisterUnixLib(W10X_XINPUT_UNIXLIB_NAME, kXInputFuncs, std::size(kXInputFuncs));
 }
 

@@ -220,6 +220,9 @@ BOOL WINAPI NtUserGetDpiForMonitor(HMONITOR monitor, UINT type, UINT* x, UINT* y
 BOOL WINAPI NtUserEnumDisplaySettings(UNICODE_STRING* device, DWORD mode, DEVMODEW* dev_mode, DWORD flags);
 NTSTATUS WINAPI NtUserEnumDisplayDevices(UNICODE_STRING* device, DWORD index, DISPLAY_DEVICEW* info, DWORD flags);
 LONG WINAPI NtUserGetDisplayConfigBufferSizes(UINT32 flags, UINT32* num_path_info, UINT32* num_mode_info);
+LONG WINAPI NtUserQueryDisplayConfig(UINT32 flags, UINT32* paths_count, DISPLAYCONFIG_PATH_INFO* paths, UINT32* modes_count,
+                                     DISPLAYCONFIG_MODE_INFO* modes, DISPLAYCONFIG_TOPOLOGY_ID* topology_id);
+NTSTATUS WINAPI NtUserDisplayConfigGetDeviceInfo(DISPLAYCONFIG_DEVICE_INFO_HEADER* packet);
 BOOL WINAPI NtUserGetProcessDefaultLayout(ULONG* layout);
 BOOL WINAPI NtUserSetProcessDefaultLayout(ULONG layout);
 BOOL WINAPI NtUserSetSysColors(INT count, const INT* colors, const COLORREF* values);
@@ -407,7 +410,7 @@ BOOL WINAPI NtGdiTransparentBlt(HDC hdc, INT x_dst, INT y_dst, INT width_dst, IN
     X(NtUserGetSystemDpiForProcess) X(NtUserGetProcessDpiAwarenessContext) X(NtUserSetProcessDpiAwarenessContext) \
     X(NtUserSystemParametersInfo) X(NtUserSystemParametersInfoForDpi) X(NtUserEnumDisplayMonitors) \
     X(NtUserGetDpiForMonitor) X(NtUserEnumDisplaySettings) X(NtUserEnumDisplayDevices) \
-    X(NtUserGetDisplayConfigBufferSizes) \
+    X(NtUserGetDisplayConfigBufferSizes) X(NtUserQueryDisplayConfig) X(NtUserDisplayConfigGetDeviceInfo) \
     X(NtUserGetProcessDefaultLayout) \
     X(NtUserSetProcessDefaultLayout) X(NtUserSetSysColors) X(NtUserIsMouseInPointerEnabled) \
     \
