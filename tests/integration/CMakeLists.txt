@@ -208,6 +208,35 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   unset(_guest_args)
   unset(_guest_debug)
   unset(_guest_forbid_trace)
+
+  # Sysinternals Coreinfo64.exe (tools/ci/fetch_sysinternals.ps1, pinned by SHA-256), a system-information program:
+  # it reads the CPU topology through NtQuerySystemInformation. PsInfo64 is not gated here (docs/slices/sysinfo.md).
+  # The anchors are lines every runner prints whatever its CPU vendor is (docs/slices/sysinfo.md).
+  # It imports comdlg32/shell32, whose native copies cannot load on the shared
+  # machine folder (docs/slices/sysinfo.md), so they run on the builtin-only one, like the GUI guests below.
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  set(_guest_args "-accepteula")
+  win10xbox_guest_test(coreinfo "C:\\guest\\Coreinfo64.exe" 0
+    "Logical to Physical Processor Map:"
+    "Logical Processor to Socket Map:")
+  unset(_guest_args)
+  unset(_guest_machine)
+endif()
+
+# ---- fastfetch: the first prebuilt real program ----------------------------------------------------------------------
+# fastfetch 2.70.0, the project's official Windows x64 release (tools/ci/fetch_fastfetch.ps1: pinned SHA-256, verified on
+# every run), left at <machine>/guest/fastfetch.exe by a named step of ci.yml's windows job before ctest runs. It is a
+# system-information tool: it asks the layer for the OS version, kernel, CPU, memory, locale and uptime. Gate: exit 0
+# and the four headline modules on stdout; the other modules (Disk, GPU, Display, ...) are run one by one, for information,
+# by a step of ci.yml (docs/slices/fastfetch.md).
+# It runs on the builtin-only folder (the console's DLL set): the shared folder's native DLLs (the runner's build 26100)
+# do not work under Wine's ntdll (see the GUI tests above), and fastfetch imports shell32, ole32 and advapi32.
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  set(_guest_args "--pipe;--logo;none;-s;OS:Kernel:CPU:Memory:Locale:Uptime")
+  win10xbox_guest_test(fastfetch "C:\\guest\\fastfetch.exe" 0 "OS: " "Kernel: " "CPU: " "Memory: ")
+  unset(_guest_args)
+  unset(_guest_machine)
 endif()
 
 # ---- Real GUI programs (not ours), built from source on the Windows runner ------------------------------------------
