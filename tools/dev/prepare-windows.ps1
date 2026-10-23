@@ -57,7 +57,7 @@ function Invoke-Guest([string] $name, [string] $script, [string[]] $argList, [st
   if (-not $Force -and (Test-Path $marker)) { Say 'ok' "$name already in place ($marker)"; return }
   Say 'install' $name
   Invoke-CiScript $script $argList
-  if (-not (Test-Path $marker)) { Fail "$name: $marker missing after $script" }
+  if (-not (Test-Path $marker)) { Fail "${name}: $marker missing after $script" }
   Say 'ok' $name
 }
 
@@ -180,7 +180,7 @@ if ($Phase -eq 'Pre') {
 $machine = Join-Path $build 'bin\machine'
 $guest = Join-Path $machine 'guest'
 $sys32 = Join-Path $env:SystemRoot 'System32'
-if (-not (Test-Path (Join-Path $build 'bin'))) { Fail "$build\bin missing: run `cmake --build $BuildDir` before -Phase Post" }
+if (-not (Test-Path (Join-Path $build 'bin'))) { Fail "$build\bin missing: run cmake --build $BuildDir before -Phase Post" }
 
 # ci.yml: Populate machine folder from System32 (never committed), then the Direct3D machine's extra natives.
 if (-not $Force -and (Test-Path (Join-Path $machine 'Windows\System32\ntdll.dll')) -and (Test-Path (Join-Path $build 'bin\machine-d3d-extra'))) {
