@@ -1,4 +1,4 @@
-status: wip
+status: ready
 
 # Slice: realninja
 
@@ -14,12 +14,15 @@ build. It runs on the shared machine folder next to the Lua build, gated in ci.y
   C:\guest\ninja_tool.lua` (tests/guest/ninja).
 * `integration.ninja_noop`: a second run prints `ninja: no work to do.`
 
-CI run: https://github.com/user99672223/win10xbox/actions/runs/39880335902 (head 65e6ccb): windows (Debug) and windows
-(RelWithDebInfo) 100% of 51 tests passed, `integration.ninja_version`, `_targets`, `_build` and `_noop` among them
-(RelWithDebInfo 0.31 s, 0.31 s, 1.00 s, 0.31 s); that run's linux-cross job died on its apt step ("Install Wine +
-ninja" timed out), unrelated to this slice (the tests are not registered there). ctest prints no output for passing
-tests, so the regexes above (exact `[1/3]`, `[2/3]`, `[3/3] CONCAT ninja_out/ab.txt`, `ninja: no work to do.`) are the
-record of what ninja printed.
+CI run: https://github.com/user99672223/win10xbox/actions/runs/39889154701 (head f699206, before the merge of main):
+linux-cross, windows (Debug) and windows (RelWithDebInfo) all green, "Gate - nothing skipped" passed on all three,
+51 of 51 tests passed on both Windows jobs. The four ninja tests among them (RelWithDebInfo 0.28 s, 0.28 s, 0.90 s,
+0.28 s; Debug 0.88 s, 0.86 s, 2.70 s, 0.87 s). An earlier run (39880335902, head 65e6ccb) had the same Windows result
+with linux-cross dead on an apt timeout. ctest prints no output for passing tests, so the regexes above (exact
+`[1/3]`, `[2/3]`, `[3/3] CONCAT ninja_out/ab.txt`, `ninja: no work to do.`) are the record of what ninja printed.
+The head after the merge of main is checked by its own ci run (see COORDINATION.md for that run).
+
+Syscalls added or changed: none. DLLs added to wine-pe/dlls.txt: none.
 
 ## What had to change
 
