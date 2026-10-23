@@ -390,12 +390,13 @@ void Host::Impl::FinishAllChain()
     std::string body;
     ReadTextFile(path, &body);
     const std::vector<ReportBlock> blocks = ParseReport(body);
-    unsigned pass = 0, fail = 0, exited = 0, timeout = 0, crash = 0, skipped = 0;
+    unsigned pass = 0, knownfail = 0, fail = 0, exited = 0, timeout = 0, crash = 0, skipped = 0;
     std::vector<std::string> rows;
     for (const ReportBlock& b : blocks)
     {
         const std::string w = VerdictWord(b.verdict);
         if (w == "PASS") ++pass;
+        else if (w == "KNOWN-FAIL") ++knownfail;
         else if (w == "FAIL") ++fail;
         else if (w == "EXITED") ++exited;
         else if (w == "TIMEOUT") ++timeout;
@@ -403,8 +404,8 @@ void Host::Impl::FinishAllChain()
         else if (w == "SKIPPED") ++skipped;
         rows.push_back(b.program + "  " + w + "  exit " + std::to_string(b.exit_code));
     }
-    const std::string counts = Fmt("%u programs: %u PASS, %u FAIL, %u EXITED, %u TIMEOUT, %u CRASH, %u SKIPPED",
-                                   static_cast<unsigned>(blocks.size()), pass, fail, exited, timeout, crash, skipped);
+    const std::string counts = Fmt("%u programs: %u PASS, %u KNOWN-FAIL, %u FAIL, %u EXITED, %u TIMEOUT, %u CRASH, %u SKIPPED",
+                                   static_cast<unsigned>(blocks.size()), pass, knownfail, fail, exited, timeout, crash, skipped);
     if (body.rfind("# win10xbox report", 0) != 0)
     {
         const std::string os = OsBuildString();
@@ -414,7 +415,7 @@ void Host::Impl::FinishAllChain()
         head += "package_version=" + info.package_version + "\n";
         head += "date_utc=" + TimestampUtc() + "\n";
         head += "programs=" + std::to_string(blocks.size()) + "\n";
-        head += Fmt("pass=%u\nfail=%u\nexited=%u\ntimeout=%u\ncrash=%u\nskipped=%u\n\n", pass, fail, exited, timeout, crash, skipped);
+        head += Fmt("pass=%u\nknownfail=%u\nfail=%u\nexited=%u\ntimeout=%u\ncrash=%u\nskipped=%u\n\n", pass, knownfail, fail, exited, timeout, crash, skipped);
         if (!WriteTextFile(path, head + body, false)) diag::Line("launcher: cannot write the report.txt header (error %lu)", GetLastError());
     }
     diag::Line("report: %s", counts.c_str());

@@ -281,3 +281,8 @@ showed: `KMUTANT.Abandoned` is a bit field of `MutantFlags` (`OB()` in `layout_l
 `WIN10XBOX_TEST_FORCE_RDRAND_TRAP=1` (latched in `process::Launch`): the scanner rewrites every register-form `rdrand`/`rdseed` in guest images
 to `ud2`, so the #UD emulation (D18: `BCryptGenRandom`, CF=1) runs on a CPU that has the instructions. Set by `integration.guest_rdrand` and
 `integration.guest_identity`.
+
+`WIN10XBOX_TEST_PRESENT_LIMIT=N` (latched in `process::Launch`, N=0/unset = off): the DXGI interposition (`core/dispatch/dxgi_interpose.cpp`) counts successful
+`Present`/`Present1` calls (not `DXGI_PRESENT_TEST`) over all swap chains; after the N-th, once that frame is handed to the compositor, it traces and prints
+`present-limit: N frames presented, <w>x<h>, <adapter>` and ends the guest with exit code 42 (`process::GuestExit`, the `NtTerminateProcess` path), so a
+`WIN10XBOX_SCREENSHOT` still shows the last composed frame. A generic gate for any unmodified D3D11 program; used by `integration.guest_d3d11_swap_limit`.
