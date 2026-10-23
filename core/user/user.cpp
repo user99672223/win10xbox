@@ -51,7 +51,7 @@ State& S() {
     }
     // The PEB field is the guest's while a guest runs and is restored by process.cpp at exit; put
     // ours back if anything replaced it (a second Launch in the same host process).
-    void*& peb_table = dispatch::detail::PebField<void*>(dispatch::detail::peb::GdiSharedHandleTable);
+    void*& peb_table = dispatch::detail::GuestPebField<void*>(dispatch::detail::peb::GdiSharedHandleTable);
     if (peb_table != g_state->gdi_entries) peb_table = g_state->gdi_entries;
     return *g_state;
 }
@@ -112,7 +112,7 @@ NTSTATUS UserModeCallback(ULONG id, const void* args, ULONG len, void** ret_ptr,
     using dispatch::detail::peb::KernelCallbackTable;
     if (ret_ptr) *ret_ptr = nullptr;
     if (ret_len) *ret_len = 0;
-    auto* table = dispatch::detail::PebField<KernelCallbackFn*>(KernelCallbackTable);
+    auto* table = dispatch::detail::GuestPebField<KernelCallbackFn*>(KernelCallbackTable);
     if (!table || !table[id]) {
         ERR(user, "callback %lu: no KernelCallbackTable entry (user32 not initialised?)", id);
         return dispatch::detail::st::NotImplemented;

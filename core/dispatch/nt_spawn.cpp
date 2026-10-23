@@ -1,6 +1,7 @@
 // Process creation (D1) and the refusals around it.
 //
-//   NtCreateUserProcess   a real child: a new HOST process running the host executable itself on the child's guest
+//   NtCreateUserProcess   under a shell (user::ShellActive()): a virtual process, a second guest view inside this host
+//                         process (vprocess.h, D1-b). Otherwise a real child: a new HOST process running the host executable itself on the child's guest
 //                         image (host-win32 only, config::child_processes), see "Child processes" in
 //                         docs/DISPATCHER.md
 //   NtCreateProcessEx, NtCreateThread, NtCreateDebugObject, NtDebugActiveProcess
@@ -10,7 +11,9 @@
 //                         the classes that need a privilege answer STATUS_PRIVILEGE_NOT_HELD here, whatever the
 //                         host's own token could do
 #include "nt_spawn.h"
+#include "vprocess.h"
 #include "win10xbox/config.h"
+#include "win10xbox/user.h"
 #if WIN10XBOX_HAVE_REGISTRY
 #include "win10xbox/registry.h"
 #endif
@@ -316,6 +319,35 @@ void PrimeChildProcesses() {
 
 void SetChildHostExecutableForTest(const std::wstring& exe) { g_test_host_exe = exe; }
 
+// The outputs of NtCreateUserProcess: the two handles, the create info and the PS attributes that ask for the client id
+// and the image information. They were probed before anything was started.
+static NTSTATUS DeliverCreateOutputs(PHANDLE process_handle, PHANDLE thread_handle, void* create_info,
+                              const std::vector<PsAttribute>& attrs, const std::uint8_t image_info[kImageInfoSize],
+                              HANDLE process, HANDLE thread, DWORD pid, DWORD tid) {
+    NTSTATUS out_status = probe::Store<HANDLE>(process_handle, process);
+    if (out_status == st::Success) out_status = probe::Store<HANDLE>(thread_handle, thread);
+    if (out_status == st::Success && create_info) out_status = WriteCreateInfo(create_info, kPsCreateSuccess);
+    for (std::size_t i = 0; i < attrs.size() && out_status == st::Success; ++i) {
+        const PsAttribute& a = attrs[i];
+        const auto number = a.Attribute & kAttrNumberMask;
+        std::size_t written = 0;
+        if (number == kPsClientId) {
+            ClientIdPair id{};
+            id.UniqueProcess = reinterpret_cast<PVOID>(static_cast<std::uintptr_t>(pid));
+            id.UniqueThread = reinterpret_cast<PVOID>(static_cast<std::uintptr_t>(tid));
+            written = std::min<std::size_t>(a.Size, sizeof id);
+            out_status = probe::CopyToUser(a.ValuePtr, &id, written);
+        } else if (number == kPsImageInfo) {
+            written = std::min<std::size_t>(a.Size, kImageInfoSize);
+            out_status = probe::CopyToUser(a.ValuePtr, image_info, written);
+        } else {
+            continue;
+        }
+        if (out_status == st::Success && a.ReturnLength) out_status = probe::Store<SIZE_T>(a.ReturnLength, written);
+    }
+    return out_status;
+}
+
 // ---- NtCreateUserProcess --------------------------------------------------------------------------------------------
 
 NTSTATUS NTAPI Xl_NtCreateUserProcess(PHANDLE process_handle, PHANDLE thread_handle, ACCESS_MASK process_access,
@@ -323,11 +355,15 @@ NTSTATUS NTAPI Xl_NtCreateUserProcess(PHANDLE process_handle, PHANDLE thread_han
                                       POBJECT_ATTRIBUTES thread_attr, ULONG process_flags, ULONG thread_flags,
                                       PVOID params_arg, PVOID create_info, PVOID attribute_list) {
     (void)process_access; (void)thread_access;   // the host child's handles carry full access
-    if (!config::Current().child_processes) {
+    // The rule: once a program has made itself the shell (explorer.exe as the desktop), what it and its descendants start
+    // lives in this host process; without a shell the child is a real host process, and a host that cannot start one
+    // (config::child_processes off) refuses.
+    const bool in_process = user::ShellActive();
+    if (!in_process && !config::Current().child_processes) {
         WARN(process, "NtCreateUserProcess: this host cannot start child processes (config::child_processes is off)");
         return st::NotSupported;
     }
-    if (!g_api.CreateProcessW || !g_api.InitializeProcThreadAttributeList || !g_api.UpdateProcThreadAttribute ||
+    if (!in_process && !g_api.CreateProcessW || !g_api.InitializeProcThreadAttributeList || !g_api.UpdateProcThreadAttribute ||
         !g_api.DeleteProcThreadAttributeList) {
         ERR(process, "NtCreateUserProcess: kernel32 process creation entry points are missing");
         return st::NotSupported;
@@ -470,6 +506,37 @@ NTSTATUS NTAPI Xl_NtCreateUserProcess(PHANDLE process_handle, PHANDLE thread_han
         if (!NtSuccess(s)) return s == st::ObjectNameNotFound ? st::ObjectPathNotFound : s;
     }
 
+    if (in_process) {
+        VirtualProcessRequest vr;
+        vr.image = req.image;
+        vr.command_line = req.command_line;
+        vr.current_directory = req.current_directory;
+        vr.env = req.env;
+        vr.has_env = req.has_env;
+        vr.console_handle = req.console_handle;
+        vr.console_flags = req.console_flags;
+        for (int i = 0; i < 3; ++i) vr.std_handles[i] = req.std_handles[i];
+        vr.suspended = (thread_flags & kThreadCreateSuspended) || (process_flags & kProcessSuspended);
+        HANDLE vprocess = nullptr, vthread = nullptr;
+        DWORD vpid = 0, vtid = 0;
+        s = CreateVirtualProcess(vr, &vprocess, &vthread, &vpid, &vtid);
+        if (!NtSuccess(s)) {
+            Fail(create_info, kPsCreateFailExeFormat);
+            WARN(process, "NtCreateUserProcess: virtual process %ls failed: %08lx", req.image.c_str(), static_cast<unsigned long>(s));
+            return s;
+        }
+        const NTSTATUS out = DeliverCreateOutputs(process_handle, thread_handle, create_info, attr_copy, image_info, vprocess,
+                                                  vthread, vpid, vtid);
+        if (out != st::Success) {
+            if (VirtualProcess* vp = VirtualProcessFromHandle(vprocess)) (void)TerminateVirtualProcess(vp, out);
+            Xl_NtClose(vprocess);
+            Xl_NtClose(vthread);
+            return out;
+        }
+        TRACE(process, "started virtual process %04lx tid %04lx: %ls", vpid, vtid, req.image.c_str());
+        return st::Success;
+    }
+
     // ---- the host command line, environment and flags ------------------------------------------------------------------
     const std::wstring host_exe = g_test_host_exe.empty() ? g_api.host_exe : g_test_host_exe;
     const std::wstring machine_root = config::Current().machine_root;
@@ -608,27 +675,8 @@ NTSTATUS NTAPI Xl_NtCreateUserProcess(PHANDLE process_handle, PHANDLE thread_han
     // ---- outputs ---------------------------------------------------------------------------------------------------------
     // They were probed before the child was started; a caller that unmaps one meanwhile gets the access violation,
     // and the child it will never learn about is not left running.
-    NTSTATUS out_status = probe::Store<HANDLE>(process_handle, pi.hProcess);
-    if (out_status == st::Success) out_status = probe::Store<HANDLE>(thread_handle, pi.hThread);
-    if (out_status == st::Success && create_info) out_status = WriteCreateInfo(create_info, kPsCreateSuccess);
-    for (std::size_t i = 0; i < count && out_status == st::Success; ++i) {
-        const PsAttribute& a = attr_copy[i];
-        const auto number = a.Attribute & kAttrNumberMask;
-        std::size_t written = 0;
-        if (number == kPsClientId) {
-            ClientIdPair id{};
-            id.UniqueProcess = reinterpret_cast<PVOID>(static_cast<std::uintptr_t>(pi.dwProcessId));
-            id.UniqueThread = reinterpret_cast<PVOID>(static_cast<std::uintptr_t>(pi.dwThreadId));
-            written = std::min<std::size_t>(a.Size, sizeof id);
-            out_status = probe::CopyToUser(a.ValuePtr, &id, written);
-        } else if (number == kPsImageInfo) {
-            written = std::min<std::size_t>(a.Size, kImageInfoSize);
-            out_status = probe::CopyToUser(a.ValuePtr, image_info, written);
-        } else {
-            continue;
-        }
-        if (out_status == st::Success && a.ReturnLength) out_status = probe::Store<SIZE_T>(a.ReturnLength, written);
-    }
+    NTSTATUS out_status = DeliverCreateOutputs(process_handle, thread_handle, create_info, attr_copy, image_info, pi.hProcess,
+                                               pi.hThread, pi.dwProcessId, pi.dwThreadId);
     if (out_status != st::Success) {
         TerminateProcess(pi.hProcess, static_cast<UINT>(out_status));
         CloseHandle(pi.hProcess);

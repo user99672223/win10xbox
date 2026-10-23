@@ -238,6 +238,7 @@ struct WindowObj {
     RECT window{}, client{};          // relative to the parent's client area
     RECT normal{};                    // restored position (parent coordinates)
     DWORD tid = 0;
+    DWORD pid = 0;                    // the creating thread's (virtual) process id
     struct UserThread* thread = nullptr;
     // painting
     RECT update{};                    // client coordinates, bounding box of the update region

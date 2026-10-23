@@ -3,6 +3,7 @@
 // See docs/DISPATCHER.md.
 #include "internal.h"
 #include "nt_spawn.h"
+#include "vprocess.h"
 #include "win10xbox/config.h"
 #include "win10xbox/probe.h"
 #include <algorithm>
@@ -178,7 +179,21 @@ void ResolveHost(HostNt& h) {
 #undef R
 }
 
+// A virtual process's thread shows its own PEB and process id to its guest code; the host code the dispatcher runs
+// sees the real ones. TLS-free like SwapIn/SwapOut, which call them.
+inline void ShowHostIdentity(ThreadState* st) {
+    if (!st->guest_peb) return;
+    __writegsqword(teb::Peb, st->host_peb);
+    __writegsqword(teb::ClientIdProcess, st->host_pid);
+}
+inline void ShowGuestIdentity(ThreadState* st) {
+    if (!st->guest_peb) return;
+    __writegsqword(teb::Peb, st->guest_peb);
+    __writegsqword(teb::ClientIdProcess, st->vpid);
+}
+
 void SwapIn(ThreadState* st) {
+    ShowHostIdentity(st);
     st->guest_tls = __readgsqword(teb::ThreadLocalStoragePointer);
     __writegsqword(teb::ThreadLocalStoragePointer, st->host_tls);
     st->guest_fls = __readgsqword(teb::FlsData);
@@ -189,6 +204,7 @@ void SwapOut(ThreadState* st) {
     __writegsqword(teb::ThreadLocalStoragePointer, st->guest_tls);
     st->host_fls = __readgsqword(teb::FlsData);
     __writegsqword(teb::FlsData, st->guest_fls);
+    ShowGuestIdentity(st);
 }
 
 // TEB.TlsSlots index for our ThreadState. Both allocators hand out the lowest
@@ -423,6 +439,11 @@ ThreadState* CurrentThreadState() {
     return st;
 }
 
+DWORD CurrentVirtualPid() {
+    const ThreadState* st = CurrentThreadState();
+    return st && st->vp ? st->vpid : GetCurrentProcessId();
+}
+
 bool GuestViewActive() {
     // Deliberately not via CurrentThreadState(): S() calls this on every
     // syscall, so this skips the cookie check (a diagnostic, not a boundary)
@@ -520,15 +541,20 @@ bool ThreadSlotIntact() {
 void ReserveGuestTlsSlot(const char* why) {
     State& s = S();
     if (s.tls_index >= teb::TlsSlotCount) return;                    // nothing to protect
-    void* bm = PebField<void*>(peb::TlsBitmap);
+    // The initial process's PEB is the real one; a virtual process's is its own, with its own bitmap to protect.
+    ThreadState* self = CurrentThreadState();
+    VirtualProcess* const vp = self ? self->vp : nullptr;
+    volatile LONG* const latch = vp ? &vp->tls_reserved : &s.guest_tls_reserved;
+    const std::uint8_t* const peb_base = vp ? vp->peb : CurrentPeb();
+    void* bm = *reinterpret_cast<void* const*>(peb_base + peb::TlsBitmap);
     // Until Wine's loader_init has installed its own RTL_BITMAP there is no
     // guest allocator yet; stay unlatched and look again on the next call.
     if (!bm || bm == s.host_tls_bitmap) return;
-    if (InterlockedCompareExchange(&s.guest_tls_reserved, 1, 0) != 0) return;
+    if (InterlockedCompareExchange(latch, 1, 0) != 0) return;
     // RTL_BITMAP { ULONG SizeOfBitMap; ULONG *Buffer; } (x64: Buffer at +8)
     const std::uint32_t size = *static_cast<std::uint32_t*>(bm);
     auto* buffer = *reinterpret_cast<std::uint32_t**>(static_cast<std::uint8_t*>(bm) + 8);
-    const auto* own_bits = reinterpret_cast<const std::uint32_t*>(CurrentPeb() + peb::TlsBitmapBits);
+    const auto* own_bits = reinterpret_cast<const std::uint32_t*>(peb_base + peb::TlsBitmapBits);
     if (!buffer || s.tls_index >= size) {
         ERR(dispatch, "guest TLS bitmap at %p unusable (size %lu, buffer %p): slot %lu NOT reserved (%s)", bm,
             static_cast<unsigned long>(size), static_cast<void*>(buffer), s.tls_index, why);
@@ -565,6 +591,8 @@ ThreadState* AttachThreadState(std::uint32_t flags) {
     }
     st->host_tls = st->guest_tls = __readgsqword(teb::ThreadLocalStoragePointer);
     st->host_fls = st->guest_fls = __readgsqword(teb::FlsData);
+    st->host_peb = __readgsqword(teb::Peb);
+    st->host_pid = static_cast<std::uint32_t>(__readgsqword(teb::ClientIdProcess));
     st->flags = flags;
     st->tid = GetCurrentThreadId();
     st->magic = kThreadStateMagic;   // before the TEB slot points at it
@@ -927,7 +955,7 @@ extern "C" std::uint32_t win10xbox_syscall_nargs(std::uint32_t id) {
     return e ? e->nargs : 0;
 }
 
-extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
+static std::int64_t DispatchImpl(Frame* f) {
     // A syscall never changes the thread's last error / last status, but the
     // host Win32 calls made below (and tracing) do: both live in the TEB the
     // guest shares, so put them back.
@@ -939,7 +967,10 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
     // reserved against the guest's allocator -- ahead of any guest DLL's
     // DLL_PROCESS_ATTACH, which is the first thing that could call TlsAlloc.
     // One relaxed load per syscall until it latches.
-    if (!s.guest_tls_reserved) ReserveGuestTlsSlot("first guest syscall");
+    {
+        const ThreadState* const t0 = CurrentThreadState();
+        if (!(t0 && t0->vp ? t0->vp->tls_reserved : s.guest_tls_reserved)) ReserveGuestTlsSlot("first guest syscall");
+    }
     if (win10xbox_guest_view_violations || trace::DroppedUnsafe()) {
         static volatile LONG view_reported = 0;
         if (!InterlockedExchange(&view_reported, 1)) {
@@ -1060,6 +1091,18 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
     if (self) { self->syscall_error = outer_error; self->syscall_error_set = outer_error_set; }
     if (win32u) return static_cast<std::int64_t>(result64);
     return status;
+}
+
+// The entry stub swapped the TLS and FLS pointers and raised depth to 1; a virtual process's thread also swaps the PEB and
+// process id the TEB shows (what a syscall's host code reads) and swaps them back before the stub returns to the guest.
+// Nested entries (depth > 1) are already in the host view. Calls that leave through LeaveToGuestView swap them there.
+extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
+    ThreadState* const st = CurrentThreadState();
+    if (!st || !st->guest_peb || st->depth != 1) return DispatchImpl(f);
+    ShowHostIdentity(st);
+    const std::int64_t r = DispatchImpl(f);
+    ShowGuestIdentity(st);
+    return r;
 }
 
 // ---- Emulated objects ------------------------------------------------------------

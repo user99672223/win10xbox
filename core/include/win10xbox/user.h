@@ -65,6 +65,14 @@ void ScreenSize(std::int32_t* width, std::int32_t* height);
 // <path>, written when the guest has exited) and by host-uwp (LocalState\screen.bmp).
 bool WriteScreenshot(const std::wstring& path);
 
+// True while a program is the desktop (it adopted the desktop window: explorer.exe as the shell, before it even sets the
+// shell window) or has set the shell window. While it is, CreateProcess starts virtual processes in this host
+// (docs/DISPATCHER.md, "Child processes").
+bool ShellActive();
+// A virtual process (pid as GetWindowThreadProcessId reports it) ended: its threads' windows and hooks go with it, as
+// when the kernel tears a process down.
+void ProcessExited(std::uint32_t pid);
+
 // Counters for tests and status files.
 struct Stats {
     std::uint64_t windows_created = 0, windows_destroyed = 0;

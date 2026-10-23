@@ -948,6 +948,7 @@ HWND WINAPI NtUserCreateWindowEx(DWORD ex_style, UNICODE_STRING* class_name, UNI
     w->unicode = cls->proc.w && cls->proc.a ? !ansi : cls->proc.w != nullptr;
     w->extra.assign(static_cast<std::size_t>(cls->win_extra), 0);
     w->tid = t.tid;
+    w->pid = dispatch::detail::CurrentVirtualPid();
     w->thread = &t;
     w->dpi_context = t.info && t.info->dpi_context ? t.info->dpi_context : s.process_dpi_context;
     if ((w->style & (WS_CHILD | WS_POPUP)) != WS_CHILD) {
@@ -1367,7 +1368,7 @@ ULONG_PTR WINAPI NtUserCallHwndParam(HWND hwnd, DWORD_PTR param, DWORD code) {
         return 0;
     }
     case abi::HwndParamGetWindowThread: {
-        if (param) *reinterpret_cast<DWORD*>(param) = GetCurrentProcessId();
+        if (param) *reinterpret_cast<DWORD*>(param) = w->pid ? w->pid : GetCurrentProcessId();
         return w->tid;
     }
     case abi::HwndParamIsChild: {
@@ -1518,7 +1519,7 @@ HANDLE WINAPI NtUserQueryWindow(HWND hwnd, int cls) {
     UserThread* t = FindUserThreadById(w->tid);
     switch (cls) {
     case abi::QwWindowProcess:
-    case abi::QwWindowProcess2: return UlongToHandle(GetCurrentProcessId());
+    case abi::QwWindowProcess2: return UlongToHandle(w->pid ? w->pid : GetCurrentProcessId());
     case abi::QwWindowThread: return UlongToHandle(w->tid);
     case abi::QwWindowActiveWindow: return t ? t->active : nullptr;
     case abi::QwWindowFocusWindow: return t ? t->focus : nullptr;

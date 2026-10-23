@@ -193,7 +193,7 @@ ATOM WINAPI NtUserRegisterClassExWOW(const WNDCLASSEXW* wc, UNICODE_STRING* name
         return 0;
     }
     HINSTANCE instance = wc->hInstance;
-    if (!instance) instance = dispatch::detail::PebField<HINSTANCE>(dispatch::detail::peb::ImageBaseAddress);
+    if (!instance) instance = dispatch::detail::GuestPebField<HINSTANCE>(dispatch::detail::peb::ImageBaseAddress);
     const std::size_t len = name->Length / sizeof(WCHAR);
     const bool local = !builtin && !(wc->style & CS_GLOBALCLASS);
     // a class of the same name and instance (or a global one of the same name) already exists

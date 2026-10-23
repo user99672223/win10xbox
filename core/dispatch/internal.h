@@ -64,6 +64,7 @@ namespace teb {
 constexpr std::uint32_t StackBase                 = 0x08;
 constexpr std::uint32_t StackLimit                = 0x10;
 constexpr std::uint32_t ThreadLocalStoragePointer = 0x58;
+constexpr std::uint32_t ClientIdProcess          = 0x40;   // TEB.ClientId.UniqueProcess
 constexpr std::uint32_t Peb                       = 0x60;
 constexpr std::uint32_t DeallocationStack         = 0x1478;
 constexpr std::uint32_t LastErrorValue            = 0x68;
@@ -146,6 +147,14 @@ struct ThreadState {
     // The start address the guest asked for (the EXE entry for the main thread, NtCreateThreadEx's StartRoutine
     // otherwise): what ThreadQuerySetWin32StartAddress reports. The host thread itself starts in GuestThreadProc.
     void*         win32_start;
+    // Virtual processes (vprocess.h, docs/DISPATCHER.md "Child processes"): a second guest view in this host process.
+    // vp is null for the initial process. guest_peb is the PEB the thread's guest code sees (TEB.ProcessEnvironmentBlock
+    // in the guest view; 0 = the real PEB, which the initial process owns); host_peb is the real one, shown in the host
+    // view. vpid / host_pid are what TEB.ClientId.UniqueProcess shows in the guest / host view. All four are written
+    // once, before the thread's guest code runs.
+    struct VirtualProcess* vp;
+    std::uint64_t guest_peb, host_peb;
+    std::uint32_t vpid, host_pid;
 };
 static_assert(offsetof(ThreadState, host_tls) == 0x00);
 static_assert(offsetof(ThreadState, host_fls) == 0x08);
@@ -174,6 +183,14 @@ void DetachThreadState();
 std::uint32_t LeaveToGuestView();
 void ReenterHostView(std::uint32_t depth);
 std::vector<ThreadState*> GuestThreads();   // snapshot
+// The (virtual) process id the calling thread's guest code sees: its virtual process, else the host process.
+DWORD CurrentVirtualPid();
+// The PEB of the calling thread's guest process: its virtual process's private PEB, else the real one. Host view only.
+template <class T> T& GuestPebField(std::uint32_t off) {
+    ThreadState* st = CurrentThreadState();
+    const std::uint8_t* base = st && st->guest_peb ? reinterpret_cast<const std::uint8_t*>(st->guest_peb) : CurrentPeb();
+    return *reinterpret_cast<T*>(const_cast<std::uint8_t*>(base) + off);
+}
 // See ThreadState::syscall_error. Host view only (from inside a syscall).
 void SetSyscallLastError(std::uint32_t error);
 
@@ -546,7 +563,7 @@ NTSTATUS CreateGuestThread(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTE
 // Current guest thread is exiting with `code` (NtTerminateThread on itself).
 [[noreturn]] void GuestThreadExit(NTSTATUS code);
 void ForgetGuestThread(DWORD tid);                       // another guest thread is being terminated
-void TerminateOtherGuestThreads(NTSTATUS code);          // NtTerminateProcess(NULL, code)
+void TerminateOtherGuestThreads(NTSTATUS code, bool whole_host = false);          // NtTerminateProcess(NULL, code)
 
 // ---- Emulated syscalls implemented here (exact NT signatures) -------------------
 NTSTATUS NTAPI Xl_NtCreateFile(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, PLARGE_INTEGER, ULONG, ULONG,

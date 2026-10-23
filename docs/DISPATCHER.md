@@ -474,6 +474,29 @@ Windows asks for) answer `STATUS_PRIVILEGE_NOT_HELD` and so does every class not
 zone setters therefore fail with `ERROR_PRIVILEGE_NOT_HELD`, as they do for an unprivileged Windows user, and the virtual
 clock and the machine identity stay the layer's.
 
+### Virtual processes (D1-b): `CreateProcess` under a shell
+
+While a program is the desktop (`user::ShellActive()`: explorer.exe adopted the desktop window or set the shell window; explorer starts its
+command-line program *before* it sets the shell window, hence the adopted desktop), `Xl_NtCreateUserProcess` does not start a host process: it builds a
+*virtual process* (`core/dispatch/vprocess.h`, implemented at the end of `process.cpp`) and returns a process handle that is a duplicate of a manual-reset
+host event (waitable, signalled when the process ends) and the real host handle of the main thread. Everything above the image check (attributes, parameter
+block, image information, `Fail` states) is shared with the host-child path; the choice is made after it. Per process: a second mapping of the guest ntdll
+(`MapGuestNtdll`, relocated by our loader; own syscall stubs and Rtl forwarding), the EXE (`MapMainImage`), a private PEB (4 KiB: the host's PEB as
+`SavePebFields` saw it before the initial process took it over, plus image base, parameters and OS version), a parameter block from `BuildParameterBlock`
+(console, standard handles and startup placement from the host's original block, standard handles from the request when given), and a main thread started by
+`CreateGuestThreadIn` that runs `GuestThreadProc`/`EnterGuest` against *its* `LdrInitializeThunk`. A virtual process's threads carry `ThreadState::vp`,
+`guest_peb`, `vpid`: `SwapOut` (and the entry stub's return, through `win10xbox_dispatch`) shows the private PEB and pid in the TEB, `SwapIn` and the host view
+show the real ones, so host code inside a syscall reads the host's PEB and guest code its own (`GuestPebField` is for host code that needs the caller's guest PEB:
+core/user's GDI table and kernel callback table). `ReserveGuestTlsSlot` and `NoteGuestEntry` run per process. NtQueryInformationProcess answers
+ProcessBasicInformation (exit status 259 until it ends, its PEB and pids), the image name and image information for the virtual process itself and for a
+holder of its handle (a duplicate made with NtDuplicateObject is tracked, a handle that is not one of ours is a host handle as before); NtTerminateProcess on a
+handle ends its other threads and signals it, on the current process (or NULL: other threads) it ends the caller's virtual process only; the last thread to
+exit does the same (`CountGuestThreads(vp)`). core/user records the creating thread's virtual pid in each window (`GetWindowThreadProcessId`,
+`NtUserQueryWindow`), and `user::ProcessExited` destroys a process's windows and hooks when it ends. Known limits: no memory or crash isolation, one shared
+host heap, `NtOpenProcess(pid)` and `GetProcessTimes` of a virtual pid are host calls and fail, inheritance is by sharing (every handle is valid in every
+virtual process), a process killed from outside does not run its DLL detach, classes registered under the same name by two processes with the same `hInstance`
+clash (core/user keeps one class table).
+
 ## Registry persistence (D13)
 
 1. Hives stay read-only; every guest write lands in the in-memory overlay. The overlay is also kept in one file, `<machine>\registry-overlay.bin` (the `SaveOverlay` format), which `process::Launch` loads right after `registry::Initialize` (`registry::EnablePersistence`) when it exists.

@@ -29,7 +29,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x000c | NtReplyPort | 2 | PassThrough |  |
 | 0x000d | NtSetInformationThread | 4 | PassThrough |  |
 | 0x000e | NtSetEvent | 2 | PassThrough |  |
-| 0x000f | NtClose | 1 | Translate | emulated handles (registry, token, image sections) routed to their owner |
+| 0x000f | NtClose | 1 | Translate | emulated handles (registry, token, image sections) routed to their owner; virtual process handles forgotten (D1-b) |
 | 0x0010 | NtQueryObject | 5 | Translate | directory/link handles are answered here, names of named host objects are mapped back to the guest path, a file handle names the guest NT path, not the host device path |
 | 0x0011 | NtQueryInformationFile | 5 | Translate | FileNameInformation/FileNormalizedNameInformation/FileAllInformation: the name is the guest view, built from a private reply |
 | 0x0012 | NtOpenKey | 3 | Emulate | registry |
@@ -39,7 +39,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0016 | NtQueryKey | 5 | Emulate | registry |
 | 0x0017 | NtQueryValueKey | 6 | Emulate | registry |
 | 0x0018 | NtAllocateVirtualMemory | 6 | PassThrough |  |
-| 0x0019 | NtQueryInformationProcess | 5 | Translate | ProcessImageInformation/ImageFileName* from the guest image |
+| 0x0019 | NtQueryInformationProcess | 5 | Translate | ProcessImageInformation/ImageFileName* from the guest image; a virtual process answers ProcessBasicInformation and its own image (D1-b) |
 | 0x001a | NtWaitForMultipleObjects32 | 0 | PassThrough |  |
 | 0x001b | NtWriteFileGather | 9 | PassThrough |  |
 | 0x001c | NtSetInformationProcess | 4 | PassThrough |  |
@@ -58,7 +58,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0029 | NtAccessCheckAndAuditAlarm | 11 | PassThrough |  |
 | 0x002a | NtUnmapViewOfSection | 2 | Translate | views of our image sections are mapped by core/loader |
 | 0x002b | NtReplyWaitReceivePortEx | 5 | PassThrough |  |
-| 0x002c | NtTerminateProcess | 2 | Emulate | NULL handle: guest threads only; current process: process::GuestExit |
+| 0x002c | NtTerminateProcess | 2 | Emulate | NULL handle: guest threads only; current process: process::GuestExit, or its virtual process only (D1-b); a virtual process handle ends that process |
 | 0x002d | NtSetEventBoostPriority | 1 | PassThrough |  |
 | 0x002e | NtReadFileScatter | 9 | PassThrough |  |
 | 0x002f | NtOpenThreadTokenEx | 5 | Emulate | token |
@@ -74,7 +74,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0039 | NtFsControlFile | 10 | Translate | FSCTL_SET_REPARSE_POINT/FSCTL_GET_REPARSE_POINT: the target of a junction or absolute symbolic link goes through the VFS (guest name to host name and back) |
 | 0x003a | NtWriteVirtualMemory | 5 | PassThrough |  |
 | 0x003b | NtCloseObjectAuditAlarm | 3 | PassThrough |  |
-| 0x003c | NtDuplicateObject | 7 | Translate | emulated handles (registry, token, image sections) routed to their owner |
+| 0x003c | NtDuplicateObject | 7 | Translate | emulated handles (registry, token, image sections) routed to their owner; virtual process handles followed (D1-b) |
 | 0x003d | NtQueryAttributesFile | 2 | Translate | VFS path rewrite |
 | 0x003e | NtClearEvent | 1 | PassThrough |  |
 | 0x003f | NtReadVirtualMemory | 5 | PassThrough |  |
@@ -151,7 +151,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0086 | NtCreateTimer | 4 | Translate | named objects: the guest name maps onto a host object under the layer prefix (nt_object.cpp) |
 | 0x0087 | NtCreateToken | 13 | Emulate | privileged: refused like Windows does for an unprivileged caller |
 | 0x0088 | NtCreateTransaction | 10 | PassThrough |  |
-| 0x0089 | NtCreateUserProcess | 11 | Translate | D1: spawns a host process running the host executable on the guest image (host-win32, config child_processes); STATUS_NOT_SUPPORTED elsewhere |
+| 0x0089 | NtCreateUserProcess | 11 | Translate | D1: spawns a host process running the host executable on the guest image (host-win32, config child_processes); a virtual process in this host while a shell runs (D1-b); STATUS_NOT_SUPPORTED elsewhere |
 | 0x008a | NtDebugActiveProcess | 2 | Emulate | STATUS_NOT_SUPPORTED: no debugger support (E6) |
 | 0x008b | NtDebugContinue | 3 | PassThrough |  |
 | 0x008c | NtDeleteAtom | 1 | PassThrough |  |

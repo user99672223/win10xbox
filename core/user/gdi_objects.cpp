@@ -115,7 +115,7 @@ HGDIOBJ GdiHandleTable::Alloc(GdiObject* obj, DWORD type, void* user_pointer) {
     e.Unique = abi::MakeUnique(ext, false, gen);
     e.Type = static_cast<UCHAR>(ext & 0x1f);
     e.Flags = 0;
-    e.Owner = GetCurrentProcessId() & 0xffff;
+    e.Owner = dispatch::detail::CurrentVirtualPid() & 0xffff;
     e.Object = reinterpret_cast<UINT64>(obj);
     e.UserPointer = reinterpret_cast<UINT64>(user_pointer);
     objects_[idx] = obj;

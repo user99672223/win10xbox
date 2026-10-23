@@ -123,6 +123,11 @@ win10xbox_add_guest(guest_window_menu)
 add_executable(guest_shellhook shellhook.c)
 target_link_libraries(guest_shellhook PRIVATE user32)
 win10xbox_add_guest(guest_shellhook)
+# A program the shell starts that starts another (tests/guest/shell_launch.c, core/dispatch/vprocess.h): two virtual
+# processes of one host, two windows on one screen. Needs guest_window in the machine folder.
+add_executable(guest_shell_launch shell_launch.c)
+target_link_libraries(guest_shell_launch PRIVATE user32)
+win10xbox_add_guest(guest_shell_launch)
 # Cursors and icons (tests/guest/cursor.c): LoadCursor of Wine's own IDC_ARROW / IDC_IBEAM, GetIconInfo, GetCursorInfo,
 # SetCursor, ShowCursor, DrawIconEx, and the cursor composed onto the screen, which the host looks at with screenshots
 # taken by the inject script. Nothing to see without that injection, so there is no native smoke test.

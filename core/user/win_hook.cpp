@@ -81,7 +81,7 @@ LRESULT CallOneHook(State& s, HookObj* h, int code, WPARAM wp, LPARAM lp, std::s
     auto* p = reinterpret_cast<abi::WinHookParams*>(buf.data());
     p->proc = reinterpret_cast<void*>(h->proc);
     p->handle = h->handle;
-    p->pid = GetCurrentProcessId();
+    p->pid = dispatch::detail::CurrentVirtualPid();
     p->tid = h->tid;
     p->id = h->id;
     p->code = code;

@@ -286,4 +286,27 @@ HWND WINAPI NtUserSetTaskmanWindow(HWND hwnd) {
 }
 
 }  // namespace sys
+
+void ProcessExited(std::uint32_t pid) {
+    detail::LockGuard lock;
+    detail::State* s = detail::StateIfAny();
+    if (!s || !pid) return;
+    std::vector<DWORD> tids;
+    for (const detail::WindowObj* o : s->windows)
+        if (o && o->pid == pid && o->tid && std::find(tids.begin(), tids.end(), o->tid) == tids.end()) tids.push_back(o->tid);
+    for (DWORD tid : tids)
+        if (detail::UserThread* t = detail::FindUserThreadById(tid)) {
+            t->exiting = true;
+            detail::RemoveThreadHooks(tid);
+            detail::DestroyThreadWindows(t);
+        }
+}
+
+bool ShellActive() {
+    detail::LockGuard lock;
+    const detail::State* s = detail::StateIfAny();
+    if (!s) return false;
+    const detail::WindowObj* desk = detail::Win(s->desktop);
+    return (desk && desk->tid) || detail::Win(s->shell_window) != nullptr;
+}
 }  // namespace win10xbox::user

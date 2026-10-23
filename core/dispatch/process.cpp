@@ -2,7 +2,9 @@
 // Sequence and PEB take-over are documented in docs/DISPATCHER.md.
 #include "internal.h"
 #include "nt_spawn.h"
+#include "vprocess.h"
 #include "win10xbox/config.h"
+#include "win10xbox/user.h"
 #if WIN10XBOX_HAVE_VFS
 #include "win10xbox/vfs.h"
 #endif
@@ -62,6 +64,8 @@ struct Globals {
     volatile LONG exit_code = 0;
     volatile LONG exited = 0;
     SavedPeb peb;
+    std::uint8_t peb_template[0x800];       // the host's PEB as it was before the take-over: a virtual process starts from it
+    bool have_peb_template = false;
     std::vector<wchar_t> environment;
     void* params = nullptr;                // what we installed (Wine replaces it in init_user_process_params)
     std::size_t stack_reserve = 1 << 20;
@@ -82,6 +86,7 @@ struct GuestStart {
     std::uint32_t flags;
     bool wait_for_peb = false;         // main thread: block until the PEB take-over is done
     bool clear_skip_attach = false;    // we added SKIP_THREAD_ATTACH for the host's sake
+    VirtualProcess* vp = nullptr;      // the virtual process the thread belongs to (null: the initial process)
 };
 constexpr std::uint32_t kTebSameTebFlags = 0x17EE;
 constexpr USHORT kSkipThreadAttach = 1u << 3;
@@ -129,6 +134,10 @@ void RegisterHostUnwindTables() {
 void SavePebFields() {
     SavedPeb& s = G().peb;
     if (s.saved) return;
+    if (!G().have_peb_template) {
+        std::memcpy(G().peb_template, CurrentPeb(), sizeof G().peb_template);
+        G().have_peb_template = true;
+    }
     s.image_base = PebField<void*>(peb::ImageBaseAddress);
     s.ldr = PebField<void*>(peb::Ldr);
     s.params = PebField<void*>(peb::ProcessParameters);
@@ -336,7 +345,7 @@ __declspec(noinline) void ProbeStack(std::size_t bytes) {
         (void)*reinterpret_cast<volatile std::uint8_t*>(a);
 }
 
-[[noreturn]] __declspec(noinline) void EnterGuest(void* start, void* arg) {
+[[noreturn]] __declspec(noinline) void EnterGuest(void* start, void* arg, VirtualProcess* vp) {
     ProbeStack(0x14000);
     CONTEXT ctx;   // CONTEXT is declared 16-byte aligned
     std::memset(&ctx, 0, sizeof ctx);
@@ -345,11 +354,11 @@ __declspec(noinline) void ProbeStack(std::size_t bytes) {
     ctx.EFlags &= ~0x500u;   // TF, DF
     const auto top = static_cast<std::uint64_t>(__readgsqword(teb::StackBase));
     ctx.Rsp = ((top - 0x100) & ~std::uint64_t(0xf)) - 8;   // as if entered by `call`
-    ctx.Rip = reinterpret_cast<std::uint64_t>(G().user_thread_start);
+    ctx.Rip = reinterpret_cast<std::uint64_t>(vp ? vp->user_thread_start : G().user_thread_start);
     ctx.Rcx = reinterpret_cast<std::uint64_t>(start);
     ctx.Rdx = reinterpret_cast<std::uint64_t>(arg);
     TRACE(process, "thread %04lx entering guest: start=%p arg=%p", GetCurrentThreadId(), start, arg);
-    const auto ldr_init = G().ldr_init;
+    const auto ldr_init = vp ? reinterpret_cast<PFN_LdrInitializeThunk>(vp->ldr_init) : G().ldr_init;
     // The guest starts with NO TLS vector, like a fresh thread, not with the host's: ThreadState::host_tls
     // already holds the host's (AttachThreadState) and core/asm swaps it back in on every syscall. Wine's
     // loader installs its own vector in alloc_thread_tls, but before that, while it resolves the static
@@ -360,6 +369,11 @@ __declspec(noinline) void ProbeStack(std::size_t bytes) {
     // it is: Wine replaces FlsSlots unconditionally in its thread init.
     // Nothing between this store and the call touches TLS (ldr_init was read above).
     __writegsqword(teb::ThreadLocalStoragePointer, 0);
+    if (vp) {
+        // The guest view of a virtual process: its own PEB and process id (SwapIn/SwapOut keep them from here on).
+        __writegsqword(teb::Peb, reinterpret_cast<std::uint64_t>(vp->peb));
+        __writegsqword(teb::ClientIdProcess, vp->pid);
+    }
     ldr_init(&ctx, 0, 0, 0);
     ERR(process, "guest LdrInitializeThunk returned");
     detail::GuestThreadExit(st::Unsuccessful);
@@ -371,10 +385,16 @@ DWORD WINAPI GuestThreadProc(void* p) {
     void* arg = gs->arg;
     std::uint32_t flags = gs->flags;
     const bool wait_for_peb = gs->wait_for_peb, clear_skip = gs->clear_skip_attach;
+    VirtualProcess* const vp = gs->vp;
     delete gs;
-    if (ThreadState* ts = AttachThreadState(kThreadGuest | flags))
+    if (ThreadState* ts = AttachThreadState(kThreadGuest | flags)) {
         ts->win32_start = start;
-    else
+        if (vp) {
+            ts->vp = vp;
+            ts->guest_peb = reinterpret_cast<std::uint64_t>(vp->peb);
+            ts->vpid = vp->pid;
+        }
+    } else
         WARN(process, "no thread state: guest/host TEB view switching disabled on this thread");
     if (clear_skip) {
         auto* tf = reinterpret_cast<USHORT*>(static_cast<std::uintptr_t>(__readgsqword(0x30)) + kTebSameTebFlags);
@@ -386,7 +406,7 @@ DWORD WINAPI GuestThreadProc(void* p) {
         SetEvent(G().thread_ready);
         WaitForSingleObject(G().peb_ready, INFINITE);
     }
-    EnterGuest(start, arg);
+    EnterGuest(start, arg, vp);
     return 0;   // not reached
 }
 
@@ -394,7 +414,7 @@ std::wstring Quote(const std::wstring& s) {
     return s.find_first_of(L" \t") == std::wstring::npos ? s : L"\"" + s + L"\"";
 }
 
-NTSTATUS MapGuestNtdll(const std::wstring& root) {
+NTSTATUS MapGuestNtdll(const std::wstring& root, PFN_LdrInitializeThunk* ldr_init_out, void** user_thread_start_out) {
 #if WIN10XBOX_HAVE_VFS
     std::wstring path = vfs::BuiltinDllPath(L"ntdll");
     if (path.empty()) path = root + L"\\Windows\\builtin\\ntdll.dll";
@@ -431,9 +451,9 @@ NTSTATUS MapGuestNtdll(const std::wstring& root) {
         ERR(process, "guest ntdll has no unix call dispatcher (ordinal %u): not our Wine PE ntdll?", static_cast<unsigned>(wine_ordinal::kUnixCallDispatcher));
     if (auto* p = static_cast<std::uint64_t*>(loader::FindExportByOrdinal(base, wine_ordinal::kUnixlibHandle)))
         *p = NtdllUnixLibHandle();
-    G().ldr_init = reinterpret_cast<PFN_LdrInitializeThunk>(loader::FindExport(base, "LdrInitializeThunk"));
-    G().user_thread_start = loader::FindExport(base, "RtlUserThreadStart");
-    if (!G().ldr_init || !G().user_thread_start) {
+    *ldr_init_out = reinterpret_cast<PFN_LdrInitializeThunk>(loader::FindExport(base, "LdrInitializeThunk"));
+    *user_thread_start_out = loader::FindExport(base, "RtlUserThreadStart");
+    if (!*ldr_init_out || !*user_thread_start_out) {
         ERR(process, "guest ntdll lacks LdrInitializeThunk/RtlUserThreadStart");
         return st::InvalidImageFormat;
     }
@@ -442,11 +462,12 @@ NTSTATUS MapGuestNtdll(const std::wstring& root) {
     s = FinalizeView(view);
     if (!NtSuccess(s)) return s;
     TRACE(process, "guest ntdll at %p: %zu stubs, LdrInitializeThunk=%p", base, view->stubs,
-          reinterpret_cast<void*>(G().ldr_init));
+          reinterpret_cast<void*>(*ldr_init_out));
     return st::Success;
 }
 
-NTSTATUS MapMainImage(const std::wstring& guest_path, void** base_out, std::shared_ptr<ImageSection>* sec_out) {
+NTSTATUS MapMainImage(const std::wstring& guest_path, void** base_out, std::shared_ptr<ImageSection>* sec_out,
+                      std::size_t* stack_reserve_out) {
     std::wstring nt = L"\\??\\" + guest_path;
     UNICODE_STRING us{static_cast<USHORT>(nt.size() * 2), static_cast<USHORT>(nt.size() * 2), nt.data()};
     OBJECT_ATTRIBUTES oa{};
@@ -485,19 +506,22 @@ NTSTATUS MapMainImage(const std::wstring& guest_path, void** base_out, std::shar
     if (!NtSuccess(s)) { ERR(process, "mapping %ls failed: %08lx", guest_path.c_str(), static_cast<unsigned long>(s)); return s; }
     std::uint64_t reserve;
     std::memcpy(&reserve, sec->info + 0x10, 8);
-    G().stack_reserve = std::max<std::size_t>(static_cast<std::size_t>(reserve), 1 << 20);
+    *stack_reserve_out = std::max<std::size_t>(static_cast<std::size_t>(reserve), 1 << 20);
     *base_out = base;
     *sec_out = sec;
     return st::Success;
 }
 
-NTSTATUS BuildProcessParameters(const LaunchOptions& o, const std::wstring& image) {
+// Builds the process parameter block for `image`; the environment block it points at is left in `block`. `old` is a
+// block whose console, standard handles and startup fields the new one inherits (the host's, or for a virtual process
+// one filled from the CreateProcess request); null inherits nothing.
+NTSTATUS BuildParameterBlock(const LaunchOptions& o, const std::wstring& image, const void* old_params,
+                             std::vector<wchar_t>& block, void** params_out) {
     std::wstring cmdline = o.command_line.empty() ? Quote(image) : o.command_line;
     std::wstring curdir = o.current_directory.empty() ? DefaultCurrentDirectory() : o.current_directory;
     if (curdir.empty() || curdir.back() != L'\\') curdir += L'\\';
     std::vector<std::wstring> env = o.environment.empty() ? DefaultEnvironment() : o.environment;
     EnsureWineUserName(&env);
-    auto& block = G().environment;
     block.clear();
     for (auto& e : env) { block.insert(block.end(), e.begin(), e.end()); block.push_back(0); }
     block.push_back(0);
@@ -546,7 +570,7 @@ NTSTATUS BuildProcessParameters(const LaunchOptions& o, const std::wstring& imag
         }
     }
 
-    void* old = PebField<void*>(peb::ProcessParameters);
+    void* const old = const_cast<void*>(old_params);
     // Wine computes the default DLL search path only when DllPath.Buffer is NULL.
     auto& dll = At<UNICODE_STRING>(params, pp::DllPath);
     dll.Buffer = nullptr;
@@ -577,10 +601,18 @@ NTSTATUS BuildProcessParameters(const LaunchOptions& o, const std::wstring& imag
         // Without STARTF_USESHOWWINDOW the CRT's WinMain gets SW_SHOWDEFAULT, as from an ordinary launch.
         At<ULONG>(params, pp::WindowFlags) &= ~0x1u;   // STARTF_USESHOWWINDOW
     }
-    G().params = params;
-    PebField<void*>(peb::ProcessParameters) = params;
+    *params_out = params;
     TRACE(process, "process parameters: image=%ls cmdline=%ls curdir=%ls (%zu env vars)", image.c_str(), cmdline.c_str(),
           curdir.c_str(), env.size());
+    return st::Success;
+}
+
+NTSTATUS BuildProcessParameters(const LaunchOptions& o, const std::wstring& image) {
+    void* params = nullptr;
+    const NTSTATUS s = BuildParameterBlock(o, image, PebField<void*>(peb::ProcessParameters), G().environment, &params);
+    if (s) return s;
+    G().params = params;
+    PebField<void*>(peb::ProcessParameters) = params;
     return st::Success;
 }
 
@@ -724,13 +756,13 @@ int Launch(const LaunchOptions& opts) {
     PrimeAudio(root);   // the host audio thread and stack, likewise before the take-over (unix_mmdevapi.cpp)
     RegisterNtdllUnixLib();
 
-    if ((s = MapGuestNtdll(root))) return static_cast<int>(s);
+    if ((s = MapGuestNtdll(root, &g.ldr_init, &g.user_thread_start))) return static_cast<int>(s);
 
     const std::wstring image = NormalizeGuestPath(opts.image_path);
     g.image_path = image;
     void* exe_base = nullptr;
     std::shared_ptr<ImageSection> exe;
-    if ((s = MapMainImage(image, &exe_base, &exe))) { g.image_path.clear(); return static_cast<int>(s); }
+    if ((s = MapMainImage(image, &exe_base, &exe, &g.stack_reserve))) { g.image_path.clear(); return static_cast<int>(s); }
     SetMainImage(exe);
 
     std::uint32_t entry_rva;
@@ -812,7 +844,7 @@ int WaitForGuest(DWORD timeout_ms) {
     // that dies inside a registry call would leave the registry's mutex held.
     registry::PersistOverlay();
 #endif
-    TerminateOtherGuestThreads(static_cast<NTSTATUS>(exit_code));
+    TerminateOtherGuestThreads(static_cast<NTSTATUS>(exit_code), true);
     RestorePebFields();
     ThreadState* self = CurrentThreadState();
     const bool caller_owned = self && (self->flags & kThreadCallerOwned);
@@ -848,9 +880,12 @@ bool MapHostDirectory(wchar_t letter, const std::wstring& host_dir) {
 
 namespace win10xbox::dispatch::detail {
 
-NTSTATUS CreateGuestThread(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr, PVOID start, PVOID arg,
-                           ULONG flags, SIZE_T zero_bits, SIZE_T stack_size, SIZE_T max_stack, PVOID attr_list) {
+// A guest thread of `vp` (null: the initial process).
+static NTSTATUS CreateGuestThreadIn(VirtualProcess* vp, PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr,
+                                    PVOID start, PVOID arg, ULONG flags, SIZE_T zero_bits, SIZE_T stack_size,
+                                    SIZE_T max_stack, PVOID attr_list) {
     auto* gs = new process::GuestStart{start, arg, 0};
+    gs->vp = vp;
     // A Wine host ntdll runs its thread attach against Peb->ImageBaseAddress
     // (now the guest EXE, unknown to it): skip the host's attach there and
     // restore the flag for the guest's loader in GuestThreadProc.
@@ -867,6 +902,13 @@ NTSTATUS CreateGuestThread(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTE
     return s;
 }
 
+NTSTATUS CreateGuestThread(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr, PVOID start, PVOID arg,
+                           ULONG flags, SIZE_T zero_bits, SIZE_T stack_size, SIZE_T max_stack, PVOID attr_list) {
+    const ThreadState* self = CurrentThreadState();
+    return CreateGuestThreadIn(self ? self->vp : nullptr, handle, access, attr, start, arg, flags, zero_bits, stack_size,
+                               max_stack, attr_list);
+}
+
 // The guest's RtlUserThreadStart thunk, captured while mapping the guest ntdll
 // (process::G()). Defined here, in detail, so NoteGuestEntry (nt_section.cpp) can
 // recognise the launch continuation; external linkage matches internal.h.
@@ -874,8 +916,10 @@ void* GuestEntryThunk() { return process::G().user_thread_start; }
 
 [[noreturn]] void GuestThreadExit(NTSTATUS code) {
     ThreadState* self = CurrentThreadState();
-    std::size_t guests = GuestThreads().size();
-    if (self && (self->flags & kThreadGuest) && guests <= 1) process::GuestExit(static_cast<std::uint32_t>(code));
+    if (self && (self->flags & kThreadGuest) && CountGuestThreads(self->vp) <= 1) {
+        if (self->vp) ExitVirtualProcess(self->vp, code);
+        process::GuestExit(static_cast<std::uint32_t>(code));
+    }
     DetachThreadState();
     for (;;) Host().NtTerminateThread(reinterpret_cast<HANDLE>(-2), code);
 }
@@ -893,14 +937,186 @@ std::vector<std::wstring> HostEnvironmentEntries() {
     return out;
 }
 
-void TerminateOtherGuestThreads(NTSTATUS code) {
+void TerminateOtherGuestThreads(NTSTATUS code, bool whole_host) {
     const DWORD self = GetCurrentThreadId();
+    const ThreadState* me = CurrentThreadState();
+    const VirtualProcess* const mine = me ? me->vp : nullptr;
     for (ThreadState* t : GuestThreads()) {
         if (t->tid == self) continue;
+        if (!whole_host && t->vp != mine) continue;   // another virtual process's threads are not ours to end
         TRACE(process, "terminating guest thread %04lx", t->tid);
         if (t->thread) Host().NtTerminateThread(t->thread, code);
         ForgetGuestThread(t->tid);
     }
+}
+
+}  // namespace win10xbox::dispatch::detail
+
+// ---- Virtual processes (vprocess.h) -------------------------------------------------------------------------------------
+// CreateProcess from a program that runs under a shell: a second guest view inside this host process. Namespace-scope
+// state like process::G, reached through one accessor that records the access when the guest view is installed.
+namespace win10xbox::dispatch::detail {
+namespace {
+
+struct VirtualProcessTable {
+    SRWLOCK lock = SRWLOCK_INIT;
+    std::vector<std::pair<HANDLE, VirtualProcess*>> handles;   // process handle values -> their process
+    DWORD next_pid = 1000;                                     // 1000, 1004, ...
+};
+VirtualProcessTable g_virtual_processes;
+VirtualProcessTable& VpTable() {
+    NoteHostStateUnderGuestView("vprocess::table");
+    return g_virtual_processes;
+}
+
+void RegisterHandle(HANDLE h, VirtualProcess* vp) {
+    VirtualProcessTable& t = VpTable();
+    AcquireSRWLockExclusive(&t.lock);
+    t.handles.emplace_back(h, vp);
+    ReleaseSRWLockExclusive(&t.lock);
+}
+
+}  // namespace
+
+VirtualProcess* CurrentVirtualProcess() {
+    const ThreadState* st = CurrentThreadState();
+    return st ? st->vp : nullptr;
+}
+
+std::size_t CountGuestThreads(const VirtualProcess* vp) {
+    std::size_t n = 0;
+    for (const ThreadState* t : GuestThreads())
+        if (t->vp == vp) ++n;
+    return n;
+}
+
+VirtualProcess* VirtualProcessFromHandle(HANDLE h) {
+    if (!h) return nullptr;
+    VirtualProcessTable& t = VpTable();
+    AcquireSRWLockShared(&t.lock);
+    VirtualProcess* found = nullptr;
+    for (const auto& e : t.handles)
+        if (e.first == h) { found = e.second; break; }
+    ReleaseSRWLockShared(&t.lock);
+    return found;
+}
+
+void ForgetVirtualProcessHandle(HANDLE h) {
+    VirtualProcessTable& t = VpTable();
+    AcquireSRWLockExclusive(&t.lock);
+    t.handles.erase(std::remove_if(t.handles.begin(), t.handles.end(), [h](const auto& e) { return e.first == h; }),
+                    t.handles.end());
+    ReleaseSRWLockExclusive(&t.lock);
+}
+
+void NoteDuplicatedVirtualProcessHandle(HANDLE src, HANDLE dup) {
+    if (VirtualProcess* vp = VirtualProcessFromHandle(src)) RegisterHandle(dup, vp);
+}
+
+NTSTATUS CreateVirtualProcess(const VirtualProcessRequest& req, PHANDLE process, PHANDLE thread, DWORD* pid_out,
+                              DWORD* tid_out) {
+    using namespace win10xbox::process;
+    Globals& g = G();
+    if (!g.have_peb_template) { ERR(process, "virtual process: no initial process to start from"); return st::Unsuccessful; }
+    const auto& cfg = config::Current();
+    auto vp = std::make_unique<VirtualProcess>();
+    vp->image_path = NormalizeGuestPath(req.image);
+    vp->parent_pid = CurrentVirtualPid();
+    {
+        VirtualProcessTable& t = VpTable();
+        AcquireSRWLockExclusive(&t.lock);
+        vp->pid = t.next_pid;
+        t.next_pid += 4;
+        ReleaseSRWLockExclusive(&t.lock);
+    }
+    PFN_LdrInitializeThunk ldr_init = nullptr;
+    NTSTATUS s = MapGuestNtdll(cfg.machine_root, &ldr_init, &vp->user_thread_start);
+    if (s) return s;
+    vp->ldr_init = reinterpret_cast<void*>(ldr_init);
+    if ((s = MapMainImage(vp->image_path, &vp->exe_base, &vp->image, &vp->stack_reserve))) return s;
+    void* entry;
+    {
+        auto* b = static_cast<std::uint8_t*>(vp->exe_base);
+        auto* nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(b + reinterpret_cast<IMAGE_DOS_HEADER*>(b)->e_lfanew);
+        entry = b + nt->OptionalHeader.AddressOfEntryPoint;
+    }
+
+    // The PEB: the host's as it was before the initial process took it over, with this process's own fields.
+    vp->peb = static_cast<std::uint8_t*>(VirtualAlloc(nullptr, 0x1000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+    if (!vp->peb) return st::NoMemory;
+    std::memcpy(vp->peb, g.peb_template, sizeof g.peb_template);
+
+    // The parameter block starts from the host's (console, standard handles, startup placement), then the request's
+    // standard handles replace the host's.
+    std::vector<std::uint8_t> old(0x440, 0);
+    if (g.peb.saved && g.peb.params) std::memcpy(old.data(), g.peb.params, old.size());
+    else if (void* cur = PebField<void*>(peb::ProcessParameters)) std::memcpy(old.data(), cur, old.size());
+    for (int i = 0; i < 3; ++i)
+        if (req.std_handles[i] && req.std_handles[i] != INVALID_HANDLE_VALUE)
+            At<HANDLE>(old.data(), pp::StdInput + 8 * i) = req.std_handles[i];
+    LaunchOptions lo;
+    lo.image_path = vp->image_path;
+    lo.command_line = req.command_line;
+    lo.current_directory = req.current_directory;
+    if (req.has_env) lo.environment = req.env;
+    if ((s = BuildParameterBlock(lo, vp->image_path, old.data(), vp->environment, &vp->params))) return s;
+    auto setf = [&](std::uint32_t off, auto v) { *reinterpret_cast<decltype(v)*>(vp->peb + off) = v; };
+    setf(peb::ImageBaseAddress, vp->exe_base);
+    setf(peb::ProcessParameters, vp->params);
+    setf(peb::OSMajorVersion, static_cast<ULONG>(cfg.os_major));
+    setf(peb::OSMinorVersion, static_cast<ULONG>(cfg.os_minor));
+    setf(peb::OSBuildNumber, static_cast<USHORT>(cfg.os_build));
+    setf(peb::OSCSDVersion, static_cast<USHORT>(0));
+    setf(peb::OSPlatformId, static_cast<ULONG>(VER_PLATFORM_WIN32_NT));
+
+    vp->exit_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!vp->exit_event) return st::NoMemory;
+    HANDLE process_handle = nullptr;
+    if (!DuplicateHandle(GetCurrentProcess(), vp->exit_event, GetCurrentProcess(), &process_handle, 0, FALSE,
+                         DUPLICATE_SAME_ACCESS))
+        return st::NoMemory;
+    RegisterHandle(process_handle, vp.get());
+
+    HANDLE thread_handle = nullptr;
+    s = CreateGuestThreadIn(vp.get(), &thread_handle, THREAD_ALL_ACCESS, nullptr, entry, vp->peb,
+                            req.suspended ? 1u /*THREAD_CREATE_FLAGS_CREATE_SUSPENDED*/ : 0u, 0, 0, vp->stack_reserve,
+                            nullptr);
+    if (!NtSuccess(s)) {
+        ForgetVirtualProcessHandle(process_handle);
+        CloseHandle(process_handle);
+        return s;
+    }
+    TRACE(process, "virtual process %lu: %ls, ntdll LdrInitializeThunk %p, PEB %p, base %p", vp->pid,
+          vp->image_path.c_str(), vp->ldr_init, static_cast<void*>(vp->peb), vp->exe_base);
+    *pid_out = vp->pid;
+    *tid_out = GetThreadId(thread_handle);
+    *process = process_handle;
+    *thread = thread_handle;
+    vp.release();   // lives as long as the host
+    return st::Success;
+}
+
+NTSTATUS TerminateVirtualProcess(VirtualProcess* vp, NTSTATUS code) {
+    if (InterlockedCompareExchange(&vp->exited, 1, 0)) return static_cast<NTSTATUS>(0xC000010A);   // STATUS_PROCESS_IS_TERMINATING
+    InterlockedExchange(&vp->exit_code, static_cast<LONG>(code));
+    for (ThreadState* t : GuestThreads())
+        if (t->vp == vp) {
+            if (t->thread) Host().NtTerminateThread(t->thread, code);
+            ForgetGuestThread(t->tid);
+        }
+    user::ProcessExited(vp->pid);
+    SetEvent(vp->exit_event);
+    return st::Success;
+}
+
+[[noreturn]] void ExitVirtualProcess(VirtualProcess* vp, NTSTATUS code) {
+    if (!InterlockedCompareExchange(&vp->exited, 1, 0)) InterlockedExchange(&vp->exit_code, static_cast<LONG>(code));
+    TRACE(process, "virtual process %lu exits, code %08lx", vp->pid, static_cast<unsigned long>(vp->exit_code));
+    TerminateOtherGuestThreads(code);
+    user::ProcessExited(vp->pid);
+    SetEvent(vp->exit_event);
+    DetachThreadState();
+    for (;;) Host().NtTerminateThread(reinterpret_cast<HANDLE>(-2), code);
 }
 
 }  // namespace win10xbox::dispatch::detail

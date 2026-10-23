@@ -2,6 +2,7 @@
 // switches and hard errors.
 #include "internal.h"
 #include "nt_spawn.h"
+#include "vprocess.h"
 #include "win10xbox/config.h"
 #if WIN10XBOX_HAVE_AFD
 #include "win10xbox/afd.h"
@@ -121,6 +122,7 @@ NTSTATUS NTAPI Xl_NtClose(HANDLE h) {
         return st::Success;
     }
     ForgetNamedHandle(h);
+    ForgetVirtualProcessHandle(h);
     return Host().NtClose(h);
 }
 
@@ -138,7 +140,8 @@ static NTSTATUS NTAPI Xl_NtDuplicateObject(HANDLE src_process, HANDLE src, HANDL
         NTSTATUS s = Host().NtDuplicateObject(src_process, src, dst_process, dst, access, attributes, options);
         if (NtSuccess(s) && IsCurrentProcess(src_process) && IsCurrentProcess(dst_process) && dst) {
             NoteDuplicatedNamedHandle(src, *dst);
-            if (options & DUPLICATE_CLOSE_SOURCE) ForgetNamedHandle(src);
+            NoteDuplicatedVirtualProcessHandle(src, *dst);
+            if (options & DUPLICATE_CLOSE_SOURCE) { ForgetNamedHandle(src); ForgetVirtualProcessHandle(src); }
         }
         return s;
     }
@@ -234,13 +237,36 @@ static NTSTATUS NTAPI Xl_NtQueryVirtualMemory(HANDLE process, PVOID addr, ULONG 
 
 // ---- Process / thread / system information ------------------------------------------------
 
+// ProcessBasicInformation of a virtual process: the host's answer for the real fields (affinity, priority), with the
+// virtual process's own exit status, PEB and ids.
+static NTSTATUS VirtualBasicInformation(VirtualProcess* vp, PVOID buffer, ULONG length, PULONG ret_len) {
+    struct Basic { NTSTATUS exit_status; PVOID peb; ULONG_PTR affinity; LONG priority; ULONG_PTR pid, parent; };
+    if (length != sizeof(Basic)) return st::InfoLengthMismatch;
+    if (NTSTATUS ps = probe::ProbeWrite(buffer, length)) return ps;
+    Basic b{};
+    if (NTSTATUS hs = Host().NtQueryInformationProcess(reinterpret_cast<HANDLE>(-1), 0, &b, sizeof b, nullptr)) return hs;
+    b.exit_status = vp->exited ? static_cast<NTSTATUS>(vp->exit_code) : 259;   // STATUS_PENDING while it runs
+    b.peb = vp->peb;
+    b.pid = vp->pid;
+    b.parent = vp->parent_pid;
+    if (ret_len)
+        if (NTSTATUS ps = probe::Store<ULONG>(ret_len, sizeof b)) return ps;
+    return probe::CopyToUser(buffer, &b, sizeof b);
+}
+
 static NTSTATUS NTAPI Xl_NtQueryInformationProcess(HANDLE process, ULONG klass, PVOID buffer, ULONG length,
                                                    PULONG ret_len) {
-    if (IsCurrentProcess(process)) {
-        const std::wstring guest = process::GuestImagePath();
+    // A virtual process answers for itself, whether it asks about the pseudo handle or another process holds its handle.
+    VirtualProcess* const vp = IsCurrentProcess(process) ? CurrentVirtualProcess() : VirtualProcessFromHandle(process);
+    if (vp && klass == 0 /*ProcessBasicInformation*/) return VirtualBasicInformation(vp, buffer, length, ret_len);
+    if (vp && !IsCurrentProcess(process) && klass != kProcessImageInformation && klass != kProcessImageFileName &&
+        klass != kProcessImageFileNameWin32)
+        return st::InvalidInfoClass;   // the handle names an event, not a host process
+    if (IsCurrentProcess(process) || vp) {
+        const std::wstring guest = vp ? vp->image_path : process::GuestImagePath();
         switch (klass) {
         case kProcessImageInformation:
-            if (const std::uint8_t* info = MainImageInfo()) {
+            if (const std::uint8_t* info = vp ? (vp->image ? vp->image->info : nullptr) : MainImageInfo()) {
                 if (NTSTATUS ps = probe::ProbeWrite(buffer, length)) return ps;
                 if (ret_len)
                     if (NTSTATUS ps = probe::Store<ULONG>(ret_len, 0x40)) return ps;
@@ -325,7 +351,7 @@ static NTSTATUS NTAPI Xl_NtQueryInformationThread(HANDLE thread, ULONG klass, PV
             if (NTSTATUS ps = probe::ProbeWrite(buffer, length, sizeof(ULONG))) return ps;
             if (ret_len)
                 if (NTSTATUS ps = probe::ProbeWrite(ret_len, sizeof(ULONG), sizeof(ULONG))) return ps;
-            const std::size_t guests = GuestThreads().size();
+            const std::size_t guests = CountGuestThreads(self->vp);
             TRACE(process, "thread %04lx: ThreadAmILastThread -> %lu (%zu guest threads)", GetCurrentThreadId(),
                   static_cast<unsigned long>(guests <= 1 ? 1 : 0), guests);
             if (NTSTATUS ws = probe::Store<ULONG>(static_cast<ULONG*>(buffer), guests <= 1 ? 1 : 0))
@@ -397,7 +423,14 @@ static NTSTATUS NTAPI Xl_NtTerminateProcess(HANDLE process, NTSTATUS code) {
         TerminateOtherGuestThreads(code);
         return st::Success;
     }
-    if (IsCurrentProcess(process)) process::GuestExit(static_cast<std::uint32_t>(code));
+    if (IsCurrentProcess(process)) {
+        if (VirtualProcess* vp = CurrentVirtualProcess()) ExitVirtualProcess(vp, code);
+        process::GuestExit(static_cast<std::uint32_t>(code));
+    }
+    if (VirtualProcess* vp = VirtualProcessFromHandle(process)) {
+        if (vp == CurrentVirtualProcess()) ExitVirtualProcess(vp, code);
+        return TerminateVirtualProcess(vp, code);
+    }
     return Host().NtTerminateProcess(process, code);
 }
 

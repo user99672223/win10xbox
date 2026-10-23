@@ -39,7 +39,7 @@ if(TARGET guest_hello)
                    guest_window guest_window2 guest_window_input guest_window_input2 guest_window_text guest_window_nc
                    guest_dialog guest_comctl guest_seh guest_window_scroll guest_clipboard guest_net msctf_stub
                    guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput xinput1_4 guest_identity
-                   guest_cursor guest_regpersist guest_wasapi guest_xaudio2 guest_tebframe guest_shellhook)
+                   guest_cursor guest_regpersist guest_wasapi guest_xaudio2 guest_tebframe guest_shellhook guest_shell_launch)
   if(TARGET guest_d3d11_tri)
     add_dependencies(prepare_machine guest_d3d11_tri)
   endif()
@@ -321,6 +321,20 @@ unset(_guest_args)
 win10xbox_guest_test(shell_desktop_hook "C:\\guest\\guest_shellhook.exe" 42
   "shellhook: registered" "shellhook: created ok" "shellhook: activated ok" "shellhook: destroyed ok")
 set_tests_properties(integration.shell_desktop_hook PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL ")
+# A program started by the shell starts another (tests/guest/shell_launch.c, core/dispatch/vprocess.h, D1-b): explorer.exe
+# is the desktop, ShellExecute starts guest_shell_launch.exe as a virtual process (a second guest view in the same host),
+# which opens its own window (300x200 at 600,100, green) and CreateProcess-es guest_window.exe (400x300 at 100,100, blue,
+# red square at 20,20): a third. The host script waits for the first window, gives the windows and the taskbar time to
+# paint, takes the screenshot and quits. Pixels: inside guest_window's blue client area and its red square, inside the green
+# window (so both are on the screen at their rectangles), the desktop between them (black), the taskbar strip (f0f0f0) and
+# the taskbar button of the last window to be activated, guest_window's (99b4d1): explorer only gives a window a button
+# when its process id is not its own, which is what the virtual process ids are for.
+set(_guest_args "/desktop=shell,1920x1080;C:\\guest\\guest_shell_launch.exe")
+win10xbox_guest_test(shell_launch "C:\\Windows\\System32\\explorer.exe" 0 "shell_launch: child pid [0-9]+ window ok")
+set_tests_properties(integration.shell_launch PROPERTIES
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/shell_launch.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=300,250,ff0050dc|130,130,ffff0000|750,200,ff00a000|550,150,ff000000|1000,1070,fff0f0f0|400,1075,ff99b4d1;WIN10XBOX_TEST_INJECT_INPUT=waitwin 60000\\;sleep 12000\\;shot\\;quit 0"
+  FAIL_REGULAR_EXPRESSION "FAIL ")
+unset(_guest_args)
 # Cursors and icons (tests/guest/cursor.c, core/user/win_cursor.cpp). The guest loads Wine's IDC_ARROW / IDC_IBEAM (user32
 # reads the 32 bpp images from its resources and hands the bitmaps to NtUserSetCursorIconData), builds a monochrome
 # AND/XOR cursor, checks GetIconInfo / GetCursorInfo / SetCursor / ShowCursor and draws the icons with DrawIconEx
