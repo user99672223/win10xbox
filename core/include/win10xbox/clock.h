@@ -58,12 +58,15 @@ NTSTATUS Clk_NtGetTickCount(ULONG* Out);     // Wine ntdll syscall shape: return
 NTSTATUS Clk_NtDelayExecution(BOOLEAN Alertable, PLARGE_INTEGER Timeout);
 NTSTATUS Clk_NtQueryTimerResolution(PULONG Min, PULONG Max, PULONG Current);
 NTSTATUS Clk_NtSetTimerResolution(ULONG Requested, BOOLEAN Set, PULONG Actual);
+NTSTATUS Clk_NtConvertBetweenAuxiliaryCounterAndPerformanceCounter(BOOLEAN ToPerformanceCounter, PULONGLONG Value,
+                                                                  PULONGLONG Converted, PULONGLONG Error);
 NTSTATUS Clk_NtQuerySystemInformation_TimeOfDay(PVOID Buffer, ULONG Length, PULONG ReturnLength); // SYSTEM_TIMEOFDAY_INFORMATION
 
 // Virtual KUSER_SHARED_DATA page: a private RW page kept in sync by a
 // background thread (period ~1ms) so scanner-redirected absolute reads of
 // 0x7FFE0000.. can be served from here. nullptr until StartSharedDataThread.
 const void* VirtualSharedData();
+const void* EnsureSharedDataPage();     // the page with its static fields (version, product type) and the time as of now, no updater
 NTSTATUS StartSharedDataThread();       // allocates the page, writes it once synchronously, starts the ~1ms updater
 void StopSharedDataThread();            // joins the updater; the page stays allocated and readable (frozen at last update)
 

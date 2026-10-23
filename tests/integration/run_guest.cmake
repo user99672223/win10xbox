@@ -6,6 +6,7 @@
 #   [-DFORBID_REGEX=<regex>] [-DDEBUG_SPEC=<WIN10XBOX_DEBUG spec>]
 # EXPECT_REGEX/FORBID_REGEX match the guest's stdout. The layer's own trace
 # output goes to stderr, so assertions about it use the TRACE variants:
+#   [-DSAVE_STDOUT=<file>]   write the guest's stdout there (build/bin/*.log is uploaded by CI)
 #   [-DEXPECT_TRACE_REGEX=<regex;regex...>] [-DFORBID_TRACE_REGEX=<regex>]
 #   [-DREQUIRE=<path relative to the machine folder>]: SKIP (77) when that file is absent, e.g. the native
 #   Windows DLLs a test needs (machine/import_windows_dlls.ps1 stages them on a Windows host only).
@@ -108,6 +109,9 @@ if(REQUIRE_BUILTIN_DLLS)
 endif()
 string(REPLACE "\r\n" "\n" out "${out}")   # text-mode stdout of a Windows console program
 message("${out}")
+if(SAVE_STDOUT)   # -DSAVE_STDOUT=<file>: the guest's stdout, kept for CI to upload (ctest shows a passing test's output nowhere)
+  file(WRITE "${SAVE_STDOUT}" "${out}")
+endif()
 if(err)
   message("--- stderr ---\n${err}")
 endif()

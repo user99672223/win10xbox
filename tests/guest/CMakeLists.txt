@@ -21,6 +21,18 @@ win10xbox_add_guest(guest_hello)
 add_executable(guest_cpuid cpuid.c)
 win10xbox_add_guest(guest_cpuid)
 
+# The machine identity through every path a program can read it from (D18): CPUID, registry, SMBIOS, WMI, version.
+# It carries a Windows 10 compatibility manifest, or GetVersionExW and VerifyVersionInfoW answer 6.2.9200 as they do for
+# any unmanifested program on Windows 10: MSVC merges the .manifest file, windres compiles it from identity.rc.
+if(MSVC)
+  add_executable(guest_identity identity.c identity.manifest)
+else()
+  enable_language(RC)
+  add_executable(guest_identity identity.c identity.rc)
+endif()
+target_link_libraries(guest_identity PRIVATE ole32 oleaut32 advapi32)
+win10xbox_add_guest(guest_identity)
+
 add_executable(guest_sleep sleep.c)
 win10xbox_add_guest(guest_sleep)
 
@@ -58,6 +70,11 @@ win10xbox_add_guest(guest_window_nc)
 add_executable(guest_window_input2 window_input2.c)
 target_link_libraries(guest_window_input2 PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window_input2)
+# Hooks and timers (tests/guest/window_hooks.c): thread-local WH_MOUSE / WH_KEYBOARD / WH_GETMESSAGE hooks fed by
+# host-injected input (WIN10XBOX_TEST_INJECT_INPUT), and SetTimer cadence measured with GetTickCount64.
+add_executable(guest_window_hooks window_hooks.c)
+target_link_libraries(guest_window_hooks PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_window_hooks)
 # The text guest: TextOutW/DrawTextW with the stock system font, glyph pixels read back with GetPixel
 # (tests/guest/window_text.c). Its integration test is DISABLED until the text rendering slice lands.
 add_executable(guest_window_text window_text.c)
@@ -72,6 +89,28 @@ set_target_properties(msctf_stub PROPERTIES OUTPUT_NAME msctf PREFIX ""
   LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/native-gui-stubs
   ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib/guest)
 
+# GDI bitmap operations (tests/guest/gdi_bitmap.c): DIB sections, BitBlt/StretchBlt between memory and window DCs,
+# AlphaBlend/TransparentBlt through msimg32, LoadImage of the BITMAP resources of gdi_bitmap.rc (a generated copy of
+# gdi_bitmap.rc.in whose .bmp paths are absolute: windres and rc.exe resolve relative names differently).
+set(W10X_BMP_DIR ${CMAKE_CURRENT_SOURCE_DIR}/gdi_bitmap_res)
+configure_file(gdi_bitmap.rc.in ${CMAKE_CURRENT_BINARY_DIR}/gdi_bitmap.rc @ONLY)
+add_executable(guest_gdi_bitmap gdi_bitmap.c ${CMAKE_CURRENT_BINARY_DIR}/gdi_bitmap.rc)
+set_source_files_properties(${CMAKE_CURRENT_BINARY_DIR}/gdi_bitmap.rc PROPERTIES
+  OBJECT_DEPENDS "${W10X_BMP_DIR}/rgb24.bmp;${W10X_BMP_DIR}/pal8.bmp")
+target_link_libraries(guest_gdi_bitmap PRIVATE user32 gdi32 msimg32)
+win10xbox_add_guest(guest_gdi_bitmap)
+# Menus (tests/guest/window_menu.c): the menu API, the menu bar of a window, popup menus and TrackPopupMenu, driven by
+# host-injected clicks (WIN10XBOX_TEST_INJECT_INPUT, tests/integration/CMakeLists.txt). Like window_input it cannot do
+# anything useful without that injection, so there is no native smoke test.
+add_executable(guest_window_menu window_menu.c)
+target_link_libraries(guest_window_menu PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_window_menu)
+# The XInput guest (tests/guest/xinput.c): imports xinput1_4.dll (guest-dlls/xinput, our own builtin DLL) and reads the
+# pad state the host holds, which host-win32's WIN10XBOX_TEST_INJECT_INPUT "pad" command sets. Nothing to see without
+# that injection, so there is no native smoke test.
+add_executable(guest_xinput xinput.c)
+target_link_libraries(guest_xinput PRIVATE xinput1_4 user32)
+win10xbox_add_guest(guest_xinput)
 # Exception handling coverage (seh.cpp + the DLL it throws across): C++ throw/catch, SEH, vectored handlers.
 # __try/__except is native on MSVC. For clang's mingw target it is used when a configure-time compile+link of a
 # __try/__except program with -fms-extensions succeeds (SEH_NATIVE); otherwise seh.cpp falls back to a vectored
@@ -123,6 +162,11 @@ win10xbox_add_guest(guest_dialog)
 add_executable(guest_comctl comctl.c)
 target_link_libraries(guest_comctl PRIVATE user32 gdi32 comctl32)
 win10xbox_add_guest(guest_comctl)
+
+# The networking guest (tests/guest/net.c): Wine's ws2_32 -> \\Device\\Afd -> core/afd -> host Winsock, over loopback.
+add_executable(guest_net net.c)
+target_link_libraries(guest_net PRIVATE ws2_32)
+win10xbox_add_guest(guest_net)
 
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
 add_test(NAME guest.seh COMMAND guest_seh)

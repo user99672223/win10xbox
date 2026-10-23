@@ -23,6 +23,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <cwchar>
+#include <deque>
 #include <list>
 #include <map>
 #include <memory>
@@ -33,6 +34,7 @@
 #include "json_mini.h"
 #include "regf.h"
 #include "win10xbox/config.h"
+#include "win10xbox/probe.h"
 #include "win10xbox/trace.h"
 
 namespace win10xbox::registry {
@@ -238,7 +240,13 @@ std::wstring PathOf(const Node* n) {
 void CompleteWatch(Watch& w, NTSTATUS status) {
     if (w.done) return;
     w.done = true;
-    if (w.iosb) { w.iosb->Status = status; w.iosb->Information = 0; }
+    if (w.iosb) {
+        // The block belongs to the caller and may be gone by now (another thread freed it): a failed store is dropped.
+        IO_STATUS_BLOCK done{};
+        done.Status = status;
+        done.Information = 0;
+        probe::Store<IO_STATUS_BLOCK>(w.iosb, done);
+    }
     if (w.event) SetEvent(w.event);
 }
 
@@ -565,32 +573,58 @@ NTSTATUS ParseOA(State& st, POBJECT_ATTRIBUTES oa, Node** start, std::wstring_vi
     return nt::kSuccess;
 }
 
-NTSTATUS OpenCommon(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES oa, ULONG options) {
+// The caller's OBJECT_ATTRIBUTES is read once, here: NULL is an access violation (it is required), so is memory that
+// cannot be read, and a Length other than sizeof(OBJECT_ATTRIBUTES) is STATUS_INVALID_PARAMETER.
+NTSTATUS CaptureOA(const OBJECT_ATTRIBUTES* user, probe::ObjectAttributes* out) {
+    if (!user) return probe::kAccessViolation;
+    return probe::CaptureObjectAttributes(user, out);
+}
+
+NTSTATUS OpenCommon(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES user_oa, ULONG options) {
+    // Windows probes the handle first, then captures the attributes, and a failed open leaves the handle NULL.
+    if (NTSTATUS s = probe::ProbeWrite(KeyHandle, sizeof(HANDLE))) return s;
+    probe::ObjectAttributes cap;
+    if (NTSTATUS s = CaptureOA(user_oa, &cap)) return s;
+    const OBJECT_ATTRIBUTES* oa = &cap.oa;
+    if (NTSTATUS s = probe::Store<HANDLE>(KeyHandle, nullptr)) return s;
+    if (!DesiredAccess) return nt::kAccessDenied;
     std::lock_guard<std::mutex> lk(g_mu);
     if (!g_st) return nt::kUnsuccessful;
     State& st = *g_st;
-    if (!KeyHandle) return nt::kInvalidParameter;
     Node* start; std::wstring_view path; ACCESS_MASK ra;
-    NTSTATUS s = ParseOA(st, oa, &start, &path, &ra);
+    NTSTATUS s = ParseOA(st, const_cast<POBJECT_ATTRIBUTES>(oa), &start, &path, &ra);
     if (s < 0) return s;
     ResolveOpts ro;
     ro.open_link = (options & kRegOptionOpenLink) || (oa->Attributes & kObjOpenLink);
     Node* n = nullptr;
     s = Resolve(st, start, path, ro, &n, nullptr);
-    if (s < 0) return s;
-    *KeyHandle = EncodeHandle(NewHandle(st, n, MapAccess(DesiredAccess)));
-    TRACE(registry, "open %ls -> %p", PathOf(n).c_str(), *KeyHandle);
+    if (s < 0) {
+        TRACE(registry, "open %ls (under %ls) failed: %08lx", std::wstring(path).c_str(),
+              start ? PathOf(start).c_str() : L"\\", static_cast<unsigned long>(s));
+        return s;
+    }
+    const HANDLE key = EncodeHandle(NewHandle(st, n, MapAccess(DesiredAccess)));
+    if (NTSTATUS ws = probe::Store<HANDLE>(KeyHandle, key)) {
+        st.handles.erase(DecodeHandle(key));   // the caller's handle slot vanished: do not leak the handle
+        return ws;
+    }
+    TRACE(registry, "open %ls -> %p", PathOf(n).c_str(), key);
     return nt::kSuccess;
 }
 
 // ---- information buffers -------------------------------------------------------
 
 NTSTATUS Emit(const std::vector<std::uint8_t>& full, std::size_t fixed, PVOID buf, ULONG Length, PULONG ResultLength) {
-    if (ResultLength) *ResultLength = static_cast<ULONG>(full.size());
+    // Both caller buffers are probed before either is written: a bad pointer is an access violation, not a fault.
+    if (NTSTATUS s = probe::ProbeWrite(buf, Length)) return s;
+    if (ResultLength)
+        if (NTSTATUS s = probe::ProbeWrite(ResultLength, sizeof(ULONG), sizeof(ULONG))) return s;
+    if (ResultLength)
+        if (NTSTATUS s = probe::Store<ULONG>(ResultLength, static_cast<ULONG>(full.size()))) return s;
     if (Length < fixed) return nt::kBufferTooSmall;
-    if (!buf && Length) return nt::kInvalidParameter;
     std::size_t n = std::min<std::size_t>(Length, full.size());
-    if (n) std::memcpy(buf, full.data(), n);
+    if (n)
+        if (NTSTATUS s = probe::CopyToUser(buf, full.data(), n)) return s;
     return n < full.size() ? nt::kBufferOverflow : nt::kSuccess;
 }
 
@@ -869,6 +903,27 @@ void ApplySoftwareFidelity(State& st, Node* sw) {
     }
 }
 
+// The in-process COM servers the Wine builtins provide and a program reaches through CoCreateInstance: WMI's locator
+// (D18: Win32_Processor.Name is wbemprox reading the SMBIOS table). Windows registers them in
+// SOFTWARE\Classes\CLSID\{...}\InprocServer32; a real hive's entry is never overridden.
+void ApplyComClasses(State& st, Node* sw) {
+    struct Class { const wchar_t* clsid; const wchar_t* name; };
+    const Class kClasses[] = {
+        {L"{4590F811-1D3A-11D0-891F-00AA004B2E24}", L"WBEM Locator"},
+        {L"{674B6698-EE92-11D0-AD71-00C04FD8FDFF}", L"WBEM Call Context"},
+        {L"{CB8555CC-9128-11D1-AD9B-00C04FD8FDFF}", L"WBEM Administrative Locator"},
+    };
+    for (const Class& c : kClasses) {
+        const std::wstring key = std::wstring(L"Classes\\CLSID\\") + c.clsid;
+        Val v;
+        Node* server = EnsureKey(st, sw, key + L"\\InprocServer32");
+        if (server && FindValue(server, L"", &v)) continue;
+        SetStr(st, sw, key, L"", c.name);
+        SetStr(st, sw, key + L"\\InprocServer32", L"", L"wbemprox.dll");
+        SetStr(st, sw, key + L"\\InprocServer32", L"ThreadingModel", L"Both");
+    }
+}
+
 void ApplySystemFidelity(State& st, Node* sys, bool hive_missing) {
     const Fidelity& f = st.fid;
     if (hive_missing) {
@@ -878,6 +933,18 @@ void ApplySystemFidelity(State& st, Node* sys, bool hive_missing) {
         SetDword(st, sys, L"Select", L"LastKnownGood", 1);
         SetStr(st, sys, L"ControlSet001\\Control\\ProductOptions", L"ProductType", L"WinNT");
         SetDword(st, sys, L"ControlSet001\\Control\\Windows", L"CSDVersion", 0);
+        // The system environment every Windows install has (programs such as Sysinternals PsInfo read it).
+        const wchar_t* env = L"ControlSet001\\Control\\Session Manager\\Environment";
+        SYSTEM_INFO si;
+        GetNativeSystemInfo(&si);
+        SetStr(st, sys, env, L"OS", L"Windows_NT");
+        SetStr(st, sys, env, L"PROCESSOR_ARCHITECTURE", L"AMD64");
+        SetStr(st, sys, env, L"NUMBER_OF_PROCESSORS", std::to_wstring(si.dwNumberOfProcessors));
+        SetStr(st, sys, env, L"PATHEXT", L".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC");
+        SetStr(st, sys, env, L"ComSpec", L"%SystemRoot%\\system32\\cmd.exe", 2);
+        SetStr(st, sys, env, L"windir", L"%SystemRoot%", 2);
+        SetStr(st, sys, env, L"TEMP", L"%SystemRoot%\\TEMP", 2);
+        SetStr(st, sys, env, L"TMP", L"%SystemRoot%\\TEMP", 2);
     }
     std::wstring cn = Widen(f.computer_name);
     SetStr(st, sys, L"ControlSet001\\Control\\ComputerName\\ComputerName", L"ComputerName", cn);
@@ -999,6 +1066,7 @@ NTSTATUS Initialize(const std::wstring& machine_root) {
 
     // Fidelity: fill what a missing hive lacks; override only what machine.json states.
     if (sw_missing || st.fid.has_windows) ApplySoftwareFidelity(st, sw);
+    ApplyComClasses(st, sw);
     if (sys_missing || st.fid.has_identity) ApplySystemFidelity(st, st.system, sys_missing);
     if (sys_missing) {
         // The overlay-only SYSTEM needs the link target to exist for CurrentControlSet.
@@ -1081,27 +1149,43 @@ NTSTATUS Reg_NtOpenKeyTransactedEx(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess,
 
 NTSTATUS Reg_NtCreateKey(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes,
                          ULONG /*TitleIndex*/, PUNICODE_STRING Class, ULONG CreateOptions, PULONG Disposition) {
+    // Windows probes the outputs, then captures the attributes and the class (optional); a failed create leaves
+    // the handle NULL.
+    if (NTSTATUS s = probe::ProbeWrite(KeyHandle, sizeof(HANDLE))) return s;
+    if (Disposition)
+        if (NTSTATUS s = probe::ProbeWrite(Disposition, sizeof(ULONG), sizeof(ULONG))) return s;
+    probe::ObjectAttributes cap;
+    if (NTSTATUS s = CaptureOA(ObjectAttributes, &cap)) return s;
+    probe::String class_in;
+    if (Class)
+        if (NTSTATUS s = probe::CaptureString(Class, &class_in)) return s;
+    if (NTSTATUS s = probe::Store<HANDLE>(KeyHandle, nullptr)) return s;
     std::lock_guard<std::mutex> lk(g_mu);
     if (!g_st) return nt::kUnsuccessful;
     State& st = *g_st;
-    if (!KeyHandle) return nt::kInvalidParameter;
     Node* start; std::wstring_view path; ACCESS_MASK ra;
-    NTSTATUS s = ParseOA(st, ObjectAttributes, &start, &path, &ra);
+    NTSTATUS s = ParseOA(st, &cap.oa, &start, &path, &ra);
     if (s < 0) return s;
-    std::wstring cls(View(Class));
+    std::wstring cls(class_in.view());
     ResolveOpts ro;
     ro.create = true;
     ro.can_create = (ra & kKeyCreateSubKey) != 0;
-    ro.open_link = (CreateOptions & kRegOptionOpenLink) || (ObjectAttributes->Attributes & kObjOpenLink);
+    ro.open_link = (CreateOptions & kRegOptionOpenLink) || (cap.oa.Attributes & kObjOpenLink);
     ro.create_options = CreateOptions;
     ro.cls = &cls;
     Node* n = nullptr;
     bool created = false;
     s = Resolve(st, start, path, ro, &n, &created);
     if (s < 0) return s;
-    if (Disposition) *Disposition = created ? kRegCreatedNewKey : kRegOpenedExistingKey;
-    *KeyHandle = EncodeHandle(NewHandle(st, n, MapAccess(DesiredAccess)));
-    TRACE(registry, "create %ls -> %p (%s)", PathOf(n).c_str(), *KeyHandle, created ? "new" : "existing");
+    const HANDLE key = EncodeHandle(NewHandle(st, n, MapAccess(DesiredAccess)));
+    NTSTATUS ws = probe::Store<HANDLE>(KeyHandle, key);
+    if (ws == 0 && Disposition)
+        ws = probe::Store<ULONG>(Disposition, created ? kRegCreatedNewKey : kRegOpenedExistingKey);
+    if (ws) {
+        st.handles.erase(DecodeHandle(key));   // the caller's output vanished: do not leak the handle
+        return ws;
+    }
+    TRACE(registry, "create %ls -> %p (%s)", PathOf(n).c_str(), key, created ? "new" : "existing");
     return nt::kSuccess;
 }
 
@@ -1126,14 +1210,16 @@ NTSTATUS Reg_NtDeleteKey(HANDLE KeyHandle) {
 }
 
 NTSTATUS Reg_NtDeleteValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName) {
+    probe::String value_name;
+    if (!ValueName) return probe::kAccessViolation;
+    if (NTSTATUS s = probe::CaptureString(ValueName, &value_name)) return s;
     std::lock_guard<std::mutex> lk(g_mu);
     if (!g_st) return nt::kUnsuccessful;
     State& st = *g_st;
     Node* n;
     NTSTATUS s = GetHandle(st, KeyHandle, kKeySetValue, &n);
     if (s < 0) return s;
-    if (!ValueName) return nt::kInvalidParameter;
-    std::wstring_view name = View(ValueName);
+    std::wstring_view name = value_name.view();
     Val v;
     if (!FindValue(n, name, &v)) return nt::kObjectNameNotFound;
     OvValue& o = n->ov[Upcase(name)];
@@ -1197,6 +1283,8 @@ NTSTATUS Reg_NtNotifyChangeKey(HANDLE KeyHandle, HANDLE Event, PIO_APC_ROUTINE A
     Node* n;
     NTSTATUS s = GetHandle(st, KeyHandle, kKeyNotify, &n);
     if (s < 0) return s;
+    // The block is required (the I/O manager probes it), and it is written later, when the key changes.
+    if (NTSTATUS ps = probe::ProbeWrite(IoStatusBlock, sizeof(IO_STATUS_BLOCK), sizeof(ULONG))) return ps;
     if (ApcRoutine) FIXME(registry, "APC completion of registry notifications is not supported; use an event");
     auto w = std::make_shared<Watch>();
     w->node = n; w->tree = WatchTree != 0; w->filter = CompletionFilter ? CompletionFilter : 0xF;
@@ -1237,15 +1325,20 @@ NTSTATUS Reg_NtQueryKey(HANDLE KeyHandle, ULONG KeyInformationClass, PVOID KeyIn
 
 NTSTATUS Reg_NtQueryValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG KeyValueInformationClass,
                              PVOID KeyValueInformation, ULONG Length, PULONG ResultLength) {
+    probe::String value_name;
+    if (!ValueName) return probe::kAccessViolation;
+    if (NTSTATUS s = probe::CaptureString(ValueName, &value_name)) return s;
     std::lock_guard<std::mutex> lk(g_mu);
     if (!g_st) return nt::kUnsuccessful;
     State& st = *g_st;
     Node* n;
     NTSTATUS s = GetHandle(st, KeyHandle, kKeyQueryValue, &n);
     if (s < 0) return s;
-    if (!ValueName) return nt::kInvalidParameter;
     Val v;
-    if (!FindValue(n, View(ValueName), &v)) return nt::kObjectNameNotFound;
+    if (!FindValue(n, value_name.view(), &v)) {
+        TRACE(registry, "query %ls\\%ls: value not found", PathOf(n).c_str(), std::wstring(value_name.view()).c_str());
+        return nt::kObjectNameNotFound;
+    }
     std::vector<std::uint8_t> full;
     std::size_t fixed = 0;
     s = BuildValueInfo(KeyValueInformationClass, v, &full, &fixed);
@@ -1255,16 +1348,32 @@ NTSTATUS Reg_NtQueryValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG 
 
 NTSTATUS Reg_NtQueryMultipleValueKey(HANDLE KeyHandle, ValueEntry* ValueEntries, ULONG EntryCount, PVOID ValueBuffer,
                                      PULONG BufferLength, PULONG RequiredBufferLength) {
+    // Capture the entries (and every name in them) and the buffer length once; probe the outputs before any is written.
+    ULONG buffer_length = 0;
+    if (NTSTATUS s = probe::Load<ULONG>(BufferLength, &buffer_length)) return s;
+    if (NTSTATUS s = probe::ProbeWrite(BufferLength, sizeof(ULONG), sizeof(ULONG))) return s;
+    if (RequiredBufferLength)
+        if (NTSTATUS s = probe::ProbeWrite(RequiredBufferLength, sizeof(ULONG), sizeof(ULONG))) return s;
+    if (NTSTATUS s = probe::ProbeWrite(ValueEntries, std::size_t{EntryCount} * sizeof(ValueEntry))) return s;
+    if (NTSTATUS s = probe::ProbeWrite(ValueBuffer, buffer_length)) return s;
+    if (!ValueEntries) return nt::kInvalidParameter;
+    std::vector<ValueEntry> entries(EntryCount);
+    std::deque<probe::String> names;
+    if (EntryCount)
+        if (NTSTATUS s = probe::CopyFromUser(entries.data(), ValueEntries, std::size_t{EntryCount} * sizeof(ValueEntry))) return s;
+    for (ULONG i = 0; i < EntryCount; ++i) {
+        if (!entries[i].ValueName) return probe::kAccessViolation;
+        if (NTSTATUS s = probe::CaptureString(entries[i].ValueName, &names.emplace_back())) return s;
+    }
     std::lock_guard<std::mutex> lk(g_mu);
     if (!g_st) return nt::kUnsuccessful;
     State& st = *g_st;
     Node* n;
     NTSTATUS s = GetHandle(st, KeyHandle, kKeyQueryValue, &n);
     if (s < 0) return s;
-    if (!ValueEntries || !BufferLength) return nt::kInvalidParameter;
     std::vector<Val> found(EntryCount);
     for (ULONG i = 0; i < EntryCount; ++i)
-        if (!FindValue(n, View(ValueEntries[i].ValueName), &found[i])) return nt::kObjectNameNotFound;
+        if (!FindValue(n, names[i].view(), &found[i])) return nt::kObjectNameNotFound;
     std::size_t total = 0;
     std::vector<std::size_t> offs(EntryCount);
     for (ULONG i = 0; i < EntryCount; ++i) {
@@ -1273,26 +1382,34 @@ NTSTATUS Reg_NtQueryMultipleValueKey(HANDLE KeyHandle, ValueEntry* ValueEntries,
         total += found[i].data.size();
     }
     for (ULONG i = 0; i < EntryCount; ++i) {
-        ValueEntries[i].Type = found[i].type;
-        ValueEntries[i].DataLength = static_cast<ULONG>(found[i].data.size());
-        ValueEntries[i].DataOffset = static_cast<ULONG>(offs[i]);
+        entries[i].Type = found[i].type;
+        entries[i].DataLength = static_cast<ULONG>(found[i].data.size());
+        entries[i].DataOffset = static_cast<ULONG>(offs[i]);
     }
-    if (RequiredBufferLength) *RequiredBufferLength = static_cast<ULONG>(total);
-    if (total > *BufferLength) return nt::kBufferOverflow;
+    if (EntryCount)
+        if (NTSTATUS ws = probe::CopyToUser(ValueEntries, entries.data(), std::size_t{EntryCount} * sizeof(ValueEntry))) return ws;
+    if (RequiredBufferLength)
+        if (NTSTATUS ws = probe::Store<ULONG>(RequiredBufferLength, static_cast<ULONG>(total))) return ws;
+    if (total > buffer_length) return nt::kBufferOverflow;
     for (ULONG i = 0; i < EntryCount; ++i)
-        if (!found[i].data.empty()) std::memcpy(static_cast<std::uint8_t*>(ValueBuffer) + offs[i], found[i].data.data(), found[i].data.size());
-    *BufferLength = static_cast<ULONG>(total);
-    return nt::kSuccess;
+        if (!found[i].data.empty())
+            if (NTSTATUS ws = probe::CopyToUser(static_cast<std::uint8_t*>(ValueBuffer) + offs[i], found[i].data.data(),
+                                                found[i].data.size()))
+                return ws;
+    return probe::Store<ULONG>(BufferLength, static_cast<ULONG>(total));
 }
 
 NTSTATUS Reg_NtRenameKey(HANDLE KeyHandle, PUNICODE_STRING NewName) {
+    probe::String new_name;
+    if (!NewName) return probe::kAccessViolation;
+    if (NTSTATUS s = probe::CaptureString(NewName, &new_name)) return s;
     std::lock_guard<std::mutex> lk(g_mu);
     if (!g_st) return nt::kUnsuccessful;
     State& st = *g_st;
     Node* n;
     NTSTATUS s = GetHandle(st, KeyHandle, kKeyWrite & ~0x20000u, &n);   // KEY_SET_VALUE | KEY_CREATE_SUB_KEY
     if (s < 0) return s;
-    std::wstring_view nn = View(NewName);
+    std::wstring_view nn = new_name.view();
     if (nn.empty() || nn.size() > kMaxKeyNameChars || nn.find(L'\\') != std::wstring_view::npos) return nt::kInvalidParameter;
     if (n->container || n->is_mount || !n->parent) return nt::kAccessDenied;
     Node* parent = n->parent;
@@ -1310,17 +1427,24 @@ NTSTATUS Reg_NtRenameKey(HANDLE KeyHandle, PUNICODE_STRING NewName) {
 
 NTSTATUS Reg_NtSetValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG /*TitleIndex*/, ULONG Type, PVOID Data,
                            ULONG DataSize) {
+    probe::String value_name;
+    if (!ValueName) return probe::kAccessViolation;
+    if (NTSTATUS s = probe::CaptureString(ValueName, &value_name)) return s;
+    // The data is probed before it is sized into a buffer (a wild DataSize must not allocate), then copied once.
+    if (NTSTATUS s = probe::ProbeRead(Data, DataSize)) return s;
+    std::vector<std::uint8_t> data(DataSize);
+    if (DataSize)
+        if (NTSTATUS s = probe::CopyFromUser(data.data(), Data, DataSize)) return s;
     std::lock_guard<std::mutex> lk(g_mu);
     if (!g_st) return nt::kUnsuccessful;
     State& st = *g_st;
     Node* n;
     NTSTATUS s = GetHandle(st, KeyHandle, kKeySetValue, &n);
     if (s < 0) return s;
-    if (!ValueName || (DataSize && !Data)) return nt::kInvalidParameter;
-    std::wstring_view name = View(ValueName);
+    std::wstring_view name = value_name.view();
     if (name.size() > kMaxValueNameChars) return nt::kInvalidParameter;
     if (n->container) return nt::kAccessDenied;
-    StoreValue(st, n, name, Type, Data, DataSize);
+    StoreValue(st, n, name, Type, data.data(), DataSize);
     TRACE(registry, "set %ls\\%ls type=%lu size=%lu", PathOf(n).c_str(), std::wstring(name).c_str(), Type, DataSize);
     return nt::kSuccess;
 }
@@ -1334,9 +1458,8 @@ NTSTATUS Reg_NtSetInformationKey(HANDLE KeyHandle, int KeySetInformationClass, P
     if (s < 0) return s;
     switch (KeySetInformationClass) {
         case 0:   // KeyWriteTimeInformation
-            if (Length < 8 || !KeySetInformation) return nt::kInvalidParameter;
-            std::memcpy(&n->mtime, KeySetInformation, 8);
-            return nt::kSuccess;
+            if (Length < 8) return nt::kInvalidParameter;
+            return probe::CopyFromUser(&n->mtime, KeySetInformation, 8);
         case 1: case 2: case 3: case 4: case 5:   // Wow64Flags, ControlFlags, SetVirtualization, Debug, HandleTags
             TRACE(registry, "SetInformationKey class %d ignored", KeySetInformationClass);
             return nt::kSuccess;
@@ -1406,13 +1529,19 @@ namespace {
 
 NTSTATUS LoadCommon(POBJECT_ATTRIBUTES TargetKey, POBJECT_ATTRIBUTES SourceFile, ULONG flags, ACCESS_MASK access,
                     PHANDLE out_handle) {
+    probe::ObjectAttributes target, source;
+    if (out_handle)
+        if (NTSTATUS ps = probe::ProbeWrite(out_handle, sizeof(HANDLE))) return ps;
+    if (NTSTATUS cs = CaptureOA(TargetKey, &target)) return cs;
+    if (!SourceFile) return nt::kInvalidParameter;
+    if (NTSTATUS cs = CaptureOA(SourceFile, &source)) return cs;
     std::lock_guard<std::mutex> lk(g_mu);
     if (!g_st) return nt::kUnsuccessful;
     State& st = *g_st;
     Node* start; std::wstring_view path; ACCESS_MASK ra;
-    NTSTATUS s = ParseOA(st, TargetKey, &start, &path, &ra);
+    NTSTATUS s = ParseOA(st, &target.oa, &start, &path, &ra);
     if (s < 0) return s;
-    if (!SourceFile || !SourceFile->ObjectName) return nt::kInvalidParameter;
+    if (!source.oa.ObjectName) return nt::kInvalidParameter;
     auto comps = Split(path);
     if (comps.empty()) return nt::kInvalidParameter;
     std::wstring_view leaf = comps.back();
@@ -1437,7 +1566,7 @@ NTSTATUS LoadCommon(POBJECT_ATTRIBUTES TargetKey, POBJECT_ATTRIBUTES SourceFile,
     if (!parent->container) return nt::kAccessDenied;   // hives load only under \Registry\Machine, \Registry\User, \Registry\A
     if (FindChild(st, parent, leaf)) return nt::kObjectNameCollision;
 
-    std::wstring nt_file(View(SourceFile->ObjectName)), host;
+    std::wstring nt_file(source.name.view()), host;
     bool ok = g_resolver ? g_resolver(nt_file, &host) : DefaultResolve(st.root_dir, nt_file, &host);
     if (!ok) return nt::kObjectNameNotFound;
     if (GetFileAttributesW(host.c_str()) == INVALID_FILE_ATTRIBUTES) return nt::kObjectNameNotFound;
@@ -1450,7 +1579,13 @@ NTSTATUS LoadCommon(POBJECT_ATTRIBUTES TargetKey, POBJECT_ATTRIBUTES SourceFile,
     Invalidate(parent);
     NotifyChange(st, parent, kNotifyName);
     TRACE(registry, "loaded %ls at %ls", host.c_str(), PathOf(m).c_str());
-    if (out_handle) *out_handle = EncodeHandle(NewHandle(st, m, MapAccess(access)));
+    if (out_handle) {
+        const HANDLE key = EncodeHandle(NewHandle(st, m, MapAccess(access)));
+        if (NTSTATUS ws = probe::Store<HANDLE>(out_handle, key)) {
+            st.handles.erase(DecodeHandle(key));
+            return ws;
+        }
+    }
     return nt::kSuccess;
 }
 
@@ -1471,11 +1606,13 @@ NTSTATUS Reg_NtLoadKey2(POBJECT_ATTRIBUTES TargetKey, POBJECT_ATTRIBUTES SourceF
 }
 
 NTSTATUS Reg_NtUnloadKey(POBJECT_ATTRIBUTES TargetKey) {
+    probe::ObjectAttributes target;
+    if (NTSTATUS cs = CaptureOA(TargetKey, &target)) return cs;
     std::lock_guard<std::mutex> lk(g_mu);
     if (!g_st) return nt::kUnsuccessful;
     State& st = *g_st;
     Node* start; std::wstring_view path; ACCESS_MASK ra;
-    NTSTATUS s = ParseOA(st, TargetKey, &start, &path, &ra);
+    NTSTATUS s = ParseOA(st, &target.oa, &start, &path, &ra);
     if (s < 0) return s;
     ResolveOpts ro;
     ro.open_link = true;
@@ -1489,20 +1626,21 @@ NTSTATUS Reg_NtUnloadKey(POBJECT_ATTRIBUTES TargetKey) {
 }
 
 NTSTATUS Reg_NtQueryOpenSubKeys(POBJECT_ATTRIBUTES TargetKey, PULONG HandleCount) {
+    if (NTSTATUS ps = probe::ProbeWrite(HandleCount, sizeof(ULONG), sizeof(ULONG))) return ps;
+    probe::ObjectAttributes target;
+    if (NTSTATUS cs = CaptureOA(TargetKey, &target)) return cs;
     std::lock_guard<std::mutex> lk(g_mu);
     if (!g_st) return nt::kUnsuccessful;
     State& st = *g_st;
-    if (!HandleCount) return nt::kInvalidParameter;
     Node* start; std::wstring_view path; ACCESS_MASK ra;
-    NTSTATUS s = ParseOA(st, TargetKey, &start, &path, &ra);
+    NTSTATUS s = ParseOA(st, &target.oa, &start, &path, &ra);
     if (s < 0) return s;
     Node* n = nullptr;
     s = Resolve(st, start, path, ResolveOpts{}, &n, nullptr);
     if (s < 0) return s;
     ULONG count = 0;
     for (auto& [id, h] : st.handles) if (IsAncestorOrSelf(n, h.node)) ++count;
-    *HandleCount = count;
-    return nt::kSuccess;
+    return probe::Store<ULONG>(HandleCount, count);
 }
 
 // ============================================================================

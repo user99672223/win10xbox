@@ -2,8 +2,10 @@
 // Not a public header: only core/dispatch/*.cpp and tests/unit/test_dispatch.cpp
 // include it.
 #pragma once
+#include "win10xbox/config.h"
 #include "win10xbox/dispatch.h"
 #include "win10xbox/loader.h"
+#include "win10xbox/probe.h"
 #include "win10xbox/trace.h"
 #include <intrin.h>
 #include <cstddef>
@@ -520,6 +522,11 @@ NTSTATUS NTAPI Xl_NtClose(HANDLE);
 // ---- Unix calls / Wine debug (unix_calls.cpp) ------------------------------------
 std::uint64_t NtdllUnixLibHandle();
 void RegisterNtdllUnixLib();
+// ws2_32's resolver unix calls on host Winsock (unix_ws2_32.cpp); the table is in unix_calls.cpp.
+NTSTATUS WINAPI Ws2UnixGetAddrInfo(void* args);
+NTSTATUS WINAPI Ws2UnixGetHostByAddr(void* args);
+NTSTATUS WINAPI Ws2UnixGetHostByName(void* args);
+NTSTATUS WINAPI Ws2UnixGetNameInfo(void* args);
 std::uint64_t UnixLibHandleByName(std::wstring_view module_name);   // 0 if none
 // Replacements patched over the guest ntdll's __wine_dbg_* exports.
 struct WineDebugChannel { unsigned char flags; char name[15]; };
@@ -529,6 +536,16 @@ extern "C" int __cdecl w10x_wine_dbg_output(const char* str);
 extern "C" const char* __cdecl w10x_wine_dbg_strdup(const char* str);
 // Replacement for the guest ntdll's RtlCreateHeap (the host's heap, with Wine's "no maximum means growable").
 extern "C" PVOID NTAPI w10x_RtlCreateHeap(ULONG flags, PVOID base, SIZE_T reserve, SIZE_T commit, PVOID lock, PVOID params);
+
+// ---- Firmware tables (firmware.cpp, D18) ---------------------------------------------
+// Builds the synthetic SMBIOS table from config::machine_identity and the host's topology; `vendor` is the 12-character
+// CPU vendor (the string CPUID leaf 0 serves). Call before the guest runs.
+void BuildFirmwareTables(const std::string& vendor);
+// The raw SMBIOS data (RawSMBIOSData) for an identity; BuildFirmwareTables serves the host's topology through it.
+std::vector<std::uint8_t> MakeSmbios(const config::Config::MachineIdentity& id, const std::string& vendor,
+                                     unsigned cores, unsigned threads, unsigned mhz, std::uint32_t id_edx);
+// NtQuerySystemInformation(SystemFirmwareTableInformation): true when answered here (*status is the result).
+bool QuerySystemFirmwareTable(PVOID buffer, ULONG length, PULONG ret_len, NTSTATUS* status);
 
 // ---- Function-level forwarding (rtl_forward.cpp) -----------------------------
 struct ForwardResult { std::size_t forwarded = 0, skipped = 0; };

@@ -11,7 +11,7 @@
 # listed (it is still gated by its ctest entry, if it has one) but does not fail this step, so a new guest never
 # breaks CI before someone decides its expected exit code here.
 # Rows marked Real = $true are programs that are not ours (Lua, built by tools/ci/build_lua.ps1, and the Sysinternals
-# Coreinfo64, fetched by tools/ci/fetch_sysinternals.ps1, into the machine folder's guest directory); they run, and fail when missing, only with -RealPrograms, which the workflows that
+# Coreinfo64/PsInfo64, fetched by tools/ci/fetch_sysinternals.ps1, into the machine folder's guest directory); they run, and fail when missing, only with -RealPrograms, which the workflows that
 # build them pass. Args = the guest's command-line arguments.
 param(
   [Parameter(Mandatory = $true)] [string] $Bin,
@@ -65,9 +65,11 @@ $table = @(
   @{ Name = 'lua_smoke';       Host = $host_exe; Guest = 'lua.exe';             Driver = '';                  Exit = 42; Out = 'smoke: done fails=0'; Real = $true
      Args = @('C:\guest\lua_smoke.lua', 'alpha', 'beta gamma') },
   @{ Name = 'coreinfo';        Host = $host_exe; Guest = 'Coreinfo64.exe';      Driver = '';                  Exit = 0;  Out = 'Logical to Physical Processor Map:'; Real = $true
+     Args = @('-accepteula'); Sysinfo = $true },
+  @{ Name = 'psinfo';          Host = $host_exe; Guest = 'PsInfo64.exe';        Driver = '';                  Exit = 0;  Out = 'Kernel version:'; Real = $true
      Args = @('-accepteula'); Sysinfo = $true }
 )
-# Sysinternals Coreinfo64 (tools/ci/fetch_sysinternals.ps1, docs/slices/sysinfo.md) run only with -Sysinternals
+# Sysinternals Coreinfo64/PsInfo64 (tools/ci/fetch_sysinternals.ps1, docs/slices/sysinfo.md) run only with -Sysinternals
 # (ci.yml's windows job) and, like the GUI guests, on the builtin-only machine folder the integration.prepare_machine
 # fixture leaves at <Bin>/machine-builtin.
 if (-not $Sysinternals) { $table = @($table | Where-Object { -not $_.Sysinfo }) }
@@ -143,7 +145,7 @@ foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$
 
 $known = $table | ForEach-Object { $_.Guest } | Select-Object -Unique
 if (-not $RealPrograms) { $known += 'lua.exe', 'sqlite3.exe' }   # not built here; not "unlisted" either
-if (-not $Sysinternals) { $known += 'Coreinfo64.exe', 'PsInfo64.exe' }
+if (-not $Sysinternals) { $known += 'Coreinfo64.exe', 'PsInfo64.exe' }   # not built here; not "unlisted" either
 $extra = @(Get-ChildItem (Join-Path $Machine 'guest') -Filter *.exe -ErrorAction SilentlyContinue |
            Where-Object { $known -notcontains $_.Name } | ForEach-Object { $_.Name })
 if ($extra.Count -gt 0) {
