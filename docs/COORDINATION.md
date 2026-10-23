@@ -8,9 +8,10 @@ else.
 
 ## Acting coordinator
 
-While Session A is away (its usage window is spent) **Session B is the acting coordinator** and
-may merge ready slices into main. Session A resumes the role when it is back; it announces that by
-removing this paragraph. Merge procedure for the acting coordinator, per ready slice:
+**Session A is back (as of main `1a08072`) and merges again.** Session B: finish a merge you have
+already started, log it below, then stop pushing to main and return to slice branches only. The
+procedure below stays as the reference for whoever merges. If Session A goes away again it re-enables
+this role by saying so here. Merge procedure, per ready slice:
 
 1. In the main checkout: `git fetch origin && git merge --no-edit origin/claude/youthful-cerf-l7xxsb-<slice>`.
    Conflicts keep both sides; `docs/SYSCALLS.md` and `core/dispatch/syscall_table.gen.inc` are regenerated,
