@@ -371,6 +371,20 @@ jobs:
           }
           Get-AppxPackage -Name win10xbox.uwp | Format-List Name, PackageFullName, PackageFamilyName, InstallLocation, Status | Out-String | Write-Host
 
+      # The packaged launch.json shows the picker (for the console); this job pins window.exe through the
+      # owner's LocalState\launch.json so the verdict (RESULT: PASS, exit 42) stays automatic and unchanged.
+      - name: Write LocalState launch.json (window.exe, as the packaged default did before the picker)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        shell: powershell
+        run: |
+          $pkg = Get-AppxPackage -Name win10xbox.uwp
+          $ls = Join-Path $env:LOCALAPPDATA ("Packages\" + $pkg.PackageFamilyName + "\LocalState")
+          New-Item -ItemType Directory -Force -Path $ls | Out-Null
+          $json = '{ "guest": "window.exe", "args": ["30"], "expect_exit_code": 42, "trace": "+user,+gdi", "exit_when_done": false, "timeout_sec": 600 }'
+          Set-Content -Path (Join-Path $ls 'launch.json') -Value $json -Encoding ascii
+          & icacls $ls /grant '*S-1-15-2-1:(OI)(CI)F' /T | Out-Host
+          Get-Content (Join-Path $ls 'launch.json') | Out-Host
+
       - name: Launch by AUMID and wait for the app to end
         id: launch
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}

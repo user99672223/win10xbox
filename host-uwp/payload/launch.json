@@ -9,6 +9,10 @@
 // "RESULT: FAIL" at the top of LocalState\status.txt, and LocalState\screen.bmp holds what was
 // on screen. The app stays open afterwards (showing the last frame) until you close it.
 {
+  // The on-console picker (host-uwp/launcher.cpp): a list of every bundled guest on the TV, D-pad or left
+  // stick to move, A to launch, B to go back to the list after a guest has run. The cursor starts on
+  // "guest" below. The CI run job pins window.exe through a LocalState\launch.json instead (host-uwp.yml).
+  "picker": true,
   // window.exe is looked up in C:\guest (LocalState\machine\guest, filled from the package).
   "guest": "window.exe",
   // Seconds the window stays on the TV after it has painted (window.exe's only argument); it then
