@@ -1,6 +1,7 @@
 // Process bootstrap (process::Launch), guest threads and guest exit.
 // Sequence and PEB take-over are documented in docs/DISPATCHER.md.
 #include "internal.h"
+#include "nt_spawn.h"
 #include "win10xbox/config.h"
 #if WIN10XBOX_HAVE_VFS
 #include "win10xbox/vfs.h"
@@ -27,8 +28,9 @@ using namespace win10xbox::dispatch::detail;
 // RTL_USER_PROCESS_PARAMETERS (x64) offsets; MSVC's winternl.h hides most fields.
 namespace pp {
 constexpr std::uint32_t ConsoleHandle = 0x10, ConsoleFlags = 0x18, StdInput = 0x20, StdOutput = 0x28,
-                        StdError = 0x30, DllPath = 0x50, Environment = 0x80, StartingX = 0x88, ShowWindowFlags = 0xA8,
-                        EnvironmentSize = 0x3F0;
+                        StdError = 0x30, CurrentDirectory = 0x38, DllPath = 0x50, ImagePathName = 0x60, CommandLine = 0x70,
+                        Environment = 0x80, StartingX = 0x88, WindowFlags = 0xA4, ShowWindowFlags = 0xA8, WindowTitle = 0xB0,
+                        Desktop = 0xC0, ShellInfo = 0xD0, RuntimeInfo = 0xE0, EnvironmentSize = 0x3F0;
 }
 template <class T> T& At(void* base, std::uint32_t off) { return *reinterpret_cast<T*>(static_cast<std::uint8_t*>(base) + off); }
 
@@ -429,8 +431,13 @@ NTSTATUS BuildProcessParameters(const LaunchOptions& o, const std::wstring& imag
     if (block.size() == 1) block.push_back(0);
 
     std::wstring title = image, desktop = L"WinSta0\\Default", empty;
+    // MaximumLength leaves room for the terminating NUL (the std::wstring's own): RtlCreateProcessParametersEx packs
+    // the strings back to back by MaximumLength, so without it the command line runs into the next string and a
+    // program that reads GetCommandLineW as a C string (every CRT's argv) sees the image path and the desktop name
+    // appended to its last argument. Windows always NUL-terminates these.
     auto us = [](std::wstring& s) {
-        return UNICODE_STRING{static_cast<USHORT>(s.size() * 2), static_cast<USHORT>(s.size() * 2), s.data()};
+        const USHORT len = static_cast<USHORT>(s.size() * 2);
+        return UNICODE_STRING{len, static_cast<USHORT>(len ? len + 2 : 0), s.data()};
     };
     std::wstring img = image;
     UNICODE_STRING u_image = us(img), u_dll = us(empty), u_cur = us(curdir), u_cmd = us(cmdline), u_title = us(title),
@@ -458,6 +465,12 @@ NTSTATUS BuildProcessParameters(const LaunchOptions& o, const std::wstring& imag
             if (q >= lo && q < hi) q = q - lo + reinterpret_cast<std::uintptr_t>(own);
         }
         params = own;   // the heap copy is leaked on purpose: its environment may live next to it
+        // Terminate every string that has room for it, whatever the host's RtlCreateProcessParametersEx left there.
+        for (std::uint32_t off : {pp::CurrentDirectory, pp::DllPath, pp::ImagePathName, pp::CommandLine, pp::WindowTitle,
+                                  pp::Desktop, pp::ShellInfo, pp::RuntimeInfo}) {
+            const auto& str = At<UNICODE_STRING>(params, off);
+            if (str.Buffer && str.MaximumLength >= str.Length + sizeof(wchar_t)) str.Buffer[str.Length / sizeof(wchar_t)] = 0;
+        }
     }
 
     void* old = PebField<void*>(peb::ProcessParameters);
@@ -486,6 +499,10 @@ NTSTATUS BuildProcessParameters(const LaunchOptions& o, const std::wstring& imag
         // StartingX .. ShowWindowFlags: window placement and STARTF_* flags
         std::memcpy(static_cast<std::uint8_t*>(params) + pp::StartingX, static_cast<std::uint8_t*>(old) + pp::StartingX,
                     pp::ShowWindowFlags + 4 - pp::StartingX);
+        // The guest is not told how the HOST was started: a host launched hidden (CI runner, STARTF_USESHOWWINDOW +
+        // SW_HIDE) made every real GUI program's first ShowWindow(nCmdShow) a SW_HIDE and nothing was ever painted.
+        // Without STARTF_USESHOWWINDOW the CRT's WinMain gets SW_SHOWDEFAULT, as from an ordinary launch.
+        At<ULONG>(params, pp::WindowFlags) &= ~0x1u;   // STARTF_USESHOWWINDOW
     }
     G().params = params;
     PebField<void*>(peb::ProcessParameters) = params;
@@ -736,6 +753,19 @@ void* GuestEntryThunk() { return process::G().user_thread_start; }
     if (self && (self->flags & kThreadGuest) && guests <= 1) process::GuestExit(static_cast<std::uint32_t>(code));
     DetachThreadState();
     for (;;) Host().NtTerminateThread(reinterpret_cast<HANDLE>(-2), code);
+}
+
+std::vector<std::wstring> HostEnvironmentEntries() {
+    // The host's own parameter block: the one the PEB held before the take-over (saved), or the PEB's current one
+    // when no guest has launched in this process.
+    const process::SavedPeb& saved = process::G().peb;
+    const auto* params = static_cast<const std::uint8_t*>(saved.saved ? saved.params : PebField<void*>(peb::ProcessParameters));
+    std::vector<std::wstring> out;
+    if (!params) return out;
+    const auto* env = *reinterpret_cast<const wchar_t* const*>(params + process::pp::Environment);
+    if (!env) return out;
+    for (const wchar_t* p = env; *p; p += std::wcslen(p) + 1) out.emplace_back(p);
+    return out;
 }
 
 void TerminateOtherGuestThreads(NTSTATUS code) {

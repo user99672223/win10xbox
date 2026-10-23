@@ -209,6 +209,9 @@ enum : UINT { DcGetBrushOrgEx, DcGetCurrentPosition, DcGetDCOrg };
 enum : UINT { PolyPolygon = 1, PolyPolyline, PolyBezier, PolyBezierTo, PolylineTo, PolyPolygonRgn };
 
 // struct DC_ATTR: gdi32 reads and writes it directly through the handle entry's UserPointer.
+// struct char_width_info (ntgdi.h): NtGdiGetCharWidthInfo.
+struct CharWidthInfo { INT lsb, rsb, unk; };
+
 struct DcAttr {
     UINT hdc;
     LONG disabled;
