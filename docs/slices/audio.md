@@ -1,4 +1,13 @@
 status: wip
+<!-- handoff
+1. Entries implemented: all of dlls/mmdevapi/unixlib.h in core/dispatch/unix_mmdevapi.cpp (list under Mechanism); MIDI answers no devices.
+2. Local (Wine host, PulseAudio null sink, build-mingw): integration.guest_wasapi PASS (host exit 42, layer exit 42, RESULT played,
+   padding drains, position advances); integration.guest_xaudio2 PASS (143 s; the first run timed out running the host-side guest, rerun passed).
+3. Merged origin/main (results/ and uwp-host/main.cpp moved into tools/probe/); docs/SYSCALLS.md regenerated, unchanged.
+4. Untested: a real Windows host (WASAPI via the host's own mmdevapi), capture streams, exclusive mode (refused by design),
+   no-endpoint path in CI, fastfetch Sound module, native xaudio2_9 measure, volume/session calls.
+5. Next: run the CI loop (pulseaudio step is in ci.yml), fill the three (pending) sections below, watch the xaudio2 test time.
+-->
 
 # Slice: audio (Wine's mmdevapi over the host's WASAPI; xaudio2_9 on top)
 
