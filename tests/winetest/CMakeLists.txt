@@ -140,6 +140,38 @@ set_tests_properties(integration.winetest_shell32 PROPERTIES
   LABELS "wine_conformance"
   TIMEOUT 900)
 
+# ---------------------------------------------------------------------------
+# Small Wine suites (slice wt-misc): one ctest entry per DLL, all driven by
+# wine-pe/tests/misc.sh --dll <dll> (same build/run/baseline scheme as advapi32
+# above; baselines in wine-pe/tests/<dll>.baseline). Listed in priority order;
+# each entry is "<dll> <per-unit timeout s> <ctest TIMEOUT s>".
+# Not registered (docs/slices/wt-misc.md): msxml3 (xmlparser.idl needs widl, which linux-cross
+# does not have), userenv, bcrypt and ncrypt (every unit dies, so no assertion is counted).
+# ---------------------------------------------------------------------------
+foreach(_s IN ITEMS
+    "psapi 20 240" "cabinet 20 300" "xmllite 20 300" "mpr 20 240"
+    "setupapi 20 480" "dbghelp 20 360" "wintrust 20 360" "crypt32 20 600")
+  string(REPLACE " " ";" _s "${_s}")
+  list(GET _s 0 _dll)
+  list(GET _s 1 _unit_timeout)
+  list(GET _s 2 _ctest_timeout)
+  add_test(NAME integration.winetest_${_dll}
+    COMMAND ${WIN10XBOX_BASH} ${CMAKE_SOURCE_DIR}/wine-pe/tests/misc.sh all
+      --dll ${_dll}
+      --out ${CMAKE_BINARY_DIR}/winetest/${_dll}
+      --gen-include ${WIN10XBOX_WINE_GEN_INCLUDE_DIR}
+      --host $<TARGET_FILE:win10xbox>
+      --machine ${WIN10XBOX_MACHINE_DIR}
+      --emulator "${_emu}"
+      --timeout ${_unit_timeout})
+  set_tests_properties(integration.winetest_${_dll} PROPERTIES
+    FIXTURES_REQUIRED w10x_machine
+    SKIP_RETURN_CODE 77
+    SKIP_REGULAR_EXPRESSION "SKIP:"
+    LABELS "wine_conformance"
+    TIMEOUT ${_ctest_timeout})
+endforeach()
+
 # Wine's msvcrt units (dlls/msvcrt/tests) through the layer, the same way: one
 # guest msvcrt_test.exe linked against Wine's builtin msvcrt.dll, gated on
 # wine-pe/tests/msvcrt.baseline. Per-unit cap 45 s (13 units fit the 600 s limit).

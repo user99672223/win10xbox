@@ -1,0 +1,2 @@
+# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/misc.sh --dll bcrypt; measured on the linux-cross CI job, numbers in docs/slices/wt-misc.md)
+bcrypt crash 0

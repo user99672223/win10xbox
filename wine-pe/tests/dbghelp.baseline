@@ -1,0 +1,5 @@
+# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/misc.sh --dll dbghelp; measured on the linux-cross CI job, numbers in docs/slices/wt-misc.md)
+# dbghelp: 16 and 17 failures were both observed on identical code (same first failing assertion); the larger is the budget.
+dbghelp run 17
+minidump crash 0
+path run 164
