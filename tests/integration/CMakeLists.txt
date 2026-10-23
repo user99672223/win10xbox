@@ -34,8 +34,7 @@ if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
                    guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog guest_comctl
                    guest_seh guest_window_scroll guest_clipboard guest_net msctf_stub guest_gdi_bitmap
-                   guest_window_hooks guest_window_menu guest_xinput xinput1_4 guest_identity guest_cursor)
-                   guest_window_hooks guest_window_menu guest_xinput xinput1_4 guest_identity guest_regpersist)
+                   guest_window_hooks guest_window_menu guest_xinput xinput1_4 guest_identity guest_cursor guest_regpersist)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
