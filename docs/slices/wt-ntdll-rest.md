@@ -1,4 +1,4 @@
-status: wip
+status: ready
 
 # Slice wt-ntdll-rest: Wine's ntdll `exception`, `info`, `pipe`, `sync`, `threadpool`, `virtual`, `wow64` units through the layer
 
@@ -7,6 +7,11 @@ Order of the row: exception, info, pipe, sync, threadpool, virtual, wow64. A uni
 native run of the same binary on the same runner passes) only when measured on both Windows jobs. Start:
 docs/slices/wt-ntdll.md (exception/info/pipe/sync/threadpool/virtual crashed with an access violation, wow64 completed
 with 137 failures); the parity harness of docs/slices/wt-ntdll-file.md and the registry slice are merged in.
+
+Run: https://github.com/user99672223/win10xbox/actions/runs/39958085523 (head fa02598, the code of this slice; ci.yml green on linux-cross, windows (Debug) and windows (RelWithDebInfo), `integration.winetest_ntdll` passed on both
+Windows configs, nothing skipped). wine-pe.yml for the same code: https://github.com/user99672223/win10xbox/actions/runs/39958085508 (green).
+Only `threadpool` is gated (parity); `exception` cannot be (native dies too) and the other units are measured, with the
+lines left in the sections below.
 
 ## Harness changes (tests/winetest/run_ntdll.cmake, wine-pe/tests/ntdll.sh, ntdll.parity)
 
@@ -21,18 +26,24 @@ with 137 failures); the parity harness of docs/slices/wt-ntdll-file.md and the r
 * The units of this slice that do not complete get a second run with `WIN10XBOX_DEBUG=-all,+relay,+dispatch,+process`
   (tail in `<unit>.relay.log`) and the host's `crash.txt` (`<unit>.crash.txt`) in the `windows-<config>-logs` artifact.
 
-## Measurements (ci.yml runs 39952147759 and 39954832693, Debug and RelWithDebInfo; `--platform=windows`)
+## Measurements (last run, `--platform=windows`; summary lines are the unit's own, the largest one of the process and its children)
 
-| unit | layer | native, same runner | verdict |
+| unit | layer, Debug / RelWithDebInfo | native on the same runner | status |
 |---|---|---|---|
 | exception | dies, exit 0x80000002 | dies, exit 0x80000002 | not comparable (below) |
-| info | 62356 asserts, 91 failures, then hangs on a child (cap) | 60023 asserts, 2 failures | measured |
+| info | 60672 asserts, 80 failures / 60855, 83 (then hangs on a child, killed at the cap) | 61146, 1 failure / 59308, 2 | measured |
 | pipe | 2353 asserts, 18 failures | 2353 asserts, 7 failures | measured |
-| sync | 429 asserts, 1 failure (`sync.c:857`) | completes | measured |
-| threadpool | 4721 asserts, 0 failures | 4721, 0 | **gate (parity, floor 2300)** |
-| virtual | access violation after `virtual.c:1743` | 3047 asserts, 1 failure (`virtual.c:1743`) | measured |
-| wow64 | 1103 asserts, 135 failures | 1201 asserts, 40 failures | measured |
-| reg (coordinator's addition) | 1185 asserts, 13 failures | 28832 asserts, 0 failures | measured |
+| sync | 429 asserts, 1 failure (`sync.c:857`) / 429, 1 then 0 | 429, 0 failures | measured, timing |
+| threadpool | `threadpool: 4721 tests executed (0 marked as todo, 0 as flaky, 0 failures), 0 skipped.` both runs | the same line | **gate (parity, floor 2300)** |
+| virtual | access violation after `virtual.c:1743` | 3047 asserts, 1 failure (`virtual.c:1743` memory does not match) | measured |
+| wow64 | 1103 asserts, 132 failures | 1201 asserts, 40 failures | measured |
+| reg (coordinator's addition) | `reg: 1185 tests executed (0 marked as todo, 0 as flaky, 13 failures), 1 skipped.` | 28832 asserts, 0 failures | measured, not gateable |
+
+Before this slice (survey as the Wine platform, docs/slices/wt-ntdll.md) none of exception, info, pipe, sync, virtual
+completed; the table above is the first time they are measured against Windows. threadpool needed no layer change: it
+passes 4721 assertions as Windows (the earlier crash at `threadpool.c:652` was the missing pointer probing, merged with
+`-probe`); it is not on the allowlist because that runs units as the Wine platform, where the `todo_wine` blocks that
+Windows passes count as failures.
 
 ### exception
 
@@ -48,7 +59,7 @@ Fixed here: `info.c:392`, `394` (SystemEmulationProcessorInformation reported th
 identity must apply to it as to class 1), `515`, `516`, `520`, `521`, `531` (SystemTimeOfDayInformation: the kernel
 copies what the caller has room for, a length of 0 succeeds with 0 bytes, more than 0x30 is a mismatch),
 `1154`, `1157` (SystemTimeAdjustmentInformation: size check before the privilege check).
-Left: `2109`, `2484`, `2707`-`2798` (debugger: `CreateProcess` with DEBUG flags, `DebugActiveProcess`: no debugger
+Left (the same on both configs): `2109`, `2484`, `2707`-`2798` (debugger: `CreateProcess` with DEBUG flags, `DebugActiveProcess`: no debugger
 support), `2205`, `3906`, `3930`, `3936` (`NtCreateDebugObject` is STATUS_NOT_SUPPORTED), `3201`, `4168`-`4256`
 (`NtSetInformationProcess(ProcessAccessToken)` on a child, `ProcessImageFileName` of a child). The native run fails
 `info.c:687` (LsaIso.exe TebBase) only.
@@ -73,10 +84,10 @@ section is the layer's, the target a host process); the unit then reads through 
 
 ### wow64
 
-Left, native passes: `wow64.c:1333` (LDT selectors: Wine's `RtlWow64GetThreadSelectorEntry` ends in
+Native passes and the layer fails: `wow64.c:1333` (LDT selectors: Wine's `RtlWow64GetThreadSelectorEntry` ends in
 `NtQueryInformationThread(ThreadDescriptorTableEntry)`, which the host kernel answers STATUS_NOT_IMPLEMENTED on x64; Windows' ntdll
 answers STATUS_UNSUCCESSFUL/NO_LDT itself), `1492`, `1495`, `1502`, `1508` (`C:\Windows\SysWOW64\version.dll` does not exist
-in the machine folder: no 32-bit builtins). Fixed here: `wow64.c:318` (`ThreadQuerySetWin32StartAddress` of a guest thread
+in the machine folder: no 32-bit builtins). Left after this slice: `1333`, `1492`, `1495`, `1502`, `1508` only. Fixed here: `wow64.c:318` (`ThreadQuerySetWin32StartAddress` of a guest thread
 is the start address the guest asked for, not the host thread's `GuestThreadProc`), `1423`, `1447`, `1453`
 (`NtMapViewOfSectionEx` with a `MemExtendedParameterImageMachine` other than AMD64 is STATUS_NOT_SUPPORTED).
 
