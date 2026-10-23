@@ -227,6 +227,22 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: ./tools/ci/smoke_guests.ps1 -Bin build/bin -Machine build/bin/machine -LogDir build/guest-smoke -RealPrograms
+      # fastfetch module by module on the console's DLL set (information only: integration.fastfetch gates the
+      # modules listed in tests/integration/CMakeLists.txt). One process per module, so a module that stops the guest
+      # shows as its own line; the layer's err/fixme lines are printed for the ones that do not exit 0.
+      - name: fastfetch, every module on its own (information only)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: pwsh
+        run: >
+          foreach ($m in 'OS','Host','Kernel','Uptime','Packages','Shell','Display','Terminal','CPU','GPU','Memory','Swap','Disk','LocalIp','Battery','Locale','Bluetooth','Sound') {
+            $o = "ff-$m.out"; $e = "ff-$m.err";
+            $p = Start-Process build/bin/win10xbox.exe -ArgumentList '--machine',(Resolve-Path build/bin/machine-builtin).Path,'C:\guest\fastfetch.exe','--pipe','--logo','none','-s',$m -RedirectStandardOutput $o -RedirectStandardError $e -PassThru -NoNewWindow;
+            $null = $p.Handle;
+            if (-not $p.WaitForExit(120000)) { $p.Kill(); $p.WaitForExit(); Write-Host "fastfetch[$m]: KILLED after 120 s" }
+            Write-Host ("fastfetch[{0}]: exit {1}: {2}" -f $m, $p.ExitCode, ((Get-Content $o -Raw) -replace "\r?\n", ' | '));
+            if ($p.ExitCode -ne 0) { Select-String -Path $e -Pattern 'err:|fixme:|FATAL|CRASH|unresolved import|exception:' | Select-Object -First 8 | ForEach-Object { Write-Host "    $($_.Line)" } }
+          }
       # crash.txt / crash.dmp / entry-reached.txt: what host-win32/crash.cpp writes into build/bin when a guest run
       # (ctest or the smoke step) dies; *.bmp: the GUI tests' screenshots (WIN10XBOX_SCREENSHOT).
       - uses: actions/upload-artifact@v4

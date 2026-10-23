@@ -38,6 +38,7 @@ winmm
 # --- imports of fastfetch.exe (docs/slices/fastfetch.md) and what they pull in --------------------------------
 cfgmgr32
 coml2
+cryptbase
 dnsapi
 hid
 iphlpapi
