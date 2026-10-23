@@ -65,7 +65,7 @@ mkdir -p "$OUT"
 EXE="$OUT/${DLL}_test.exe"
 TDIR="$SRC/dlls/$DLL/tests"
 sources() { sed -n '/^SOURCES/,/^$/p' "$TDIR/Makefile.in" | tr -d '\\' | sed 's/^SOURCES[ \t]*=//' | tr ' \t' '\n\n' | grep -E '\.(c|rc|idl)$'; }
-unit_names() { sources | grep '\.c$' | sed 's/\.c$//'; }
+unit_names() { local f; for f in $(sources | grep '\.c$'); do grep -q 'START_TEST(' "$TDIR/$f" && echo "${f%.c}"; done; }
 
 skip() { echo "SKIP: $*"; exit 77; }
 
@@ -80,7 +80,9 @@ do_build() {
     local srcs=() names=() objs=() f n
     for f in $(sources); do
         case "$f" in
-            *.c) srcs+=("$tdir/$f"); names+=("${f%.c}") ;;
+            *.c)   # coinst.c, selfreg.c ... are the sources of helper DLLs (.spec), not units
+                grep -q 'START_TEST(' "$tdir/$f" || continue
+                srcs+=("$tdir/$f"); names+=("${f%.c}") ;;
             *.rc)
                 local wr; wr="$(command -v x86_64-w64-mingw32-windres || command -v llvm-windres || true)"
                 if [[ -n "$wr" ]]; then
@@ -147,7 +149,7 @@ do_run() {
     if [[ -n "$EMULATOR" && "$wmachine" == /* ]]; then wmachine="Z:$wmachine"; fi
     wmachine="${wmachine//\//\\}"
     export WIN10XBOX_DEBUG="${WIN10XBOX_DEBUG_SPEC:--all}"
-    local tsv="$OUT/$DLL.tsv" total=0 bad=0
+    local tsv="$OUT/$DLL.tsv" total=0 bad=0 diag_done=0
     : > "$tsv"
     local re='([0-9]+) tests executed \(([0-9]+) marked as todo, ([0-9]+) as flaky, ([0-9]+) failures?\), ([0-9]+) skipped'
     local unit
@@ -177,9 +179,23 @@ do_run() {
             "$rc" "$secs" "$last" >> "$tsv"
         echo "WINETEST $DLL:$unit status=$status executed=$ex todo=$todo flaky=$fl failures=$fails skipped=$sk exit=$rc time=${secs}s"
         [[ -n "$last" ]] && echo "  last test line: $last"
+        if (( fails > 0 )); then
+            echo "  first failure: $(grep -aoE '[A-Za-z0-9_]+\.c:[0-9]+: Test failed:[^\r]*' "$log" | head -1 | cut -c1-160)"
+        fi
         grep -a '^win10xbox: ' "$log" | head -3 | sed 's/^/  /'
+        if [[ $status != ok && $diag_done -eq 0 ]]; then
+            # First dead unit of the suite: run it once more with loader/exception traces (guest WINEDEBUG).
+            diag_done=1
+            echo "  diagnostics for $unit (WINEDEBUG=err+all,+loaddll,warn+module,+seh):"
+            WINEDEBUG="err+all,+loaddll,warn+module,+seh" WIN10XBOX_DEBUG="+process" \
+                timeout -k 5 "$TIMEOUT" $EMULATOR "$HOST" --machine "$wmachine" "C:\\guest-wine\\${DLL}_test.exe" "$unit" \
+                < /dev/null 2>&1 | grep -aE 'err:|warn:|Failed|failed|seh:|xception|c00000|win10xbox' \
+                | grep -av 'Loaded' | head -25 | cut -c1-220 | sed 's/^/    /'
+        fi
         read -r expect max <<<"$(baseline_of "$unit")"
-        if [[ $expect == run ]]; then
+        if [[ $expect == run && $max -ge 999999 ]]; then
+            echo "  MEASUREMENT: baseline is the placeholder (run 999999); record $status failures=$fails"; bad=1
+        elif [[ $expect == run ]]; then
             if [[ $status != ok ]]; then
                 echo "  REGRESSION: baseline is 'completes', now $status"; bad=1
             elif (( fails > max )); then
