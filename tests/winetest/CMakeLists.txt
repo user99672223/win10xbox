@@ -72,8 +72,14 @@ endif()
 set(_media_timeout_propsys 300)
 set(_media_timeout_windowscodecs 700)
 set(_media_timeout_mlang 300)
-set(_media_timeout_gdiplus 700)
+set(_media_timeout_gdiplus 900)
 set(_media_timeout_dwrite 400)
+# gdiplus region takes ~15 s: a 20 s cap is too tight on a loaded runner.
+set(_media_cap_propsys 20)
+set(_media_cap_windowscodecs 20)
+set(_media_cap_mlang 20)
+set(_media_cap_gdiplus 40)
+set(_media_cap_dwrite 20)
 foreach(_dll propsys windowscodecs mlang gdiplus dwrite)
   add_test(NAME integration.winetest_${_dll}
     COMMAND ${WIN10XBOX_BASH} ${CMAKE_SOURCE_DIR}/wine-pe/tests/media.sh all
@@ -83,7 +89,7 @@ foreach(_dll propsys windowscodecs mlang gdiplus dwrite)
       --host $<TARGET_FILE:win10xbox>
       --machine ${WIN10XBOX_MACHINE_DIR}
       --emulator "${_media_emu}"
-      --timeout 20)
+      --timeout ${_media_cap_${_dll}})
   set_tests_properties(integration.winetest_${_dll} PROPERTIES
     FIXTURES_REQUIRED w10x_machine
     SKIP_RETURN_CODE 77

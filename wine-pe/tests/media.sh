@@ -95,6 +95,8 @@ do_build() {
     local flags=(-std=gnu17 -O1 -g0 -w -nostdinc -isystem "$res/include"
         -I"$SRC/include" -I"$GEN" -I"$SRC/include/msvcrt"
         -D__WINESRC__ -D_NTSYSTEM_ -DWINE_NO_LONG_TYPES -D_UCRT)
+    # dwrite's layout.c calls the two-argument wcstok (Wine builds it with this macro).
+    [[ $DLL == dwrite ]] && flags+=(-D_CRT_NON_CONFORMING_WCSTOK)
     # Link libraries: the suite's Makefile.in IMPORTS mapped to -l<lib>, then the standard set.
     local libs=() l
     for l in $(sed -n 's/^IMPORTS[[:space:]]*=//p' "$tdir/Makefile.in") ntdll kernel32 user32 advapi32 gdi32 \
@@ -105,6 +107,22 @@ do_build() {
         [[ "$($cc -print-file-name=lib${l#-l}.a)" == /* ]] || echo "media.sh: note: no import library for $l"
     done
     local extra=()
+    # windowscodecs: the tests reference IID_IMILBitmap* and the WIC metadata CLSIDs, which Wine's
+    # own implib (dlls/windowscodecs/uuid.c, `#pragma makedep implib`) defines; build that object.
+    if [[ $DLL == windowscodecs ]]; then
+        local gc="$OUT/${DLL}_guids.c"
+        {
+            echo "#define WIN32_LEAN_AND_MEAN"
+            echo "#include <windows.h>"
+            echo "#include <ocidl.h>"
+            echo "#include <propidl.h>"
+            echo "#include <initguid.h>"
+            echo "#include <wincodec.h>"
+            echo "#include <wincodecsdk.h>"
+            echo "#include \"$SRC/dlls/windowscodecs/uuid.c\""
+        } > "$gc"
+        extra+=("$gc")
+    fi
     if [[ -f "$tdir/resource.rc" ]]; then
         local wr=x86_64-w64-mingw32-windres
         if command -v $wr >/dev/null && (cd "$tdir" && $wr -I"$tdir" -I"$SRC/include" -I"$GEN" -D__WINESRC__ \
@@ -116,7 +134,7 @@ do_build() {
     fi
     echo "media.sh: compiling ${#srcs[@]} test sources (${names[*]})"
     "$cc" "${flags[@]}" "${srcs[@]}" "$tl" "$ROOT/tests/wine-tests/wine_support.c" "${extra[@]}" -o "$EXE" \
-        "${libs[@]}" \
+        -Wl,--error-limit=0 "${libs[@]}" \
         || { echo "media.sh: build failed" >&2; exit 1; }
     echo "media.sh: built $EXE"
 }
@@ -171,6 +189,7 @@ do_run() {
             "$rc" "$secs" "$last" >> "$tsv"
         echo "WINETEST $DLL:$unit status=$status executed=$ex todo=$todo flaky=$fl failures=$fails skipped=$sk exit=$rc time=${secs}s"
         [[ -n "$last" ]] && echo "  last test line: $last"
+        grep -aE 'Test (failed|marked todo)|Unhandled exception|Test failed' "$log" | head -3 | cut -c1-200 | sed 's/^/  first: /'
         grep -a '^win10xbox: ' "$log" | head -3 | sed 's/^/  /'
         read -r expect max <<<"$(baseline_of "$unit")"
         if [[ $expect == run ]]; then

@@ -1,3 +1,3 @@
 # <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/media.sh --dll mlang; numbers in docs/slices/wt-media.md)
-# measurement push: every unit 999999 so crashes/timeouts show as REGRESSION; replaced by measured values
-mlang run 999999
+# measurement push: every unit -1 so every unit prints and fails the gate; replaced by measured values
+mlang run -1
