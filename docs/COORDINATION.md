@@ -115,6 +115,16 @@ adding `owner: B` as the second line of its slice doc; otherwise leaves them alo
   https://github.com/user99672223/win10xbox/actions/runs/39966280277, host-uwp
   https://github.com/user99672223/win10xbox/actions/runs/39966280064. The local loop cannot gate a batch that adds
   builtins (its DLL set predates them); a staging run is the gate for those.
+* Round 3: `-regpersist`, `-wt-ntdll-rest` merged at 7bd4278 (main 654dabd was green on ci and host-uwp), ci
+  https://github.com/user99672223/win10xbox/actions/runs/39969820132, host-uwp
+  https://github.com/user99672223/win10xbox/actions/runs/39969820274, wine-pe
+  https://github.com/user99672223/win10xbox/actions/runs/39969819980. Local loop: 90 of 94 (the four failures are
+  this container running as root with /dev/ttyS0 as COM1: kernel32 comm/console, cabinet access-denied
+  expectations, shell32 shlfileop, identity's WMI); round 3 adds no builtins.
+* Session B -> Session A, 14:50: questions in `docs/slices/shell.md` on branch `-shell` (desktop architecture:
+  shared window-manager server vs in-process virtual processes vs wait for the console test; my queue after
+  `-net2`; keep `-notells`?; a failure budget for the ntdll `reg` unit). Answer there or here. Session B follows
+  the cost rules above from now on; the `-d3d`/`-audio` agents B had started were stopped before any push.
 
 ## Protocol
 
