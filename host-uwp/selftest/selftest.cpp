@@ -8,6 +8,7 @@
 #include "../guest_sidecar.h"
 #include "../launch_config.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <fstream>
 #include <iterator>
@@ -406,6 +407,27 @@ namespace
         CHECK(!ParseLaunchFile("exe=a.exe\nbogus=1\n", &g, &err) && Contains(err, "bogus"));
         CHECK(!ParseLaunchFile("exe=a.exe\nenv=NOEQ\n", &g, &err));
         CHECK(!ParseLaunchFile("exe a.exe\n", &g, &err));
+
+        // machine folder: .launch machine=, .machine file, launch.json "machine"
+        CHECK(ParseLaunchFile("exe=a.exe\nmachine=machine-native-d3d\n", &g, &err) && g.machine == kD3dMachineName);
+        CHECK(ParseLaunchFile("exe=a.exe\n", &g, &err) && g.machine.empty());
+        CHECK(!ParseLaunchFile("exe=a.exe\nmachine=..\\x\n", &g, &err) && Contains(err, "machine="));
+        CHECK(!ParseLaunchFile("exe=a.exe\nmachine=.hidden\n", &g, &err));
+        bool mok = false;
+        CHECK(ParseMachineFile("# why\r\n\n  machine-native-d3d \nignored\n", &mok) == "machine-native-d3d" && mok);
+        CHECK(ParseMachineFile("# only a comment\n", &mok).empty() && mok);
+        CHECK(ParseMachineFile("a/b\n", &mok).empty() && !mok);
+        CHECK(ParseMachineFile("..\n", &mok).empty() && !mok);
+        LaunchConfig lc;
+        CHECK(ParseLaunchConfig("{\"machine\": \"machine-native-d3d\"}", &lc, &err) && lc.machine == "machine-native-d3d");
+        CHECK(Contains(DescribeLaunchConfig(lc), "machine=machine-native-d3d"));
+        CHECK(ParseLaunchConfig("{}", &lc, &err) && lc.machine.empty() && Contains(DescribeLaunchConfig(lc), "machine=machine\n"));
+        CHECK(!ParseLaunchConfig("{\"machine\": 3}", &lc, &err) && Contains(err, "must be a string"));
+        CHECK(!ParseLaunchConfig("{\"machine\": \"sub\\\\x\"}", &lc, &err) && Contains(err, "folder name"));
+        CHECK(!ParseLaunchConfig("{\"machine\": \"\"}", &lc, &err));
+        const std::vector<std::string>& dn = D3dMachineNativeDlls();
+        for (const char* need : {"user32.dll", "win32u.dll", "gdi32.dll", "d3d11.dll", "dxgi.dll", "d3dcompiler_47.dll", "d3d10warp.dll"})
+            CHECK(std::find(dn.begin(), dn.end(), need) != dn.end());
     }
 
     // The sidecars host-uwp/payload/guest ships for Chocolate Doom.
@@ -427,6 +449,13 @@ namespace
         for (const std::string& s : g.args) { timedemo |= s == "-timedemo"; nogui |= s == "-nogui"; }
         CHECK(timedemo && nogui);
         CHECK(g.env.size() == 1 && g.env[0].first == "SDL_RENDER_DRIVER");
+        // The D3D11 guests run on the route-B + Direct3D 11 machine folder.
+        bool mok = false;
+        CHECK(ParseMachineFile(ReadAll(dir + "/guest/guest_d3d11_tri.machine", &ok), &mok) == kD3dMachineName && ok && mok);
+        CHECK(ParseMachineFile(ReadAll(dir + "/guest/guest_imgui_d3d11.machine", &ok), &mok) == kD3dMachineName && ok && mok);
+        // The packaged default launch.json keeps the default machine folder.
+        LaunchConfig pl;
+        CHECK(ParseLaunchConfig(ReadAll(dir + "/launch.json", &ok), &pl, &err) && ok && pl.machine.empty());
     }
 }  // namespace
 

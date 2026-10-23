@@ -144,6 +144,21 @@ jobs:
         shell: pwsh
         run: ./tools/ci/fetch_doom.ps1 -Out "${{ runner.temp }}/doom-guest"
 
+      # Dear ImGui's release source for guest_imgui_d3d11 (host-uwp/CMakeLists.txt reads WIN10XBOX_IMGUI_DIR; same pin as ci.yml).
+      # Both D3D11 guests run on the packaged machine-native-d3d folder (their .machine sidecars). docs/slices/uwpd3d.md.
+      - name: Fetch Dear ImGui (guest_imgui_d3d11)
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'imgui'
+          for ($i = 1; $i -le 4; $i++) {
+            if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
+            git clone -q --depth 1 --branch v1.93.0 https://github.com/ocornut/imgui $dir
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Seconds (5 * $i)
+          }
+          if (-not (Test-Path "$dir/examples/example_win32_directx11/main.cpp")) { throw "Dear ImGui v1.93.0 not fetched" }
+          "WIN10XBOX_IMGUI_DIR=$dir" >> $env:GITHUB_ENV
+
       # Mirror ci.yml's proven windows Configure. No -DCMAKE_POLICY_VERSION_MINIMUM:
       # ci.yml builds the same third_party/zydis + core/ on this runner without it,
       # and the earlier malformed value ("3") poisoned the cache so every
@@ -240,7 +255,8 @@ jobs:
                         'guest_spawn.exe', 'guest_dialog.exe', 'guest_comctl.exe', 'guest_clipboard.exe',
                         'guest_seh.exe', 'guest_seh_dll.dll', 'guest_gdi_bitmap.exe', 'guest_window_menu.exe', 'guest_xinput.exe',
                         'guest_cursor.exe', 'guest_regpersist.exe', 'guest_identity.exe',
-                        'guest_net.exe', 'guest_wasapi.exe', 'guest_xaudio2.exe', 'guest_nowine.exe', 'guest_named_objects.exe', 'guest_rdrand.exe')
+                        'guest_net.exe', 'guest_wasapi.exe', 'guest_xaudio2.exe', 'guest_nowine.exe', 'guest_named_objects.exe', 'guest_rdrand.exe',
+                        'guest_d3d11_tri.exe', 'guest_imgui_d3d11.exe', 'guest_d3d11_tri.machine', 'guest_imgui_d3d11.machine')
           $missing = @($expected | Where-Object { -not (Test-Path "$stage/payload/guest/$_") })
           Write-Host ("bundled guests: " + (@(Get-ChildItem "$stage/payload/guest" -File | ForEach-Object { $_.Name }) -join ', '))
           if ($missing.Count -gt 0) {
@@ -253,6 +269,12 @@ jobs:
           $missingDoom = @($doom | Where-Object { -not (Test-Path "$stage/payload/guest/$_") })
           if ($missingDoom.Count -gt 0) {
             Write-Host "::error::the package is missing Chocolate Doom file(s): $($missingDoom -join ', ')"
+            exit 1
+          }
+          # The second machine folder (route B + Direct3D 11, LocalState\machine-native-d3d): its machine.json and msctf stand-in.
+          $d3dMachine = @('machine.json', 'msctf.dll') | Where-Object { -not (Test-Path "$stage/payload/machine-native-d3d/$_") }
+          if ($d3dMachine) {
+            Write-Host "::error::the package is missing payload/machine-native-d3d file(s): $($d3dMachine -join ', ')"
             exit 1
           }
           # Our own builtin DLLs (guest-dlls/): the XInput DLL under its three names.
@@ -303,6 +325,9 @@ jobs:
           }
           if (-not ($entries | Where-Object { $_ -like 'payload/builtin/*.dll' })) { Write-Host '::error::no Wine builtins in package'; exit 1 }
           if ($missing.Count -gt 0) { Write-Host "::error::guest(s) missing from the .msix: $($missing -join ', ')"; exit 1 }
+          $d3dMissing = @('payload/machine-native-d3d/machine.json', 'payload/machine-native-d3d/msctf.dll',
+                          'payload/guest/guest_d3d11_tri.machine', 'payload/guest/guest_imgui_d3d11.machine') | Where-Object { $entries -notcontains $_ }
+          if ($d3dMissing) { Write-Host "::error::machine-native-d3d file(s) missing from the .msix: $($d3dMissing -join ', ')"; exit 1 }
           if ($doomMissing) { Write-Host "::error::Chocolate Doom file(s) missing from the .msix: $($doomMissing -join ', ')"; exit 1 }
           if ($mb -gt 500) { Write-Host "::error::package is $mb MB, over the 500 MB sideload budget"; exit 1 }
 
@@ -531,12 +556,54 @@ jobs:
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           exit 0
 
+      # Second pinned run on the same install: guest_d3d11_tri.exe on LocalState\machine-native-d3d (launch.json "machine"; the
+      # picker would use the guest's .machine sidecar). Native d3d11/dxgi/user32/win32u come BY NAME from the runner's System32.
+      # Expect exit 42 (centre pixel = triangle colour); the "d3d11: adapter=" line in stdout.txt names the adapter. The
+      # all-programs assert (report.txt) is in the launcher job.
+      - name: Run guest_d3d11_tri.exe on machine-native-d3d (pinned, same install)
+        id: d3d
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        shell: powershell
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $pkg = Get-AppxPackage -Name win10xbox.uwp
+          $ls = Join-Path $env:LOCALAPPDATA ("Packages\" + $pkg.PackageFamilyName + "\LocalState")
+          # The window.exe run keeps the app open (exit_when_done false): end it so the next activation starts a fresh process.
+          Get-Process -Name 'win10xbox*' -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 3
+          foreach ($f in 'status.txt', 'stdout.txt', 'crash.txt', 'entry-reached.txt') { Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $ls $f) }
+          $json = '{ "guest": "guest_d3d11_tri.exe", "machine": "machine-native-d3d", "expect_exit_code": 42, "trace": "+user,+modules", "exit_when_done": true, "timeout_sec": 240 }'
+          Set-Content -Path (Join-Path $ls 'launch.json') -Value $json -Encoding ascii
+          & .\uwp_activate.exe "$($pkg.PackageFamilyName)!App" --package-full-name $pkg.PackageFullName --timeout 300
+          Write-Host "uwp_activate exit status: $LASTEXITCODE"
+          New-Item -ItemType Directory -Force -Path uwp-evidence-d3d | Out-Null
+          foreach ($f in 'status.txt', 'stdout.txt', 'trace.log', 'crash.txt') { $p = Join-Path $ls $f; if (Test-Path $p) { Copy-Item $p uwp-evidence-d3d -Force } }
+          $status = Join-Path $ls 'status.txt'
+          $first = if (Test-Path $status) { Get-Content -Path $status -TotalCount 1 } else { '(no status.txt)' }
+          $out = if (Test-Path (Join-Path $ls 'stdout.txt')) { Get-Content -Path (Join-Path $ls 'stdout.txt') -Raw } else { '' }
+          Write-Host '--- status.txt ---'; if (Test-Path $status) { Get-Content $status | ForEach-Object { Write-Host $_ } }
+          Write-Host '--- stdout.txt ---'; Write-Host $out
+          $tl = Join-Path $ls 'trace.log'
+          if (Test-Path $tl) { Write-Host '--- trace.log: machine / stage / d3d lines ---'; Select-String -Path $tl -Pattern 'machine folder|stage\[stub\]|stage\[native\].*(d3d11|dxgi|user32|win32u)|d3d11|dxgi|error' | Select-Object -First 60 | ForEach-Object { Write-Host $_.Line } }
+          $fail = @()
+          if ($first -notlike 'RESULT: PASS*') { $fail += "status.txt: $first" }
+          if ($out -notmatch 'd3d11: adapter=') { $fail += 'no "d3d11: adapter=" line in stdout.txt' }
+          if ($out -notmatch 'd3d11: centre=ff0000ff corner=0000ffff') { $fail += 'centre/corner pixels are not ff0000ff/0000ffff' }
+          $lines = @('### host-uwp: guest_d3d11_tri.exe on machine-native-d3d (pinned run, same install)', "- verdict: ``$first``")
+          $adapter = [regex]::Match($out, 'd3d11: adapter=[^\r\n]*').Value
+          $lines += "- $adapter"
+          if ($fail.Count -eq 0) { $lines += '- PASS' } else { $fail | ForEach-Object { $lines += "- FAIL: $_"; Write-Host "::error::$_" } }
+          $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($fail.Count -gt 0) { exit 1 }
+
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
           name: host-uwp-run-evidence
           path: |
             uwp-evidence
+            uwp-evidence-d3d
             uwp-activate.rc
           if-no-files-found: ignore
           retention-days: 7

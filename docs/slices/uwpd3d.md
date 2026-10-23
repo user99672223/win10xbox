@@ -1,0 +1,9 @@
+status: ready
+head 841137c (code); ci.yml 40011613143 green (3 jobs), host-uwp dispatch https://github.com/user99672223/win10xbox/actions/runs/40011661906 green.
+Problem: the console package staged only the default machine, so guest_d3d11_tri.exe died with LoadLibrary(d3d11.dll) 126.
+Change: second machine folder LocalState\machine-native-d3d (route B + native D3D11, the prepare_machine D3D_MACHINE set). The package carries only payload\machine-native-d3d\{machine.json (derived by stage.cmake), msctf.dll stand-in}; builtins/guests/NLS are the same package files, the native DLLs (guest_sidecar.cpp D3dMachineNativeDlls) are read BY NAME from the console System32.
+Selection: `<name>.machine` sidecar (first non-blank line), `machine=` in .launch, `"machine"` in launch.json; default `machine`; the picked entry wins. Bundled: guest_d3d11_tri.machine, guest_imgui_d3d11.machine (guest_imgui_d3d11 is now bundled; Dear ImGui v1.93.0 is cloned in host-uwp.yml).
+Package (.msix artifact, compressed): 49.47 MB (run 40009489508) -> 50.62 MB, +1.15 MB, mostly the imgui guest; budget 500 MB.
+CI: host-uwp.yml `run` job pins guest_d3d11_tri.exe (exit 42) after window.exe; on the runner: adapter=Microsoft Basic Render Driver feature_level=0xb100 driver=hardware, centre=ff0000ff corner=0000ffff. host_uwp.selftest covers the sidecar, the .launch key and the launch.json key.
+Still to prove on the console: the "d3d11: adapter=" line in stdout.txt must name the real GPU (not Basic Render Driver), the native DLLs must all copy from the console System32 (trace.log stage[native] lines: no `missing`), and guest_imgui_d3d11 must present frames (picker -> its .machine). Not run in CI: guest_imgui_d3d11 on the packaged machine (only built and bundled).
+Commands: `gh workflow run host-uwp.yml --ref <branch>`; on the console pick guest_d3d11_tri.exe in the launcher, read LocalState\stdout.txt and trace.log.
