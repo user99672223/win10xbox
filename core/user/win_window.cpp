@@ -349,6 +349,32 @@ void AdjustRectForStyle(RECT* rect, DWORD style, bool menu, DWORD ex_style) {
     }
 }
 
+int FrameInset(const WindowObj* w) {
+    RECT r{0, 0, 0, 0};
+    AdjustRectForStyle(&r, w->style, false, w->ex_style & ~WS_EX_CLIENTEDGE);
+    return -r.left;
+}
+
+int CaptionHeightOf(const WindowObj* w) {
+    return (w->ex_style & WS_EX_TOOLWINDOW) ? SystemMetric(SM_CYSMCAPTION) : SystemMetric(SM_CYCAPTION);
+}
+
+bool CaptionButtonRect(const WindowObj* w, int hittest, RECT* out) {
+    if ((w->style & WS_CAPTION) != WS_CAPTION || !(w->style & WS_SYSMENU)) return false;
+    const bool boxes = (w->style & (WS_MINIMIZEBOX | WS_MAXIMIZEBOX)) && !(w->ex_style & WS_EX_TOOLWINDOW);
+    int slot;
+    switch (hittest) {
+    case HTCLOSE: slot = 1; break;
+    case HTMAXBUTTON: slot = 2; break;
+    case HTMINBUTTON: slot = 3; break;
+    default: return false;
+    }
+    if (slot > 1 && !boxes) return false;
+    const int f = FrameInset(w), bw = SystemMetric(SM_CXSIZE), right = (w->window.right - w->window.left) - f;
+    *out = RECT{right - slot * bw, f, right - (slot - 1) * bw, f + CaptionHeightOf(w) - 1};
+    return true;
+}
+
 void SendNcCalcSize(HWND hwnd, RECT* window_parent, RECT* client_out) {
     WindowObj* w = Win(hwnd);
     if (!w) return;

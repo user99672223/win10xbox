@@ -27,7 +27,7 @@ add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
-                   guest_window_input guest_window_input2 guest_window_text)
+                   guest_window_input guest_window_input2 guest_window_text guest_window_nc)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -142,6 +142,17 @@ win10xbox_guest_test(guest_window_input "C:\\guest\\guest_window_input.exe" 42
   "input: WM_LBUTTONDOWN x=50 y=50" "input: WM_CHAR ch=a" "input: WM_MOUSEWHEEL delta=120")
 set_tests_properties(integration.guest_window_input PROPERTIES
   ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=sleep 1500\\;move 150,150\\;ldown\\;lup\\;key 0x41\\;wheel 120")
+# The non-client area (tests/guest/window_nc.c): frame metrics, hit testing, a caption drag (+50,+40), a bottom-right
+# corner drag (+30,+20) and a click on the close button, injected by the host; the guest reads the frame's pixels back
+# with GetPixel and exits 42 once the window was moved and resized and WM_CLOSE/WM_DESTROY arrived. The screenshot (the
+# last frame painted: window at 150,140, 430x320) is checked too: active caption (153,180,209) at (420,152), border
+# (180,180,180) at (153,300), the close button (199,80,80) at (538,150), the client (64,64,64) at (300,300).
+win10xbox_guest_test(guest_window_nc "C:\\guest\\guest_window_nc.exe" 42
+  "window_nc: frame ok" "window_nc: hit caption=2 close=20 max=9 min=8 client=1 top=12 topleft=13 left=10 bottomright=17"
+  "window_nc: dragged to 150,140 size=400x300" "window_nc: resized to 150,140 size=430x320" "window_nc: pixels ok"
+  "window_nc: WM_SYSCOMMAND SC_CLOSE" "window_nc: WM_CLOSE" "window_nc: WM_DESTROY" "window_nc: done")
+set_tests_properties(integration.guest_window_nc PROPERTIES
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_nc.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=420,152,ff99b4d1|153,300,ffb4b4b4|538,150,ffc75050|300,300,ff404040;WIN10XBOX_TEST_INJECT_INPUT=sleep 4000\\;move 300,115\\;sleep 300\\;ldown\\;sleep 300\\;move 320,130\\;sleep 300\\;move 350,155\\;sleep 300\\;lup\\;sleep 1000\\;move 548,438\\;sleep 300\\;ldown\\;sleep 300\\;move 560,450\\;sleep 300\\;move 578,458\\;sleep 300\\;lup\\;sleep 1000\\;move 555,155\\;sleep 300\\;ldown\\;sleep 300\\;lup")
 # Input semantics (tests/guest/window_input2.c): the host script covers the driver path (move, double click, right
 # click, wheel, key; the guest compares every message with its hit test / WM_SETCURSOR companions), the guest the rest with
 # SendInput. It prints PASS/FAIL per case and exits 42 only when every case passed.
