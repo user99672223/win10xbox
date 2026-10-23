@@ -24,6 +24,10 @@ win10xbox_add_guest(guest_cpuid)
 add_executable(guest_sleep sleep.c)
 win10xbox_add_guest(guest_sleep)
 
+# CreateProcess through the layer (NtCreateUserProcess): runs guest_hello.exe and itself as children.
+add_executable(guest_spawn spawn.c)
+win10xbox_add_guest(guest_spawn)
+
 add_library(guest_dll SHARED dll.c)
 win10xbox_add_guest(guest_dll)
 
@@ -43,6 +47,12 @@ win10xbox_add_guest(guest_window2)
 add_executable(guest_window_input window_input.c)
 target_link_libraries(guest_window_input PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window_input)
+# Input semantics beyond the plain sequence (tests/guest/window_input2.c): hit test / cursor / activation
+# sequencing, double clicks, capture, children, the keyboard state and the US layout. Host-injected (the same hook) plus
+# SendInput from the guest.
+add_executable(guest_window_input2 window_input2.c)
+target_link_libraries(guest_window_input2 PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_window_input2)
 # The text guest: TextOutW/DrawTextW with the stock system font, glyph pixels read back with GetPixel
 # (tests/guest/window_text.c). Its integration test is DISABLED until the text rendering slice lands.
 add_executable(guest_window_text window_text.c)
@@ -81,3 +91,6 @@ if(NOT CMAKE_CROSSCOMPILING_EMULATOR)
   add_test(NAME guest.window_text COMMAND guest_window_text)
   set_tests_properties(guest.window_text PROPERTIES PASS_REGULAR_EXPRESSION "text: done")
 endif()
+
+# Guests from the SQLite shell bring-up (tests/guest/sqlite).
+add_subdirectory(sqlite)
