@@ -1,4 +1,4 @@
-status: wip
+status: ready (wine-pe https://github.com/user99672223/win10xbox/actions/runs/39998179308 ; host-uwp https://github.com/user99672223/win10xbox/actions/runs/39998856104 ; uwp-lite https://github.com/user99672223/win10xbox/actions/runs/39998860190 ; ci https://github.com/user99672223/win10xbox/actions/runs/39998017789 rerun)
 <!-- handoff
 1. Cause (first on-console run, 1.0.0.333): l_intl.nls and c_10000.nls were in neither the package nor the console System32, so RtlInitNlsTables crashed every guest.
 2. wine-pe.yml: new step copies wine-pe/wine-src/nls/*.nls to wine-pe/out/nls, fails if l_intl/c_10000/c_1252/locale/sortdefault are missing, uploads artifact `wine-pe-nls`.
