@@ -1,0 +1,4 @@
+# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/misc.sh --dll dbghelp; measured numbers in docs/slices/wt-misc.md)
+dbghelp run 999999
+minidump run 999999
+path run 999999

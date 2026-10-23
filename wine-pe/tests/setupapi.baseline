@@ -1,0 +1,12 @@
+# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/misc.sh --dll setupapi; measured numbers in docs/slices/wt-misc.md)
+coinst run 999999
+devinst run 999999
+dialog run 999999
+diskspace run 999999
+install run 999999
+misc run 999999
+parser run 999999
+query run 999999
+selfreg run 999999
+setupcab run 999999
+stringtable run 999999

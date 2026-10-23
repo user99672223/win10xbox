@@ -1,0 +1,16 @@
+# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/misc.sh --dll crypt32; measured numbers in docs/slices/wt-misc.md)
+base64 run 999999
+cert run 999999
+chain run 999999
+crl run 999999
+ctl run 999999
+encode run 999999
+main run 999999
+message run 999999
+msg run 999999
+object run 999999
+oid run 999999
+protectdata run 999999
+sip run 999999
+store run 999999
+str run 999999

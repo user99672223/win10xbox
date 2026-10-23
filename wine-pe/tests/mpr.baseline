@@ -1,0 +1,2 @@
+# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/misc.sh --dll mpr; measured numbers in docs/slices/wt-misc.md)
+mpr run 999999

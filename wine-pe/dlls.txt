@@ -80,6 +80,9 @@ crypt32
 bcrypt
 ncrypt
 wintrust
+cryptnet    # crypt32 delay import
+cryptui     # wintrust delay import
+imagehlp    # wintrust delay import
 
 # --- console programs (wine-pe/programs/*.sh, ctest integration.wineprog_*) --
 programs/xcopy

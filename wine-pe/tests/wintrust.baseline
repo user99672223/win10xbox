@@ -1,0 +1,5 @@
+# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/misc.sh --dll wintrust; measured numbers in docs/slices/wt-misc.md)
+asn run 999999
+crypt run 999999
+register run 999999
+softpub run 999999

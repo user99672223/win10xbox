@@ -1,0 +1,3 @@
+# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/misc.sh --dll xmllite; measured numbers in docs/slices/wt-misc.md)
+reader run 999999
+writer run 999999
