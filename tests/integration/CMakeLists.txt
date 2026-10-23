@@ -35,13 +35,11 @@ set(_prepare_args
 add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
-  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_nowine guest_spawn guest_named_objects guest_window guest_window2
-                   guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog guest_comctl
-                   guest_seh guest_window_scroll guest_clipboard guest_net msctf_stub guest_gdi_bitmap
-                   guest_window_hooks guest_window_menu guest_xinput xinput1_4 guest_identity guest_cursor
-                   guest_regpersist guest_wasapi guest_xaudio2)
-                   guest_seh guest_tebframe guest_window_scroll guest_clipboard guest_net msctf_stub guest_gdi_bitmap
-                   guest_window_hooks guest_window_menu guest_xinput xinput1_4 guest_identity guest_cursor guest_regpersist)
+  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_nowine guest_spawn guest_named_objects
+                   guest_window guest_window2 guest_window_input guest_window_input2 guest_window_text guest_window_nc
+                   guest_dialog guest_comctl guest_seh guest_window_scroll guest_clipboard guest_net msctf_stub
+                   guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput xinput1_4 guest_identity
+                   guest_cursor guest_regpersist guest_wasapi guest_xaudio2 guest_tebframe)
   if(TARGET guest_d3d11_tri)
     add_dependencies(prepare_machine guest_d3d11_tri)
   endif()
