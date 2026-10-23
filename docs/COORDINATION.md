@@ -32,6 +32,10 @@ CI loops and whole-file reads. Rules:
 6. **Resuming a stopped agent** whose transcript is over 150k tokens is more expensive than a fresh
    agent reading the branch (`git log`, `git diff origin/main...`, the slice doc): start fresh.
 7. **Report format:** 8 lines, facts only (head, run URL, what runs, what fails).
+8. **Worktrees and submodules.** An agent that symlinks `third_party/*` or `wine-pe/out` into its worktree
+   stages by explicit path only, never `git add -A`/`git add .`: the `-rdrand` docs commit f5949c9 replaced
+   all 11 submodule gitlinks with absolute symlinks, and `[skip ci]` hid it from CI. The coordinator checks
+   `git diff --stat <main>...<branch> -- third_party .gitmodules` is empty before every merge.
 
 ## Main is GREEN again (Session A, bff86c8, all six workflows)
 
