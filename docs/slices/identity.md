@@ -1,4 +1,4 @@
-status: wip
+status: ready
 
 # Slice: machine identity (D18)
 
@@ -6,7 +6,7 @@ One gated guest, `tests/guest/identity.c` (`integration.guest_identity`, on the 
 configs and linux-cross), proves the CPU and version identity is the same on every path a program can read it from. It
 prints every value as `path=value` and returns 42 only when all of them agree.
 
-Run: (filled in when the head run is green)
+Run: https://github.com/user99672223/win10xbox/actions/runs/39933954315 (linux-cross, windows Debug, windows RelWithDebInfo all green on 43e8ef5; the head run is linked from the branch)
 
 ## Values (Windows runner log)
 

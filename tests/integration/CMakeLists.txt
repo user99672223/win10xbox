@@ -70,6 +70,7 @@ function(win10xbox_guest_test name program exit_code)
       "-DDEBUG_SPEC=${_guest_debug}"
       "-DFORBID_TRACE_REGEX=${_guest_forbid_trace}"
       "-DEXPECT_TRACE_REGEX=${_guest_expect_trace}"
+      "-DSAVE_STDOUT=${_guest_save_stdout}"
       -DEXPECT_EXIT=${exit_code}
       "-DEXPECT_REGEX=${ARGN}"
       "-DINPUT_FILE=${_guest_input}" "-DGUEST_FILE=${_guest_file}"
@@ -97,11 +98,13 @@ win10xbox_guest_test(guest_cpuid "C:\\guest\\guest_cpuid.exe" 0
 # native ole32/advapi32 cannot load under Wine's ntdll (see the GUI tests). WMI works under Wine, so the guest's
 # WIN10XBOX_TEST_NO_WMI=1 escape hatch is not used by any registration.
 set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+set(_guest_save_stdout ${CMAKE_BINARY_DIR}/bin/guest_identity.log)   # the value table, uploaded by CI
 win10xbox_guest_test(guest_identity "C:\\guest\\guest_identity.exe" 42
   "cpuid\\.brand=AMD 4700S 8-Core Processor" "registry\\.brand=AMD 4700S 8-Core Processor"
   "smbios\\.brand=AMD 4700S 8-Core Processor" "wmi\\.name=AMD 4700S 8-Core Processor"
   "version\\.KUSER_SHARED_DATA=10\\.0\\.19045" "identity=consistent")
 set_tests_properties(integration.guest_identity PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL ")
+unset(_guest_save_stdout)
 unset(_guest_machine)
 
 # Regression guard for the Xbox kernel32-forwarder bug. WIN10XBOX_TEST_NO_HOST_PATHS
