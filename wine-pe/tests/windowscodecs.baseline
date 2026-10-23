@@ -1,0 +1,17 @@
+# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/media.sh --dll windowscodecs; numbers in docs/slices/wt-media.md)
+# measurement push: every unit 999999 so crashes/timeouts show as REGRESSION; replaced by measured values
+bitmap run 999999
+bmpformat run 999999
+converter run 999999
+ddsformat run 999999
+gifformat run 999999
+icoformat run 999999
+info run 999999
+jpegformat run 999999
+metadata run 999999
+palette run 999999
+pngformat run 999999
+propertybag run 999999
+stream run 999999
+tiffformat run 999999
+wmpformat run 999999

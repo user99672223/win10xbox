@@ -1,0 +1,5 @@
+# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/media.sh --dll dwrite; numbers in docs/slices/wt-media.md)
+# measurement push: every unit 999999 so crashes/timeouts show as REGRESSION; replaced by measured values
+analyzer run 999999
+font run 999999
+layout run 999999

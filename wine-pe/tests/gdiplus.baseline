@@ -1,0 +1,14 @@
+# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/media.sh --dll gdiplus; numbers in docs/slices/wt-media.md)
+# measurement push: every unit 999999 so crashes/timeouts show as REGRESSION; replaced by measured values
+brush run 999999
+customlinecap run 999999
+font run 999999
+graphics run 999999
+graphicspath run 999999
+image run 999999
+matrix run 999999
+metafile run 999999
+pathiterator run 999999
+pen run 999999
+region run 999999
+stringformat run 999999
