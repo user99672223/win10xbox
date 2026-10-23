@@ -309,22 +309,18 @@ set_tests_properties(integration.guest_window_menu PROPERTIES
 # the screenshot and quits. Pixels: desktop (COLOR_BACKGROUND, black) at (500,500); the row above the taskbar (500,1059) black and
 # the taskbar's first row (500,1060) f0f0f0; the Start button's top-left (0,1060) white and its right edge (67,1070) 696969;
 # the tray area right of the buttons (1800,1070) f0f0f0. Builtin-only folder: no native DLL of the runner is involved.
-set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
 set(_guest_args "/desktop=shell,1920x1080")
 win10xbox_guest_test(shell_desktop "C:\\Windows\\System32\\explorer.exe" 0)
 set_tests_properties(integration.shell_desktop PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/shell_desktop.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=500,500,ff000000|500,1059,ff000000|500,1060,fff0f0f0|0,1060,ffffffff|67,1070,ff696969|1800,1070,fff0f0f0;WIN10XBOX_TEST_INJECT_INPUT=waitwin 60000\\;sleep 6000\\;shot\\;quit 0"
   FAIL_REGULAR_EXPRESSION "FAIL ")
 unset(_guest_args)
-unset(_guest_machine)
 # Shell hook messages (tests/guest/shellhook.c, core/user/win_shell.cpp): RegisterShellHookWindow (user32, patched to the
 # layer's NtUserCallOneParam extension, wine-pe/patches) and the WM_SHELLHOOK messages for a top-level window another
 # thread creates, activates and destroys. Builtin-only folder (the console's DLL set).
-set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
 win10xbox_guest_test(shell_desktop_hook "C:\\guest\\guest_shellhook.exe" 42
   "shellhook: registered" "shellhook: created ok" "shellhook: activated ok" "shellhook: destroyed ok")
 set_tests_properties(integration.shell_desktop_hook PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL ")
-unset(_guest_machine)
 # Cursors and icons (tests/guest/cursor.c, core/user/win_cursor.cpp). The guest loads Wine's IDC_ARROW / IDC_IBEAM (user32
 # reads the 32 bpp images from its resources and hands the bitmaps to NtUserSetCursorIconData), builds a monochrome
 # AND/XOR cursor, checks GetIconInfo / GetCursorInfo / SetCursor / ShowCursor and draws the icons with DrawIconEx
