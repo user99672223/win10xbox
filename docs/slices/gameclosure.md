@@ -1,4 +1,4 @@
-status: wip
+status: ready
 
 # -gameclosure: DLL/import closure of a game through the layer
 
@@ -81,3 +81,15 @@ RelWithDebInfo: the same stub exception, not a crash in closure.c. Exit code -21
 crypt32 load; no `closure:` line was printed because the host process ended on it. In the Debug host the same two exceptions are recovered
 through the TEB-frame VEH (`2 unwinds to a frame`) and LoadLibrary returns 0; in the optimised host the recovery did not take place (why is
 open: core/dispatch/teb_frames.cpp is the only code between). With the stub gone neither build raises it.
+
+### Status: ready
+Head e7ff3c7 (code). ci https://github.com/user99672223/win10xbox/actions/runs/40027945146: linux-cross, windows (Debug) and windows (RelWithDebInfo) all
+green, including integration.guest_closure (machine-native-d3d: native user32/gdi32/win32u/d3d11/dxgi, Debug 10.6 s, RelWithDebInfo 1.5 s) and
+integration.guest_closure_builtin (linux-cross, 3.5 s). wine-pe https://github.com/user99672223/win10xbox/actions/runs/40027945108 green (patch 0021).
+The passing test prints nothing; its gate is `closure: N modules, N dlls, N symbols, 0 missing dlls, 0 missing symbols` and exit 42. The last failing
+Debug run, before the fix, had 13 modules, 19 dlls, 1157 symbols with only crypt32/cryptui (and the symbols they carry) missing, so the closed
+set is that one: ws2_32, secur32, crypt32, bcrypt, dbghelp, ucrtbase, xinput1_4, winhttp, jsproxy, wininet, cryptui, dhcpcsvc, d3d11, dxgi, vcruntime140/msvcp140 (+_1).
+DLLs added to wine-pe/dlls.txt in this slice: winhttp, jsproxy, msvcp140, msvcp140_1, vcruntime140, vcruntime140_1, dhcpcsvc (cryptui was already listed).
+Patches: wine-pe/patches/0021-kernelbase-loadstringbaseexw.patch. Still open: why the optimised host does not recover a Wine __TRY after an
+EXCEPTION_WINE_STUB that the Debug host recovers (core/dispatch/teb_frames.cpp); any other stub raised under a native-user32 call would end the
+optimised host the same way.
