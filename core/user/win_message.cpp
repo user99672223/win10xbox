@@ -872,6 +872,9 @@ void KillWindowTimers(HWND hwnd) {
                         t->timers.end());
 }
 
+LONG g_cursor_count = 0;   // ShowCursor's display counter (visible while >= 0)
+INT CursorShowCount() { return g_cursor_count; }
+
 }  // namespace detail
 
 // ---- Host-facing --------------------------------------------------------------------------------
@@ -1323,8 +1326,6 @@ HCURSOR WINAPI NtUserGetCursor() {
     winexbox::IWinexboxDriver* d = Driver();
     return d ? reinterpret_cast<HCURSOR>(d->CursorCurrent()) : nullptr;
 }
-
-namespace { LONG g_cursor_count = 0; }
 
 INT WINAPI NtUserShowCursor(BOOL show) {
     return show ? InterlockedIncrement(&g_cursor_count) : InterlockedDecrement(&g_cursor_count);

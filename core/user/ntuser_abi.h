@@ -150,6 +150,27 @@ enum : int {
     TsCursor, TsExtraInfo, TsInSendMessage, TsMessageTime, TsIsForeground,
 };
 
+// struct cursoricon_frame / cursoricon_desc (NtUserSetCursorIconData; "not compatible with Windows")
+struct CursorIconFrame {
+    UINT width, height;   // frame-specific size
+    HBITMAP color;        // colour bitmap
+    HBITMAP alpha;        // pre-multiplied alpha bitmap of 32 bpp icons
+    HBITMAP mask;         // mask bitmap (followed by the colour half for 1 bpp icons)
+    POINT hotspot;
+};
+static_assert(sizeof(CursorIconFrame) == 40);
+struct CursorIconDesc {
+    UINT flags, num_steps, num_frames, delay;
+    CursorIconFrame* frames;
+    DWORD* frame_seq;
+    DWORD* frame_rates;
+    HRSRC rsrc;
+};
+static_assert(sizeof(CursorIconDesc) == 48);
+struct DispatchCallbackParams { UINT64 callback; };
+struct FreeIconParams { DispatchCallbackParams dispatch; UINT64 param; };
+static_assert(sizeof(FreeIconParams) == 16);
+
 // struct client_menu_name
 struct ClientMenuName { char* nameA; WCHAR* nameW; UNICODE_STRING* nameUS; };
 

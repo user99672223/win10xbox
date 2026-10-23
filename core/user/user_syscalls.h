@@ -108,6 +108,15 @@ BOOL WINAPI NtUserGetCursorPos(POINT* pt);
 BOOL WINAPI NtUserSetCursorPos(INT x, INT y);
 HCURSOR WINAPI NtUserSetCursor(HCURSOR cursor);
 HCURSOR WINAPI NtUserGetCursor();
+// ---- win_cursoricon.cpp ----
+BOOL WINAPI NtUserSetCursorIconData(HCURSOR cursor, UNICODE_STRING* module, UNICODE_STRING* res_name, abi::CursorIconDesc* desc);
+HICON WINAPI NtUserFindExistingCursorIcon(UNICODE_STRING* module, UNICODE_STRING* res_name, void* desc);
+BOOL WINAPI NtUserDestroyCursor(HCURSOR cursor, ULONG arg);
+BOOL WINAPI NtUserGetIconSize(HICON handle, UINT step, LONG* width, LONG* height);
+HCURSOR WINAPI NtUserGetCursorFrameInfo(HCURSOR cursor, DWORD istep, DWORD* rate_jiffies, DWORD* num_steps);
+BOOL WINAPI NtUserGetIconInfo(HICON icon, ICONINFO* info, UNICODE_STRING* module, UNICODE_STRING* res_name, DWORD* bpp, LONG unk);
+BOOL WINAPI NtUserGetCursorInfo(CURSORINFO* info);
+BOOL WINAPI NtUserDrawIconEx(HDC hdc, INT x0, INT y0, HICON icon, INT width, INT height, UINT step, HBRUSH brush, UINT flags);
 INT WINAPI NtUserShowCursor(BOOL show);
 BOOL WINAPI NtUserClipCursor(const RECT* rect);
 BOOL WINAPI NtUserGetClipCursor(RECT* rect);
@@ -183,6 +192,9 @@ BOOL WINAPI NtUserGetDpiForMonitor(HMONITOR monitor, UINT type, UINT* x, UINT* y
 BOOL WINAPI NtUserEnumDisplaySettings(UNICODE_STRING* device, DWORD mode, DEVMODEW* dev_mode, DWORD flags);
 NTSTATUS WINAPI NtUserEnumDisplayDevices(UNICODE_STRING* device, DWORD index, DISPLAY_DEVICEW* info, DWORD flags);
 LONG WINAPI NtUserGetDisplayConfigBufferSizes(UINT32 flags, UINT32* num_path_info, UINT32* num_mode_info);
+LONG WINAPI NtUserQueryDisplayConfig(UINT32 flags, UINT32* paths_count, DISPLAYCONFIG_PATH_INFO* paths, UINT32* modes_count,
+                                     DISPLAYCONFIG_MODE_INFO* modes, DISPLAYCONFIG_TOPOLOGY_ID* topology_id);
+NTSTATUS WINAPI NtUserDisplayConfigGetDeviceInfo(DISPLAYCONFIG_DEVICE_INFO_HEADER* packet);
 BOOL WINAPI NtUserGetProcessDefaultLayout(ULONG* layout);
 BOOL WINAPI NtUserSetProcessDefaultLayout(ULONG layout);
 BOOL WINAPI NtUserSetSysColors(INT count, const INT* colors, const COLORREF* values);
@@ -338,6 +350,8 @@ INT WINAPI NtGdiStretchDIBitsInternal(HDC hdc, INT x_dst, INT y_dst, INT width_d
     X(NtUserGetQueueStatus) X(NtUserWaitMessage) X(NtUserMsgWaitForMultipleObjectsEx) X(NtUserWaitForInputIdle) \
     X(NtUserGetKeyState) X(NtUserGetAsyncKeyState) X(NtUserGetKeyboardState) X(NtUserSetKeyboardState) \
     X(NtUserGetCursorPos) X(NtUserSetCursorPos) X(NtUserSetCursor) X(NtUserGetCursor) X(NtUserShowCursor) \
+    X(NtUserSetCursorIconData) X(NtUserFindExistingCursorIcon) X(NtUserDestroyCursor) X(NtUserGetIconSize) \
+    X(NtUserGetCursorFrameInfo) X(NtUserGetIconInfo) X(NtUserGetCursorInfo) X(NtUserDrawIconEx) \
     X(NtUserClipCursor) X(NtUserGetClipCursor) X(NtUserGetKeyboardLayout) X(NtUserGetKeyboardLayoutList) \
     X(NtUserGetKeyboardLayoutName) X(NtUserActivateKeyboardLayout) X(NtUserMapVirtualKeyEx) X(NtUserToUnicodeEx) \
     X(NtUserVkKeyScanEx) X(NtUserGetKeyNameText) X(NtUserSendInput) X(NtUserTrackMouseEvent) \
@@ -357,7 +371,7 @@ INT WINAPI NtGdiStretchDIBitsInternal(HDC hdc, INT x_dst, INT y_dst, INT width_d
     X(NtUserGetSystemDpiForProcess) X(NtUserGetProcessDpiAwarenessContext) X(NtUserSetProcessDpiAwarenessContext) \
     X(NtUserSystemParametersInfo) X(NtUserSystemParametersInfoForDpi) X(NtUserEnumDisplayMonitors) \
     X(NtUserGetDpiForMonitor) X(NtUserEnumDisplaySettings) X(NtUserEnumDisplayDevices) \
-    X(NtUserGetDisplayConfigBufferSizes) \
+    X(NtUserGetDisplayConfigBufferSizes) X(NtUserQueryDisplayConfig) X(NtUserDisplayConfigGetDeviceInfo) \
     X(NtUserGetProcessDefaultLayout) \
     X(NtUserSetProcessDefaultLayout) X(NtUserSetSysColors) X(NtUserIsMouseInPointerEnabled) \
     \

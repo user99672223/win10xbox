@@ -81,7 +81,8 @@ more. Presentation is the host's: it only needs `ComposeFrame`.
 | `win_message.cpp` | per-thread queues (posted, input, cross-thread sent), WM_PAINT and WM_TIMER pseudo-messages, `GetMessage`, `PeekMessage`, `MsgWaitForMultipleObjectsEx`, `WaitMessage`, `GetQueueStatus`, `NtUserMessageCall` codes, `DispatchMessage` (WM_PAINT / timer procs), `TranslateMessage` (US layout), timers, the input sink and the thread-side processing of mouse input (hit test, activation, `WM_SETCURSOR`, double clicks), key state, `SendInput`, cursor, caret (tracked, not drawn) |
 | `win_paint.cpp` | update regions (bounding rectangle + erase / frame / internal-paint flags), `InvalidateRect`/`Rgn`, `ValidateRect`/`Rgn`, `RedrawWindow`, `GetUpdateRect`/`Rgn`, `BeginPaint`/`EndPaint`, `GetDC`/`GetDCEx`/`GetWindowDC`/`ReleaseDC`, `ScrollWindowEx`, the non-client frame (solid colours), window surfaces from the driver, flush, `ComposeFrame` / `ComposeLastPaintedFrame` |
 | `win_scroll.cpp` | scroll state per window (`NtUserSetScrollInfo`, `GetScrollBarInfo`, `ShowScrollBar`, `EnableScrollBar`, `GetScrollInfo` via `NtUserCallHwndParam`), the non-client WS_VSCROLL / WS_HSCROLL bars (solid colours, drawn from WM_NCPAINT, HTVSCROLL / HTHSCROLL in WM_NCHITTEST, a WM_NCLBUTTONDOWN on a bar sends WM_VSCROLL / WM_HSCROLL SB_LINEUP / SB_LINEDOWN / SB_PAGEUP / SB_PAGEDOWN then SB_ENDSCROLL), the `ScrollBar` control procedure (SBM_*), `ScrollDC` |
-| `win_sysparams.cpp` | `GetSystemMetrics` (Windows 10 at 96 DPI), `SystemParametersInfo[ForDpi]`, DPI awareness, monitors (`EnumDisplayMonitors` via the callback, `GetMonitorInfo`, `MonitorFromRect/Window`), `EnumDisplaySettings`, `EnumDisplayDevices`, `SetSysColors` |
+| `win_cursoricon.cpp` | HICON / HCURSOR objects (handle `0x00C00000 | slot << 4 | generation`, frame bitmaps owned by the object): `NtUserCallOneParam(CreateCursorIcon)`, `SetCursorIconData` (static and animated), `FindExistingCursorIcon` (the shared-icon cache), `DestroyCursor`, `GetIconInfo`, `GetIconSize`, `GetCursorFrameInfo`, `GetCursorInfo`, `DrawIconEx` (mask / colour raster operations, pre-multiplied alpha frames composited per pixel), the icon param (`GetIconParam` / `SetIconParam`) and its free callback |
+| `win_sysparams.cpp` | `GetSystemMetrics` (Windows 10 at 96 DPI), `SystemParametersInfo[ForDpi]`, DPI awareness, monitors (`EnumDisplayMonitors` via the callback, `GetMonitorInfo`, `MonitorFromRect/Window`), `EnumDisplaySettings`, `EnumDisplayDevices`, `QueryDisplayConfig` / `DisplayConfigGetDeviceInfo` (one path, source 0 / target 0, source / target / adapter names), `SetSysColors` |
 
 Any syscall not implemented stays **Todo** in the dispatcher: it traces `unimplemented syscall NtUserFoo`, sets the
 guest's last error to `ERROR_CALL_NOT_IMPLEMENTED` and returns **0** -- the failure value of every win32u call
@@ -116,8 +117,8 @@ Not implemented yet (they stay Todo or are documented FIXMEs), roughly in the or
   `GetGlyphIndices` beyond the identity map. `GetFontData`, `GetOutlineTextMetrics`, `EnumFontFamilies` and
   `AddFontResource` stay Todo / failing.
 * **Menus** (`NtUserCreateMenu`, `NtUserThunkedMenuItemInfo`, `TrackPopupMenu`...): Todo; `LoadMenu` fails, so
-  windows get no menu bar. **Icons and cursors** (`NtUserSetCursorIconData`, `NtUserDrawIconEx`, `LoadImage` of
-  icons/cursors): Todo. **Scroll bars**: `win_scroll.cpp` (see the module table); thumb dragging and button auto-repeat are not implemented. **Clipboard**, **hooks** (`SetWindowsHookEx`, `SetWinEventHook`), **IME**,
+  windows get no menu bar. **Icons and cursors**: `win_cursoricon.cpp` (see the module table); the display driver is
+  only handed the cursor handle by `SetCursor`, the pointer shape is not drawn. **Scroll bars**: `win_scroll.cpp` (see the module table); thumb dragging and button auto-repeat are not implemented. **Clipboard**, **hooks** (`SetWindowsHookEx`, `SetWinEventHook`), **IME**,
   **raw input**, **layered windows** (`SetLayeredWindowAttributes`, `UpdateLayeredWindow`), **window regions**,
   `AlphaBlend` / `TransparentBlt` / `GradientFill` / `MaskBlt`, `PrintWindow`, `DeferWindowPos`,
   window stations / desktops: Todo.
@@ -127,8 +128,9 @@ Not implemented yet (they stay Todo or are documented FIXMEs), roughly in the or
 * Update regions are a bounding rectangle per window (BeginPaint clips to it), not true regions.
 * Cross-thread `SendMessage` works (queued and answered while the receiver pumps); `SendMessageTimeout` ignores
   the timeout. `ShowWindowAsync` runs synchronously. `DestroyWindow` of another thread's window fails.
-* Drawing into 1 bpp bitmaps and non-32 bpp DIB sections works for blits (pixel by pixel) but not for the
-  line / polygon primitives; drawing on the screen DC (`GetDC(NULL)`) is dropped with a FIXME.
+* Drawing into 1 bpp bitmaps and non-32 bpp DIB sections works for blits and DIB copies (`StretchDIBits`,
+  `SetDIBitsToDevice`; pixel by pixel, colour into monochrome by the background-colour rule) but not for the
+  line / polygon primitives (they log a FIXME with the call's name); drawing on the screen DC (`GetDC(NULL)`) is dropped with a FIXME.
 * DPI: everything is 96 DPI; `SetProcessDpiAwarenessContext` is recorded, nothing is scaled.
 
 ## Rules

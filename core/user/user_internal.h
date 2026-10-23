@@ -431,6 +431,8 @@ struct DrawTarget {
     HWND top = nullptr;                        // window DC: the top-level window that owns the surface
 };
 bool ResolveDrawTarget(DcObj* dc, DrawTarget* out);
+// The same, for a primitive that has no pixel-by-pixel path: a bitmap without a 32 bpp view logs a FIXME (nothing is drawn).
+bool ResolveOrWarn(DcObj* dc, DrawTarget* out, const char* what);
 // The text cell of the DC's selected font: the built-in 8x16 face, scaled by a whole factor for
 // LOGFONT heights of 32 and up (font8x16.h).
 struct TextCell { int scale, width, height, ascent, descent; };
@@ -454,6 +456,13 @@ std::wstring AtomName(ATOM atom);
 ATOM FindAtom(const WCHAR* name, std::size_t len);
 ULONG_PTR GetClassLongSize(HWND hwnd, INT offset, UINT size, bool ansi);
 WinProc ResolveWinProc(WNDPROC func, bool ansi);   // fills the other half for known builtin procs
+
+// win_cursoricon.cpp
+HICON CreateCursorIconHandle(bool is_icon);                    // NtUserCallOneParam(CreateCursorIcon)
+ULONG_PTR GetIconParam(HICON icon);                            // NtUserCallOneParam(GetIconParam)
+ULONG_PTR SetIconParam(HICON icon, const abi::FreeIconParams* params);   // NtUserCallTwoParam(SetIconParam)
+// win_message.cpp
+INT CursorShowCount();                                         // the ShowCursor display counter
 
 // win_window.cpp
 // HWND = (0x20 + slot) | (generation << 16), generation 1..0x7fff (win_window.cpp).

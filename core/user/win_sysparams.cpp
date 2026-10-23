@@ -460,6 +460,123 @@ LONG WINAPI NtUserGetDisplayConfigBufferSizes(UINT32 flags, UINT32* num_path_inf
     return ERROR_SUCCESS;
 }
 
+// The one adapter and its one monitor, as win32u's sysparams.c reports them: source 0 / target 0 on a fixed adapter LUID,
+// the current mode of the display driver (the same mode EnumDisplaySettings answers).
+namespace {
+constexpr LUID kAdapterLuid = {1, 0};
+constexpr UINT32 kSourceId = 0, kTargetId = 0;
+}  // namespace
+
+LONG WINAPI NtUserQueryDisplayConfig(UINT32 flags, UINT32* paths_count, DISPLAYCONFIG_PATH_INFO* paths, UINT32* modes_count,
+                                     DISPLAYCONFIG_MODE_INFO* modes, DISPLAYCONFIG_TOPOLOGY_ID* topology_id) {
+    constexpr UINT32 kRetrieveMask = QDC_ALL_PATHS | QDC_ONLY_ACTIVE_PATHS | QDC_DATABASE_CURRENT;
+    const UINT32 retrieve = flags & kRetrieveMask;
+    if (!paths_count || !modes_count || !*paths_count || !*modes_count) return ERROR_INVALID_PARAMETER;
+    if (retrieve != QDC_ALL_PATHS && retrieve != QDC_ONLY_ACTIVE_PATHS && retrieve != QDC_DATABASE_CURRENT)
+        return ERROR_INVALID_PARAMETER;
+    if ((retrieve == QDC_DATABASE_CURRENT) != (topology_id != nullptr)) return ERROR_INVALID_PARAMETER;
+    if (flags & ~kRetrieveMask) {   // QDC_VIRTUAL_MODE_AWARE (desktop-image modes) is not provided
+        FIXME(user, "QueryDisplayConfig flags %#x not supported", flags);
+        return ERROR_INVALID_PARAMETER;
+    }
+    const UINT32 need_modes = 2;   // source, target
+    if (!paths || !modes) return ERROR_INVALID_PARAMETER;
+    if (*paths_count < 1 || *modes_count < need_modes) return ERROR_INSUFFICIENT_BUFFER;
+
+    winexbox::DisplayMode m;
+    {
+        LockGuard lock;
+        m = CurrentMode();
+    }
+    if (topology_id) *topology_id = DISPLAYCONFIG_TOPOLOGY_INTERNAL;
+    const UINT32 freq = m.refresh_hz ? m.refresh_hz : 60;
+    const UINT32 bpp = m.bits_per_pixel ? m.bits_per_pixel : 32;
+
+    std::memset(paths, 0, sizeof(paths[0]));
+    std::memset(modes, 0, sizeof(modes[0]) * need_modes);
+    DISPLAYCONFIG_MODE_INFO& src = modes[0];
+    src.infoType = DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE;
+    src.adapterId = kAdapterLuid;
+    src.id = kSourceId;
+    src.sourceMode.width = m.width;
+    src.sourceMode.height = m.height;
+    src.sourceMode.pixelFormat = bpp == 32 ? DISPLAYCONFIG_PIXELFORMAT_32BPP
+                                 : bpp == 24 ? DISPLAYCONFIG_PIXELFORMAT_24BPP
+                                 : bpp == 16 ? DISPLAYCONFIG_PIXELFORMAT_16BPP
+                                 : bpp == 8  ? DISPLAYCONFIG_PIXELFORMAT_8BPP
+                                             : DISPLAYCONFIG_PIXELFORMAT_NONGDI;
+    src.sourceMode.position = POINTL{0, 0};
+
+    DISPLAYCONFIG_MODE_INFO& tgt = modes[1];
+    tgt.infoType = DISPLAYCONFIG_MODE_INFO_TYPE_TARGET;
+    tgt.adapterId = kAdapterLuid;
+    tgt.id = kTargetId;
+    DISPLAYCONFIG_VIDEO_SIGNAL_INFO& sig = tgt.targetMode.targetVideoSignalInfo;
+    sig.pixelRate = static_cast<UINT64>(freq) * m.width * m.height;
+    sig.hSyncFreq = DISPLAYCONFIG_RATIONAL{freq * static_cast<UINT32>(m.width), 1};
+    sig.vSyncFreq = DISPLAYCONFIG_RATIONAL{freq, 1};
+    sig.activeSize = DISPLAYCONFIG_2DREGION{static_cast<UINT32>(m.width), static_cast<UINT32>(m.height)};
+    sig.totalSize = (flags & QDC_DATABASE_CURRENT) ? DISPLAYCONFIG_2DREGION{0, 0}
+                                                    : DISPLAYCONFIG_2DREGION{static_cast<UINT32>(m.width), static_cast<UINT32>(m.height)};
+    sig.videoStandard = static_cast<decltype(sig.videoStandard)>(255);   // D3DKMDT_VSS_OTHER
+    sig.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
+
+    DISPLAYCONFIG_PATH_INFO& path = paths[0];
+    path.flags = DISPLAYCONFIG_PATH_ACTIVE;
+    path.sourceInfo.adapterId = kAdapterLuid;
+    path.sourceInfo.id = kSourceId;
+    path.sourceInfo.statusFlags = DISPLAYCONFIG_SOURCE_IN_USE;
+    path.targetInfo.adapterId = kAdapterLuid;
+    path.targetInfo.id = kTargetId;
+    path.targetInfo.outputTechnology = DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EXTERNAL;
+    path.targetInfo.rotation = DISPLAYCONFIG_ROTATION_IDENTITY;
+    path.targetInfo.scaling = DISPLAYCONFIG_SCALING_IDENTITY;
+    path.targetInfo.refreshRate = DISPLAYCONFIG_RATIONAL{freq, 1};
+    path.targetInfo.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
+    path.targetInfo.targetAvailable = TRUE;
+    path.targetInfo.statusFlags = DISPLAYCONFIG_TARGET_IN_USE;
+    path.sourceInfo.modeInfoIdx = 0;
+    path.targetInfo.modeInfoIdx = 1;
+    *paths_count = 1;
+    *modes_count = need_modes;
+    return ERROR_SUCCESS;
+}
+
+NTSTATUS WINAPI NtUserDisplayConfigGetDeviceInfo(DISPLAYCONFIG_DEVICE_INFO_HEADER* packet) {
+    namespace st = dispatch::detail::st;
+    constexpr NTSTATUS kInvalidParameter = static_cast<NTSTATUS>(0xC000000D), kUnsuccessful = static_cast<NTSTATUS>(0xC0000001);
+    if (!packet || packet->size < sizeof(*packet)) return kUnsuccessful;
+    auto our_adapter = [&] { return packet->adapterId.LowPart == kAdapterLuid.LowPart && packet->adapterId.HighPart == kAdapterLuid.HighPart; };
+    switch (packet->type) {
+    case DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME: {
+        auto* p = reinterpret_cast<DISPLAYCONFIG_SOURCE_DEVICE_NAME*>(packet);
+        if (packet->size < sizeof(*p)) return kInvalidParameter;
+        if (!our_adapter() || packet->id != kSourceId) return kUnsuccessful;
+        wcscpy(p->viewGdiDeviceName, L"\\\\.\\DISPLAY1");
+        return st::Success;
+    }
+    case DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME: {
+        auto* p = reinterpret_cast<DISPLAYCONFIG_TARGET_DEVICE_NAME*>(packet);
+        if (packet->size < sizeof(*p)) return kInvalidParameter;
+        std::memset(&p->flags, 0, sizeof(*p) - offsetof(DISPLAYCONFIG_TARGET_DEVICE_NAME, flags));
+        if (!our_adapter() || packet->id != kTargetId) return kUnsuccessful;
+        p->outputTechnology = DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL;
+        wcscpy(p->monitorFriendlyDeviceName, L"Display1");
+        wcscpy(p->monitorDevicePath, L"\\\\?\\DISPLAY#Default_Monitor#1&0&UID0#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}");
+        return st::Success;
+    }
+    case DISPLAYCONFIG_DEVICE_INFO_GET_ADAPTER_NAME: {
+        auto* p = reinterpret_cast<DISPLAYCONFIG_ADAPTER_NAME*>(packet);
+        if (packet->size < sizeof(*p)) return kInvalidParameter;
+        if (!our_adapter()) return kUnsuccessful;
+        wcscpy(p->adapterDevicePath, L"\\\\?\\PCI#VEN_1414&DEV_008C#0#{5b45201d-f2f2-4f3b-85bb-30ff1f953599}");
+        return st::Success;
+    }
+    default:
+        return kInvalidParameter;   // the other packet types (preferred mode, colour, white level, ...) are not answered
+    }
+}
+
 BOOL WINAPI NtUserGetProcessDefaultLayout(ULONG* layout) {
     if (!layout) return FALSE;
     *layout = 0;

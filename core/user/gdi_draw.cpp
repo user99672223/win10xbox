@@ -608,7 +608,7 @@ BOOL WINAPI NtGdiRectangle(HDC hdc, INT left, INT top, INT right, INT bottom) {
     if (!dc) return FALSE;
     RECT r = Normalized(LogicalRect(dc, left, top, right - left, bottom - top));
     DrawTarget t;
-    if (!ResolveDrawTarget(dc, &t)) return TRUE;
+    if (!ResolveOrWarn(dc, &t, __func__)) return TRUE;
     const BrushPaint b = BrushOf(dc, dc->brush);
     const PenPaint pen = PenOf(dc);
     const int pw = pen.null ? 0 : pen.width;
@@ -632,7 +632,7 @@ BOOL WINAPI NtGdiEllipse(HDC hdc, INT left, INT top, INT right, INT bottom) {
     DcObj* dc = DcGet(hdc);
     if (!dc) return FALSE;
     DrawTarget t;
-    if (!ResolveDrawTarget(dc, &t)) return TRUE;
+    if (!ResolveOrWarn(dc, &t, __func__)) return TRUE;
     FillEllipse(dc, t, Normalized(LogicalRect(dc, left, top, right - left, bottom - top)), BrushOf(dc, dc->brush), PenOf(dc));
     return TRUE;
 }
@@ -653,7 +653,7 @@ BOOL WINAPI NtGdiLineTo(HDC hdc, INT x, INT y) {
     const POINT from = dc->attr->cur_pos;
     dc->attr->cur_pos = POINT{x, y};
     DrawTarget t;
-    if (!ResolveDrawTarget(dc, &t)) return TRUE;
+    if (!ResolveOrWarn(dc, &t, __func__)) return TRUE;
     DrawLine(dc, t, LogicalToDevice(dc, from.x, from.y), LogicalToDevice(dc, x, y), PenOf(dc));
     return TRUE;
 }
@@ -682,7 +682,7 @@ ULONG WINAPI NtGdiPolyPolyDraw(HDC hdc, const POINT* points, const ULONG* counts
         return static_cast<ULONG>(reinterpret_cast<ULONG_PTR>(GdiAlloc(r, abi::kObjRegion)));
     }
     DrawTarget t;
-    const bool ok = ResolveDrawTarget(dc, &t);
+    const bool ok = ResolveOrWarn(dc, &t, __func__);
     std::vector<std::vector<POINT>> polys;
     std::size_t k = 0;
     for (DWORD i = 0; i < count; ++i) {
@@ -742,7 +742,7 @@ BOOL WINAPI NtGdiFillRgn(HDC hdc, HRGN hrgn, HBRUSH hbrush) {
     auto* r = GdiGetT<RegionObj>(hrgn, abi::kObjRegion);
     if (!dc || !r) return FALSE;
     DrawTarget t;
-    if (!ResolveDrawTarget(dc, &t)) return TRUE;
+    if (!ResolveOrWarn(dc, &t, __func__)) return TRUE;
     const BrushPaint b = BrushOf(dc, hbrush);
     for (const RECT& rc : r->rgn.rects) {
         const POINT a = LogicalToDevice(dc, rc.left, rc.top), z = LogicalToDevice(dc, rc.right, rc.bottom);
@@ -757,7 +757,7 @@ BOOL WINAPI NtGdiFrameRgn(HDC hdc, HRGN hrgn, HBRUSH brush, INT width, INT heigh
     auto* r = GdiGetT<RegionObj>(hrgn, abi::kObjRegion);
     if (!dc || !r) return FALSE;
     DrawTarget t;
-    if (!ResolveDrawTarget(dc, &t)) return TRUE;
+    if (!ResolveOrWarn(dc, &t, __func__)) return TRUE;
     // frame = region minus the region shrunk by (width, height)
     Rgn inner;
     for (const RECT& rc : r->rgn.rects) {
@@ -780,7 +780,7 @@ BOOL WINAPI NtGdiInvertRgn(HDC hdc, HRGN hrgn) {
     auto* r = GdiGetT<RegionObj>(hrgn, abi::kObjRegion);
     if (!dc || !r) return FALSE;
     DrawTarget t;
-    if (!ResolveDrawTarget(dc, &t)) return TRUE;
+    if (!ResolveOrWarn(dc, &t, __func__)) return TRUE;
     for (const RECT& rc : r->rgn.rects) {
         const POINT a = LogicalToDevice(dc, rc.left, rc.top), z = LogicalToDevice(dc, rc.right, rc.bottom);
         const RECT d = Normalized(RECT{a.x, a.y, z.x, z.y});
@@ -804,7 +804,7 @@ BOOL WINAPI NtGdiExtTextOutW(HDC hdc, INT x, INT y, UINT flags, const RECT* rect
     }
     if (!str) count = 0;
     DrawTarget t;
-    const bool ok = ResolveDrawTarget(dc, &t);
+    const bool ok = ResolveOrWarn(dc, &t, __func__);
     RECT rect_dev{};
     const bool have_rect = rect && (flags & (ETO_OPAQUE | ETO_CLIPPED));
     if (have_rect) rect_dev = Normalized(LogicalRect(dc, rect->left, rect->top, rect->right - rect->left, rect->bottom - rect->top));
@@ -890,8 +890,6 @@ INT WINAPI NtGdiStretchDIBitsInternal(HDC hdc, INT x_dst, INT y_dst, INT width_d
     if (v.bottom_up) sy = v.height - y_src - height_src;
     const RECT dr = LogicalRect(dc, x_dst, y_dst, width_dst, height_dst);
     const RECT sr{x_src, sy, x_src + width_src, sy + height_src};
-    DrawTarget t;
-    if (!ResolveDrawTarget(dc, &t)) return height_src;
     const RECT nd = Normalized(dr);
     const int dw = nd.right - nd.left, dh = nd.bottom - nd.top;
     if (dw <= 0 || dh <= 0 || !width_src || !height_src) return 0;
@@ -900,15 +898,38 @@ INT WINAPI NtGdiStretchDIBitsInternal(HDC hdc, INT x_dst, INT y_dst, INT width_d
     const RECT ns = Normalized(sr);
     const int sw = ns.right - ns.left, sh = ns.bottom - ns.top;
     const BrushPaint b = BrushOf(dc, dc->brush);
-    ForEachPixel(t, nd, [&](int x, int y, std::uint32_t& px) {
+    auto source_at = [&](int x, int y) {
         int sx = ns.left + static_cast<int>((static_cast<long long>(x - nd.left) * sw) / dw);
         int syy = ns.top + static_cast<int>((static_cast<long long>(y - nd.top) * sh) / dh);
         if (flip_x) sx = ns.right - 1 - (sx - ns.left);
         if (flip_y) syy = ns.bottom - 1 - (syy - ns.top);
-        const std::uint32_t s = DibViewPixel(v, sx, syy);
-        px = rop3 == 0xcc ? s | 0xff000000u : 0xff000000u | (Rop3(rop3, b.At(x, y), s, px) & 0xffffff);
-    });
-    NoteDrawn(dc, t, nd);
+        return DibViewPixel(v, sx, syy);
+    };
+    DrawTarget t;
+    if (ResolveDrawTarget(dc, &t)) {
+        ForEachPixel(t, nd, [&](int x, int y, std::uint32_t& px) {
+            const std::uint32_t s = source_at(x, y);
+            px = rop3 == 0xcc ? s | 0xff000000u : 0xff000000u | (Rop3(rop3, b.At(x, y), s, px) & 0xffffff);
+        });
+        NoteDrawn(dc, t, nd);
+        return height_src;
+    }
+    // A destination without a 32 bpp view (a monochrome mask, a paletted DIB section): pixel by pixel. Colour into
+    // monochrome follows BitBlt's rule: the DC's background colour becomes 1 (white), everything else 0.
+    SlowDest d;
+    if (!OpenSlowDest(dc, &d)) return height_src;
+    const bool dst_mono = DestIsMono(dc);
+    const std::uint32_t bg = ColorToPixel(dc->attr->background_color) & 0xffffff;
+    for (const RECT& c : d.clip.rects) {
+        const RECT x = RectIntersect(nd, c);
+        for (int y = x.top; y < x.bottom; ++y)
+            for (int xx = x.left; xx < x.right; ++xx) {
+                std::uint32_t s = source_at(xx, y);
+                if (dst_mono) s = (s & 0xffffff) == bg ? 0xffffffffu : 0xff000000u;
+                const std::uint32_t px = rop3 == 0xcc ? s : Rop3(rop3, b.At(xx, y), s, BitmapPixel(*d.bmp, xx, y));
+                SetBitmapPixel(*d.bmp, xx, y, 0xff000000u | (px & 0xffffff));
+            }
+    }
     return height_src;
 }
 
@@ -922,24 +943,45 @@ INT WINAPI NtGdiSetDIBitsToDeviceInternal(HDC hdc, INT x_dst, INT y_dst, DWORD c
     if (!dc || !bits || !MakeDibView(bmi, coloruse, bits, &v)) return 0;
     // `bits` holds `lines` scans starting at scan `startscan` (scan 0 = first row in memory).
     if (lines > static_cast<UINT>(v.height)) lines = static_cast<UINT>(v.height);
-    DrawTarget t;
-    if (!ResolveDrawTarget(dc, &t)) return static_cast<INT>(lines);
     const POINT o = LogicalToDevice(dc, x_dst, y_dst);
     const RECT dr{o.x, o.y, o.x + static_cast<LONG>(cx), o.y + static_cast<LONG>(cy)};
-    ForEachPixel(t, dr, [&](int x, int y, std::uint32_t& px) {
+    // The DIB pixel for device (x, y), or false when it lies outside the scans that were given.
+    auto source_at = [&](int x, int y, std::uint32_t* out) {
         const int sx = x_src + (x - dr.left);
         // DIB y of this destination row: y_src is measured from the bottom for bottom-up DIBs
-        int dib_y = v.bottom_up ? (y_src + static_cast<int>(cy) - 1 - (y - dr.top)) : (y_src + (y - dr.top));
-        const int scan = v.bottom_up ? dib_y : dib_y;
-        if (scan < static_cast<int>(startscan) || scan >= static_cast<int>(startscan + lines) || sx < 0 || sx >= v.width) return;
+        const int scan = v.bottom_up ? (y_src + static_cast<int>(cy) - 1 - (y - dr.top)) : (y_src + (y - dr.top));
+        if (scan < static_cast<int>(startscan) || scan >= static_cast<int>(startscan + lines) || sx < 0 || sx >= v.width) return false;
         const std::uint8_t* row = v.bits + static_cast<std::ptrdiff_t>(scan - static_cast<int>(startscan)) * v.stride;
         DibView one = v;
         one.bits = row;
         one.height = 1;
         one.bottom_up = false;
-        px = DibViewPixel(one, sx, 0) | 0xff000000u;
-    });
-    NoteDrawn(dc, t, dr);
+        *out = DibViewPixel(one, sx, 0) | 0xff000000u;
+        return true;
+    };
+    DrawTarget t;
+    if (ResolveDrawTarget(dc, &t)) {
+        ForEachPixel(t, dr, [&](int x, int y, std::uint32_t& px) {
+            std::uint32_t s;
+            if (source_at(x, y, &s)) px = s;
+        });
+        NoteDrawn(dc, t, dr);
+        return static_cast<INT>(lines);
+    }
+    SlowDest d;   // a monochrome or paletted destination: pixel by pixel (colour into mono as in NtGdiStretchDIBitsInternal)
+    if (!OpenSlowDest(dc, &d)) return static_cast<INT>(lines);
+    const bool dst_mono = DestIsMono(dc);
+    const std::uint32_t bg = ColorToPixel(dc->attr->background_color) & 0xffffff;
+    for (const RECT& c : d.clip.rects) {
+        const RECT x = RectIntersect(dr, c);
+        for (int y = x.top; y < x.bottom; ++y)
+            for (int xx = x.left; xx < x.right; ++xx) {
+                std::uint32_t s;
+                if (!source_at(xx, y, &s)) continue;
+                if (dst_mono) s = (s & 0xffffff) == bg ? 0xffffffffu : 0xff000000u;
+                SetBitmapPixel(*d.bmp, xx, y, s);
+            }
+    }
     return static_cast<INT>(lines);
 }
 

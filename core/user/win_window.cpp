@@ -1863,6 +1863,8 @@ ULONG_PTR WINAPI NtUserCallNoParam(ULONG code) {
 ULONG_PTR WINAPI NtUserCallOneParam(ULONG_PTR arg, ULONG code) {
     LockGuard lock;
     switch (code) {
+    case abi::OneParamCreateCursorIcon: return HandleToUlong(CreateCursorIconHandle(arg != 0));
+    case abi::OneParamGetIconParam: return GetIconParam(reinterpret_cast<HICON>(UlongToHandle(static_cast<ULONG>(arg))));
     case abi::OneParamGetSysColor: return SysColor(static_cast<int>(arg));
     case abi::OneParamGetSysColorBrush:
         if (static_cast<int>(arg) == 0x100 /* COLOR_55AA_BRUSH */) return HandleToUlong(S().stock[GRAY_BRUSH]);
@@ -1941,6 +1943,8 @@ ULONG_PTR WINAPI NtUserCallTwoParam(ULONG_PTR arg1, ULONG_PTR arg2, ULONG code) 
         if (r) ScreenRect(r);
         return TRUE;
     }
+    case abi::TwoParamSetIconParam:
+        return SetIconParam(reinterpret_cast<HICON>(UlongToHandle(static_cast<ULONG>(arg1))), reinterpret_cast<const abi::FreeIconParams*>(arg2));
     case abi::TwoParamGetDialogProc:
     case abi::TwoParamAllocWinProc:
         return arg1;   // raw procedure pointers throughout (no WINPROC handles)
