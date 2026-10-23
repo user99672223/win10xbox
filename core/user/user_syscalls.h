@@ -292,6 +292,7 @@ INT WINAPI NtGdiStretchDIBitsInternal(HDC hdc, INT x_dst, INT y_dst, INT width_d
                                       UINT coloruse, DWORD rop, UINT max_info, UINT max_bits, HANDLE xform);
 
 }  // namespace win10xbox::user::sys
+#include "win_scroll.h"   // the scroll bar syscalls (prototypes)
 
 // The registration list: every name above.
 #define W10X_USER_SYSCALLS(X) \
@@ -327,6 +328,7 @@ INT WINAPI NtGdiStretchDIBitsInternal(HDC hdc, INT x_dst, INT y_dst, INT width_d
     X(NtUserInvalidateRect) X(NtUserInvalidateRgn) X(NtUserValidateRect) X(NtUserValidateRgn) X(NtUserRedrawWindow) \
     X(NtUserGetUpdateRect) X(NtUserGetUpdateRgn) X(NtUserExcludeUpdateRgn) X(NtUserWindowFromDC) \
     X(NtUserLockWindowUpdate) X(NtUserScrollWindowEx) \
+    X(NtUserSetScrollInfo) X(NtUserShowScrollBar) X(NtUserEnableScrollBar) X(NtUserGetScrollBarInfo) X(NtUserScrollDC) \
     X(NtUserGetSystemDpiForProcess) X(NtUserGetProcessDpiAwarenessContext) X(NtUserSetProcessDpiAwarenessContext) \
     X(NtUserSystemParametersInfo) X(NtUserSystemParametersInfoForDpi) X(NtUserEnumDisplayMonitors) \
     X(NtUserGetDpiForMonitor) X(NtUserEnumDisplaySettings) X(NtUserEnumDisplayDevices) \

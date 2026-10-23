@@ -1365,7 +1365,7 @@ ULONG_PTR WINAPI NtUserCallHwndParam(HWND hwnd, DWORD_PTR param, DWORD code) {
     case abi::HwndParamSetDialogInfo: w->dlg_info = static_cast<LONG_PTR>(param); return 0;
     case abi::HwndParamSetMDIClientInfo: w->mdi_info = static_cast<LONG_PTR>(param); return 0;
     case abi::HwndParamGetWinMonitorDpi: return 96;
-    case abi::HwndParamGetScrollInfo: return FALSE;
+    case abi::HwndParamGetScrollInfo: return ScrollGetInfoCall(w->handle, param);   // win_scroll.cpp
     case abi::HwndParamExposeWindowSurface: return FALSE;
     case abi::HwndParamGetPrivateData: {
         auto* p = reinterpret_cast<abi::GetPrivateDataParams*>(param);

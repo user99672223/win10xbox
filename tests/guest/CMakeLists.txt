@@ -97,6 +97,11 @@ if(NOT MSVC)
     target_compile_definitions(guest_seh PRIVATE SEH_NATIVE=1)
   endif()
 endif()
+# The scroll bar guest (tests/guest/window_scroll.c): SetScrollInfo/GetScrollInfo, non-client scroll bars, ScrollWindowEx,
+# ScrollDC, and a click injected by the host on the vertical bar's down arrow (WM_VSCROLL SB_LINEDOWN).
+add_executable(guest_window_scroll window_scroll.c)
+target_link_libraries(guest_window_scroll PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_window_scroll)
 # The dialog guest: DialogBoxParamW with a DIALOG resource (dialog.rc); the host clicks OK (tests/guest/dialog.c).
 enable_language(RC)
 add_executable(guest_dialog dialog.c dialog.rc)

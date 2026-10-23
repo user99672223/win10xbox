@@ -29,6 +29,8 @@ if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
                    guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog guest_comctl
                    guest_seh)
+                   guest_window_input guest_window_input2 guest_window_scroll guest_window_text guest_window_nc guest_dialog
+                   guest_comctl)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -183,6 +185,17 @@ win10xbox_guest_test(guest_window_text "C:\\guest\\guest_window_text.exe" 42
   "text: done")
 set_tests_properties(integration.guest_window_text PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_text.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=121,123,ff000000|123,123,ffffffff|131,123,ff000000")
+# Scroll bars (tests/guest/window_scroll.c, core/user/win_scroll.cpp): range/position round trip, HTVSCROLL hit test,
+# ScrollWindowEx / ScrollDC pixels, and a host-injected click on the vertical bar's down arrow that must arrive as
+# WM_VSCROLL SB_LINEDOWN + SB_ENDSCROLL. The screenshot shows the bar's track colour (COLOR_SCROLLBAR, ffc8c8c8) at
+# screen (391,250), between the thumb and the down arrow.
+win10xbox_guest_test(guest_window_scroll "C:\\guest\\guest_window_scroll.exe" 42
+  "scroll: client=283x183" "scroll: v min=0 max=100 page=10 pos=20" "scroll: h min=0 max=50 pos=5"
+  "scroll: vbar rect=383,100,400,283" "scroll: hittest down-arrow=7 hbar=6 client=1"
+  "scroll: ScrollWindowEx before=404040 after=0000ff upd=0,0,283,30" "scroll: ScrollDC pixel=0000ff upd=0,0,283,10"
+  "scroll: WM_VSCROLL code=1" "scroll: after click linedown=1 endscroll=1 pos=21" "scroll: done")
+set_tests_properties(integration.guest_window_scroll PROPERTIES
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_scroll.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=391,250,ffc8c8c8;WIN10XBOX_TEST_INJECT_INPUT=sleep 2000\\;move 391,275\\;ldown\\;sleep 100\\;lup")
 # The dialog manager (tests/guest/dialog.c): DialogBoxParamW with a DIALOG resource, WM_INITDIALOG, GetDlgItem,
 # Set/GetDlgItemText, tab order, WM_CTLCOLORSTATIC, a click on the OK button injected by the host (screen (160,163) =
 # the button's centre once the program placed the dialog at (100,100) and the button at client (10,50) 100x26),

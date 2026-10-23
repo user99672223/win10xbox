@@ -6,6 +6,7 @@
 // depend on; frameless windows first, captioned frames drawn in solid colours.
 #include "user_internal.h"
 #include "user_syscalls.h"
+#include "win_scroll.h"
 
 #include <algorithm>
 #include <cstring>
@@ -261,14 +262,20 @@ LRESULT DefWindowProcInternal(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, bool an
         else if (lp) ShrinkByInsets(reinterpret_cast<RECT*>(lp), in);
         return 0;
     }
-    case WM_NCHITTEST:
-        return HitTest(w, POINT{static_cast<short>(LOWORD(lp)), static_cast<short>(HIWORD(lp))});
+    case WM_NCHITTEST: {
+        const POINT pt{static_cast<short>(LOWORD(lp)), static_cast<short>(HIWORD(lp))};
+        if (const LRESULT sb = ScrollNcHitTest(w, pt)) return sb;   // win_scroll.cpp
+        return HitTest(w, pt);
+    }
     case WM_NCPAINT:
         PaintNonClient(hwnd);
+        ScrollDrawNc(hwnd);   // win_scroll.cpp
         return 0;
     case WM_NCACTIVATE:
-        if (WindowObj* cur = Win(hwnd); cur && (cur->style & WS_CAPTION) == WS_CAPTION && IsWindowReallyVisible(cur))
+        if (WindowObj* cur = Win(hwnd); cur && (cur->style & WS_CAPTION) == WS_CAPTION && IsWindowReallyVisible(cur)) {
             PaintNonClient(hwnd);
+            ScrollDrawNc(hwnd);   // the frame fill covers the scroll bars
+        }
         return TRUE;
     case WM_ERASEBKGND:
     case WM_ICONERASEBKGND:
@@ -285,7 +292,10 @@ LRESULT DefWindowProcInternal(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, bool an
         if (!lp) SetWindowTextInternal(w, L"");
         else if (ansi) SetWindowTextInternal(w, FromAnsi(reinterpret_cast<const char*>(lp)).c_str());
         else SetWindowTextInternal(w, reinterpret_cast<const WCHAR*>(lp));
-        if ((w = Win(hwnd)) && (w->style & WS_CAPTION) == WS_CAPTION && IsWindowReallyVisible(w)) PaintNonClient(hwnd);
+        if ((w = Win(hwnd)) && (w->style & WS_CAPTION) == WS_CAPTION && IsWindowReallyVisible(w)) {
+            PaintNonClient(hwnd);
+            ScrollDrawNc(hwnd);
+        }
         return TRUE;
     }
     case WM_GETTEXT: {
@@ -401,6 +411,9 @@ LRESULT DefWindowProcInternal(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, bool an
             break;
         case HTLEFT: case HTRIGHT: case HTTOP: case HTBOTTOM: case HTTOPLEFT: case HTTOPRIGHT: case HTBOTTOMLEFT: case HTBOTTOMRIGHT:
             SendMessageInternal(hwnd, WM_SYSCOMMAND, SC_SIZE + (ht - HTLEFT + WMSZ_LEFT), lp);
+            break;
+        case HTVSCROLL: case HTHSCROLL:
+            ScrollNcLButtonDown(hwnd, lp);   // win_scroll.cpp: a click on a non-client scroll bar
             break;
         }
         return 0;
