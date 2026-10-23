@@ -28,10 +28,7 @@ add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
 if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
                    guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog guest_comctl
-                   guest_seh)
-                   guest_window_input guest_window_input2 guest_window_scroll guest_window_text guest_window_nc guest_dialog
-                   guest_comctl)
-                   guest_clipboard)
+                   guest_seh guest_window_scroll guest_clipboard)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -324,6 +321,9 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   win10xbox_guest_test(ninja_noop "C:\\guest\\ninja.exe" 0 "ninja: no work to do\\.")
   set_tests_properties(integration.ninja_noop PROPERTIES DEPENDS integration.ninja_build)
   unset(_guest_args)
+endif()
+
+# ---- The python.org embeddable CPython (docs/slices/realpython.md) ----------------------------------------------------
 # The official CPython 3.12 embeddable package (python.org zip, nothing compiled), unpacked by
 # tools/ci/fetch_python.ps1 (a named step of ci.yml's windows job) into <machine>/guest/python before ctest runs.
 # Registered where that step exists: MSVC builds, or -DWIN10XBOX_REAL_PYTHON=ON after unpacking the zip there.
