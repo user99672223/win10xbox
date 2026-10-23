@@ -145,6 +145,11 @@ win10xbox_add_guest(guest_cursor)
 add_executable(guest_xinput xinput.c)
 target_link_libraries(guest_xinput PRIVATE xinput1_4 user32)
 win10xbox_add_guest(guest_xinput)
+# Display mode (tests/guest/display_mode.c): GetSystemMetrics, GetDeviceCaps, EnumDisplaySettings and the monitor rectangle
+# must all report the one mode the host set (integration test: WIN10XBOX_DISPLAY_MODE=1280x720@75).
+add_executable(guest_display_mode display_mode.c)
+target_link_libraries(guest_display_mode PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_display_mode)
 # Exception handling coverage (seh.cpp + the DLL it throws across): C++ throw/catch, SEH, vectored handlers.
 # __try/__except is native on MSVC. For clang's mingw target it is used when a configure-time compile+link of a
 # __try/__except program with -fms-extensions succeeds (SEH_NATIVE); otherwise seh.cpp falls back to a vectored

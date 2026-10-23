@@ -6,8 +6,9 @@
 //   <name>.title   first non-blank line = the text the picker shows instead of "<name>.exe"
 //   <name>.machine first non-blank line = the machine folder under LocalState this guest runs on (default "machine";
 //                  "machine-native-d3d" = route B + native Direct3D 11, docs/slices/uwpd3d.md)
+//   <name>.display first non-blank line = "WxH@Hz" (or "auto"): the screen this program sees (launch.json "guest_display")
 //   <name>.launch  an extra picker entry that runs another guest: lines  exe=, title=, args= (whitespace separated,
-//                  "double quotes" group a word), env=KEY=VALUE (repeatable), machine=<folder>, cwd=<dir relative to the
+//                  "double quotes" group a word), env=KEY=VALUE (repeatable), machine=<folder>, display=WxH@Hz, cwd=<dir relative to the
 //                  entry's directory>. exe= may be a relative path with subdirectories (Binaries\Win64\App.exe).
 //   <dir>\<dir>.launch  (a subdirectory of guests\) one picker entry for a whole directory install: the directory is
 //                  C:\guest\<dir>\, exe= and cwd= are relative to it.
@@ -29,6 +30,7 @@ namespace w10x_uwp
         std::vector<std::string> args;
         std::vector<std::pair<std::string, std::string>> env;
         std::string machine; // machine folder name under LocalState; empty = "machine"
+        std::string display; // the guest's screen for this program ("WxH@Hz", or "auto"); empty = launch.json guest_display
     };
 
     void ParseArgsFile(std::string_view text, std::vector<std::string>* out);
@@ -39,6 +41,8 @@ namespace w10x_uwp
     // A machine folder name: a leaf name that does not start with '.'.
     bool IsMachineFolderName(std::string_view name);
     // First non-blank line of a .machine file, trimmed; sets *ok = false (and returns "") when it is not a valid name.
+    // First non-blank line of a .display file: "auto" or "WxH[@Hz]"; sets *ok = false (and returns "") otherwise.
+    std::string ParseDisplayFile(std::string_view text, bool* ok);
     std::string ParseMachineFile(std::string_view text, bool* ok);
     // The machine folder that carries the native Direct3D 11 runtime (route B + D3D, tests/integration/prepare_machine.cmake
     // D3D_MACHINE) and the System32 DLLs the host copies BY NAME into it from the console (the same set).

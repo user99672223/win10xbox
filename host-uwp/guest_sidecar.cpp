@@ -85,6 +85,18 @@ namespace w10x_uwp
         return IsLeafNameUtf8(name) && name[0] != '.';
     }
 
+    std::string ParseDisplayFile(std::string_view text, bool* ok)
+    {
+        std::string v;
+        *ok = true;
+        ForEachLine(text, [&](std::string_view line) {
+            v = std::string(Trim(line));
+            return false;
+        });
+        if (!v.empty() && !IsDisplayModeText(v)) *ok = false;
+        return *ok ? v : std::string();
+    }
+
     std::string ParseMachineFile(std::string_view text, bool* ok)
     {
         std::string name;
@@ -183,6 +195,15 @@ namespace w10x_uwp
             else if (k == "args")
             {
                 for (std::string& w : SplitArgLine(v)) out->args.push_back(std::move(w));
+            }
+            else if (k == "display")
+            {
+                out->display = std::string(Trim(v));
+                if (!IsDisplayModeText(out->display))
+                {
+                    *error = "display= must be auto or WxH@Hz: " + std::string(line);
+                    return false;
+                }
             }
             else if (k == "machine")
             {

@@ -61,6 +61,18 @@ std::uint64_t FrameSerial();
 // monitor). Zero before the first NtUser call.
 void ScreenSize(std::int32_t* width, std::int32_t* height);
 
+// The one display mode every display answer of the layer comes from (EnumDisplaySettings, GetDeviceCaps
+// HORZRES/VERTRES/VREFRESH/BITSPIXEL, GetSystemMetrics SM_CXSCREEN, the monitor rect, and the DXGI output of the
+// emulated windows): the current mode of the driver's primary monitor, set by the host when it creates the driver.
+// False (all zero) before a driver exists.
+bool CurrentDisplayMode(std::uint32_t* width, std::uint32_t* height, std::uint32_t* refresh_hz,
+                        std::uint32_t* bits_per_pixel);
+
+// The sync interval of the guest's most recent IDXGISwapChain::Present (1 until it presents). The host-uwp presenter
+// presents with tearing (VRR) whenever this is 0. Any thread.
+void NoteGuestPresent(unsigned sync_interval);
+unsigned LastGuestSyncInterval();
+
 // Writes ComposeLastPaintedFrame() as a 32-bit BMP. Used by host-win32 (WIN10XBOX_SCREENSHOT=
 // <path>, written when the guest has exited) and by host-uwp (LocalState\screen.bmp).
 bool WriteScreenshot(const std::wstring& path);
