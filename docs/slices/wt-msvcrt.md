@@ -1,6 +1,12 @@
-status: wip
+status: ready
 
 # wt-msvcrt
+
+Run: https://github.com/user99672223/win10xbox/actions/runs/39881821163 (head ec42f12; windows Debug and
+RelWithDebInfo green, linux-cross green on the re-run of the job: its first attempt failed only
+`integration.guest_window_input2` "another thread's window: delivered on that thread", an unrelated test that ran
+before this one and passed on the re-run, while integration.winetest_msvcrt passed in both). wine-pe, uwp-lite,
+host-win32-smoke, host-win32-appcontainer and host-uwp are green for the same head (host-uwp 39881821138).
 
 Wine 11.9 msvcrt conformance units (dlls/msvcrt/tests, fetched on the linux-cross job, never copied here) built with
 llvm-mingw as one guest PE (`msvcrt_test.exe`, linked against an import library of Wine's own msvcrt.dll made from
@@ -35,3 +41,27 @@ harness exits with the failure count); otherwise the parent did not finish and t
 Total executed over the completing units: 413218 assertions.
 
 Whole suite wall time on linux-cross: 23 s (per-unit cap 45 s).
+
+## What runs through the layer
+
+`win10xbox.exe --machine <dir> C:\guest-wine\msvcrt_test.exe <unit>` once per unit (on linux-cross under Wine as the
+host), output lines of the first run (run 39878660644):
+
+    WINETEST msvcrt:cpp status=ok executed=624 todo=2 flaky=0 failures=0 skipped=0 exit=0 time=1s
+    WINETEST msvcrt:string status=ok executed=410075 todo=4 flaky=0 failures=0 skipped=0 exit=0 time=1s
+    WINETEST msvcrt:time status=ok executed=314 todo=0 flaky=0 failures=11 skipped=1 exit=11 time=1s
+    WINETEST msvcrt total executed=413218
+
+Allowlist (0 failures, only grows): cpp data dir heap printf scanf signal string. `time` completes with 11 failures.
+`environ file locale misc` do not complete (`crash`). ctest only prints a passing test's output, so the lines above are
+from the one run where the gate failed (all units at `run 999999`, which flagged environ/file as wrongly parsed, see
+above); the committed baseline held in the green run. A unit that completes while recorded as `crash` prints
+IMPROVED but does not fail: lower the baseline then.
+
+Syscalls added or changed: none. DLLs added to wine-pe/dlls.txt: none.
+
+## What still fails
+
+time (11: timezone/mktime), environ (`system()` cannot start cmd; parent ends with exit 1), file (a spawned test exe
+dies with 0xc0000005; pipe/inherit tests), locale (0xc0000005 after the __p___mb_cur_max skip), misc (advapi32
+SystemFunction036 is unimplemented in the machine's advapi32: rand_s aborts).
