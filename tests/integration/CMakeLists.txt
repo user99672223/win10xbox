@@ -56,6 +56,7 @@ function(win10xbox_guest_test name program exit_code)
       -DHOST=$<TARGET_FILE:win10xbox>
       -DMACHINE=${_guest_machine}
       -DREQUIRE_BUILTIN_DLLS=${_require_builtin}
+      "-DNO_USER32=${_guest_no_user32}"
       -DPROGRAM=${program}
       "-DPROGRAM_ARGS=${_guest_args}"
       "-DDEBUG_SPEC=${_guest_debug}"
@@ -330,7 +331,12 @@ include(${CMAKE_CURRENT_LIST_DIR}/sqlite_tests.cmake)
 # -DWIN10XBOX_REAL_PROGRAMS=ON after putting a curl.exe into the machine folder. No network: --version, and the
 # file:// handler reading and copying files under the machine folder's guest home (C:\Users\User).
 if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
-  set(_curl_home ${WIN10XBOX_MACHINE_DIR}/Users/User)
+  # curl links ws2_32, which on the shared folder is the runner's native one (its advapi32/sechost/rpcrt4 chain dies
+  # on Wine's 0x80000100 import stub, docs/TESTING.md "GUI guests"): run on the builtin-only folder, where it is Wine's.
+  # curl never loads user32, which that folder's trace check otherwise demands.
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  set(_guest_no_user32 ON)
+  set(_curl_home ${WIN10XBOX_BUILTIN_MACHINE_DIR}/Users/User)
   file(MAKE_DIRECTORY ${_curl_home})
   file(WRITE ${_curl_home}/curl_in.txt "hello from a guest file, read by curl\nsecond line\n")
   string(REPEAT "0123456789abcdef" 20000 _curl_big)   # 320000 bytes
@@ -354,4 +360,6 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   set(_guest_args "-sS;file:///C:/Users/User/curl_missing.txt")
   win10xbox_guest_test(real_curl_file_missing "C:\\guest\\curl.exe" 37 "")
   unset(_guest_args)
+  unset(_guest_machine)
+  unset(_guest_no_user32)
 endif()
