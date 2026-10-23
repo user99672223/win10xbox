@@ -250,9 +250,15 @@ static NTSTATUS GuestTlsLocation(HANDLE thread, PVOID buffer, ULONG length, PULO
 static NTSTATUS NTAPI Xl_NtQueryInformationThread(HANDLE thread, ULONG klass, PVOID buffer, ULONG length,
                                                   PULONG ret_len) {
     if (klass == kThreadGuestTlsLocation) return GuestTlsLocation(thread, buffer, length, ret_len);
-    if (klass == kThreadAmILastThread && IsCurrentThreadHandle(thread)) {
+    if (klass == kThreadAmILastThread) {
+        // Wine's RtlExitUserThread leaves its out value uninitialised when this fails, and a nonzero stack leftover
+        // ends the whole process with the thread's exit code. Trace every query so the answer is on record.
+        const bool current = IsCurrentThreadHandle(thread);
         ThreadState* self = CurrentThreadState();
-        if (self && (self->flags & kThreadGuest)) {
+        TRACE(process, "thread %04lx: NtQueryInformationThread(ThreadAmILastThread) current=%d state=%p flags=%x guests=%zu",
+              GetCurrentThreadId(), current ? 1 : 0, static_cast<void*>(self), self ? static_cast<unsigned>(self->flags) : 0u,
+              GuestThreads().size());
+        if (current && self && (self->flags & kThreadGuest)) {
             if (length != sizeof(ULONG)) return st::InfoLengthMismatch;
             const std::size_t guests = GuestThreads().size();
             *static_cast<ULONG*>(buffer) = guests <= 1 ? 1 : 0;

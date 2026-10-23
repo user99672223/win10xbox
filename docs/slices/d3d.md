@@ -1,4 +1,13 @@
 status: wip
+handoff (run 39946954565 @ 8237882: linux-cross green, both MSVC jobs red on integration.guest_d3d11):
+- the guest reaches the host dxgkrnl: NtGdiDdDDIQueryAdapterInfo returns c000000d (host), QueryStatistics success.
+- RelWithDebInfo: exit 1722 (RPC_S_SERVER_UNAVAILABLE) before the "d3d11: adapter=" line; no d3d11: adapter line printed yet.
+- cause: Wine sechost device_notify_proc (cfgmgr32 notification) fails its plugplay RPC and returns 1722; RtlExitUserThread
+  then took ThreadAmILastThread as true (no ThreadAmILastThread trace line appeared, so the query bypassed the guest-count path).
+- this push: ThreadAmILastThread is traced on every query (state, flags, guest count) to settle which branch answers.
+- Debug: test hangs 120 s early in guest startup with relay tracing on (not yet diagnosed).
+- guest_imgui_d3d11 (not this gate): D3DCOMPILER_47 import api-ms-win-security-cryptoapi-l1-1-0.dll not found (c0000135); same dll blocks D3DCompile in d3d11_tri.
+- next: read the ThreadAmILastThread line; map api-ms-win-security-cryptoapi to cryptsp/sechost; Debug hang.
 
 # Slice: -d3d, a guest renders with Direct3D 11 (off-screen)
 
