@@ -162,6 +162,15 @@ endif()
 
 # Guests from the SQLite shell bring-up (tests/guest/sqlite).
 add_subdirectory(sqlite)
+# Direct3D 11 off-screen (tests/guest/d3d11_tri.c, docs/slices/d3d.md): the guest loads the NATIVE d3d11/dxgi/d3dcompiler_47
+# at run time (LoadLibrary), renders a triangle into a render-target texture and reads the pixels back. MSVC only (the
+# Windows SDK's d3d11.h/dxguid.lib); run on the route-B + D3D machine folder (integration.guest_d3d11).
+if(MSVC)
+  add_executable(guest_d3d11_tri d3d11_tri.c)
+  target_link_libraries(guest_d3d11_tri PRIVATE dxguid)
+  win10xbox_add_guest(guest_d3d11_tri)
+endif()
+
 # Dear ImGui's example_win32_directx11, unmodified, as a guest of route B + Direct3D 11 (tests/guest/imgui_d3d11.cpp
 # wraps it; docs/DECISIONS.md G1). The Dear ImGui release source is not vendored: CI fetches it on the Windows runner
 # (ci.yml, "Fetch Dear ImGui") and passes its root as WIN10XBOX_IMGUI_DIR (environment or cache). MSVC only, like

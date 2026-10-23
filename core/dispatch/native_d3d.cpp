@@ -26,15 +26,30 @@ ULONGLONG g_last_compose_tick = 0;
 
 bool StartsWith(const char* s, const char* p) { return std::strncmp(s, p, std::strlen(p)) == 0; }
 
-void NoteFirst(const char* name) {
+const char* g_failed[kMaxNames];   // names whose first non-success status has been reported (under g_lock)
+LONG g_nfailed = 0;
+
+// The first call of each name, with the status the host returned; and, once per name, the first status that is not
+// success (an NTSTATUS error or warning: the measurement of what the host's dxgkrnl refuses, e.g. in an AppContainer).
+void NoteFirst(const char* name, std::uint64_t result) {
+    const auto status = static_cast<unsigned long>(result);
+    const bool bad = status >= 0x80000000ul;
     AcquireSRWLockExclusive(&g_lock);
-    bool seen = false;
+    bool seen = false, failed_seen = !bad;
     for (LONG i = 0; i < g_nseen; ++i)
         if (g_seen[i] == name || !std::strcmp(g_seen[i], name)) { seen = true; break; }
     if (!seen && g_nseen < kMaxNames) g_seen[g_nseen++] = name;
+    if (bad) {
+        for (LONG i = 0; i < g_nfailed; ++i)
+            if (g_failed[i] == name || !std::strcmp(g_failed[i], name)) { failed_seen = true; break; }
+        if (!failed_seen && g_nfailed < kMaxNames) g_failed[g_nfailed++] = name;
+    }
     const LONG n = g_nseen;
     ReleaseSRWLockExclusive(&g_lock);
-    if (!seen) TRACE(dispatch, "native d3d: first D3DKMT call %s (host win32k/dxgkrnl), %ld distinct so far", name, n);
+    if (!seen)
+        TRACE(dispatch, "native d3d: first D3DKMT call %s -> %08lx (host win32k/dxgkrnl), %ld distinct so far", name,
+              status, n);
+    if (!failed_seen) TRACE(dispatch, "native d3d: D3DKMT %s returned %08lx", name, status);
 }
 
 }  // namespace
@@ -46,7 +61,7 @@ void NativeWin32uBefore(const char* name) {
 void NativeWin32uAfter(const char* name, std::uint64_t result) {
     if (!StartsWith(name, "NtGdiDdDDI")) return;
     InterlockedIncrement64(&g_ddi_calls);
-    NoteFirst(name);
+    NoteFirst(name, result);
     if (!std::strstr(name, "Present")) return;
     const LONG64 n = InterlockedIncrement64(&g_present_calls);
     const ULONGLONG now = GetTickCount64();

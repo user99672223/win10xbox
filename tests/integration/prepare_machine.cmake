@@ -177,7 +177,8 @@ if(D3D_MACHINE)
     file(MAKE_DIRECTORY "${D3D_MACHINE}/${d}")
   endforeach()
   set(_d3d_native user32.dll win32u.dll gdi32.dll gdi32full.dll msvcp_win.dll imm32.dll
-                  d3d11.dll dxgi.dll d3dcompiler_47.dll d3d10warp.dll dxcore.dll dwmapi.dll)
+                  d3d11.dll dxgi.dll d3dcompiler_47.dll d3d10warp.dll dxcore.dll dwmapi.dll
+                  d3d12.dll D3D12Core.dll D3DSCache.dll)
   file(GLOB _files "${MACHINE}/Windows/builtin/*" "${MACHINE}/guest/*" "${MACHINE}/Windows/System32/*.nls"
                    "${MACHINE}/Windows/Globalization/Sorting/*.nls")
   foreach(n ${_d3d_native})

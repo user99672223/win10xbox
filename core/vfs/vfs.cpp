@@ -43,6 +43,7 @@ struct State {
     std::wstring machine_root;
     std::vector<Drive> drives;               // sorted by letter, always contains C
     std::wstring c_root;                     // host_root of C:
+    std::wstring host_system32;              // the HOST's own %SystemRoot%\System32 (GPU user-mode driver fallback)
     TokPath builtin_tok;                     // C root + Windows\builtin
     MachineInfo info;
     DllOverride default_override = DllOverride::NativeThenBuiltin;
@@ -266,14 +267,45 @@ const Drive* FindDrive(const State& st, wchar_t letter) {
     return nullptr;
 }
 
+// Direct3D user-mode drivers (docs/slices/d3d.md). The native d3d11/dxgi ask the host's kernel which UMD an adapter
+// uses (D3DKMTQueryAdapterInfo, UMDRIVERNAME) and LoadLibrary it by that name: "C:\Windows\System32\nvwgf2umx.dll",
+// "...\System32\DriverStore\FileRepository\<inf>\<umd>.dll", "...\System32\d3d10warp.dll". The machine folder is
+// the guest's C:\ and never holds a vendor's driver (it is not a Microsoft system DLL, not in machine/guest_dlls.txt,
+// and differs per host), so those loads would miss. Only for these names, and only when the machine folder does not
+// have the file itself, the guest sees the HOST's System32 file: the driver the host's own kernel handed out. Nothing
+// else of the host's System32 is reachable this way.
+constexpr const wchar_t* kGpuDriverPrefix[] = {L"NVWGF2", L"NVD3DUM", L"ATIDXX", L"ATICFX", L"AMDXX", L"AMDXC",
+                                               L"D3D10WARP"};
+bool IsGpuDriverModule(std::wstring_view name) {
+    if (!IsOverrideExtension(name)) return false;
+    const std::wstring f = Fold(name);   // upper-cased
+    for (const wchar_t* p : kGpuDriverPrefix)
+        if (f.compare(0, wcslen(p), p) == 0) return true;
+    return f.find(L"UMD") != std::wstring::npos;   // nvldumdx, igd10iumd64, igd12umd64, vm3dum64_10 (umd inside)
+}
+
 // Guest drive path -> plain host Win32 path (applies DLL overrides).
 NTSTATUS BuildHostPlain(const State& st, const GuestPath& g, std::wstring* out) {
     const Drive* d = FindDrive(st, g.drive);
     if (!d) return STATUS_OBJECT_PATH_NOT_FOUND;
-    if (g.drive == L'C' && g.comps.size() == 3 && !g.trailing && EqualNoCase(g.comps[0], L"Windows") &&
-        EqualNoCase(g.comps[1], L"System32") && IsOverrideExtension(g.comps[2]))
-        return ResolveModuleImpl(st, g.comps[2], out);
+    const bool sys32 = g.drive == L'C' && g.comps.size() >= 2 && EqualNoCase(g.comps[0], L"Windows") &&
+                       EqualNoCase(g.comps[1], L"System32");
+    if (sys32 && g.comps.size() == 3 && !g.trailing && IsOverrideExtension(g.comps[2])) {
+        NTSTATUS s = ResolveModuleImpl(st, g.comps[2], out);
+        if (s == STATUS_SUCCESS && !st.host_system32.empty() && IsGpuDriverModule(g.comps[2]) && !FileExists(*out)) {
+            std::wstring host = st.host_system32 + L"\\" + g.comps[2];
+            if (FileExists(host)) *out = std::move(host);
+        }
+        return s;
+    }
     *out = BuildHost(d->host_root, g.comps, g.trailing);
+    // System32\DriverStore\FileRepository\<package>\<file>: the driver packages of the host.
+    if (sys32 && g.comps.size() >= 4 && !g.trailing && !st.host_system32.empty() &&
+        EqualNoCase(g.comps[2], L"DriverStore") && IsOverrideExtension(g.comps.back()) && !FileExists(*out)) {
+        std::wstring host = st.host_system32;
+        for (size_t i = 2; i < g.comps.size(); ++i) { host += L'\\'; host += g.comps[i]; }
+        if (FileExists(host)) *out = std::move(host);
+    }
     return STATUS_SUCCESS;
 }
 
@@ -551,6 +583,11 @@ NTSTATUS Initialize(const std::wstring& machine_root) {
     ApplyDrives(doc, st.get(), mt);
     const Drive* c = FindDrive(*st, L'C');
     st->c_root = c->host_root;
+    {
+        wchar_t sys[MAX_PATH];
+        const UINT n = GetSystemDirectoryW(sys, MAX_PATH);
+        if (n && n < MAX_PATH) st->host_system32.assign(sys, n);
+    }
     st->builtin_tok = c->tok;
     st->builtin_tok.comps.push_back(L"Windows");
     st->builtin_tok.comps.push_back(L"builtin");

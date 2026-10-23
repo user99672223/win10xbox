@@ -201,8 +201,10 @@ std::size_t ExtendKernelbase(const loader::MappedImage& img) {
     d.VirtualAddress = rva_of(dir);
     d.Size = static_cast<DWORD>(reinterpret_cast<std::uint8_t*>(str) - reinterpret_cast<std::uint8_t*>(dir));
     if (flip) VirtualProtect(&d, sizeof d, old, &old);
-    VirtualProtect(mem, thunks, PAGE_EXECUTE_READ, &old);
-    VirtualProtect(mem + thunks, total - thunks, PAGE_READONLY, &old);
+    // One protection for the whole block: the jump slots and the directory share a page, and a second call on the
+    // directory part would take the execute right from the last slots' page (the first native run died executing
+    // a jump slot in a read-only page).
+    VirtualProtect(mem, total, PAGE_EXECUTE_READ, &old);
     FlushInstructionCache(GetCurrentProcess(), mem, thunks);
     std::string wine_names, host_names;
     std::size_t nw = 0, nh = 0;

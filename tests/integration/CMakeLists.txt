@@ -36,6 +36,9 @@ if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
                    guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog guest_comctl
                    guest_seh guest_window_scroll guest_clipboard msctf_stub)
+  if(TARGET guest_d3d11_tri)
+    add_dependencies(prepare_machine guest_d3d11_tri)
+  endif()
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -477,6 +480,35 @@ set_tests_properties(integration.guest_window_native PROPERTIES
   # The screen pixels as 0xAARRGGBB from the BMP's B,G,R,A bytes: RGB(0,80,220) is ff0050dc, RGB(255,0,0) ffff0000.
   # WIN10XBOX_WINEDEBUG: Wine's own loader warnings ("No implementation for ntdll.dll.X", failed DllMains).
   ENVIRONMENT "WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_native.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=110,110,ff0050dc|130,130,ffff0000")
+endif()
+
+# Direct3D 11 off-screen, route B (docs/slices/d3d.md): tests/guest/d3d11_tri.c on machine-native-d3d. The guest loads the
+# NATIVE d3d11/dxgi/d3dcompiler_47 and the user-mode driver (hardware, else WARP), creates a device, renders one triangle
+# into a render-target texture and reads the centre and a corner pixel back through a staging texture; the D3DKMT calls
+# of those DLLs (NtGdiDdDDI* in the native win32u) are forwarded by name to the host's win32u. Exit 42 = centre is the
+# triangle colour and the corner the clear colour. Native Windows builds only (no Windows DLLs under Wine on linux-cross,
+# where the test is not registered at all so the skip gate never counts it).
+if(NOT CMAKE_CROSSCOMPILING AND TARGET guest_d3d11_tri)
+add_test(NAME integration.guest_d3d11
+  COMMAND ${CMAKE_COMMAND}
+    -DHOST=$<TARGET_FILE:win10xbox>
+    -DMACHINE=${WIN10XBOX_D3D_MACHINE_DIR}
+    -DPROGRAM=C:\\guest\\guest_d3d11_tri.exe
+    -DEXPECT_EXIT=42
+    "-DEXPECT_REGEX=d3d11: adapter=.* feature_level=0x[0-9a-f][0-9a-f][0-9a-f][0-9a-f] driver=(hardware|warp);d3d11: centre=ff0000ff corner=0000ffff;d3d11: done"
+    "-DEXPECT_TRACE_REGEX=gui native: [0-9]+ win32u syscalls pass through;NtGdiDdDDI\\* \\(D3DKMT\\) thunks forwarded by name;native d3d: first D3DKMT call NtGdiDdDDI;host path [^)]*[Ss]ystem32.[Dd]3[Dd]11.dll;host path [^)]*[Ss]ystem32.[Dd][Xx][Gg][Ii].dll"
+    "-DFORBID_TRACE_REGEX=host state reached under the guest TLS view"
+    -DDEBUG_SPEC=+dispatch,+modules,+process,+user
+    -DREQUIRE=Windows/System32/d3d11.dll
+    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
+set_tests_properties(integration.guest_d3d11 PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "guest_e2e"
+  TIMEOUT 240
+  ENVIRONMENT "WIN10XBOX_WINEDEBUG=+loaddll,warn+module")
 endif()
 
 # Route B + Direct3D 11 (docs/DECISIONS.md G1): Dear ImGui's example_win32_directx11 (tests/guest/imgui_d3d11.cpp,

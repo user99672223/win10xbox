@@ -494,6 +494,11 @@ TEST(vfs_override_translation) {
     NT_OK(sys + L"both.dll", HostNt(nat + L"both.dll"));
     NT_OK(sys + L"builtin_only.dll", HostNt(bi + L"builtin_only.dll"));
     NT_OK(sys + L"ghost.dll", HostNt(nat + L"ghost.dll"));
+    // A GPU user-mode driver name (docs/slices/d3d.md) that exists nowhere keeps the machine path: the host's
+    // System32 is consulted only for a file that is there.
+    NT_OK(sys + L"w10x_no_such_umd64.dll", HostNt(nat + L"w10x_no_such_umd64.dll"));
+    NT_OK(L"\\??\\C:\\Windows\\System32\\DriverStore\\FileRepository\\w10x.inf\\w10x_umd.dll",
+          HostNt(L"\\Windows\\System32\\DriverStore\\FileRepository\\w10x.inf\\w10x_umd.dll"));
     // builtin
     NT_OK(sys + L"user32.dll", HostNt(bi + L"user32.dll"));
     // builtin,native -> builtin if present, else native
