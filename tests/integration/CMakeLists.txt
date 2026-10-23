@@ -110,10 +110,6 @@ win10xbox_guest_test(guest_spawn "C:\\guest\\guest_spawn.exe" 42
 win10xbox_guest_test(guest_seh "C:\\guest\\guest_seh.exe" 42
   "seh: throw_catch ok" "seh: dll_boundary ok" "seh: seh ok" "seh: veh ok" "seh: uef ok" "seh: done failures=0")
 set_tests_properties(integration.guest_seh PROPERTIES FAIL_REGULAR_EXPRESSION "seh: [a-z_.]+ FAILED;seh: FAIL line")
-if(CMAKE_CROSSCOMPILING)
-  # Wine's own +seh trace (handler, frame, flags of every dispatch and unwind step) lands in the failure output.
-  set_tests_properties(integration.guest_seh PROPERTIES ENVIRONMENT "WINEDEBUG=+seh")
-endif()
 
 # The host-uwp-lite smoke guest (built in tests/guest, MSVC only): the program
 # that ran on the console, in both subsystems. It prints facts and returns 42.
