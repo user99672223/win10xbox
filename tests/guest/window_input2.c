@@ -452,6 +452,7 @@ int main(void) {
         moveto(950, 550);
         t_end = GetTickCount() + 3000;
         while (!strstr(g_log3, "3:MM(") && (int)(t_end - GetTickCount()) > 0) pump(30);
+        printf("window_input2: thread 3 log [%s]\n", g_log3);
         check("another thread's window: delivered on that thread", strstr(g_log3, "3:MM(50,50;own-thread=1)") != NULL);
         click();
         t_end = GetTickCount() + 3000;
