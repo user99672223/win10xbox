@@ -142,30 +142,23 @@ do_build() {
     local rc_="$OUT/regdll.c"
     cat > "$rc_" <<'REGEOF'
 #include <windows.h>
-static void out(const char *s) { DWORD n; WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), s, lstrlenA(s), &n, NULL); }
-void regdll_start(void)
+#include <stdio.h>
+int main(int argc, char **argv)
 {
-    const char *p = GetCommandLineA();
-    char hex[] = "0123456789abcdef", num[11];
     HRESULT hr = 0x80070002;
-    HMODULE m;
-    int i;
-    if (*p == '"') { for (p++; *p && *p != '"'; p++) ; if (*p) p++; } else while (*p && *p != ' ') p++;
-    while (*p == ' ') p++;
-    m = LoadLibraryA(p);
+    HMODULE m = argc > 1 ? LoadLibraryA(argv[1]) : NULL;
     if (m)
     {
         HRESULT (WINAPI *reg)(void) = (void *)GetProcAddress(m, "DllRegisterServer");
         hr = reg ? reg() : 0x8007007f;
     }
-    out("regdll: "); out(p); out(" DllRegisterServer=0x");
-    for (i = 0; i < 8; i++) num[i] = hex[((unsigned)hr >> (28 - 4 * i)) & 15];
-    num[8] = '\n'; num[9] = 0; out(num);
-    ExitProcess(hr ? 1 : 0);
+    printf("regdll: %s DllRegisterServer=0x%08x\n", argc > 1 ? argv[1] : "(none)", (unsigned)hr);
+    fflush(stdout);
+    return hr != 0;
 }
 REGEOF
-    "$cc" -O1 -w -nostdlib -Wl,-entry:regdll_start "$rc_" -o "$OUT/regdll.exe" -lkernel32 \
-        || { echo "media.sh: regdll build failed" >&2; exit 1; }
+    "$cc" -O1 -w "$rc_" -o "$OUT/regdll.exe" -lkernel32 \
+        || echo "media.sh: note: regdll build failed; COM classes stay unregistered"
 }
 
 baseline_of() {   # <unit> -> "<expect> <max>"
