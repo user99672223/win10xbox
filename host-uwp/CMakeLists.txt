@@ -33,7 +33,7 @@
 #                                         exists, else the placeholder guest/window.c)
 #   hello_guest        hello.exe          sample guest, /SUBSYSTEM:WINDOWS
 #   hello_guest_cui    hello_cui.exe      same source, /SUBSYSTEM:CONSOLE (A/B variant)
-#   guest_hello, guest_cpuid, guest_sleep, guest_identity, guest_dll   tests/guest/*.c (console; guest_dll.dll)
+#   guest_hello, guest_cpuid, guest_sleep, guest_identity, guest_regpersist, guest_dll   tests/guest/*.c (console; guest_dll.dll)
 #   smoke_guest_cui    smoke_cui.exe      host-uwp-lite/smoke_guest.c (console, exits 42)
 #   drv_client         drv_client.exe     tests/drivers/drv_client.c (console; needs the driver host)
 #   host_uwp_selftest  host_uwp_selftest.exe  console program, no layer / WinRT / package:
@@ -218,7 +218,7 @@ set_target_properties(window_guest PROPERTIES OUTPUT_NAME "window")
 
 # Every other guest of the repo, so the package carries them all to the console (HANDOFF.md
 # "Standing testing rule"). Console programs; output names as in the main tree.
-foreach(_g hello cpuid sleep spawn xinput identity)
+foreach(_g hello cpuid sleep spawn xinput identity regpersist)
   add_executable(guest_${_g} "${WIN10XBOX_ROOT}/tests/guest/${_g}.c")
 endforeach()
 # Our own builtin DLLs (guest-dlls/: xinput1_4.dll and its copies xinput1_3.dll / xinput9_1_0.dll, staged into
@@ -229,6 +229,7 @@ target_link_libraries(guest_xinput PRIVATE xinput1_4 user32)
 # guest_identity: COM / WMI / registry, and the Windows 10 compatibility manifest the version checks need.
 target_sources(guest_identity PRIVATE "${WIN10XBOX_ROOT}/tests/guest/identity.manifest")
 target_link_libraries(guest_identity PRIVATE ole32 oleaut32 advapi32)
+target_link_libraries(guest_regpersist PRIVATE advapi32)   # the registry API
 add_library(guest_dll SHARED "${WIN10XBOX_ROOT}/tests/guest/dll.c")
 set_target_properties(guest_dll PROPERTIES PREFIX "")
 add_executable(smoke_guest_cui "${WIN10XBOX_ROOT}/host-uwp-lite/smoke_guest.c")
@@ -272,7 +273,7 @@ set_target_properties(smoke_guest PROPERTIES OUTPUT_NAME "smoke")
 set(HOST_UWP_GUESTS window_guest hello_guest hello_guest_cui guest_hello guest_cpuid guest_sleep guest_dll
     smoke_guest_cui drv_client guest_window2 guest_window_input guest_window_input2 guest_window_text smoke_guest
     guest_spawn guest_window_nc guest_dialog guest_comctl guest_seh guest_seh_dll guest_window_scroll guest_clipboard
-    guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput guest_identity guest_net guest_cursor)
+    guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput guest_identity guest_net guest_cursor guest_regpersist)
 
 # ---------------------------------------------------------------------------
 # The selftest: the launch.json parser (launch_config.cpp has no Windows or layer

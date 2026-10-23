@@ -769,6 +769,98 @@ TEST(registry_overlay_persistence) {
     RemoveTree(dir);
 }
 
+namespace {
+
+DWORD WINAPI ReleaseLockLater(void* lock) {
+    Sleep(400);
+    CloseHandle(static_cast<HANDLE>(lock));
+    return 0;
+}
+
+bool Exists(const std::wstring& path) { return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES; }
+
+std::string FileBytes(const std::wstring& path) {
+    std::string out;
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return out;
+    char buf[4096];
+    DWORD n = 0;
+    while (ReadFile(f, buf, sizeof buf, &n, nullptr) && n) out.append(buf, n);
+    CloseHandle(f);
+    return out;
+}
+
+}  // namespace
+
+// Cross-process persistence (EnablePersistence / PersistOverlay): only changes are written, atomically (temp file +
+// rename), under the lock file; a second "process" sees them; an unwritable folder costs the caller nothing.
+TEST(registry_overlay_persist_atomic_lock) {
+    const std::wstring dir = TempDir(L"persist2");
+    CopyFixture(dir);
+    const std::wstring file = dir + L"\\registry-overlay.bin";
+    const std::wstring cv = std::wstring(kSoftware) + L"\\Microsoft\\Windows NT\\CurrentVersion";
+    {
+        Session s(dir);
+        CHECK_EQ(s.init, nt::kSuccess);
+        CHECK_EQ(reg::EnablePersistence(), nt::kSuccess);   // no file yet
+        reg::PersistOverlay();
+        CHECK(!Exists(file));                               // nothing changed: nothing written
+        HANDLE k = Open(cv, kAll);
+        CHECK_EQ(SetString(k, L"ProductName", L"Flushed"), nt::kSuccess);
+        CHECK(!Exists(file));                               // no flush yet
+        CHECK_EQ(reg::Reg_NtFlushKey(k), nt::kSuccess);
+        reg::Close(k);
+        CHECK(Exists(file));
+        CHECK(!Exists(file + L".tmp"));
+        CHECK(Exists(dir + L"\\registry-overlay.lock"));
+        const std::string raw = FileBytes(file);
+        std::uint32_t count = 0;
+        CHECK(raw.size() > 12);
+        std::memcpy(&count, raw.data() + 8, 4);
+        CHECK_EQ(count, 1u);                                // the seeded keys of Initialize are not written back
+    }
+    {
+        // A second process: loads what the first one flushed; another holder of the lock makes its save wait.
+        Session s(dir);
+        CHECK_EQ(reg::EnablePersistence(), nt::kSuccess);
+        std::wstring str;
+        CHECK_EQ(reg::QueryString(cv, L"ProductName", &str), nt::kSuccess);
+        CHECK(str == L"Flushed");
+        HANDLE k = Open(cv, kAll);
+        CHECK_EQ(SetString(k, L"ProductName", L"Second"), nt::kSuccess);
+        reg::Close(k);
+        HANDLE lock = CreateFileW((dir + L"\\registry-overlay.lock").c_str(), GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS,
+                                  FILE_ATTRIBUTE_NORMAL, nullptr);
+        CHECK(lock != INVALID_HANDLE_VALUE);
+        HANDLE t = CreateThread(nullptr, 0, ReleaseLockLater, lock, 0, nullptr);
+        const DWORD t0 = GetTickCount();
+        reg::PersistOverlay();
+        CHECK(GetTickCount() - t0 >= 300);
+        WaitForSingleObject(t, INFINITE);
+        CloseHandle(t);
+    }
+    {
+        Session s(dir);
+        CHECK_EQ(reg::EnablePersistence(), nt::kSuccess);
+        std::wstring str;
+        CHECK_EQ(reg::QueryString(cv, L"ProductName", &str), nt::kSuccess);
+        CHECK(str == L"Second");
+    }
+    // An overlay file that cannot be replaced (a directory is in its place): the flush still succeeds, nothing is left over.
+    DeleteFileW(file.c_str());
+    CreateDirectoryW(file.c_str(), nullptr);
+    {
+        Session s(dir);
+        CHECK_EQ(reg::EnablePersistence(), nt::kSuccess);
+        HANDLE k = Open(cv, kAll);
+        CHECK_EQ(SetString(k, L"ProductName", L"Lost"), nt::kSuccess);
+        CHECK_EQ(reg::Reg_NtFlushKey(k), nt::kSuccess);
+        reg::Close(k);
+        CHECK(!Exists(file + L".tmp"));
+    }
+    RemoveTree(dir);
+}
+
 TEST(registry_missing_hives_use_machine_json) {
     const std::wstring dir = TempDir(L"nohive");
     {

@@ -8,6 +8,8 @@
 # output goes to stderr, so assertions about it use the TRACE variants:
 #   [-DSAVE_STDOUT=<file>]   write the guest's stdout there (build/bin/*.log is uploaded by CI)
 #   [-DEXPECT_TRACE_REGEX=<regex;regex...>] [-DFORBID_TRACE_REGEX=<regex>]
+#   [-DKEEP_REGISTRY_OVERLAY=ON]  keep <machine>\registry-overlay.bin (the registry a previous run left, docs/DISPATCHER.md
+#   "Registry persistence"); without it the file is deleted first, so no test sees another's registry writes.
 #   [-DREQUIRE=<path relative to the machine folder>]: SKIP (77) when that file is absent, e.g. the native
 #   Windows DLLs a test needs (machine/import_windows_dlls.ps1 stages them on a Windows host only).
 # ('@SEMI@' in PROGRAM_ARGS stands for a ';' inside one argument.)
@@ -55,6 +57,9 @@ string(REPLACE "/" "\\" _machine "${_machine}")
 string(REPLACE "@SEMI@" "\\;" _args "${PROGRAM_ARGS}")   # '@SEMI@' stands for a ';' inside one argument
 if(GUEST_FILE)
   file(REMOVE "${MACHINE}/${GUEST_FILE}")
+endif()
+if(NOT KEEP_REGISTRY_OVERLAY)
+  file(REMOVE "${MACHINE}/registry-overlay.bin")
 endif()
 set(_stdin "")
 if(INPUT_FILE)

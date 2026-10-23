@@ -610,6 +610,7 @@ int Launch(const LaunchOptions& opts) {
     registry::SetHostNamespace(reinterpret_cast<registry::OpenDirectoryFn>(HostExport("NtOpenDirectoryObject")),
                                reinterpret_cast<registry::CloseObjectFn>(HostExport("NtClose")));
     if ((s = registry::Initialize(root))) WARN(process, "registry::Initialize failed: %08lx", static_cast<unsigned long>(s));
+    else if ((s = registry::EnablePersistence())) WARN(process, "registry overlay file not loaded: %08lx", static_cast<unsigned long>(s));
 #endif
 #if WIN10XBOX_HAVE_CLOCK
     {
@@ -771,6 +772,9 @@ int WaitForGuest(DWORD timeout_ms) {
         DWORD code = 0;
         GetExitCodeThread(g.main_thread, &code);
         WARN(process, "guest main thread ended without ExitProcess (code %lu)", code);
+#if WIN10XBOX_HAVE_REGISTRY
+        registry::PersistOverlay();
+#endif
         g.exit_code = static_cast<LONG>(code);
         RestorePebFields();
     }
@@ -783,6 +787,11 @@ int WaitForGuest(DWORD timeout_ms) {
     InterlockedExchange(&g.exit_code, static_cast<LONG>(exit_code));
     InterlockedExchange(&g.exited, 1);
     TRACE(process, "guest exit, code %u", exit_code);
+#if WIN10XBOX_HAVE_REGISTRY
+    // What a program wrote to the registry outlives it (docs/DISPATCHER.md). Before the other threads are killed: one
+    // that dies inside a registry call would leave the registry's mutex held.
+    registry::PersistOverlay();
+#endif
     TerminateOtherGuestThreads(static_cast<NTSTATUS>(exit_code));
     RestorePebFields();
     ThreadState* self = CurrentThreadState();
