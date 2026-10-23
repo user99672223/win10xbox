@@ -41,6 +41,7 @@
 #include "host_diag.h"
 #include "host_shell.h"
 #include "host_util.h"
+#include "launch_config.h"
 #include "launcher.h"
 #include "presenter.h"
 
@@ -77,7 +78,6 @@ std::string RequestAppRestart(const std::string& arg)
         }
         switch (op.GetResults())
         {
-        case wac::AppRestartFailureReason::None: return "";   // granted: the process is about to end
         case wac::AppRestartFailureReason::RestartPending: return "AppRestartFailureReason::RestartPending (a restart is already pending)";
         case wac::AppRestartFailureReason::NotInForeground: return "AppRestartFailureReason::NotInForeground";
         case wac::AppRestartFailureReason::InvalidUser: return "AppRestartFailureReason::InvalidUser";
