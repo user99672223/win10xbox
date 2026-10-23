@@ -44,6 +44,7 @@ constexpr NTSTATUS kAccessViolation         = static_cast<NTSTATUS>(0xC0000005);
 constexpr NTSTATUS kInvalidHandle           = static_cast<NTSTATUS>(0xC0000008);
 constexpr NTSTATUS kInvalidParameter        = static_cast<NTSTATUS>(0xC000000D);
 constexpr NTSTATUS kNotImplemented          = static_cast<NTSTATUS>(0xC0000002);
+constexpr NTSTATUS kNotSupported            = static_cast<NTSTATUS>(0xC00000BB);
 constexpr NTSTATUS kAccessDenied            = static_cast<NTSTATUS>(0xC0000022);
 constexpr NTSTATUS kBufferTooSmall          = static_cast<NTSTATUS>(0xC0000023);
 constexpr NTSTATUS kObjectTypeMismatch      = static_cast<NTSTATUS>(0xC0000024);
@@ -1384,6 +1385,28 @@ NTSTATUS Tok_NtCompareTokens(HANDLE FirstTokenHandle, HANDLE SecondTokenHandle, 
     }
     *Equal = eq ? TRUE : FALSE;
     return kSuccess;
+}
+
+NTSTATUS Tok_NtCreateLowBoxToken(PHANDLE NewTokenHandle, HANDLE ExistingTokenHandle, ACCESS_MASK DesiredAccess,
+                                 POBJECT_ATTRIBUTES ObjectAttributes, PSID PackageSid, ULONG CapabilityCount,
+                                 PSID_AND_ATTRIBUTES Capabilities, ULONG HandleCount, HANDLE* Handles) {
+    (void)DesiredAccess; (void)ObjectAttributes; (void)Handles;
+    EnsureReady();
+    if (!NewTokenHandle) return kAccessViolation;
+    *NewTokenHandle = nullptr;
+    if (!PackageSid || (CapabilityCount && !Capabilities) || CapabilityCount > 0x1000 || HandleCount > 0x1000)
+        return kInvalidParameter;
+    {
+        Lock l;
+        TokPtr src;
+        const NTSTATUS st = Resolve(ExistingTokenHandle, kTokDuplicate, &src);
+        if (st != kSuccess) return st;
+    }
+    // A LowBox token that did not report TokenIsAppContainer would be a lie, and one that did would contradict the
+    // identity every other token query gives: refuse, so a sandboxing program sees the failure it can handle.
+    FIXME(token, "NtCreateLowBoxToken: AppContainer tokens are not emulated (%lu capabilities, %lu handles)",
+          static_cast<unsigned long>(CapabilityCount), static_cast<unsigned long>(HandleCount));
+    return kNotSupported;
 }
 
 NTSTATUS Tok_NtQuerySecurityObject(HANDLE Handle, SECURITY_INFORMATION SecurityInformation, PSECURITY_DESCRIPTOR SecurityDescriptor,
