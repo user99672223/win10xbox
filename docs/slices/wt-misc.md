@@ -1,4 +1,4 @@
-status: wip
+status: blocked: REGRESSION: baseline is 'completes', now crashed (WINETEST crypt32:message, ci run 39946638580, head 9f16b24)
 
 # Slice: wt-misc (small Wine conformance suites)
 
@@ -100,5 +100,13 @@ same first failing assertions dbghelp.c:135/:142/:170): the count is not determi
   cancelled by newer merges before linux-cross finished, so main could not be compared.
 - host-uwp (msix) failed with "guest(s) missing from the .msix: guest_msctf_stub.exe", a guest MAIN added.
 The Windows jobs of ci and wine-pe were green.
+
+Result of that final push (ci 39946638580, head 9f16b24): linux-cross red with exactly one failing test,
+`integration.winetest_crypt32`, because `crypt32:message` crashed (exit 5, after message.c:1257 CryptEncryptMessage failed
+00000057, then a call through a bad pointer) where it completed with 49 failures on run 39930191602 and 39939144450. The
+outcome flips between runs, so the unit's honest baseline is `message crash 0` (a `crash` entry only prints IMPROVED when
+the unit completes; `run 49` fails on every crash). Everything else in linux-cross passed (psapi, cabinet, xmllite, mpr,
+setupapi, dbghelp with 17, wintrust, kernel32 including atom and environ, shell32, msvcrt); the Windows jobs and wine-pe
+are green. Not applied: the push budget is used up.
 
 The final push merges main (edfdcbd + later) and sets `dbghelp run 17`; its run is reported to the coordinator.
