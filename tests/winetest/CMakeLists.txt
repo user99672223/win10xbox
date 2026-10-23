@@ -23,6 +23,7 @@ if(EXISTS ${_ntdll_exe})
     COMMAND ${CMAKE_COMMAND}
       -DHOST=$<TARGET_FILE:win10xbox> -DMACHINE=${CMAKE_BINARY_DIR}/bin/machine-builtin -DEXE=${_ntdll_exe}
       -DALLOWLIST=${CMAKE_SOURCE_DIR}/wine-pe/tests/ntdll.allowlist
+      -DPARITY=${CMAKE_SOURCE_DIR}/wine-pe/tests/ntdll.parity
       -DRESULTS_DIR=${CMAKE_BINARY_DIR}/winetest/ntdll/results
       "-DEMULATOR=${_emu}"
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_ntdll.cmake)

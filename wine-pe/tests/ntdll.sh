@@ -83,6 +83,16 @@ cmd_build() {
         echo "#include <windows.h>"
         echo "#define STANDALONE"
         echo "#include \"wine/test.h\""
+        # `ntdll_test.exe <unit> --platform=windows`: Wine's harness takes the guest for Wine (our ntdll exports
+        # wine_get_version) and so expects Wine's known deficiencies in every todo_wine block; a unit whose
+        # behaviour is the Windows host's own (file: the host's NTFS) is run as on Windows. main() reads
+        # WINETEST_PLATFORM, which the guest cannot be given through its environment (it is the layer's), so the
+        # constructor sets it from the command line before main runs.
+        echo "#include <string.h>"
+        echo "static void __attribute__((constructor)) w10x_platform(void)"
+        echo "{"
+        echo "    if (strstr(GetCommandLineA(), \" --platform=windows\")) SetEnvironmentVariableA(\"WINETEST_PLATFORM\", \"windows\");"
+        echo "}"
         for u in "${units[@]}"; do echo "extern void func_$u(void);"; done
         echo "const struct test winetest_testlist[] = {"
         for u in "${units[@]}"; do echo "    { \"$u\", func_$u },"; done

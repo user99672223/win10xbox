@@ -93,3 +93,4 @@ programs/icacls
 programs/cacls
 programs/explorer         # wine-pe/programs/explorer.sh: explorer /desktop=shell,WxH
 programs/conhost          # wine-pe/programs/conhost.sh: console host (DECISIONS.md)
+programs/cmd              # C:\Windows\System32\cmd.exe: the command interpreter every Windows machine has (ntdll file.c:400 opens it; ComSpec points at it)

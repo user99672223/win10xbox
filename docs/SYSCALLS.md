@@ -5,7 +5,7 @@ Windows 10 x64 / 22H2 NT syscall numbers) and the hand-maintained policy
 `core/dispatch/syscall_policy.inc`; win32u entries (ids 0x1000..) are Emulate when
 `core/user/user_syscalls.h` registers them. Do not edit by hand.
 
-1798 syscalls. passthrough 151, translate 38, emulate 352, todo 1257. Generated 2026-10-23.
+1798 syscalls. passthrough 150, translate 39, emulate 352, todo 1257. Generated 2026-10-23.
 
 Policy: **PassThrough** calls the host ntdll export by name; **Translate**
 rewrites arguments (paths, handles, timeouts) then passes through;
@@ -31,7 +31,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x000e | NtSetEvent | 2 | PassThrough |  |
 | 0x000f | NtClose | 1 | Translate | emulated handles (registry, token, image sections) routed to their owner |
 | 0x0010 | NtQueryObject | 5 | Translate | ObjectNameInformation of a file handle names the guest NT path, not the host device path |
-| 0x0011 | NtQueryInformationFile | 5 | Translate | FileNameInformation/FileNormalizedNameInformation un-translated to the guest view |
+| 0x0011 | NtQueryInformationFile | 5 | Translate | FileNameInformation/FileNormalizedNameInformation/FileAllInformation: the name is the guest view, built from a private reply |
 | 0x0012 | NtOpenKey | 3 | Emulate | registry |
 | 0x0013 | NtEnumerateValueKey | 6 | Emulate | registry |
 | 0x0014 | NtFindAtom | 3 | PassThrough |  |
@@ -65,13 +65,13 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0030 | NtOpenProcessTokenEx | 4 | Emulate | token |
 | 0x0031 | NtQueryPerformanceCounter | 2 | Emulate | clock |
 | 0x0032 | NtEnumerateKey | 6 | Emulate | registry |
-| 0x0033 | NtOpenFile | 6 | Translate | VFS path rewrite |
+| 0x0033 | NtOpenFile | 6 | Translate | VFS path rewrite (not for FILE_OPEN_BY_FILE_ID) |
 | 0x0034 | NtDelayExecution | 2 | Emulate | clock |
 | 0x0035 | NtQueryDirectoryFile | 11 | PassThrough |  |
 | 0x0036 | NtQuerySystemInformation | 4 | Translate | SystemTimeOfDayInformation from the virtual clock |
 | 0x0037 | NtOpenSection | 3 | PassThrough |  |
 | 0x0038 | NtQueryTimer | 5 | PassThrough |  |
-| 0x0039 | NtFsControlFile | 10 | PassThrough |  |
+| 0x0039 | NtFsControlFile | 10 | Translate | FSCTL_SET_REPARSE_POINT/FSCTL_GET_REPARSE_POINT: the target of a junction or absolute symbolic link goes through the VFS (guest name to host name and back) |
 | 0x003a | NtWriteVirtualMemory | 5 | PassThrough |  |
 | 0x003b | NtCloseObjectAuditAlarm | 3 | PassThrough |  |
 | 0x003c | NtDuplicateObject | 7 | Translate | emulated handles (registry, token, image sections) routed to their owner |
@@ -99,7 +99,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0052 | NtResumeThread | 2 | PassThrough |  |
 | 0x0053 | NtTerminateThread | 2 | Translate | current thread: guest thread bookkeeping before the host call |
 | 0x0054 | NtReadRequestData | 6 | PassThrough |  |
-| 0x0055 | NtCreateFile | 11 | Translate | VFS path rewrite |
+| 0x0055 | NtCreateFile | 11 | Translate | VFS path rewrite (not for FILE_OPEN_BY_FILE_ID) |
 | 0x0056 | NtQueryEvent | 5 | PassThrough |  |
 | 0x0057 | NtWriteRequestData | 6 | PassThrough |  |
 | 0x0058 | NtOpenDirectoryObject | 3 | Translate | \\KnownDlls reported absent (E3); other directories pass through |
