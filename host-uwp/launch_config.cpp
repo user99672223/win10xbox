@@ -729,12 +729,24 @@ bool ParseLaunchConfig(std::string_view text, LaunchConfig* out, std::string* er
         {
             if (!WantBool(v, k, &c.input_pump, error)) return false;
         }
+        else if (k == "picker")
+        {
+            if (!WantBool(v, k, &c.picker, error)) return false;
+            c.has_picker = true;
+        }
+        else if (k == "autoselect")
+        {
+            if (!WantString(v, k, &s, error)) return false;
+            if (!s.empty() && !IsLeafNameUtf8(s))
+                return Fail(error, v.line, "\"autoselect\" must be a bare file name such as \"hello_cui.exe\"");
+            c.autoselect = s;
+        }
         else
         {
             return Fail(error, kl,
                         "unknown key \"" + k +
                             "\" (known: guest, args, cwd, trace, winedebug, trace_log_max_mb, timeout_sec, exit_when_done, "
-                            "expect_exit_code, stage_native, input_pump)");
+                            "expect_exit_code, stage_native, input_pump, picker, autoselect)");
         }
     }
 
@@ -761,6 +773,8 @@ std::string DescribeLaunchConfig(const LaunchConfig& c)
     for (const std::string& n : c.stage_native) names += (names.empty() ? "" : ",") + n;
     s += "stage_native=" + (names.empty() ? std::string("(none)") : names) + "\n";
     s += std::string("input_pump=") + (c.input_pump ? "true" : "false") + "\n";
+    if (c.has_picker) s += std::string("picker=") + (c.picker ? "true" : "false") + "\n";
+    if (!c.autoselect.empty()) s += "autoselect=" + c.autoselect + "\n";
     return s;
 }
 
