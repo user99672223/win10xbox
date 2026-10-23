@@ -9,8 +9,11 @@
  *   5. a registered format (RegisterClipboardFormatW, GetClipboardFormatNameW) round-trips its
  *      bytes; EmptyClipboard sends WM_DESTROYCLIPBOARD to the previous owner
  *   6. delayed rendering: SetClipboardData(CF_UNICODETEXT, NULL) and the WM_RENDERFORMAT answer
- *   7. clipboard format listeners
- * Exit 42 when everything holds; otherwise the number of the first failing step.
+ *   7. clipboard format listeners: a second window registered with AddClipboardFormatListener receives
+ *      WM_CLIPBOARDUPDATE when another window changes the clipboard, and stops receiving it after
+ *      RemoveClipboardFormatListener
+ * Every passed check prints "clipboard: <name> ok". Exit 42 when everything holds; otherwise the number
+ * of the first failing step.
  */
 #include <windows.h>
 #include <stdio.h>
@@ -22,6 +25,7 @@ static const char kTextA[] = "Hello Xbox clipboard";
 static const WCHAR kRendered[] = L"rendered on demand";
 static int g_render_calls;
 static int g_destroy_calls;
+static int g_update_calls;   /* WM_CLIPBOARDUPDATE seen by the listener window */
 
 static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_RENDERFORMAT) {
@@ -33,11 +37,29 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == CF_UNICODETEXT) SetClipboardData(CF_UNICODETEXT, h);
         return 0;
     }
+    if (msg == WM_CLIPBOARDUPDATE) {
+        g_update_calls++;
+        return 0;
+    }
     if (msg == WM_DESTROYCLIPBOARD) {
         g_destroy_calls++;
         return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+/* Dispatches the thread's posted messages until `*counter` differs from `until_ne` or `ms` ran out. */
+static void pump(const int* counter, int until_ne, DWORD ms) {
+    DWORD start = GetTickCount();
+    for (;;) {
+        MSG m;
+        while (PeekMessageW(&m, NULL, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&m);
+            DispatchMessageW(&m);
+        }
+        if (*counter != until_ne || GetTickCount() - start >= ms) return;
+        MsgWaitForMultipleObjectsEx(0, NULL, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    }
 }
 
 static HGLOBAL make_text(const WCHAR* s) {
@@ -60,7 +82,7 @@ static HGLOBAL make_text(const WCHAR* s) {
 
 int main(void) {
     WNDCLASSW wc;
-    HWND hwnd;
+    HWND hwnd, hwnd2;
     DWORD seq0, seq1, seq2;
     HANDLE h;
     UINT fmt;
@@ -74,7 +96,9 @@ int main(void) {
     CHECK(1, RegisterClassW(&wc));
     hwnd = CreateWindowExW(0, L"W10XClipboard", L"clip", WS_POPUP, 0, 0, 10, 10, NULL, NULL, wc.hInstance, NULL);
     CHECK(1, hwnd != NULL);
-    printf("clipboard: window created\n");
+    hwnd2 = CreateWindowExW(0, L"W10XClipboard", L"clip2", WS_POPUP, 0, 0, 10, 10, NULL, NULL, wc.hInstance, NULL);
+    CHECK(1, hwnd2 != NULL && hwnd2 != hwnd);
+    printf("clipboard: window ok\n");
     fflush(stdout);
 
     /* set CF_UNICODETEXT */
@@ -87,10 +111,11 @@ int main(void) {
     CHECK(2, SetClipboardData(CF_UNICODETEXT, h) == h);
     CHECK(2, CloseClipboard());
     seq1 = GetClipboardSequenceNumber();
-    printf("clipboard: set unicode text seq %lu -> %lu\n", (unsigned long)seq0, (unsigned long)seq1);
-    fflush(stdout);
-    CHECK(2, seq1 > seq0);
     CHECK(2, GetOpenClipboardWindow() == NULL);
+    printf("clipboard: set-unicode ok\n");
+    CHECK(2, seq1 > seq0);
+    printf("clipboard: sequence-number ok seq %lu -> %lu\n", (unsigned long)seq0, (unsigned long)seq1);
+    fflush(stdout);
 
     /* formats and the Unicode read-back */
     CHECK(3, IsClipboardFormatAvailable(CF_UNICODETEXT));
@@ -106,7 +131,7 @@ int main(void) {
         CHECK(3, p && wcscmp(p, kText) == 0);
         GlobalUnlock(h);
     }
-    printf("clipboard: CF_UNICODETEXT ok\n");
+    printf("clipboard: get-unicode ok\n");
 
     /* CF_TEXT, synthesized */
     h = GetClipboardData(CF_TEXT);
@@ -114,7 +139,7 @@ int main(void) {
     {
         const char* p = (const char*)GlobalLock(h);
         CHECK(4, p && strcmp(p, kTextA) == 0);
-        printf("clipboard: CF_TEXT=%s\n", p);
+        printf("clipboard: synthesized-text ok CF_TEXT=%s\n", p);
         GlobalUnlock(h);
     }
     fmt = 0;
@@ -127,7 +152,7 @@ int main(void) {
         }
         CHECK(4, n == 4 && saw_unicode && saw_text);
         CHECK(4, GetLastError() == ERROR_SUCCESS);
-        printf("clipboard: enum formats=%d\n", n);
+        printf("clipboard: enum-formats ok count=%d\n", n);
     }
     CHECK(4, GetClipboardData(CF_BITMAP) == NULL);
     CHECK(4, CloseClipboard());
@@ -163,7 +188,7 @@ int main(void) {
         CHECK(5, p && memcmp(p, blob, sizeof blob) == 0);
         GlobalUnlock(h);
         CHECK(5, CloseClipboard());
-        printf("clipboard: custom format round trip ok seq %lu\n", (unsigned long)seq2);
+        printf("clipboard: registered-format ok seq %lu\n", (unsigned long)seq2);
         fflush(stdout);
     }
 
@@ -183,13 +208,27 @@ int main(void) {
     }
     CHECK(6, g_render_calls == 1);
     CHECK(6, CloseClipboard());
-    printf("clipboard: delayed render calls=%d\n", g_render_calls);
+    printf("clipboard: delayed-render ok calls=%d\n", g_render_calls);
 
-    /* listeners */
-    CHECK(7, AddClipboardFormatListener(hwnd));
-    CHECK(7, !AddClipboardFormatListener(hwnd));
-    CHECK(7, RemoveClipboardFormatListener(hwnd));
-    CHECK(7, !RemoveClipboardFormatListener(hwnd));
+    /* listeners: hwnd2 is registered, hwnd changes the clipboard */
+    CHECK(7, AddClipboardFormatListener(hwnd2));
+    g_update_calls = 0;
+    CHECK(7, OpenClipboard(hwnd));
+    CHECK(7, EmptyClipboard());
+    h = make_text(kText);
+    CHECK(7, SetClipboardData(CF_UNICODETEXT, h) == h);
+    CHECK(7, g_update_calls == 0); /* only sent when the clipboard is closed */
+    CHECK(7, CloseClipboard());
+    pump(&g_update_calls, 0, 5000);
+    CHECK(7, g_update_calls == 1);
+    printf("clipboard: listener-update ok count=%d\n", g_update_calls);
+    CHECK(7, RemoveClipboardFormatListener(hwnd2));
+    CHECK(7, OpenClipboard(hwnd));
+    CHECK(7, EmptyClipboard());
+    CHECK(7, CloseClipboard());
+    pump(&g_update_calls, 1, 300);
+    CHECK(7, g_update_calls == 1);
+    printf("clipboard: listener-removed ok\n");
 
     printf("clipboard: done\n");
     fflush(stdout);

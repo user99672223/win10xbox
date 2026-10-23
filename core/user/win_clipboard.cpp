@@ -181,6 +181,12 @@ std::vector<std::uint8_t> ConvertText(const Fmt& src, UINT to) {
     return out;
 }
 
+constexpr UINT kSynthTable[][3] = {
+    {CF_TEXT, CF_OEMTEXT, CF_UNICODETEXT},
+    {CF_OEMTEXT, CF_UNICODETEXT, CF_TEXT},
+    {CF_UNICODETEXT, CF_TEXT, CF_OEMTEXT},
+};
+
 // server: synthesize_formats (text only). Returns the number of formats added.
 int SynthesizeFormats(Clip& c) {
     int total = 0;
@@ -191,12 +197,7 @@ int SynthesizeFormats(Clip& c) {
         std::memcpy(f->data.data(), &c.lcid, sizeof(LCID));
         f->has_data = true;
     }
-    static const UINT kTable[][3] = {
-        {CF_TEXT, CF_OEMTEXT, CF_UNICODETEXT},
-        {CF_OEMTEXT, CF_UNICODETEXT, CF_TEXT},
-        {CF_UNICODETEXT, CF_TEXT, CF_OEMTEXT},
-    };
-    for (const auto& row : kTable) {
+    for (const auto& row : kSynthTable) {
         if (HasFmt(c, row[0])) continue;
         UINT from;
         if (HasFmt(c, row[1])) from = row[1];

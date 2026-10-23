@@ -165,9 +165,11 @@ set_tests_properties(integration.guest_window_text PROPERTIES
 # The clipboard (tests/guest/clipboard.c, core/user/win_clipboard.cpp): CF_UNICODETEXT set/read, CF_TEXT synthesis,
 # a registered format, delayed rendering, the sequence number. It creates a (hidden) window, so builtin-only folder.
 win10xbox_guest_test(guest_clipboard "C:\\guest\\guest_clipboard.exe" 42
-  "clipboard: window created" "clipboard: set unicode text seq" "clipboard: CF_UNICODETEXT ok"
-  "clipboard: CF_TEXT=Hello Xbox clipboard" "clipboard: enum formats=4" "clipboard: custom format round trip ok"
-  "clipboard: delayed render calls=1" "clipboard: done")
+  "clipboard: window ok" "clipboard: set-unicode ok" "clipboard: sequence-number ok" "clipboard: get-unicode ok"
+  "clipboard: synthesized-text ok CF_TEXT=Hello Xbox clipboard" "clipboard: enum-formats ok count=4"
+  "clipboard: registered-format ok" "clipboard: delayed-render ok calls=1" "clipboard: listener-update ok count=1"
+  "clipboard: listener-removed ok" "clipboard: done")
+set_tests_properties(integration.guest_clipboard PROPERTIES FAIL_REGULAR_EXPRESSION "clipboard: FAIL")
 unset(_guest_machine)
 
 # ---- Real programs: the first guests that are not ours ----------------------------------------------------------
