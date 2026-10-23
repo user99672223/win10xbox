@@ -37,7 +37,8 @@ set_tests_properties(integration.winetest_advapi32 PROPERTIES
 # kernel32_test.exe and runs it unit by unit against wine-pe/tests/kernel32.baseline
 # (0-failure allowlist, "run <max>" / crash / timeout for the rest). Same gate and
 # MSVC rule as advapi32 above.
-set(_out ${CMAKE_BINARY_DIR}/winetest/kernel32)
+# Under bin/ so the linux-cross-bin artifact carries kernel32.tsv and the per-unit logs.
+set(_out ${CMAKE_BINARY_DIR}/bin/winetest-kernel32)
 add_test(NAME integration.winetest_kernel32
   COMMAND ${WIN10XBOX_BASH} ${CMAKE_SOURCE_DIR}/wine-pe/tests/kernel32.sh all
     --out ${_out}
