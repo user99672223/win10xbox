@@ -179,6 +179,17 @@ add_executable(guest_net net.c)
 target_link_libraries(guest_net PRIVATE ws2_32)
 win10xbox_add_guest(guest_net)
 
+# Audio (docs/slices/audio.md): WASAPI and XAudio2 guests. Exit 42 = a device played the sound, 43 = the host has no
+# audio endpoint (the exact HRESULT is printed); tests/integration/audio_test.cmake requires the layer to agree with
+# the same program run directly on the host.
+add_executable(guest_wasapi wasapi.c)
+target_link_libraries(guest_wasapi PRIVATE ole32)
+win10xbox_add_guest(guest_wasapi)
+
+add_executable(guest_xaudio2 xaudio2.c)
+target_link_libraries(guest_xaudio2 PRIVATE ole32)
+win10xbox_add_guest(guest_xaudio2)
+
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
 add_test(NAME guest.seh COMMAND guest_seh)
 set_tests_properties(guest.seh PROPERTIES PASS_REGULAR_EXPRESSION "seh: done failures=0"

@@ -720,6 +720,7 @@ int Launch(const LaunchOptions& opts) {
 #if WIN10XBOX_HAVE_AFD
     afd::PrimeHost();   // before the PEB take-over (see afd.h)
 #endif
+    PrimeAudio(root);   // the host audio thread and stack, likewise before the take-over (unix_mmdevapi.cpp)
     RegisterNtdllUnixLib();
 
     if ((s = MapGuestNtdll(root))) return static_cast<int>(s);

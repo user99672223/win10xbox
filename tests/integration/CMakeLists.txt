@@ -34,7 +34,8 @@ if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
                    guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog guest_comctl
                    guest_seh guest_window_scroll guest_clipboard guest_net msctf_stub guest_gdi_bitmap
-                   guest_window_hooks guest_window_menu guest_xinput xinput1_4 guest_identity guest_cursor guest_regpersist)
+                   guest_window_hooks guest_window_menu guest_xinput xinput1_4 guest_identity guest_cursor
+                   guest_regpersist guest_wasapi guest_xaudio2)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -426,6 +427,29 @@ set_tests_properties(integration.guest_regpersist_write integration.guest_regper
 set_tests_properties(integration.guest_regpersist_read PROPERTIES DEPENDS integration.guest_regpersist_write)
 unset(_guest_no_user32)
 unset(_guest_machine)
+# ---- Audio: Wine's mmdevapi over core/dispatch/unix_mmdevapi.cpp (the host's WASAPI) -----------------------------------
+# tests/guest/wasapi.c and xaudio2.c exit 42 when a device played the sound and 43 when the host has no audio endpoint.
+# audio_test.cmake runs each one directly on the host (what the host really answers) and through the layer on the
+# builtin-only folder (Wine's mmdevapi, xaudio2_9 and the registry's MMDeviceEnumerator registration) and requires the
+# same verdict, in the no-endpoint case with the same HRESULT; nothing is faked either way (docs/slices/audio.md).
+foreach(_a wasapi xaudio2)
+  add_test(NAME integration.guest_${_a}
+    COMMAND ${CMAKE_COMMAND}
+      -DHOST=$<TARGET_FILE:win10xbox>
+      -DMACHINE=${WIN10XBOX_BUILTIN_MACHINE_DIR}
+      -DGUEST_EXE=$<TARGET_FILE:guest_${_a}>
+      -DPROBE_EXE=$<TARGET_FILE:guest_wasapi>
+      -DPROGRAM=C:\\guest\\guest_${_a}.exe
+      -DTAG=${_a}
+      -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/audio_test.cmake)
+  set_tests_properties(integration.guest_${_a} PROPERTIES
+    FIXTURES_REQUIRED w10x_machine
+    SKIP_RETURN_CODE 77
+    SKIP_REGULAR_EXPRESSION "SKIP:"
+    LABELS "guest_e2e"
+    TIMEOUT 240)
+endforeach()
 
 # ---- Real programs: the first guests that are not ours ----------------------------------------------------------
 # Lua 5.4.7, built from the upstream tarball with MSVC by tools/ci/build_lua.ps1 (a named step of ci.yml's windows

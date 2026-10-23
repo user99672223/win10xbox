@@ -1062,6 +1062,25 @@ void ApplySystemFidelity(State& st, Node* sys, bool hive_missing) {
     SetStr(st, sys, L"ControlSet001\\Services\\Tcpip\\Parameters", L"NV Hostname", cn);
 }
 
+// The audio stack (core/dispatch/unix_mmdevapi.cpp). Wine registers its builtin COM classes with DllRegisterServer
+// into the prefix at creation; this machine has no prefix, so what mmdevapi's DllRegisterServer would write
+// (dlls/mmdevapi/mmdevapi_classes.idl: CLSID_MMDeviceEnumerator, ThreadingModel Both) is written here, and the
+// driver choice Wine keeps under HKCU\Software\Wine\Drivers selects the layer's own unix library ("winewasapi").
+// A real hive's own registration of the class is left alone.
+void ApplyAudioRegistration(State& st, Node* sw, Node* user) {
+    const std::wstring clsid = L"Classes\\CLSID\\{BCDE0395-E52F-467C-8E3D-C4579291692E}";
+    Val v;
+    Node* srv = EnsureKey(st, sw, clsid + L"\\InprocServer32");
+    if (srv && !FindValue(srv, L"", &v)) {
+        SetStr(st, sw, clsid, L"", L"MMDeviceEnumerator class");
+        SetStr(st, sw, clsid + L"\\InprocServer32", L"", L"mmdevapi.dll");
+        SetStr(st, sw, clsid + L"\\InprocServer32", L"ThreadingModel", L"Both");
+    }
+    if (!user) return;
+    Node* drv = EnsureKey(st, user, L"Software\\Wine\\Drivers");
+    if (drv && !FindValue(drv, L"Audio", &v)) SetStr(st, user, L"Software\\Wine\\Drivers", L"Audio", L"wasapi");
+}
+
 Node* Mount(State& st, Node* parent, const std::wstring& name, const std::wstring& file, bool* missing = nullptr) {
     Node* n = NewNode(st, name, parent);
     n->is_mount = true;
@@ -1175,7 +1194,7 @@ NTSTATUS Initialize(const std::wstring& machine_root) {
     std::wstring sid = Widen(st.fid.user_sid);
     std::wstring ntuser = user_dir.empty() ? L"" : st.root_dir + L"\\Users\\" + user_dir + L"\\NTUSER.DAT";
     std::wstring usrclass = user_dir.empty() ? L"" : st.root_dir + L"\\Users\\" + user_dir + L"\\AppData\\Local\\Microsoft\\Windows\\UsrClass.dat";
-    Mount(st, st.user, sid, ntuser);
+    Node* user_hive = Mount(st, st.user, sid, ntuser);
     Mount(st, st.user, sid + L"_Classes", usrclass);
 
     // Fidelity: fill what a missing hive lacks; override only what machine.json states.
@@ -1183,6 +1202,7 @@ NTSTATUS Initialize(const std::wstring& machine_root) {
     if (sw_missing || st.fid.has_windows) ApplySoftwareFidelity(st, sw);
     ApplyComClasses(st, sw);
     if (sys_missing || st.fid.has_identity) ApplySystemFidelity(st, st.system, sys_missing);
+    ApplyAudioRegistration(st, sw, user_hive);
     if (sys_missing) {
         // The overlay-only SYSTEM needs the link target to exist for CurrentControlSet.
         EnsureKey(st, st.system, L"ControlSet001\\Control");

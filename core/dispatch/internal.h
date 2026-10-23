@@ -539,6 +539,10 @@ NTSTATUS WINAPI Ws2UnixGetAddrInfo(void* args);
 NTSTATUS WINAPI Ws2UnixGetHostByAddr(void* args);
 NTSTATUS WINAPI Ws2UnixGetHostByName(void* args);
 NTSTATUS WINAPI Ws2UnixGetNameInfo(void* args);
+// mmdevapi's driver on the host's WASAPI (unix_mmdevapi.cpp). PrimeAudio starts the host audio thread and loads the
+// host stack; call it before the PEB take-over. RegisterMmdevapiUnixLib registers the "winewasapi" unix library.
+void PrimeAudio(const std::wstring& machine_root);
+void RegisterMmdevapiUnixLib();
 std::uint64_t UnixLibHandleByName(std::wstring_view module_name);   // 0 if none
 // Replacements patched over the guest ntdll's __wine_dbg_* exports.
 struct WineDebugChannel { unsigned char flags; char name[15]; };
