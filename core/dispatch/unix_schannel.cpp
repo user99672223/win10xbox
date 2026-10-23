@@ -42,6 +42,16 @@ void DescribeRecords(const unsigned char* d, size_t n, char* out, size_t cap) {
     if (i < n && o + 20 < cap) std::snprintf(out + o, cap - o, "+%zu", n - i);
 }
 
+// The bytes themselves, 48 per +schannel line (diagnostic for the handshake: compared with what the server wrote).
+void TraceHex(const char* tag, int step, const unsigned char* d, size_t n) {
+    for (size_t i = 0; d && i < n; i += 48) {
+        char hex[100];
+        size_t m = n - i < 48 ? n - i : 48;
+        for (size_t k = 0; k < m; ++k) std::snprintf(hex + 2 * k, 3, "%02x", d[i + k]);
+        TRACE(schannel, "step %d %s +%zu/%zu: %s", step, tag, i, n, hex);
+    }
+}
+
 using Session64 = std::uint64_t;
 constexpr NTSTATUS STATUS_INTERNAL_ERROR = static_cast<NTSTATUS>(0xC00000E5);
 constexpr NTSTATUS STATUS_NOT_IMPLEMENTED = static_cast<NTSTATUS>(0xC0000002);
@@ -96,6 +106,53 @@ constexpr ULONG kIscFlags = ISC_REQ_SEQUENCE_DETECT | ISC_REQ_REPLAY_DETECT | IS
                             ISC_REQ_ALLOCATE_MEMORY | ISC_REQ_STREAM | ISC_REQ_MANUAL_CRED_VALIDATION;
 
 inline Session* Sess(Session64 h) { return reinterpret_cast<Session*>(h); }
+
+// ---- the SSPI worker thread --------------------------------------------------------------------------------------
+// Every call that reaches the host's SChannel (and with it ncrypt, bcrypt, crypt32 and the providers they load lazily)
+// runs on ONE dedicated host thread that is never in the guest view, like afd's completion threads. A guest thread
+// calling in is in the host view, but its TEB.ThreadLocalStoragePointer / FlsData are the snapshot the view switch
+// swapped in, which a host DLL loaded after that snapshot (the lazy providers) does not know about. The caller hands the
+// call over and waits; calls are serialised by g_worker_lock, so the SSPI contexts see one thread, in order.
+struct WorkItem { NTSTATUS (WINAPI* fn)(void*); void* args; NTSTATUS result; };
+SRWLOCK g_worker_lock = SRWLOCK_INIT;
+HANDLE g_worker_req = nullptr, g_worker_done = nullptr;
+WorkItem* volatile g_worker_item = nullptr;
+int g_worker_state = 0;   // 0 not started, 1 running, -1 could not start (calls then run on the caller)
+
+DWORD WINAPI SchannelWorker(LPVOID) {
+    for (;;) {
+        WaitForSingleObject(g_worker_req, INFINITE);
+        WorkItem* it = g_worker_item;
+        if (it) it->result = it->fn(it->args);
+        SetEvent(g_worker_done);
+    }
+}
+
+NTSTATUS RunOnWorker(NTSTATUS (WINAPI* fn)(void*), void* args) {
+    AcquireSRWLockExclusive(&g_worker_lock);
+    if (g_worker_state == 0) {
+        g_worker_req = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        g_worker_done = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        HANDLE th = (g_worker_req && g_worker_done) ? CreateThread(nullptr, 0, SchannelWorker, nullptr, 0, nullptr) : nullptr;
+        if (th) { CloseHandle(th); g_worker_state = 1; } else { g_worker_state = -1; }
+    }
+    NTSTATUS st;
+    if (g_worker_state == 1) {
+        WorkItem it{fn, args, 0};
+        g_worker_item = &it;
+        SetEvent(g_worker_req);
+        WaitForSingleObject(g_worker_done, INFINITE);
+        g_worker_item = nullptr;
+        st = it.result;
+    } else {
+        st = fn(args);
+    }
+    ReleaseSRWLockExclusive(&g_worker_lock);
+    return st;
+}
+
+template <NTSTATUS (WINAPI* F)(void*)>
+NTSTATUS WINAPI OnWorker(void* args) { return RunOnWorker(F, args); }
 
 // ---- process / credentials ------------------------------------------------------------------------------------
 
@@ -223,6 +280,9 @@ NTSTATUS WINAPI U_schan_handshake(void* args) {
                 DescribeRecords(data.data(), data.size(), rin, sizeof rin);
                 DescribeRecords(static_cast<const unsigned char*>(out_buf.pvBuffer), out_buf.pvBuffer ? out_buf.cbBuffer : 0,
                                 rout, sizeof rout);
+                const int step = s->calls + 1;
+                TraceHex("in", step, data.data(), data.size());
+                TraceHex("out", step, static_cast<const unsigned char*>(out_buf.pvBuffer), out_buf.pvBuffer ? out_buf.cbBuffer : 0);
                 TRACE(schannel, "step %d: ss %08lx in %lu [%s] (caller input_size %lu) extra %lu(type %lu) out %lu [%s]",
                       ++s->calls, static_cast<unsigned long>(ss), static_cast<unsigned long>(used), rin,
                       static_cast<unsigned long>(p->input_size), static_cast<unsigned long>(in[1].cbBuffer),
@@ -429,22 +489,22 @@ NTSTATUS WINAPI U_schan_get_session_peer_certificate(void* args) {
 const UnixCallFn kSchannelFuncs[] = {
     &U_schan_ok,                                 // process_attach
     &U_schan_ok,                                 // process_detach
-    &U_schan_allocate_certificate_credentials,
-    &U_schan_create_session,
-    &U_schan_dispose_session,
-    &U_schan_free_certificate_credentials,
-    &U_schan_get_application_protocol,
-    &U_schan_get_cipher_info,
-    &U_schan_get_connection_info,
+    &OnWorker<U_schan_allocate_certificate_credentials>,
+    &OnWorker<U_schan_create_session>,
+    &OnWorker<U_schan_dispose_session>,
+    &OnWorker<U_schan_free_certificate_credentials>,
+    &OnWorker<U_schan_get_application_protocol>,
+    &OnWorker<U_schan_get_cipher_info>,
+    &OnWorker<U_schan_get_connection_info>,
     &U_schan_get_enabled_protocols,
-    &U_schan_get_key_signature_algorithm,
-    &U_schan_get_max_message_size,
-    &U_schan_get_session_cipher_block_size,
-    &U_schan_get_session_peer_certificate,
-    &U_schan_get_unique_channel_binding,
-    &U_schan_handshake,
-    &U_schan_recv,
-    &U_schan_send,
+    &OnWorker<U_schan_get_key_signature_algorithm>,
+    &OnWorker<U_schan_get_max_message_size>,
+    &OnWorker<U_schan_get_session_cipher_block_size>,
+    &OnWorker<U_schan_get_session_peer_certificate>,
+    &OnWorker<U_schan_get_unique_channel_binding>,
+    &OnWorker<U_schan_handshake>,
+    &OnWorker<U_schan_recv>,
+    &OnWorker<U_schan_send>,
     &U_schan_set_application_protocols,
     &U_schan_dtls_unsupported,                   // set_dtls_mtu
     &U_schan_set_session_target,

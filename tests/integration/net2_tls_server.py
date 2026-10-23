@@ -12,6 +12,7 @@ receives and shuts itself down after ten minutes if nobody stops it.
 """
 import os
 import shutil
+import hashlib
 import socket
 import ssl
 import subprocess
@@ -71,6 +72,31 @@ def handle(conn):
         pass
 
 
+def tap(raw):
+    """Diagnostic: put a logging relay between the client and the TLS engine and return the engine's end. Every chunk
+    that crosses is logged with its direction (c2s read from the client, s2c written to it), length, sha256 and bytes."""
+    a, b = socket.socketpair()
+
+    def pump(src, dst, tag):
+        try:
+            while True:
+                d = src.recv(16384)
+                if not d:
+                    break
+                print("%s %d sha256=%s %s" % (tag, len(d), hashlib.sha256(d).hexdigest(), d[:400].hex()), flush=True)
+                dst.sendall(d)
+        except OSError:
+            pass
+        try:
+            dst.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+    threading.Thread(target=pump, args=(raw, a, "c2s"), daemon=True).start()
+    threading.Thread(target=pump, args=(a, raw, "s2c"), daemon=True).start()
+    return b
+
+
 def serve(port, state):
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(os.path.join(state, "cert.pem"), os.path.join(state, "key.pem"))
@@ -87,11 +113,13 @@ def serve(port, state):
         except socket.timeout:
             continue
         try:
-            conn = ctx.wrap_socket(raw, server_side=True)
+            inner = tap(raw)
+            conn = ctx.wrap_socket(inner, server_side=True)
         except (OSError, ssl.SSLError) as e:
             if not isinstance(e, (ssl.SSLEOFError, ConnectionError)) and "EOF" not in str(e):   # not the start probe
                 print("handshake error: %r" % (e,), file=sys.stderr, flush=True)
             raw.close()
+            inner.close()
             continue
         threading.Thread(target=handle, args=(conn,), daemon=True).start()
 
@@ -137,10 +165,8 @@ def main():
             text = open(os.path.join(sys.argv[2], "server.log"), "r", errors="replace").read()
         except OSError:
             text = ""
-        if "handshake error" in text:    # a TLS handshake failed on the server: show why (the guest test fails too)
-            print(text)
-            return 1
-        return 0
+        print(text)    # the relay log (tap): kept in the test output for the handshake diagnosis
+        return 1 if "handshake error" in text else 0   # a TLS handshake failed on the server: the guest test fails too
     print(__doc__, file=sys.stderr)
     return 2
 
