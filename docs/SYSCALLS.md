@@ -5,7 +5,7 @@ Windows 10 x64 / 22H2 NT syscall numbers) and the hand-maintained policy
 `core/dispatch/syscall_policy.inc`; win32u entries (ids 0x1000..) are Emulate when
 `core/user/user_syscalls.h` registers them. Do not edit by hand.
 
-1798 syscalls. passthrough 153, translate 37, emulate 329, todo 1279. Generated 2026-10-23.
+1798 syscalls. passthrough 153, translate 37, emulate 331, todo 1277. Generated 2026-10-23.
 
 Policy: **PassThrough** calls the host ntdll export by name; **Translate**
 rewrites arguments (paths, handles, timeouts) then passes through;
@@ -412,7 +412,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1089 | NtGdiAddInitialFonts | 0 | Todo |  |
 | 0x108a | NtGdiAddRemoteFontToDC | 0 | Todo |  |
 | 0x108b | NtGdiAddRemoteMMInstanceToDC | 0 | Todo |  |
-| 0x108c | NtGdiAlphaBlend | 12 | Todo |  |
+| 0x108c | NtGdiAlphaBlend | 12 | Emulate | core/user |
 | 0x108d | NtGdiAngleArc | 6 | Todo |  |
 | 0x108e | NtGdiAnyLinkedFonts | 0 | Todo |  |
 | 0x108f | NtGdiArcInternal | 10 | Todo |  |
@@ -933,7 +933,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1292 | NtGdiStrokePath | 1 | Todo |  |
 | 0x1293 | NtGdiSwapBuffers | 1 | Todo |  |
 | 0x1294 | NtGdiTransformPoints | 5 | Emulate | core/user |
-| 0x1295 | NtGdiTransparentBlt | 11 | Todo |  |
+| 0x1295 | NtGdiTransparentBlt | 11 | Emulate | core/user |
 | 0x1296 | NtGdiUMPDEngFreeUserMem | 0 | Todo |  |
 | 0x1297 | NtGdiUnloadPrinterDriver | 0 | Todo |  |
 | 0x1298 | NtGdiUnmapMemFont | 0 | Todo |  |

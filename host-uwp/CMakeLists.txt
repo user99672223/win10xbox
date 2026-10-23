@@ -89,6 +89,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 add_compile_definitions(_WIN32_WINNT=0x0A00 WINVER=0x0A00 UNICODE _UNICODE)
 
 enable_language(ASM_MASM)   # core's asm syscall entry stub
+enable_language(RC)         # guest_gdi_bitmap's BITMAP resources
 
 # ---------------------------------------------------------------------------
 # Options
@@ -248,13 +249,19 @@ add_library(guest_seh_dll SHARED "${WIN10XBOX_ROOT}/tests/guest/seh_dll.cpp")
 set_target_properties(guest_seh_dll PROPERTIES PREFIX "")
 add_executable(guest_seh "${WIN10XBOX_ROOT}/tests/guest/seh.cpp")
 target_link_libraries(guest_seh PRIVATE guest_seh_dll)
+# guest_gdi_bitmap: the same sources as tests/guest/CMakeLists.txt (a generated .rc with absolute .bmp paths, msimg32).
+set(W10X_BMP_DIR "${WIN10XBOX_ROOT}/tests/guest/gdi_bitmap_res")
+configure_file("${WIN10XBOX_ROOT}/tests/guest/gdi_bitmap.rc.in" "${CMAKE_CURRENT_BINARY_DIR}/gdi_bitmap.rc" @ONLY)
+add_executable(guest_gdi_bitmap "${WIN10XBOX_ROOT}/tests/guest/gdi_bitmap.c" "${CMAKE_CURRENT_BINARY_DIR}/gdi_bitmap.rc")
+target_link_libraries(guest_gdi_bitmap PRIVATE user32 gdi32 msimg32)
 add_executable(smoke_guest WIN32 "${WIN10XBOX_ROOT}/host-uwp-lite/smoke_guest.c")
 target_compile_definitions(smoke_guest PRIVATE SMOKE_GUI=1)
 set_target_properties(smoke_guest PROPERTIES OUTPUT_NAME "smoke")
 
 set(HOST_UWP_GUESTS window_guest hello_guest hello_guest_cui guest_hello guest_cpuid guest_sleep guest_dll
     smoke_guest_cui drv_client guest_window2 guest_window_input guest_window_input2 guest_window_text smoke_guest
-    guest_spawn guest_window_nc guest_dialog guest_comctl guest_seh guest_seh_dll guest_window_scroll guest_clipboard)
+    guest_spawn guest_window_nc guest_dialog guest_comctl guest_seh guest_seh_dll guest_window_scroll guest_clipboard
+    guest_gdi_bitmap)
 
 # ---------------------------------------------------------------------------
 # The selftest: the launch.json parser (launch_config.cpp has no Windows or layer

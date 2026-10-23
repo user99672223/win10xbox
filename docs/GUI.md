@@ -75,6 +75,7 @@ more. Presentation is the host's: it only needs `ComposeFrame`.
 | `gdi_objects.cpp` | `GDI_SHARED_MEMORY` at `PEB.GdiSharedHandleTable` (0x10000 entries, Wine's encoding, stock objects in `init_stock_objects` order, system colour brushes/pens), regions (non-overlapping rectangle lists), brushes, pens, fonts (LOGFONT only), bitmaps / DIB sections / DIB conversion, palettes, `NtGdiCreate*`, `NtGdiDeleteObjectApp`, `NtGdiExtGetObjectW`, `Get/SetDIBits`, region syscalls |
 | `gdi_dc.cpp` | DCs (screen, window, memory) and their `DC_ATTR` (guest-visible pool), `NtGdiCreateCompatibleDC`, `NtGdiOpenDCW`, `NtGdiGetDeviceCaps`, `NtGdiGetAndSetDCDword`, `NtGdiSelect*`, `SaveDC`/`RestoreDC`, clipping, logical->device mapping (MM_TEXT / ISOTROPIC / ANISOTROPIC, world transform translation), what a DC draws on (`ResolveDrawTarget`), the text metrics of the built-in face (`TextCellOf`, `GetTextMetrics`, `GetTextExtentExW`, `GetCharWidth*`) |
 | `gdi_draw.cpp` | the rasteriser on BGRA32: `PatBlt`, `BitBlt` / `StretchBlt` with any ternary ROP (colour<->mono conversion), `Get/SetPixel`, `Rectangle`, `Ellipse`, `MoveTo`/`LineTo`, `PolyPolyDraw` (polygons, polylines, Béziers), `Fill/Frame/InvertRgn`, `SetDIBitsToDevice`, `StretchDIBits`, `ExtTextOutW` (the built-in 8x16 face: `font8x16.h`) |
+| `gdi_bitmap.cpp` | `NtGdiAlphaBlend` (constant alpha and premultiplied per-pixel alpha, `AC_SRC_OVER`) and `NtGdiTransparentBlt` (colour key), nearest-neighbour stretching, any DC that has a bitmap or a window surface; reached through `msimg32.dll`'s forwarders to `gdi32!GdiAlphaBlend` / `GdiTransparentBlt` |
 | `win_class.cpp` | classes and the user atom table (`NtUserRegisterClassExWOW`, `NtUserGetClassInfoEx`, `NtUserGetClassName`, `NtUserGetAtomName`, `NtUserRegisterWindowMessage`, class longs), the builtin classes (Button ... `#32769`, `Message`) with the procs from `NtUserInitializeClientPfnArrays`; procedures are kept as raw (A, W) pairs |
 | `win_window.cpp` | handle table, tree and z-order, rects, `NtUserCreateWindowEx` (Wine's message sequence), `ShowWindow`, `SetWindowPos` (WINDOWPOSCHANGING / NCCALCSIZE / WINDOWPOSCHANGED), `DestroyWindow` (WM_DESTROY parent first, WM_NCDESTROY children first), activation and focus, window longs, props, `NtUserCall{Hwnd,HwndParam,NoParam,OneParam,TwoParam}` codes, `FindWindowEx`, `BuildHwndList`, `WindowFromPoint`, capture, enable |
 | `win_defwnd.cpp` | the default window procedure (`NtUserMessageCall(NtUserDefWindowProc)`): text, WM_NCCALCSIZE from the style (Windows 10 frame metrics), WM_NCHITTEST, WM_NCPAINT, WM_ERASEBKGND with the class brush, WM_CTLCOLOR*, WM_CLOSE, WM_WINDOWPOSCHANGED -> WM_MOVE/WM_SIZE, WM_ACTIVATE -> focus, Alt+F4 |
@@ -119,7 +120,7 @@ Not implemented yet (they stay Todo or are documented FIXMEs), roughly in the or
   windows get no menu bar. **Icons and cursors** (`NtUserSetCursorIconData`, `NtUserDrawIconEx`, `LoadImage` of
   icons/cursors): Todo. **Scroll bars**: `win_scroll.cpp` (see the module table); thumb dragging and button auto-repeat are not implemented. **Clipboard**, **hooks** (`SetWindowsHookEx`, `SetWinEventHook`), **IME**,
   **raw input**, **layered windows** (`SetLayeredWindowAttributes`, `UpdateLayeredWindow`), **window regions**,
-  `AlphaBlend` / `TransparentBlt` / `GradientFill` / `MaskBlt`, `PrintWindow`, `DeferWindowPos`,
+  `GradientFill` / `MaskBlt`, `PrintWindow`, `DeferWindowPos`,
   window stations / desktops: Todo.
 * Window dragging / resizing from the frame (WM_NCLBUTTONDOWN on the caption or border) is not implemented; the
   frame is drawn in solid colours (COLOR_ACTIVEBORDER / COLOR_ACTIVECAPTION, a close-button square), without
@@ -127,7 +128,9 @@ Not implemented yet (they stay Todo or are documented FIXMEs), roughly in the or
 * Update regions are a bounding rectangle per window (BeginPaint clips to it), not true regions.
 * Cross-thread `SendMessage` works (queued and answered while the receiver pumps); `SendMessageTimeout` ignores
   the timeout. `ShowWindowAsync` runs synchronously. `DestroyWindow` of another thread's window fails.
-* Drawing into 1 bpp bitmaps and non-32 bpp DIB sections works for blits (pixel by pixel) but not for the
+* Drawing into 1 bpp bitmaps and non-32 bpp DIB sections works for blits, `StretchDIBits` / `SetDIBitsToDevice`
+  (pixel by pixel; `LoadImage` with `LR_CREATEDIBSECTION` fills its DIB section that way), `AlphaBlend` and
+  `TransparentBlt` (`gdi_bitmap.cpp`, nearest-neighbour; the DC clip is not applied), but not for the
   line / polygon primitives; drawing on the screen DC (`GetDC(NULL)`) is dropped with a FIXME.
 * DPI: everything is 96 DPI; `SetProcessDpiAwarenessContext` is recorded, nothing is scaled.
 

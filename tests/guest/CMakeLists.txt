@@ -72,6 +72,16 @@ set_target_properties(msctf_stub PROPERTIES OUTPUT_NAME msctf PREFIX ""
   LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/native-gui-stubs
   ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib/guest)
 
+# GDI bitmap operations (tests/guest/gdi_bitmap.c): DIB sections, BitBlt/StretchBlt between memory and window DCs,
+# AlphaBlend/TransparentBlt through msimg32, LoadImage of the BITMAP resources of gdi_bitmap.rc (a generated copy of
+# gdi_bitmap.rc.in whose .bmp paths are absolute: windres and rc.exe resolve relative names differently).
+set(W10X_BMP_DIR ${CMAKE_CURRENT_SOURCE_DIR}/gdi_bitmap_res)
+configure_file(gdi_bitmap.rc.in ${CMAKE_CURRENT_BINARY_DIR}/gdi_bitmap.rc @ONLY)
+add_executable(guest_gdi_bitmap gdi_bitmap.c ${CMAKE_CURRENT_BINARY_DIR}/gdi_bitmap.rc)
+set_source_files_properties(${CMAKE_CURRENT_BINARY_DIR}/gdi_bitmap.rc PROPERTIES
+  OBJECT_DEPENDS "${W10X_BMP_DIR}/rgb24.bmp;${W10X_BMP_DIR}/pal8.bmp")
+target_link_libraries(guest_gdi_bitmap PRIVATE user32 gdi32 msimg32)
+win10xbox_add_guest(guest_gdi_bitmap)
 # Exception handling coverage (seh.cpp + the DLL it throws across): C++ throw/catch, SEH, vectored handlers.
 # __try/__except is native on MSVC. For clang's mingw target it is used when a configure-time compile+link of a
 # __try/__except program with -fms-extensions succeeds (SEH_NATIVE); otherwise seh.cpp falls back to a vectored

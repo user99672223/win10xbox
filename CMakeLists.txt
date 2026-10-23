@@ -49,6 +49,8 @@ if(MSVC)
 else()
   enable_language(ASM)
 endif()
+# Resource scripts of the guest test programs (tests/guest/gdi_bitmap.rc.in).
+enable_language(RC)
 
 add_subdirectory(third_party)
 add_subdirectory(core)
