@@ -72,7 +72,7 @@ function(win10xbox_guest_test name program exit_code)
       "-DEXPECT_TRACE_REGEX=${_guest_expect_trace}"
       -DEXPECT_EXIT=${exit_code}
       "-DEXPECT_REGEX=${ARGN}"
-      "-DINPUT_FILE=${_guest_input}" "-DGUEST_FILE=${_guest_file}"
+      "-DINPUT_FILE=${_guest_input}" "-DGUEST_FILE=${_guest_file}" "-DRUN_TIMEOUT=${_guest_run_timeout}"
       -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
   set_tests_properties(integration.${name} PROPERTIES
@@ -389,6 +389,37 @@ if(MSVC OR WIN10XBOX_REAL_GUI_PROGRAMS)
   unset(_guest_expect_trace)
   unset(_guest_forbid_trace)
   unset(_realgui_script)
+  unset(_guest_machine)
+endif()
+
+# ---- Chocolate Doom 3.1.1 (official win64 zip) with the shareware doom1.wad: the first game --------------------------
+# tools/ci/fetch_doom.ps1 (a named ci.yml step of the windows job) leaves chocolate-doom.exe, its SDL2 DLLs and doom1.wad
+# in <machine>/guest before ctest runs (docs/slices/doom.md). Registered where the Lua tests are: MSVC builds, or
+# -DWIN10XBOX_REAL_PROGRAMS=ON with those files staged; a missing binary FAILS (the host cannot start it), it never skips.
+# The game runs demo1 as fast as it can (-timedemo) in a 640x400 window on SDL2's software renderer, whose blits go
+# through GDI onto the window (core/user). Chocolate Doom ends a timedemo by reporting it through I_Error: the stats line
+# "timed N gametics in M realtics (F fps)" goes to STDERR (the trace checks below read the guest's stderr too) and the
+# process exits with -1. -nogui keeps I_Error from opening a message box that nobody would close.
+# Gates: exit -1 after the whole demo, the stats line, the host's `shot` seen at least 3 distinct colours in the frame
+# 300 frames into the demo (waitflush), and the frame at exit (WIN10XBOX_SCREENSHOT is rewritten when the process ends,
+# so the BMP is the last frame of the demo, deterministic) holds the status bar: pixels of its grey panel and of its red digits.
+# The window is centred on the 1920x1080 virtual screen at (685,309), client origin (693,340).
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  set(_guest_args "-iwad;C:\\guest\\doom1.wad;-nosound;-nomusic;-nomouse;-window;-geometry;640x400;-nogui;-timedemo;demo1")
+  set(_guest_debug "-all,err+all,fixme+all")
+  set(_guest_run_timeout 280)
+  set(_guest_expect_trace "timed [0-9]+ gametics in [0-9]+ realtics;shot: distinct=([3-9]|[1-9][0-9]+) written=1")
+  set(_guest_forbid_trace "TIMEOUT")
+  win10xbox_guest_test(doom_timedemo "C:\\guest\\chocolate-doom.exe" -1 "Chocolate Doom 3\\.1\\.1" "adding C:.guest.doom1\\.wad" "Playing demo demo1")
+  set_tests_properties(integration.doom_timedemo PROPERTIES
+    TIMEOUT 300
+    ENVIRONMENT "SDL_RENDER_DRIVER=software;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/doom_timedemo.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=715,694,ff303030|785,694,ff585858|707,689,ffc80000|735,704,ffbc0000;WIN10XBOX_TEST_INJECT_INPUT=waitflush 300 250000\\;shot")
+  unset(_guest_args)
+  unset(_guest_debug)
+  unset(_guest_run_timeout)
+  unset(_guest_expect_trace)
+  unset(_guest_forbid_trace)
   unset(_guest_machine)
 endif()
 

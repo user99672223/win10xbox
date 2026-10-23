@@ -240,6 +240,20 @@ std::vector<std::wstring> DefaultEnvironment() {
     return env;
 }
 
+// Wine's advapi32 answers GetUserNameW from the WINEUSERNAME variable, which Wine's server puts into every process
+// environment, not from the token. Without it GetUserNameW fails and shell32's %USERPROFILE% expansion (SHGetFolderPath,
+// so SDL_GetPrefPath, so every program's %APPDATA% directory) builds a path with a garbage user name. A child's inherited guest
+// environment has no WINE* entry (nt_spawn.cpp keeps them host-owned), so the entry is added here for every process.
+void EnsureWineUserName(std::vector<std::wstring>* env) {
+    for (const std::wstring& e : *env)
+        if (e.size() > 13 && _wcsnicmp(e.c_str(), L"WINEUSERNAME=", 13) == 0) return;
+#if WIN10XBOX_HAVE_TOKEN
+    env->push_back(L"WINEUSERNAME=" + token::UserName());
+#else
+    env->push_back(L"WINEUSERNAME=User");
+#endif
+}
+
 std::wstring DefaultCurrentDirectory() {
 #if WIN10XBOX_HAVE_VFS
     return vfs::GuestUserProfile();
@@ -459,6 +473,7 @@ NTSTATUS BuildProcessParameters(const LaunchOptions& o, const std::wstring& imag
     std::wstring curdir = o.current_directory.empty() ? DefaultCurrentDirectory() : o.current_directory;
     if (curdir.empty() || curdir.back() != L'\\') curdir += L'\\';
     std::vector<std::wstring> env = o.environment.empty() ? DefaultEnvironment() : o.environment;
+    EnsureWineUserName(&env);
     auto& block = G().environment;
     block.clear();
     for (auto& e : env) { block.insert(block.end(), e.begin(), e.end()); block.push_back(0); }

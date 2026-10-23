@@ -57,6 +57,11 @@ secur32
 winbrand
 wtsapi32
 
+# --- imports of chocolate-doom.exe / SDL2.dll / SDL3.dll / libfluidsynth / libportaudio (docs/slices/doom.md) ---
+msacm32    # winmm's hard import
+dsound     # libfluidsynth-3.dll's hard import
+setupapi   # SDL2.dll, libportaudio.dll
+
 # --- COM -------------------------------------------------------------------
 ole32
 oleaut32

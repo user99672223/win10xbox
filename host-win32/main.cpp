@@ -364,7 +364,7 @@ private:
 
 // WIN10XBOX_TEST_INJECT_INPUT=<script>: a scripted user for the GUI tests (tests/guest/window_input.c). Commands are
 // separated by ';': sleep N (ms), move X,Y (screen coordinates), ldown / lup / rdown / rup (at the last moved position),
-// wheel D (WHEEL_DELTA units), waitwin N (until a window is painted, at most N ms), shot (screenshot now + distinct
+// wheel D (WHEEL_DELTA units), waitwin N (until a window is painted, at most N ms), waitflush F N (until the guest has flushed F frames, at most N ms), shot (screenshot now + distinct
 // colour count), quit N (end the process with exit code N), key 0xVK (key down, then up; the scan code is set 1 for 'A'..'Z', else 0). Each command
 // logs one "host-win32: inject" line on stderr. The thread touches no guest state: the loader initialisation it runs
 // on creation completes before Launch takes over the PEB, and after that it only calls the driver, whose InjectInput
@@ -455,6 +455,27 @@ bool RunInjectCommand(winexbox::IWinexboxDriver* display, const std::string& cmd
                          static_cast<unsigned long long>(st.windows_created), static_cast<unsigned long long>(st.flushes),
                          static_cast<unsigned long long>(st.paints), static_cast<unsigned long>(GetTickCount() - t0),
                          (st.windows_created == 0 || st.flushes == 0) ? " (TIMEOUT: nothing painted)" : "");
+        }
+        events.clear();
+        std::fprintf(stderr, "host-win32: inject %s\n", cmd.c_str());
+        return ok;
+    } else if (verb == "waitflush") {
+        // waitflush F N: until the guest's windows have flushed F surfaces in total (a program that draws a frame per
+        // tick, such as a game, is then F frames in whatever the speed of the machine), at most N ms. Logs how it ended.
+        const size_t sep = arg.find(' ');
+        long frames = 0, limit_ms = 0;
+        ok = sep != std::string::npos && ParseInt(arg.substr(0, sep), frames) && ParseInt(Trim(arg.substr(sep + 1)), limit_ms) &&
+             frames >= 0 && limit_ms >= 0;
+        if (ok) {
+            const DWORD t0 = GetTickCount();
+            win10xbox::user::Stats st = win10xbox::user::GetStats();
+            while (st.flushes < static_cast<unsigned long long>(frames) && GetTickCount() - t0 < static_cast<DWORD>(limit_ms)) {
+                Sleep(10);
+                st = win10xbox::user::GetStats();
+            }
+            std::fprintf(stderr, "host-win32: waitflush: flushes=%llu after %lu ms%s\n", static_cast<unsigned long long>(st.flushes),
+                         static_cast<unsigned long>(GetTickCount() - t0),
+                         st.flushes < static_cast<unsigned long long>(frames) ? " (TIMEOUT: too few frames)" : "");
         }
         events.clear();
         std::fprintf(stderr, "host-win32: inject %s\n", cmd.c_str());

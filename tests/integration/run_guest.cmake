@@ -2,6 +2,7 @@
 # code (cmake -P; ctest's PASS_REGULAR_EXPRESSION alone ignores exit codes).
 #   -DHOST=<win10xbox.exe> -DMACHINE=<machine dir> -DPROGRAM=<C:\guest\x.exe>
 #   -DEXPECT_EXIT=<n> -DEXPECT_REGEX=<regex;regex...> [-DEMULATOR=<wine>]
+#   [-DRUN_TIMEOUT=<seconds>]       the guest's run-time limit (default 120)
 #   [-DPROGRAM_ARGS=<arg;arg...>]   the guest's own command-line arguments, one list element each ("\;" inside one)
 #   [-DFORBID_REGEX=<regex>] [-DDEBUG_SPEC=<WIN10XBOX_DEBUG spec>]
 # EXPECT_REGEX/FORBID_REGEX match the guest's stdout. The layer's own trace
@@ -59,10 +60,15 @@ if(REQUIRE_BUILTIN_DLLS)
     set(ENV{WIN10XBOX_DEBUG} "$ENV{WIN10XBOX_DEBUG},+modules")
   endif()
 endif()
+# -DRUN_TIMEOUT=<seconds>: how long the guest may run (default 120).
+set(_timeout 120)
+if(RUN_TIMEOUT)
+  set(_timeout "${RUN_TIMEOUT}")
+endif()
 # ${_args} is expanded right here, not through an intermediate list variable: set() joins the expanded elements
 # without their "\;" escape, so an argument that holds a ';' would be split in two.
 execute_process(COMMAND ${EMULATOR} "${HOST}" --machine "${_machine}" "${_program}" ${_args} ${_stdin}
-                RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 120)
+                RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT ${_timeout})
 # Before the guest's output: ctest keeps only the first 1024 bytes of a passing test's output.
 set(_builtin_fail "")
 if(REQUIRE_BUILTIN_DLLS)
@@ -102,7 +108,14 @@ if(err)
   message("--- stderr ---\n${err}")
 endif()
 set(_fail "${_builtin_fail}")
-if(NOT "${rc}" STREQUAL "${EXPECT_EXIT}")
+# exit(-1) is the process exit code 0xFFFFFFFF; the runner's cmake reports it as -1, 255 (a Wine host) or 4294967295.
+set(_exit_ok OFF)
+if("${rc}" STREQUAL "${EXPECT_EXIT}")
+  set(_exit_ok ON)
+elseif("${EXPECT_EXIT}" STREQUAL "-1" AND ("${rc}" STREQUAL "255" OR "${rc}" STREQUAL "4294967295"))
+  set(_exit_ok ON)
+endif()
+if(NOT _exit_ok)
   string(APPEND _fail "exit code ${rc}, expected ${EXPECT_EXIT}\n")
   # host-win32 (MSVC) writes crash.txt next to win10xbox.exe on a fatal exception: show it, a later test
   # run would overwrite it before the CI artifact upload.

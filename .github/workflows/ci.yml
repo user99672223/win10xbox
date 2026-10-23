@@ -301,6 +301,18 @@ jobs:
       - name: Fetch ninja 1.12.1 (real guest program)
         shell: pwsh
         run: ./tools/ci/fetch_ninja.ps1 -Out build/bin/machine/guest
+      # The first game that is not ours: Chocolate Doom 3.1.1 (the project's official win64 zip: chocolate-doom.exe and the
+      # SDL2 DLLs) with the shareware doom1.wad, both pinned by SHA-256 and verified on every run (tools/ci/fetch_doom.ps1).
+      # Left in build/bin/machine/guest for integration.doom_timedemo (docs/slices/doom.md); its screenshot,
+      # build/bin/doom_timedemo.bmp, is uploaded with the other *.bmp files.
+      - name: Cache Chocolate Doom and doom1.wad
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/doom-src
+          key: doom-3.1.1-58c34c61ae954493fce5ff01fd553898240a0de25658aa97b43ac9510c49581f-wad-1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771
+      - name: Fetch Chocolate Doom 3.1.1 and doom1.wad (real guest program)
+        shell: pwsh
+        run: ./tools/ci/fetch_doom.ps1 -Out build/bin/machine/guest
       # Real GUI programs that are not ours (tools/ci/build_realgui.ps1): Microsoft's LearnWin32 Hello World and PuTTY
       # 0.85 (official tarball, cmake + cl /MT), pinned by SHA-256 and verified on every run. Left in
       # build/bin/machine/guest for integration.realgui_* (docs/TESTING.md, "Real GUI programs").
