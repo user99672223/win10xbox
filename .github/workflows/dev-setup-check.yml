@@ -9,8 +9,6 @@ on:
       branch:
         description: Branch to clone and to take the script from
         default: claude/youthful-cerf-l7xxsb
-  push:
-    branches: ["claude/youthful-cerf-l7xxsb-devsetup"]   # slice branch only; removed before status: ready
 
 permissions:
   contents: read
