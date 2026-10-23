@@ -286,11 +286,12 @@ MenuObj* BarMenu(const WindowObj* w) {
     return m;
 }
 
-// The bar rectangle in window coordinates (the area between the caption and the client area).
+// The bar rectangle in window coordinates: between the frame's sides, directly under the caption (the top of the client
+// area minus SM_CYMENU). Non-client scroll bars lie right of / below the client area, so they do not touch it.
 RECT BarRectInWindow(const WindowObj* w) {
-    const int h = SystemMetric(SM_CYMENU);
-    const int left = w->client.left - w->window.left, top = w->client.top - w->window.top;
-    return RECT{left, top - h, w->client.right - w->window.left, top};
+    const int h = SystemMetric(SM_CYMENU), f = FrameInset(w);
+    const int top = w->client.top - w->window.top;
+    return RECT{f, top - h, (w->window.right - w->window.left) - f, top};
 }
 
 POINT BarOriginScreen(const WindowObj* w) {

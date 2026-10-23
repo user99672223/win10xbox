@@ -8,6 +8,7 @@
 // US-layout keyboard functions.
 #include "user_internal.h"
 #include "user_syscalls.h"
+#include "win_scroll.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -942,13 +943,10 @@ LRESULT WINAPI NtUserMessageCall(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
     case abi::McDefWindowProc:
     case abi::McDesktopWindowProc:
         return DefWindowProcInternal(hwnd, msg, wparam, lparam, ansi != 0);
+    case abi::McScrollBarWndProc:
+        return ScrollBarWndProcInternal(hwnd, msg, wparam, lparam, ansi != 0);   // win_scroll.cpp
     case abi::McPopupMenuWndProc:
-        return MenuPopupWndProc(hwnd, msg, wparam, lparam, ansi != 0);
-    case abi::McScrollBarWndProc: {
-        static volatile LONG reported = 0;   // plain flag
-        if (!InterlockedExchange(&reported, 1)) FIXME(user, "scroll bar window procedure is not implemented");
-        return DefWindowProcInternal(hwnd, msg, wparam, lparam, ansi != 0);
-    }
+        return MenuPopupWndProc(hwnd, msg, wparam, lparam, ansi != 0);   // win_menu.cpp
     case abi::McCallWindowProc: {
         auto* p = static_cast<abi::WinProcParams*>(result_info);
         if (!p || !p->func) return FALSE;
@@ -1600,10 +1598,6 @@ BOOL WINAPI NtUserGetCaretPos(POINT* point) {
 }
 
 UINT WINAPI NtUserGetCaretBlinkTime() { return 530; }
-
-HWND WINAPI NtUserGetOpenClipboardWindow() {
-    return nullptr;   // nobody can open the clipboard (NtUserOpenClipboard is Todo)
-}
 
 }  // namespace sys
 }  // namespace win10xbox::user

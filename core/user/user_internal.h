@@ -441,6 +441,7 @@ int LogicalToDeviceDy(const DcObj* dc, int dy);
 void NoteDrawn(DcObj* dc, const DrawTarget& t, RECT device_rect);   // dirty tracking
 // gdi_draw.cpp
 void FillTargetRect(const DrawTarget& t, RECT device_rect, std::uint32_t bgra);
+void DrawGlyphRun(const DrawTarget& t, RECT limit, int x, int y, const std::wstring& text, std::uint32_t fg);
 std::uint32_t ColorToPixel(COLORREF c);
 COLORREF PixelToColor(std::uint32_t px);
 
@@ -483,6 +484,12 @@ void DestroyThreadWindows(UserThread* t);
 LRESULT DefWindowProcInternal(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, bool ansi);
 void SetWindowTextInternal(WindowObj* w, const WCHAR* text);
 void AdjustRectForStyle(RECT* rect, DWORD style, bool menu, DWORD ex_style);   // window from client
+// The non-client frame: thickness of the border (sizing frame plus the border line) around the caption and client,
+// the caption height (the caption's separator line included), and the rectangle of a caption button
+// (HTCLOSE / HTMAXBUTTON / HTMINBUTTON) in window coordinates; false when the window has no such button.
+int FrameInset(const WindowObj* w);
+int CaptionHeightOf(const WindowObj* w);
+bool CaptionButtonRect(const WindowObj* w, int hittest, RECT* out);
 void ForEachWindowPreorder(HWND root, const std::function<bool(WindowObj*)>& fn);
 
 // win_message.cpp

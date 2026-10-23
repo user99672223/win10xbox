@@ -81,6 +81,7 @@ more. Presentation is the host's: it only needs `ComposeFrame`.
 | `win_menu.cpp` | menu objects and the `NtUserThunkedMenuItemInfo` family, the menu bar (layout, paint, hit test, `WM_NCLBUTTONDOWN` -> popup), `NtUserTrackPopupMenuEx` / `NtUserEndMenu` and the shared modal loop, the `#32768` popup window procedure |
 | `win_message.cpp` | per-thread queues (posted, input, cross-thread sent), WM_PAINT and WM_TIMER pseudo-messages, `GetMessage`, `PeekMessage`, `MsgWaitForMultipleObjectsEx`, `WaitMessage`, `GetQueueStatus`, `NtUserMessageCall` codes, `DispatchMessage` (WM_PAINT / timer procs), `TranslateMessage` (US layout), timers, the input sink and the thread-side processing of mouse input (hit test, activation, `WM_SETCURSOR`, double clicks), key state, `SendInput`, cursor, caret (tracked, not drawn) |
 | `win_paint.cpp` | update regions (bounding rectangle + erase / frame / internal-paint flags), `InvalidateRect`/`Rgn`, `ValidateRect`/`Rgn`, `RedrawWindow`, `GetUpdateRect`/`Rgn`, `BeginPaint`/`EndPaint`, `GetDC`/`GetDCEx`/`GetWindowDC`/`ReleaseDC`, `ScrollWindowEx`, the non-client frame (solid colours), window surfaces from the driver, flush, `ComposeFrame` / `ComposeLastPaintedFrame` |
+| `win_scroll.cpp` | scroll state per window (`NtUserSetScrollInfo`, `GetScrollBarInfo`, `ShowScrollBar`, `EnableScrollBar`, `GetScrollInfo` via `NtUserCallHwndParam`), the non-client WS_VSCROLL / WS_HSCROLL bars (solid colours, drawn from WM_NCPAINT, HTVSCROLL / HTHSCROLL in WM_NCHITTEST, a WM_NCLBUTTONDOWN on a bar sends WM_VSCROLL / WM_HSCROLL SB_LINEUP / SB_LINEDOWN / SB_PAGEUP / SB_PAGEDOWN then SB_ENDSCROLL), the `ScrollBar` control procedure (SBM_*), `ScrollDC` |
 | `win_sysparams.cpp` | `GetSystemMetrics` (Windows 10 at 96 DPI), `SystemParametersInfo[ForDpi]`, DPI awareness, monitors (`EnumDisplayMonitors` via the callback, `GetMonitorInfo`, `MonitorFromRect/Window`), `EnumDisplaySettings`, `EnumDisplayDevices`, `SetSysColors` |
 
 Any syscall not implemented stays **Todo** in the dispatcher: it traces `unimplemented syscall NtUserFoo`, sets the
@@ -134,11 +135,11 @@ Not implemented yet (they stay Todo or are documented FIXMEs), roughly in the or
   loop. Not done: cascading submenus of popup items (they are drawn with an arrow, not opened), keyboard
   mnemonics / Alt and F10 activation, accelerator tables (`NtUserTranslateAccelerator`), owner-draw and bitmap items
   (laid out empty), `GetSystemMenu` / `SetSystemMenu` (the window system menu), menu bar wrapping onto a second row,
-  scrolling of tall popups, `MIM_BACKGROUND`, the class menu name of `RegisterClass`. **Icons and cursors** (`NtUserSetCursorIconData`, `NtUserDrawIconEx`, `LoadImage` of
-  icons/cursors): Todo. **Scroll bars** (`NtUserSetScrollInfo`, the scroll bar window procedure): Todo (WS_VSCROLL
-  only reserves the space). **Clipboard**, **hooks** (`SetWindowsHookEx`, `SetWinEventHook`), **IME**,
+  scrolling of tall popups, `MIM_BACKGROUND`, the class menu name of `RegisterClass`.
+  **Icons and cursors** (`NtUserSetCursorIconData`, `NtUserDrawIconEx`, `LoadImage` of
+  icons/cursors): Todo. **Scroll bars**: `win_scroll.cpp` (see the module table); thumb dragging and button auto-repeat are not implemented. **Clipboard**, **hooks** (`SetWindowsHookEx`, `SetWinEventHook`), **IME**,
   **raw input**, **layered windows** (`SetLayeredWindowAttributes`, `UpdateLayeredWindow`), **window regions**,
-  `AlphaBlend` / `TransparentBlt` / `GradientFill` / `MaskBlt`, `PrintWindow`, `ScrollDC`, `DeferWindowPos`,
+  `AlphaBlend` / `TransparentBlt` / `GradientFill` / `MaskBlt`, `PrintWindow`, `DeferWindowPos`,
   window stations / desktops: Todo.
 * Window dragging / resizing from the frame (WM_NCLBUTTONDOWN on the caption or border) is not implemented; the
   frame is drawn in solid colours (COLOR_ACTIVEBORDER / COLOR_ACTIVECAPTION, a close-button square), without

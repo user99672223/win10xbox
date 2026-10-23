@@ -26,6 +26,62 @@ bool HasNonClient(const WindowObj* w) {
            w->window.bottom != w->client.bottom;
 }
 
+// a minus b when the result is still one rectangle (b spans a in one direction and touches an edge in the other,
+// or misses or covers a); false leaves *out untouched. Update regions are one bounding rectangle per window, so a
+// hole in the middle cannot be represented and the caller keeps the larger (conservative) region.
+bool RectSubtractExact(const RECT& a, const RECT& b, RECT* out) {
+    const RECT i = RectIntersect(a, b);
+    if (RectEmpty(i)) { *out = a; return true; }
+    if (i.left == a.left && i.right == a.right && i.top == a.top && i.bottom == a.bottom) { *out = RECT{0, 0, 0, 0}; return true; }
+    if (i.left <= a.left && i.right >= a.right) {
+        if (i.top <= a.top) { *out = RECT{a.left, i.bottom, a.right, a.bottom}; return true; }
+        if (i.bottom >= a.bottom) { *out = RECT{a.left, a.top, a.right, i.top}; return true; }
+    }
+    if (i.top <= a.top && i.bottom >= a.bottom) {
+        if (i.left <= a.left) { *out = RECT{i.right, a.top, a.right, a.bottom}; return true; }
+        if (i.right >= a.right) { *out = RECT{a.left, a.top, i.left, a.bottom}; return true; }
+    }
+    return false;
+}
+
+// A window painted `painted` (its client coordinates): win32k's get_update_region validates that area on every
+// ancestor that does not clip its children (server/window.c validate_parents), so a parent painted later does not
+// erase it again. Only the cases RectSubtractExact can represent are validated.
+void ValidateInAncestors(const WindowObj* w, RECT painted) {
+    while (w && !RectEmpty(painted)) {
+        painted = RectOffset(painted, w->client.left, w->client.top);   // into the parent's client coordinates
+        WindowObj* a = Win(w->parent);
+        if (!a || (a->flags & kWinIsDesktop)) return;
+        if (!(a->style & WS_CLIPCHILDREN) && !RectEmpty(a->update)) {
+            RECT out;
+            if (RectSubtractExact(a->update, painted, &out)) {
+                a->update = out;
+                if (RectEmpty(a->update)) a->erase_pending = false;
+            }
+        }
+        w = a;
+    }
+}
+
+}  // namespace
+
+// A window that does not clip its children paints (and erases) over them; the children it covered are repainted
+// afterwards (the region bookkeeping above is a bounding rectangle, so the exact "child already valid" case of
+// win32k cannot always be kept).
+void InvalidateChildrenCoveredBy(WindowObj* w, const RECT& area) {
+    if (!w || RectEmpty(area) || (w->style & WS_CLIPCHILDREN)) return;
+    for (HWND ch : std::vector<HWND>(w->children)) {
+        WindowObj* c = Win(ch);
+        if (!c || !(c->style & WS_VISIBLE)) continue;
+        const RECT hit = RectIntersect(area, c->window);
+        if (RectEmpty(hit)) continue;
+        const RECT in_child = RectOffset(hit, -c->client.left, -c->client.top);
+        InvalidateWindow(ch, &in_child, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME);
+    }
+}
+
+namespace {
+
 void RetainFrame() {
     State& s = S();
     s.retained.clear();
@@ -154,9 +210,12 @@ void InvalidateWindow(HWND hwnd, const RECT* client_rect, UINT flags) {
             if (NeedsPaint(w)) WakeThread(FindUserThreadById(w->tid), QS_PAINT);
         }
     } else if (flags & RDW_VALIDATE) {
-        if (!client_rect || (r.left <= w->update.left && r.top <= w->update.top && r.right >= w->update.right &&
-                             r.bottom >= w->update.bottom))
+        if (!client_rect) {
             w->update = RECT{0, 0, 0, 0};
+        } else {
+            RECT rest;
+            if (RectSubtractExact(w->update, r, &rest)) w->update = rest;
+        }
         if (flags & RDW_NOERASE) w->erase_pending = false;
         if (flags & RDW_NOFRAME) w->nc_pending = false;
         if (flags & RDW_NOINTERNALPAINT) w->internal_paint = false;
@@ -210,19 +269,39 @@ void PaintNonClient(HWND hwnd) {
         FillTargetRect(t, RECT{0, client.top, client.left, client.bottom}, frame);
         FillTargetRect(t, RECT{client.right, client.top, ww, client.bottom}, frame);
         if ((w->style & WS_CAPTION) == WS_CAPTION) {
-            RECT inner{0, 0, ww, wh};
-            AdjustRectForStyle(&inner, w->style & ~WS_CAPTION, false, w->ex_style & ~WS_EX_CLIENTEDGE);
-            // AdjustRectForStyle grows; the frame thickness is the negated offset
-            const int border = -inner.left;
-            const int cap = (w->ex_style & WS_EX_TOOLWINDOW) ? SystemMetric(SM_CYSMCAPTION) : SystemMetric(SM_CYCAPTION);
-            const RECT caption{border, border, ww - border, border + cap - 1};
+            const int f = FrameInset(w), cap = CaptionHeightOf(w);
+            const RECT caption{f, f, ww - f, f + cap - 1};
             FillTargetRect(t, caption, ColorToPixel(SysColor(active ? COLOR_ACTIVECAPTION : COLOR_INACTIVECAPTION)));
-            // close button: a darker square at the right of the caption
-            if (w->style & WS_SYSMENU) {
-                const int bw = SystemMetric(SM_CXSIZE);
-                FillTargetRect(t, RECT{caption.right - bw, caption.top, caption.right, caption.bottom},
-                               ColorToPixel(SysColor(COLOR_BTNFACE)));
+            FillTargetRect(t, RECT{f, f + cap - 1, ww - f, f + cap}, ColorToPixel(SysColor(COLOR_WINDOWFRAME)));
+            // the system buttons: plain rectangles (no theme), a glyph each; close red, maximize blue, minimize grey
+            int text_right = caption.right;
+            const std::uint32_t black = ColorToPixel(RGB(0, 0, 0)), white = ColorToPixel(RGB(255, 255, 255));
+            struct Button { int ht; COLORREF face; };
+            const Button buttons[] = {{HTMINBUTTON, RGB(225, 225, 225)}, {HTMAXBUTTON, RGB(200, 216, 240)}, {HTCLOSE, RGB(199, 80, 80)}};
+            for (const Button& b : buttons) {
+                RECT r;
+                if (!CaptionButtonRect(w, b.ht, &r)) continue;
+                text_right = std::min<int>(text_right, r.left);
+                FillTargetRect(t, r, ColorToPixel(b.face));
+                const int cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+                if (b.ht == HTMINBUTTON) {
+                    FillTargetRect(t, RECT{cx - 5, cy + 3, cx + 5, cy + 4}, black);
+                } else if (b.ht == HTMAXBUTTON) {
+                    FillTargetRect(t, RECT{cx - 5, cy - 5, cx + 5, cy - 4}, black);
+                    FillTargetRect(t, RECT{cx - 5, cy + 4, cx + 5, cy + 5}, black);
+                    FillTargetRect(t, RECT{cx - 5, cy - 5, cx - 4, cy + 5}, black);
+                    FillTargetRect(t, RECT{cx + 4, cy - 5, cx + 5, cy + 5}, black);
+                } else {
+                    for (int i = 0; i < 10; ++i) {
+                        FillTargetRect(t, RECT{cx - 5 + i, cy - 5 + i, cx - 4 + i, cy - 4 + i}, white);
+                        FillTargetRect(t, RECT{cx - 5 + i, cy + 4 - i, cx - 4 + i, cy + 5 - i}, white);
+                    }
+                }
             }
+            // the title, in the built-in face, between the left edge and the first button
+            const RECT text_box{caption.left + 6, caption.top, text_right - 4, caption.bottom};
+            DrawGlyphRun(t, text_box, text_box.left, caption.top + (cap - 1 - 16) / 2, w->text,
+                         ColorToPixel(SysColor(active ? COLOR_CAPTIONTEXT : COLOR_INACTIVECAPTIONTEXT)));
         }
         MenuPaintBar(w, dc, t);   // win_menu.cpp: the menu bar, if any
         NoteDrawn(dc, t, RECT{0, 0, ww, wh});
@@ -251,9 +330,11 @@ void SendEraseMessages(HWND hwnd, HDC hdc_in, bool* erased) {
                 dc->paint_clip = clip;
             }
         }
+        const RECT erased_area = w->update;
         const LRESULT r = SendMessageInternal(hwnd, WM_ERASEBKGND, reinterpret_cast<WPARAM>(hdc), 0);
         if (erased) *erased = r != 0;
         if (!hdc_in) ReleaseDCInternal(hwnd, hdc);
+        InvalidateChildrenCoveredBy(Win(hwnd), erased_area);
     }
 }
 
@@ -399,6 +480,8 @@ HDC BeginPaintInternal(HWND hwnd, PAINTSTRUCT* ps) {
     w->erase_pending = false;
     w->nc_pending = false;
     w->internal_paint = false;
+    ValidateInAncestors(w, update);
+    InvalidateChildrenCoveredBy(w, update);
     if (nc && HasNonClient(w)) {
         SendMessageInternal(hwnd, WM_NCPAINT, 1, 0);
         if (!(w = Win(hwnd))) return nullptr;
