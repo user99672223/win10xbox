@@ -1,6 +1,7 @@
 # Prepares the machine folder used by the integration tests (cmake -P).
 #   cmake -DMACHINE=<bin>/machine -DBUILTIN_DIR=<wine-pe/out/builtin>
 #         -DGUEST_DIR=<bin>/guest -DDEFAULT_JSON=<machine/machine.default.json>
+#         [-DGUEST_DLL_DIR=<bin>/guest-dlls]   DLLs of our own (guest-dlls/): staged as builtins too
 #         -P prepare_machine.cmake
 #
 # Layout (the same one CI builds with machine/import_windows_dlls.ps1 plus the
@@ -33,6 +34,16 @@ endif()
 set(_builtins 0)
 if(BUILTIN_DIR AND IS_DIRECTORY "${BUILTIN_DIR}")
   file(GLOB _files "${BUILTIN_DIR}/*.dll" "${BUILTIN_DIR}/*.exe")
+  foreach(f ${_files})
+    get_filename_component(n "${f}" NAME)
+    file(COPY_FILE "${f}" "${MACHINE}/Windows/builtin/${n}" ONLY_IF_DIFFERENT)
+    math(EXPR _builtins "${_builtins} + 1")
+  endforeach()
+endif()
+
+# Our own builtins (guest-dlls/: xinput1_4.dll and its two copies) go next to Wine's.
+if(GUEST_DLL_DIR AND IS_DIRECTORY "${GUEST_DLL_DIR}")
+  file(GLOB _files "${GUEST_DLL_DIR}/*.dll")
   foreach(f ${_files})
     get_filename_component(n "${f}" NAME)
     file(COPY_FILE "${f}" "${MACHINE}/Windows/builtin/${n}" ONLY_IF_DIFFERENT)

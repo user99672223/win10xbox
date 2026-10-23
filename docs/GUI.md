@@ -261,6 +261,20 @@ Not implemented yet (they stay Todo or are documented FIXMEs), roughly in the or
    pass under Wine locally (`ctest --test-dir build-mingw -R guest_window`) and on both Windows
    configs in CI. Then `tests/guest/window2.c` (done), then a real third-party program.
 
+## Gamepad / XInput
+
+The guest's XInput is our own small DLL, `guest-dlls/xinput/xinput.c` (`xinput1_4.dll`, staged under the names
+`xinput1_3.dll` and `xinput9_1_0.dll` too; always builtin, rule 8): Wine's is PE code over hid/setupapi and a HID bus
+driver we do not have. The DLL holds no state. It reaches the host like Wine's PE DLLs reach their unix side: ntdll's
+`__wine_unix_call_dispatcher` (a data export, found with GetProcAddress) and the handle that `NtQueryVirtualMemory`
+`MemoryWineLoadUnixLibByName` gives for `L"xinput1_4"`, a unix library registered in `core/dispatch/unix_calls.cpp`
+with `get_state`, `set_state`, `get_caps` (structs in `core/include/win10xbox/xinput_abi.h`, results are Win32 error
+codes). They read and write the process-wide pad store `win10xbox::input::SetGamepadState/GetGamepadState`
+(`core/input/gamepad.cpp`, four pads, one lock, a packet number that moves when the state changes). User 0 is the host's
+pad; users 1..3 and a pad nobody has set are ERROR_DEVICE_NOT_CONNECTED. Writers: host-win32's inject script (`pad
+BUTTONS LX LY RX RY LT RT`, `padwait N`), host-uwp's `Launcher::PollGamepad` (Windows.Gaming.Input pad 0, and the
+guest's `XInputSetState` goes back to its `Vibration`). `XInputGetKeystroke` reports no keystrokes (ERROR_EMPTY).
+
 ## Local workflow
 
 ```

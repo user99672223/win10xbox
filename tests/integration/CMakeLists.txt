@@ -24,6 +24,7 @@ set(_prepare_args
   -DBUILTIN_DIR=${WIN10XBOX_BUILTIN_DIR}
   -DGUEST_DIR=${CMAKE_BINARY_DIR}/bin/guest
   -DMSCTF_STUB=${CMAKE_BINARY_DIR}/bin/native-gui-stubs/msctf.dll
+  -DGUEST_DLL_DIR=${WIN10XBOX_GUEST_DLL_DIR}
   -DDEFAULT_JSON=${_default_json}
   -P ${CMAKE_CURRENT_SOURCE_DIR}/prepare_machine.cmake)
 
@@ -33,7 +34,7 @@ if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
                    guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog guest_comctl
                    guest_seh guest_window_scroll guest_clipboard guest_net msctf_stub guest_gdi_bitmap
-                   guest_window_hooks guest_window_menu)
+                   guest_window_hooks guest_window_menu guest_xinput xinput1_4)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -229,6 +230,18 @@ win10xbox_guest_test(guest_window_menu "C:\\guest\\guest_window_menu.exe" 42
 set_tests_properties(integration.guest_window_menu PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_menu.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=300,140,fff0f0f0|116,134,ff000000;WIN10XBOX_TEST_INJECT_INPUT=waitwin 60000\\;sleep 2000\\;move 132,140\\;ldown\\;lup\\;sleep 1500\\;move 128,196\\;ldown\\;lup\\;sleep 2500\\;move 320,264\\;ldown\\;lup"
   FAIL_REGULAR_EXPRESSION "FAIL ")
+# XInput (tests/guest/xinput.c): the guest imports the layer's own xinput1_4.dll (guest-dlls/xinput, a builtin next to
+# Wine's) and reads the gamepad the HOST holds, through the "xinput1_4" unix library. The host script connects a neutral
+# pad, waits (padwait) until the guest has read it, then presses A with stick and trigger values: the guest sees its packet
+# number move and the injected values, users 1..3 stay ERROR_DEVICE_NOT_CONNECTED (1167).
+win10xbox_guest_test(guest_xinput "C:\\guest\\guest_xinput.exe" 42
+  "xinput: screen=[0-9]+x[0-9]+" "xinput: caps ok type=1 subtype=1" "xinput: idle packet=[0-9]+ buttons=0x0000"
+  "xinput: packet changed [0-9]+ -> [0-9]+" "xinput: buttons=0x1000 lx=1000 ly=-2000 rx=3000 ry=-4000 lt=128 rt=255"
+  "xinput: users 1\\.\\.3 not connected \\(1167 1167 1167\\)" "xinput: set state ok, battery type=1 level=3, bad index=160"
+  "xinput: done")
+set_tests_properties(integration.guest_xinput PROPERTIES
+  ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=pad 0 0 0 0 0 0 0\\;padwait 30000\\;sleep 300\\;pad 1000 1000 -2000 3000 -4000 128 255"
+  FAIL_REGULAR_EXPRESSION "xinput: FAIL")
 # Scroll bars (tests/guest/window_scroll.c, core/user/win_scroll.cpp): range/position round trip, HTVSCROLL hit test,
 # ScrollWindowEx / ScrollDC pixels, and a host-injected click on the vertical bar's down arrow that must arrive as
 # WM_VSCROLL SB_LINEDOWN + SB_ENDSCROLL. The screenshot shows the bar's track colour (COLOR_SCROLLBAR, ffc8c8c8) at

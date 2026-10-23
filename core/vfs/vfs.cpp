@@ -125,13 +125,15 @@ std::wstring OverrideKey(std::wstring_view name) {
 // user32/gdi32/win32u/imm32 are clients of a real win32k that an AppContainer guest does not have.
 // Route B (machine.json "gui": "native", or vfs::SetNativeGuiStack): the GUI stack follows dll_overrides like
 // any other DLL, because there the native user32/gdi32/win32u ARE the point (their win32u syscalls go to the
-// host's win32k). Namespace scope, trivially initialised; set before the guest starts.
+// host's win32k). Namespace scope, trivially initialised; set before the guest starts. The layer's own XInput
+// (guest-dlls/xinput, under its three names) is always builtin: the native one is a client of the HID stack.
 bool g_native_gui_stack = false;
 bool IsGuiStack(const std::wstring& key) {
     return key == L"WIN32U" || key == L"USER32" || key == L"GDI32" || key == L"IMM32";
 }
 bool IsAlwaysBuiltin(const std::wstring& key, bool native_gui = false) {
     return key == L"NTDLL" || key == L"KERNELBASE" || key == L"KERNEL32" ||
+           key == L"XINPUT1_4" || key == L"XINPUT1_3" || key == L"XINPUT9_1_0" ||
            (!native_gui && !g_native_gui_stack && IsGuiStack(key));
 }
 
@@ -407,7 +409,7 @@ void ApplyConfig(const json::Value& root, State* st) {
             std::wstring key = OverrideKey(Widen(m.first));
             if (key == L"*") { st->default_override = ov; continue; }
             if (IsAlwaysBuiltin(key, st->info.gui == L"native")) {
-                WARN(vfs, "machine.json: dll_overrides.%s ignored: ntdll/kernelbase/kernel32 and the GUI stack (win32u/user32/gdi32/imm32) are always builtin (E1)",
+                WARN(vfs, "machine.json: dll_overrides.%s ignored: ntdll/kernelbase/kernel32, the GUI stack (win32u/user32/gdi32/imm32) and xinput1_x are always builtin (E1)",
                      m.first.c_str());
                 continue;
             }
