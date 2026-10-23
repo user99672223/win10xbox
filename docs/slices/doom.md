@@ -40,12 +40,31 @@ Gate pixels: see below (taken from a real frame).
 
 ## Syscalls added
 
-(none yet)
+* `NtUserCallOneParam(CreateCursorIcon)` / `(GetIconParam)`, `NtUserCallTwoParam(SetIconParam)`, `NtUserSetCursorIconData`,
+  `NtUserFindExistingCursorIcon`, `NtUserDestroyCursor`, `NtUserGetIconInfo`, `NtUserGetIconSize`, `NtUserGetCursorFrameInfo`,
+  `NtUserGetCursorInfo`, `NtUserDrawIconEx` (core/user/win_cursoricon.cpp; unit tests `user_cursor_icon_*`). SDL2 creates a
+  cursor and window icons on start-up; all of them were Todo.
+* `NtUserQueryDisplayConfig`, `NtUserDisplayConfigGetDeviceInfo` (win_sysparams.cpp; SDL2 reads the display name through
+  them; test `user_query_display_config`).
+* Not a new syscall but a drawing call that reported success without drawing: `NtGdiStretchDIBitsInternal` and
+  `NtGdiSetDIBitsToDeviceInternal` into a destination without a 32 bpp view (the 1 bpp mask of an icon) now draw pixel by
+  pixel (test `user_stretch_dibits_into_monochrome_bitmap`); the primitives that still cannot draw there log a FIXME that
+  names the call.
+
+## Other fixes found on the way
+
+* `GetUserNameW` (Wine reads `WINEUSERNAME`) now works, which made fastfetch's `LsaGetUserName` path run, and Wine's
+  `LsaGetUserName` hands out a Buffer from msvcrt's private heap that fastfetch frees with `RtlFreeUnicodeString`
+  (the process heap): `STATUS_HEAP_CORRUPTION` on the Windows host's heap (run 39941218788 and 39944178745, the
+  `integration.fastfetch` gate and the module step; Doom itself was green in both). Found by running fastfetch under Wine with
+  the host heap's validation on (`GlobalFlag=0xf0` for win10xbox.exe in the prefix: `warn:heap:unsafe_block_from_ptr ... mismatching
+  heap`). wine-pe patch `0020-advapi32-lsagetusername-separate-buffer.patch` allocates the Buffers from the process heap.
 
 ## Still failing / todo
 
 * Measured under Wine on a Linux host (not the CI numbers): about 12 s from process start to the first frame, the demo
   runs at about 230 fps.
-* `NtUserFindExistingCursorIcon`, `NtUserDestroyCursor` (SDL's cursor setup), `NtUserQueryDisplayConfig`,
-  `NtUserDisplayConfigGetDeviceInfo` (SDL's display names), a 1 bpp bitmap draw target and `RegisterTouchWindow` are hit
-  and fail or are ignored; Doom does not need them.
+* Doom does not use them, but they are not implemented: `RegisterTouchWindow` is a Wine stub, COM class
+  `{529a9e6b-6587-4f23-ab9e-9c7d683e3c50}` is not registered (SDL asks for it at window creation), the other
+  `DisplayConfigGetDeviceInfo` packet types and `QDC_VIRTUAL_MODE_AWARE`.
+* I_Error's message box (without `-nogui`) is shown and never closed: the run waits for it.
