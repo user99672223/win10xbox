@@ -124,7 +124,12 @@ jobs:
         if: always()
         with:
           name: linux-cross-bin
-          path: build-mingw/bin/
+          # Testing/Temporary holds every test's full output (ctest shows a passing test's output nowhere else);
+          # winetest/<dll>/ holds the Wine conformance suites' per-unit logs and .tsv rows (wine-pe/tests/*.sh).
+          path: |
+            build-mingw/bin/
+            build-mingw/Testing/Temporary/
+            build-mingw/winetest/
           retention-days: 3
 
   # The real Windows test machine: MSVC 2022, host-win32 runs core/ unsandboxed.
