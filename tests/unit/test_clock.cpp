@@ -238,7 +238,14 @@ TEST(clock_time_of_day_information) {
     CHECK(Abs64(cur - HostSys()) < 500'000);
     CHECK(boot < cur && boot > 0);
     CHECK_EQ(bias, 0ll);
-    CHECK(clk::Clk_NtQuerySystemInformation_TimeOfDay(buf, 8, &ret) != 0);
+    // As much of the structure as the caller has room for; more than the structure is a mismatch.
+    std::memset(buf, 0xCC, sizeof buf);
+    CHECK_EQ(clk::Clk_NtQuerySystemInformation_TimeOfDay(buf, 8, &ret), 0);
+    CHECK_EQ(ret, 8u);
+    CHECK_EQ((unsigned)buf[8], 0xCCu);
+    CHECK_EQ(clk::Clk_NtQuerySystemInformation_TimeOfDay(buf, 0, &ret), 0);
+    CHECK_EQ(ret, 0u);
+    CHECK(clk::Clk_NtQuerySystemInformation_TimeOfDay(buf, 0x31, &ret) != 0);
 }
 
 TEST(clock_shared_data_tracks_virtual_time) {

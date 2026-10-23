@@ -514,10 +514,30 @@ NTSTATUS NTAPI Xl_NtMapViewOfSection(HANDLE section, HANDLE process, PVOID* base
                                      protect);
 }
 
+// MEM_EXTENDED_PARAMETER { DWORD64 Type:8, Reserved:56; union { ... ULONG ULong; } } is 16 bytes. An image machine
+// (MemExtendedParameterImageMachine) other than this process's (AMD64) cannot be honoured: Windows answers
+// STATUS_NOT_SUPPORTED for it on an x64 process, 0 meaning "the section's own machine".
+static NTSTATUS CheckImageMachineParameters(PVOID ext, ULONG ext_count) {
+    constexpr ULONG kMemExtendedParameterImageMachine = 6;
+    if (!ext) return st::Success;
+    for (ULONG i = 0; i < ext_count; ++i) {
+        std::uint64_t e[2];
+        if (NTSTATUS s = probe::CopyFromUser(e, static_cast<const std::uint8_t*>(ext) + 16 * static_cast<size_t>(i), sizeof e))
+            return s;
+        if ((e[0] & 0xFF) == kMemExtendedParameterImageMachine && static_cast<ULONG>(e[1]) != 0 &&
+            static_cast<ULONG>(e[1]) != IMAGE_FILE_MACHINE_AMD64)
+            return st::NotSupported;
+    }
+    return st::Success;
+}
+
 static NTSTATUS NTAPI Xl_NtMapViewOfSectionEx(HANDLE section, HANDLE process, PVOID* base, PLARGE_INTEGER offset,
                                               PSIZE_T view_size, ULONG alloc_type, ULONG protect, PVOID ext,
                                               ULONG ext_count) {
-    if (auto sec = SectionFromHandle(section)) return MapOurs(sec, process, base, view_size);
+    if (auto sec = SectionFromHandle(section)) {
+        if (NTSTATUS s = CheckImageMachineParameters(ext, ext_count)) return s;
+        return MapOurs(sec, process, base, view_size);
+    }
     return Host().NtMapViewOfSectionEx(section, process, base, offset, view_size, alloc_type, protect, ext, ext_count);
 }
 

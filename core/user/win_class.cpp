@@ -146,7 +146,7 @@ void RegisterBuiltinClasses() {
         c->proc = s.client_procs[b.proc];
         c->win_extra = b.extra;
         c->brush = reinterpret_cast<HBRUSH>(static_cast<ULONG_PTR>(b.brush));
-        c->cursor = nullptr;   // LoadImage(IDC_ARROW) needs the cursor code (Todo)
+        c->cursor = nullptr;   // the builtin classes load no cursor (user32 would have to be called back to load IDC_ARROW / IDC_IBEAM)
         ATOM a = 0;
         c->atom = IntegralAtom(c->name.data(), c->name.size(), &a) ? a : AddAtom(c->name.data(), c->name.size());
         AddClass(c);

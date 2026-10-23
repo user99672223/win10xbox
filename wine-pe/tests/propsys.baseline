@@ -1,0 +1,3 @@
+# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/media.sh --dll propsys; numbers in docs/slices/wt-media-atl.md)
+# measured on the CI linux-cross job (ci run 39946633669, head 46b03a1); COM classes registered through atl100
+propsys run 0

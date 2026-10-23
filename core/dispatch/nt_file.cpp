@@ -5,6 +5,9 @@
 // SetFallbackDrive) and applies the E1 builtin rule for system DLLs.
 #include "internal.h"
 #include "win10xbox/config.h"
+#if WIN10XBOX_HAVE_REGISTRY
+#include "win10xbox/registry.h"
+#endif
 #if WIN10XBOX_HAVE_AFD
 #include "win10xbox/afd.h"
 #endif
@@ -13,6 +16,7 @@
 #endif
 #include <cstring>
 #include <cwctype>
+#include <functional>
 #include <map>
 
 namespace win10xbox::dispatch::detail {
@@ -138,6 +142,8 @@ constexpr ULONG kFileRenameInformationEx = 65;
 constexpr ULONG kFileRenameInformationExBypassAccessCheck = 66;
 constexpr ULONG kFileLinkInformationEx = 72;
 constexpr ULONG kFileLinkInformationExBypassAccessCheck = 73;
+constexpr ULONG kFileAllInformation = 18;
+constexpr ULONG kFileOpenByFileId = 0x00002000;   // CreateOptions: the name is an 8 or 16 byte file ID, not a path
 
 bool IsKnownDllsName(const OBJECT_ATTRIBUTES* oa) {
     if (!oa || oa->RootDirectory) return false;
@@ -289,7 +295,7 @@ NTSTATUS RootRelativeGuestName(const OBJECT_ATTRIBUTES* in, std::wstring* nt) {
 }  // namespace
 #endif
 
-NTSTATUS TranslateOA(const OBJECT_ATTRIBUTES* user_in, TranslatedOA* out) {
+NTSTATUS TranslateOA(const OBJECT_ATTRIBUTES* user_in, TranslatedOA* out, ULONG create_options) {
     out->attr = nullptr;
     out->keep.reset();
     if (!user_in) return st::Success;
@@ -312,7 +318,7 @@ NTSTATUS TranslateOA(const OBJECT_ATTRIBUTES* user_in, TranslatedOA* out) {
         abs.RootDirectory = nullptr;
         abs.ObjectName = &us;
         auto t = std::make_shared<vfs::TranslatedAttributes>();
-        NTSTATUS s = vfs::TranslateObjectAttributes(&abs, t.get());
+        NTSTATUS s = vfs::TranslateObjectAttributes(&abs, t.get(), create_options);
         if (s) return s;
         if (t->translated) {
             out->attr = &t->attr;
@@ -321,11 +327,12 @@ NTSTATUS TranslateOA(const OBJECT_ATTRIBUTES* user_in, TranslatedOA* out) {
         return st::Success;
     }
 #else
+    (void)create_options;
     if (in->RootDirectory) return st::Success;   // relative to a host handle
 #endif
 #if WIN10XBOX_HAVE_VFS
     auto t = std::make_shared<vfs::TranslatedAttributes>();
-    NTSTATUS s = vfs::TranslateObjectAttributes(in, t.get());
+    NTSTATUS s = vfs::TranslateObjectAttributes(in, t.get(), create_options);
     if (s == st::NotSupported) return st::Success;
     if (s) return s;
     if (t->translated) {
@@ -351,7 +358,9 @@ NTSTATUS NTAPI Xl_NtCreateFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRI
                                PLARGE_INTEGER alloc_size, ULONG attributes, ULONG sharing, ULONG disposition,
                                ULONG options, PVOID ea, ULONG ea_length) {
     TranslatedOA t;
-    if (NTSTATUS s = TranslateOA(attr, &t)) return s;
+    // FILE_OPEN_BY_FILE_ID: the "name" is a binary file ID (relative to a directory or volume handle), not a path.
+    if (!(options & kFileOpenByFileId))
+        if (NTSTATUS s = TranslateOA(attr, &t, options)) return s;
     return Host().NtCreateFile(handle, access, t.Get(attr), io, alloc_size, attributes, sharing, disposition, options,
                                ea, ea_length);
 }
@@ -362,7 +371,8 @@ NTSTATUS NTAPI Xl_NtOpenFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBU
     if (afd::IsAfdDeviceName(attr)) return afd::Open(handle, io);   // sockets: core/afd
 #endif
     TranslatedOA t;
-    if (NTSTATUS s = TranslateOA(attr, &t)) return s;
+    if (!(options & kFileOpenByFileId))   // the name is a file ID, see Xl_NtCreateFile
+        if (NTSTATUS s = TranslateOA(attr, &t, options)) return s;
     // Wine's SetFileAttributesW (git hides ".git" with it) opens with SYNCHRONIZE alone and then sets
     // FileBasicInformation, which Wine's server allows; Windows demands FILE_WRITE_ATTRIBUTES for that. Ask for it,
     // and fall back to the caller's access when the file will not grant it (a read-only ACL).
@@ -416,31 +426,65 @@ static NTSTATUS NTAPI Xl_NtDeleteFile(POBJECT_ATTRIBUTES attr) {
     return Host().NtDeleteFile(t.Get(attr));
 }
 
+// Where the FILE_NAME_INFORMATION lives in the structure of `klass` (FileNameInformation, its normalized twin, and
+// FileAllInformation, whose last member it is) and the smallest buffer Windows accepts for the class (sizeof the
+// structure, so room for one character of the name).
+static bool NameInfoLayout(ULONG klass, ULONG* info_offset, ULONG* min_length) {
+    switch (klass) {
+    case kFileNameInformation: case kFileNormalizedNameInformation: *info_offset = 0; *min_length = 8; return true;
+    case kFileAllInformation: *info_offset = 96; *min_length = 104; return true;
+    default: return false;
+    }
+}
+
+// The name in these classes is the host's path of the file on its volume, and the host writes all of it: the guest's
+// view of the name is a different string of a different length, so the host answers into a buffer of ours (a path is
+// at most 32767 characters) and the reply to the caller is built from that: the other members as the host answered
+// them, FileNameLength and FileName in the guest's view, the length checks and status of the caller's own buffer
+// (STATUS_BUFFER_OVERFLOW with as many whole characters as fit, Information the bytes written).
 static NTSTATUS NTAPI Xl_NtQueryInformationFile(HANDLE file, PIO_STATUS_BLOCK io, PVOID buffer, ULONG length,
                                                 ULONG klass) {
-    NTSTATUS s = Host().NtQueryInformationFile(file, io, buffer, length, klass);
-    if (klass != kFileNameInformation && klass != kFileNormalizedNameInformation) return s;
-    if (s != st::Success && s != st::BufferOverflow) return s;
-    std::wstring host = HostPathOfHandle(file), guest;
-    if (host.empty() || !UntranslateHostWin32Path(host, &guest) || guest.size() < 2) {
-        if (!host.empty()) WARN(dispatch, "file name %ls is outside the guest's drives", host.c_str());
+    ULONG info_off = 0, min_length = 0;
+    if (!NameInfoLayout(klass, &info_off, &min_length))
+        return Host().NtQueryInformationFile(file, io, buffer, length, klass);
+    if (length < min_length) return st::InfoLengthMismatch;
+    const ULONG name_off = info_off + 4;   // offsetof(FILE_NAME_INFORMATION, FileName) within the structure
+    constexpr ULONG kMaxNameBytes = 65536;
+    constexpr NTSTATUS kUntouched = static_cast<NTSTATUS>(0x0DEFACED);
+    std::vector<std::uint8_t> reply(name_off + kMaxNameBytes);
+    IO_STATUS_BLOCK host_io;
+    host_io.Status = kUntouched;
+    host_io.Information = 0;
+    NTSTATUS s = Host().NtQueryInformationFile(file, &host_io, reply.data(), static_cast<ULONG>(reply.size()), klass);
+    if (s != st::Success && s != st::BufferOverflow) {
+        if (host_io.Status != kUntouched)
+            if (NTSTATUS ws = probe::Store<IO_STATUS_BLOCK>(io, host_io)) return ws;
         return s;
     }
-    // FILE_NAME_INFORMATION: drive-relative name ("\Windows\x.dll").
-    std::wstring_view name = std::wstring_view(guest).substr(2);
+    ULONG host_bytes = 0;
+    std::memcpy(&host_bytes, reply.data() + info_off, sizeof host_bytes);
+    if (host_bytes > kMaxNameBytes) host_bytes = kMaxNameBytes;
+    std::wstring name(host_bytes / sizeof(wchar_t), L'\0');
+    std::memcpy(name.data(), reply.data() + name_off, name.size() * sizeof(wchar_t));
+    std::wstring host = HostPathOfHandle(file), guest;
+    if (!host.empty()) {
+        if (UntranslateHostWin32Path(host, &guest) && guest.size() >= 2)
+            name = guest.substr(2);   // drive-relative: "\Windows\x.dll"
+        else
+            WARN(dispatch, "file name %ls is outside the guest's drives", host.c_str());
+    }
     const ULONG bytes = static_cast<ULONG>(name.size() * sizeof(wchar_t));
-    const ULONG room = length > 4 ? length - 4 : 0;
+    const ULONG room = length - name_off;
     const ULONG copy = bytes < room ? bytes : room & ~1u;
-    // The host has just filled the same buffer, so these succeed; they are guarded for the caller that unmaps it
-    // meanwhile.
-    std::vector<std::uint8_t> image(4 + copy);
-    std::memcpy(image.data(), &bytes, 4);
-    std::memcpy(image.data() + 4, name.data(), copy);
+    std::vector<std::uint8_t> image(name_off + copy);
+    std::memcpy(image.data(), reply.data(), name_off);   // the other members of the structure, as the host answered them
+    std::memcpy(image.data() + info_off, &bytes, sizeof bytes);
+    std::memcpy(image.data() + name_off, name.data(), copy);
     if (NTSTATUS ws = probe::CopyToUser(buffer, image.data(), image.size())) return ws;
     s = copy < bytes ? st::BufferOverflow : st::Success;
     IO_STATUS_BLOCK done{};
     done.Status = s;
-    done.Information = 4 + copy;
+    done.Information = name_off + copy;
     if (NTSTATUS ws = probe::Store<IO_STATUS_BLOCK>(io, done)) return ws;
     return s;
 }
@@ -451,6 +495,9 @@ static NTSTATUS NTAPI Xl_NtQueryInformationFile(HANDLE file, PIO_STATUS_BLOCK io
 // outside every guest drive, keep the host's answer.
 static NTSTATUS NTAPI Xl_NtQueryObject(HANDLE h, ULONG klass, PVOID buffer, ULONG length, PULONG ret_len) {
     constexpr ULONG kObjectNameInformation = 1;
+#if WIN10XBOX_HAVE_REGISTRY
+    if (registry::IsKeyHandle(h)) return registry::Reg_NtQueryObject(h, klass, buffer, length, ret_len);   // a key is no host object
+#endif
     if (klass == kObjectNameInformation) {
         alignas(8) std::uint8_t probe[4096];
         ULONG probe_len = 0;
@@ -676,6 +723,132 @@ void DosLinkAttributes(const OBJECT_ATTRIBUTES& in, HANDLE dir, UNICODE_STRING* 
     out->Attributes = (in.Attributes & ~kObjPermanent) | kObjCaseInsensitive;
 }
 
+// ---- Reparse points ---------------------------------------------------------
+// A junction or symbolic link stores its target as an NT name, and the host's NTFS resolves that name itself: a
+// guest's "\??\C:\Users\User\x" would be looked up on the host's own C: drive. FSCTL_SET_REPARSE_POINT therefore
+// gets the host's name for a drive-letter target, and FSCTL_GET_REPARSE_POINT the guest's name back. Everything else
+// (relative targets, volume GUIDs, other tags, names outside every guest drive) reaches the host exactly as written.
+constexpr ULONG kFsctlSetReparsePoint = 0x000900A4;
+constexpr ULONG kFsctlGetReparsePoint = 0x000900A8;
+constexpr ULONG kReparseTagMountPoint = 0xA0000003;
+constexpr ULONG kReparseTagSymlink = 0xA000000C;
+constexpr ULONG kSymlinkFlagRelative = 1;
+constexpr std::size_t kMaxReparseBuffer = 16 * 1024;   // MAXIMUM_REPARSE_DATA_BUFFER_SIZE
+
+bool RewriteReparseTarget(const std::uint8_t* in, std::size_t len,
+                          const std::function<bool(std::wstring_view, std::wstring*)>& map,
+                          std::vector<std::uint8_t>* out) {
+    // REPARSE_DATA_BUFFER: { ULONG Tag; USHORT DataLength; USHORT Reserved; then, for both tags, USHORT SubstituteNameOffset,
+    // SubstituteNameLength, PrintNameOffset, PrintNameLength; a symbolic link adds ULONG Flags; WCHAR PathBuffer[] }.
+    if (!in || len < 8) return false;
+    ULONG tag = 0;
+    USHORT data_len = 0;
+    std::memcpy(&tag, in, 4);
+    std::memcpy(&data_len, in + 4, 2);
+    const bool link = tag == kReparseTagSymlink;
+    if (tag != kReparseTagMountPoint && !link) return false;
+    const std::size_t hdr = link ? 20 : 16;   // start of PathBuffer
+    const std::size_t end = 8 + static_cast<std::size_t>(data_len);
+    if (end > len || end < hdr) return false;
+    USHORT so = 0, sl = 0, po = 0, pl = 0;
+    std::memcpy(&so, in + 8, 2);
+    std::memcpy(&sl, in + 10, 2);
+    std::memcpy(&po, in + 12, 2);
+    std::memcpy(&pl, in + 14, 2);
+    ULONG flags = 0;
+    if (link) std::memcpy(&flags, in + 16, 4);
+    if (flags & kSymlinkFlagRelative) return false;   // a relative target has no drive to map
+    if (((so | sl | po | pl) & 1) || hdr + so + sl > end || hdr + po + pl > end) return false;
+    std::wstring substitute(sl / sizeof(wchar_t), L'\0');
+    std::memcpy(substitute.data(), in + hdr + so, sl);
+    std::wstring mapped;
+    if (!map(substitute, &mapped)) return false;
+    const std::size_t new_sl = mapped.size() * sizeof(wchar_t);
+    // The layout the host demands: substitute name at offset 0, the print name right behind it, both NUL-terminated.
+    const std::size_t total = hdr + new_sl + sizeof(wchar_t) + pl + sizeof(wchar_t);
+    if (total - 8 > 0xFFFF || total > kMaxReparseBuffer) return false;
+    out->assign(total, 0);
+    std::uint8_t* o = out->data();
+    const USHORT new_len = static_cast<USHORT>(total - 8), new_so = 0, new_sl16 = static_cast<USHORT>(new_sl),
+                 new_po = static_cast<USHORT>(new_sl + sizeof(wchar_t));
+    std::memcpy(o, &tag, 4);
+    std::memcpy(o + 4, &new_len, 2);
+    std::memcpy(o + 6, in + 6, 2);   // Reserved
+    std::memcpy(o + 8, &new_so, 2);
+    std::memcpy(o + 10, &new_sl16, 2);
+    std::memcpy(o + 12, &new_po, 2);
+    std::memcpy(o + 14, &pl, 2);
+    if (link) std::memcpy(o + 16, &flags, 4);
+    std::memcpy(o + hdr, mapped.data(), new_sl);
+    std::memcpy(o + hdr + new_po, in + hdr + po, pl);
+    return true;
+}
+
+namespace {
+
+// "\??\C:\dir\" -> the host NT name of the same place. The drive root goes through the VFS and the rest is appended
+// as written: unlike Win32 paths, NT names are not normalised, and a target such as "...\d\..\d" has to stay invalid
+// for the host's NTFS to answer it the way it answers on Windows.
+bool GuestReparseNameToHost(std::wstring_view in, std::wstring* out) {
+    if (in.size() < 7 || !IStartsWith(in, L"\\??\\") || !std::iswalpha(in[4]) || in[5] != L':' || in[6] != L'\\')
+        return false;
+    std::wstring root;
+    if (TranslateGuestNtPath(in.substr(0, 7), &root) != st::Success || root.empty()) return false;
+    if (root.back() != L'\\') root += L'\\';
+    root.append(in.substr(7));
+    *out = std::move(root);
+    return true;
+}
+
+bool HostReparseNameToGuest(std::wstring_view in, std::wstring* out) {
+    if (!IStartsWith(in, L"\\??\\")) return false;
+    std::wstring_view drive_path = in.substr(4);
+    if (drive_path.size() < 3 || drive_path[1] != L':') return false;   // \??\Volume{..}\, \??\UNC\..: the host's own
+    std::wstring guest;
+    if (!UntranslateHostWin32Path(drive_path, &guest) || guest.size() < 3) return false;
+    *out = L"\\??\\" + guest;
+    return true;
+}
+
+using PFN_NtFsControlFile = NTSTATUS(NTAPI*)(HANDLE, HANDLE, PVOID, PVOID, PIO_STATUS_BLOCK, ULONG, PVOID, ULONG, PVOID,
+                                             ULONG);
+}  // namespace
+
+static NTSTATUS NTAPI Xl_NtFsControlFile(HANDLE file, HANDLE event, PVOID apc, PVOID apc_context, PIO_STATUS_BLOCK io,
+                                         ULONG code, PVOID in, ULONG in_length, PVOID out, ULONG out_length) {
+    auto host = reinterpret_cast<PFN_NtFsControlFile>(HostExport("NtFsControlFile"));
+    if (!host) return st::NotImplemented;
+    if (code == kFsctlSetReparsePoint && in && in_length >= 8 && in_length <= kMaxReparseBuffer) {
+        // The caller's buffer is copied once; a buffer that cannot be read is an access violation.
+        std::vector<std::uint8_t> request(in_length), host_buffer;
+        if (NTSTATUS cs = probe::CopyFromUser(request.data(), in, in_length)) return cs;
+        if (RewriteReparseTarget(request.data(), request.size(), GuestReparseNameToHost, &host_buffer))
+            return host(file, event, apc, apc_context, io, code, host_buffer.data(),
+                        static_cast<ULONG>(host_buffer.size()), out, out_length);
+        return host(file, event, apc, apc_context, io, code, in, in_length, out, out_length);
+    }
+    NTSTATUS s = host(file, event, apc, apc_context, io, code, in, in_length, out, out_length);
+    if (code != kFsctlGetReparsePoint || !out || (s != st::Success && s != st::BufferOverflow)) return s;
+    // The host answered with its own name. Ask once more, for the whole buffer, to see whether the target maps back
+    // to a guest path (and how long that answer is); an answer that stays as it is is the one already delivered.
+    std::vector<std::uint8_t> whole(kMaxReparseBuffer), guest_buffer;
+    IO_STATUS_BLOCK host_io{};
+    if (host(file, nullptr, nullptr, nullptr, &host_io, code, nullptr, 0, whole.data(), static_cast<ULONG>(whole.size())) !=
+            st::Success ||
+        host_io.Information > whole.size() ||
+        !RewriteReparseTarget(whole.data(), static_cast<std::size_t>(host_io.Information), HostReparseNameToGuest,
+                              &guest_buffer))
+        return s;
+    const ULONG copy = static_cast<ULONG>(guest_buffer.size() < out_length ? guest_buffer.size() : out_length);
+    if (NTSTATUS ws = probe::CopyToUser(out, guest_buffer.data(), copy)) return ws;
+    s = copy < guest_buffer.size() ? st::BufferOverflow : st::Success;
+    IO_STATUS_BLOCK done{};
+    done.Status = s;
+    done.Information = copy;
+    if (NTSTATUS ws = probe::Store<IO_STATUS_BLOCK>(io, done)) return ws;
+    return s;
+}
+
 static NTSTATUS NTAPI Xl_NtOpenDirectoryObject(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr) {
     // E3: no KnownDlls, so Wine's loader searches the file system through the VFS.
     NTSTATUS cs;
@@ -853,6 +1026,7 @@ const ImplDef* FileImpls() {
         {"NtMakeTemporaryObject", reinterpret_cast<void*>(&Xl_NtMakeTemporaryObject)},
         {"NtLockFile", reinterpret_cast<void*>(&Xl_NtLockFile)},
         {"NtUnlockFile", reinterpret_cast<void*>(&Xl_NtUnlockFile)},
+        {"NtFsControlFile", reinterpret_cast<void*>(&Xl_NtFsControlFile)},
         {nullptr, nullptr},
     };
     return k;

@@ -113,6 +113,7 @@ void Compose(const std::vector<RetainedLayer>& layers, std::uint32_t* bgra, std:
             for (int x = r.left; x < r.right; ++x) dst[x] = src[x - l.screen.left] | 0xff000000u;
         }
     }
+    ComposeCursor(bgra, width, height, stride);
 }
 
 std::vector<RetainedLayer> LiveLayers() {

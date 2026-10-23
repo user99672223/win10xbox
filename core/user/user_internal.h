@@ -75,6 +75,7 @@ struct Rgn {
 Rgn CombineRgns(const Rgn& a, const Rgn& b, int mode);
 
 struct State;
+struct CursorObj;   // win_cursor.cpp
 
 // ---- GDI objects ---------------------------------------------------------------
 struct GdiObject {
@@ -317,6 +318,10 @@ struct UserThread {
     HHOOK cur_hook = nullptr;
     bool cur_hook_unicode = true;
     std::uint32_t hook_depth = 0;
+    // the cursor SetCursor chose for this thread (win_cursor.cpp); `cursor_set` tells "never set" (the arrow) from
+    // SetCursor(NULL) (no cursor)
+    HCURSOR cursor = nullptr;
+    bool cursor_set = false;
 };
 // A SetWindowsHookEx hook (win_hook.cpp). tid 0: every thread of the process. `owner` installed it.
 struct HookObj {
@@ -369,6 +374,13 @@ struct State {
     std::uint32_t hook_calls_active = 0;
     ULONG_PTR next_hook = 0;
     POINT cursor{};
+    // cursor and icon objects (win_cursor.cpp): handle = (generation << 16) | (slot + 1), generation 1..0x7fff
+    std::vector<CursorObj*> cursors;
+    std::vector<WORD> cursor_gens;
+    std::vector<std::uint32_t> cursor_free;
+    int cursor_show = 0;                      // ShowCursor's count: the cursor is drawn while it is >= 0
+    bool clip_set = false;                    // ClipCursor
+    RECT clip{};
     BYTE key_state[256] = {};                 // async key state (GetAsyncKeyState): 0x80 down, 0x01 toggled; follows the hardware
     BYTE input_key_state[256] = {};           // the state as of the last input message an application took (GetKeyState, TranslateMessage)
     std::uint32_t input_seq = 0;
@@ -437,6 +449,8 @@ struct DibView {
 };
 bool MakeDibView(const BITMAPINFO* bmi, UINT coloruse, const void* bits, DibView* out);
 std::uint32_t DibViewPixel(const DibView& v, int x, int y);   // y counts from the top of the image
+// The same, but a 32 bpp source keeps its fourth byte (the alpha of a cursor or icon image) instead of 0xff.
+std::uint32_t DibViewPixelRaw(const DibView& v, int x, int y);
 // gdi_dc.cpp
 DcObj* DcGet(HDC hdc);
 HDC CreateDcObj(DcKind kind, HWND hwnd);
@@ -532,6 +546,14 @@ LRESULT CallHooks(int id, int code, WPARAM wparam, LPARAM lparam, std::size_t lp
 // CallWindowProcInternal wrapped in WH_CALLWNDPROC / WH_CALLWNDPROCRET.
 LRESULT CallWindowProcHooked(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, bool ansi, bool sent_by_this_thread);
 void RemoveThreadHooks(DWORD tid);             // the thread exits
+
+// win_cursor.cpp
+HCURSOR CreateCursorObject(bool is_icon);      // NtUserCallOneParam(CreateCursorIcon)
+bool SetThreadCursor(UserThread& t, HCURSOR cursor);   // NtUserSetCursor for `t`; false when the handle is not a cursor
+HCURSOR ThreadCursor(const UserThread& t);     // the handle if it is still valid, else null
+// Draws the cursor onto a composed frame (BGRA, alpha 0xff): the cursor of the thread that owns the window under the
+// pointer, only while the show count is >= 0. Lock held.
+void ComposeCursor(std::uint32_t* bgra, std::int32_t width, std::int32_t height, std::int32_t stride_bytes);
 
 // win_paint.cpp
 void InvalidateWindow(HWND hwnd, const RECT* client_rect, UINT rdw_flags);

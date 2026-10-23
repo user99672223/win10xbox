@@ -36,12 +36,14 @@ constexpr ULONG kProcessImageFileName = 27;
 constexpr ULONG kProcessImageInformation = 37;
 constexpr ULONG kProcessImageFileNameWin32 = 43;
 // THREADINFOCLASS
+constexpr ULONG kThreadQuerySetWin32StartAddress = 9;
 constexpr ULONG kThreadAmILastThread = 12;
 // SYSTEM_INFORMATION_CLASS
 #if WIN10XBOX_HAVE_CLOCK
 constexpr ULONG kSystemTimeOfDayInformation = 3;
 #endif
 constexpr ULONG kSystemCpuInformation = 1;
+constexpr ULONG kSystemEmulationProcessorInformation = 63;
 constexpr ULONG kSystemFirmwareTableInformation = 76;
 constexpr ULONG kSystemWineVersionInformation = 1000;
 
@@ -266,6 +268,18 @@ static NTSTATUS NTAPI Xl_NtQueryInformationThread(HANDLE thread, ULONG klass, PV
             return probe::StoreIfPresent<ULONG>(ret_len, sizeof(ULONG));
         }
     }
+    if (klass == kThreadQuerySetWin32StartAddress && IsCurrentThreadHandle(thread)) {
+        // The host thread started in GuestThreadProc; a guest sees the address it asked for.
+        ThreadState* self = CurrentThreadState();
+        if (self && (self->flags & kThreadGuest) && self->win32_start) {
+            if (length != sizeof(PVOID)) return st::InfoLengthMismatch;
+            if (NTSTATUS ps = probe::ProbeWrite(buffer, length, sizeof(PVOID))) return ps;
+            if (ret_len)
+                if (NTSTATUS ps = probe::ProbeWrite(ret_len, sizeof(ULONG), sizeof(ULONG))) return ps;
+            if (NTSTATUS ws = probe::Store<PVOID>(static_cast<PVOID*>(buffer), self->win32_start)) return ws;
+            return probe::StoreIfPresent<ULONG>(ret_len, sizeof(PVOID));
+        }
+    }
     return Host().NtQueryInformationThread(thread, klass, buffer, length, ret_len);
 }
 
@@ -287,9 +301,11 @@ static NTSTATUS NTAPI Xl_NtQuerySystemInformation(ULONG klass, PVOID buffer, ULO
         if (QuerySystemFirmwareTable(buffer, length, ret_len, &answer)) return answer;
     }
     const NTSTATUS host = Host().NtQuerySystemInformation(klass, buffer, length, ret_len);
-    if (klass == kSystemCpuInformation && NtSuccess(host) && buffer && length >= 6) {
+    if ((klass == kSystemCpuInformation || klass == kSystemEmulationProcessorInformation) && NtSuccess(host) && buffer &&
+        length >= 6) {
         // SYSTEM_CPU_INFORMATION: ProcessorLevel is the family, ProcessorRevision is model << 8 | stepping (what
-        // GetSystemInfo reports); the CPUID patch serves the same machine identity.
+        // GetSystemInfo reports); the CPUID patch serves the same machine identity. The emulation class (63, the x86
+        // view of the same processor) reports the same two words.
         const auto& id = config::Current().machine_identity;
         auto* words = static_cast<USHORT*>(buffer);
         words[1] = static_cast<USHORT>(id.cpu_family);

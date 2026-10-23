@@ -10,6 +10,7 @@
 #include <intrin.h>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -142,6 +143,9 @@ struct ThreadState {
     // through SetSyscallLastError and the dispatcher writes that value instead.
     std::uint32_t syscall_error;
     std::uint32_t syscall_error_set;
+    // The start address the guest asked for (the EXE entry for the main thread, NtCreateThreadEx's StartRoutine
+    // otherwise): what ThreadQuerySetWin32StartAddress reports. The host thread itself starts in GuestThreadProc.
+    void*         win32_start;
 };
 static_assert(offsetof(ThreadState, host_tls) == 0x00);
 static_assert(offsetof(ThreadState, host_fls) == 0x08);
@@ -423,7 +427,15 @@ struct TranslatedOA {
 std::wstring_view OAName(const OBJECT_ATTRIBUTES* oa);
 // Guest OBJECT_ATTRIBUTES -> host. STATUS_SUCCESS (translated or untouched) or
 // an error the syscall should return (e.g. unmapped drive).
-NTSTATUS TranslateOA(const OBJECT_ATTRIBUTES* in, TranslatedOA* out);
+// `create_options`: the NtCreateFile/NtOpenFile options (FILE_DIRECTORY_FILE decides the status of "file\\").
+NTSTATUS TranslateOA(const OBJECT_ATTRIBUTES* in, TranslatedOA* out, ULONG create_options = 0);
+// The mount-point or symbolic-link reparse buffer `in` (REPARSE_DATA_BUFFER) with its substitute name replaced by
+// `map(name)`, laid out the way NTFS demands (substitute name first, print name right behind it, both terminated).
+// False, with *out untouched, when the buffer is another kind of reparse point, a relative symbolic link, malformed,
+// or `map` leaves the name alone: the caller then uses `in` as it is.
+bool RewriteReparseTarget(const std::uint8_t* in, std::size_t len,
+                          const std::function<bool(std::wstring_view, std::wstring*)>& map,
+                          std::vector<std::uint8_t>* out);
 // Guest NT path ("\??\C:\x") -> host NT path. Same contract as vfs::TranslateNtPath.
 NTSTATUS TranslateGuestNtPath(std::wstring_view guest, std::wstring* host);
 // Host Win32 path -> guest Win32 path; returns false when outside every mapping.

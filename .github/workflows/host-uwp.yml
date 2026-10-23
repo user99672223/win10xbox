@@ -188,7 +188,7 @@ jobs:
                         'guest_window_scroll.exe', 'guest_window_text.exe', 'guest_window_hooks.exe', 'guest_window_nc.exe', 'smoke.exe',
                         'guest_spawn.exe', 'guest_dialog.exe', 'guest_comctl.exe', 'guest_clipboard.exe',
                         'guest_seh.exe', 'guest_seh_dll.dll', 'guest_gdi_bitmap.exe', 'guest_window_menu.exe', 'guest_xinput.exe',
-                        'guest_notells.exe')
+                        'guest_cursor.exe', 'guest_regpersist.exe', 'guest_identity.exe', 'guest_notells.exe')
           $missing = @($expected | Where-Object { -not (Test-Path "$stage/payload/guest/$_") })
           Write-Host ("bundled guests: " + (@(Get-ChildItem "$stage/payload/guest" -File | ForEach-Object { $_.Name }) -join ', '))
           if ($missing.Count -gt 0) {
@@ -224,6 +224,7 @@ jobs:
           $groups | Sort-Object MB -Descending | Format-Table -AutoSize | Out-String | Write-Host
           $want = @(Get-Content build-uwp/AppX/payload/guests.txt | Where-Object { $_ })
           foreach ($c in Get-ChildItem tests/guest -Filter *.c) {
+            if ($c.BaseName -eq 'msctf_stub') { continue }   # a msctf.dll stand-in for the native-GUI machine folder, not a guest
             $n = if ($c.BaseName -eq 'dll') { 'guest_dll.dll' } elseif ($c.BaseName -eq 'window') { 'window.exe' } else { "guest_$($c.BaseName).exe" }
             if ($want -notcontains $n) { $want += $n }
           }

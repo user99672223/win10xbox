@@ -34,6 +34,7 @@
 #   hello_guest        hello.exe          sample guest, /SUBSYSTEM:WINDOWS
 #   hello_guest_cui    hello_cui.exe      same source, /SUBSYSTEM:CONSOLE (A/B variant)
 #   guest_hello, guest_cpuid, guest_sleep, guest_identity, guest_notells, guest_dll   tests/guest/*.c (console; guest_dll.dll)
+#   guest_hello, guest_cpuid, guest_sleep, guest_identity, guest_regpersist, guest_dll   tests/guest/*.c (console; guest_dll.dll)
 #   smoke_guest_cui    smoke_cui.exe      host-uwp-lite/smoke_guest.c (console, exits 42)
 #   drv_client         drv_client.exe     tests/drivers/drv_client.c (console; needs the driver host)
 #   host_uwp_selftest  host_uwp_selftest.exe  console program, no layer / WinRT / package:
@@ -218,7 +219,7 @@ set_target_properties(window_guest PROPERTIES OUTPUT_NAME "window")
 
 # Every other guest of the repo, so the package carries them all to the console (HANDOFF.md
 # "Standing testing rule"). Console programs; output names as in the main tree.
-foreach(_g hello cpuid sleep spawn xinput identity notells)
+foreach(_g hello cpuid sleep spawn xinput identity regpersist notells)
   add_executable(guest_${_g} "${WIN10XBOX_ROOT}/tests/guest/${_g}.c")
 endforeach()
 # Our own builtin DLLs (guest-dlls/: xinput1_4.dll and its copies xinput1_3.dll / xinput9_1_0.dll, staged into
@@ -231,6 +232,7 @@ target_sources(guest_identity PRIVATE "${WIN10XBOX_ROOT}/tests/guest/identity.ma
 target_link_libraries(guest_identity PRIVATE ole32 oleaut32 advapi32)
 # guest_notells: the same Windows 10 manifest as guest_identity (GetVersionExW); it loads version.dll itself.
 target_sources(guest_notells PRIVATE "${WIN10XBOX_ROOT}/tests/guest/identity.manifest")
+target_link_libraries(guest_regpersist PRIVATE advapi32)   # the registry API
 add_library(guest_dll SHARED "${WIN10XBOX_ROOT}/tests/guest/dll.c")
 set_target_properties(guest_dll PROPERTIES PREFIX "")
 add_executable(smoke_guest_cui "${WIN10XBOX_ROOT}/host-uwp-lite/smoke_guest.c")
@@ -243,7 +245,7 @@ target_include_directories(drv_client PRIVATE "${WIN10XBOX_ROOT}/tests/drivers")
 
 # The remaining GUI guests of tests/guest (same output names as ci.yml's bin/guest), and the GUI
 # smoke variant, so the package carries every guest ci.yml builds (HANDOFF.md "Package contents").
-foreach(_g window2 window_input window_input2 window_text window_hooks window_nc window_scroll clipboard window_menu)
+foreach(_g window2 window_input window_input2 window_text window_hooks window_nc window_scroll clipboard window_menu cursor)
   add_executable(guest_${_g} "${WIN10XBOX_ROOT}/tests/guest/${_g}.c")
   target_link_libraries(guest_${_g} PRIVATE user32 gdi32)
 endforeach()
@@ -264,6 +266,9 @@ set(W10X_BMP_DIR "${WIN10XBOX_ROOT}/tests/guest/gdi_bitmap_res")
 configure_file("${WIN10XBOX_ROOT}/tests/guest/gdi_bitmap.rc.in" "${CMAKE_CURRENT_BINARY_DIR}/gdi_bitmap.rc" @ONLY)
 add_executable(guest_gdi_bitmap "${WIN10XBOX_ROOT}/tests/guest/gdi_bitmap.c" "${CMAKE_CURRENT_BINARY_DIR}/gdi_bitmap.rc")
 target_link_libraries(guest_gdi_bitmap PRIVATE user32 gdi32 msimg32)
+# The networking guest (tests/guest/net.c) links ws2_32.
+add_executable(guest_net "${WIN10XBOX_ROOT}/tests/guest/net.c")
+target_link_libraries(guest_net PRIVATE ws2_32)
 add_executable(smoke_guest WIN32 "${WIN10XBOX_ROOT}/host-uwp-lite/smoke_guest.c")
 target_compile_definitions(smoke_guest PRIVATE SMOKE_GUI=1)
 set_target_properties(smoke_guest PROPERTIES OUTPUT_NAME "smoke")
@@ -271,7 +276,7 @@ set_target_properties(smoke_guest PROPERTIES OUTPUT_NAME "smoke")
 set(HOST_UWP_GUESTS window_guest hello_guest hello_guest_cui guest_hello guest_cpuid guest_sleep guest_dll
     smoke_guest_cui drv_client guest_window2 guest_window_input guest_window_input2 guest_window_text smoke_guest
     guest_spawn guest_window_nc guest_dialog guest_comctl guest_seh guest_seh_dll guest_window_scroll guest_clipboard
-    guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput guest_identity guest_notells)
+    guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput guest_identity guest_notells guest_net guest_cursor guest_regpersist)
 
 # ---------------------------------------------------------------------------
 # The selftest: the launch.json parser (launch_config.cpp has no Windows or layer

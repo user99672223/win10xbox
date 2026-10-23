@@ -1249,7 +1249,7 @@ ULONG_PTR WINAPI NtUserGetThreadState(int cls) {
     case abi::TsDefaultImeWindow:
     case abi::TsDefaultInputContext: return 0;
     case abi::TsInputState: return QueueBits(t) & (QS_KEY | QS_MOUSEBUTTON);
-    case abi::TsCursor: return winexbox::CursorId{} + (Driver() ? Driver()->CursorCurrent() : 0);
+    case abi::TsCursor: return reinterpret_cast<ULONG_PTR>(ThreadCursor(t));
     case abi::TsExtraInfo: return t.info ? static_cast<ULONG_PTR>(t.info->message_extra) : 0;
     case abi::TsInSendMessage: return t.send_depth ? ISMEX_SEND : ISMEX_NOSEND;
     case abi::TsMessageTime: return t.info ? t.info->message_time : 0;
@@ -1363,42 +1363,6 @@ BOOL WINAPI NtUserSetCursorPos(INT x, INT y) {
     LockGuard lock;
     if (Driver()) Driver()->CursorSetPos(x, y);
     S().cursor = POINT{x, y};
-    return TRUE;
-}
-
-HCURSOR WINAPI NtUserSetCursor(HCURSOR cursor) {
-    LockGuard lock;
-    winexbox::IWinexboxDriver* d = Driver();
-    const HCURSOR prev = d ? reinterpret_cast<HCURSOR>(d->CursorCurrent()) : nullptr;
-    if (d) d->CursorSet(0, reinterpret_cast<winexbox::CursorId>(cursor));
-    return prev;
-}
-
-HCURSOR WINAPI NtUserGetCursor() {
-    LockGuard lock;
-    winexbox::IWinexboxDriver* d = Driver();
-    return d ? reinterpret_cast<HCURSOR>(d->CursorCurrent()) : nullptr;
-}
-
-namespace { LONG g_cursor_count = 0; }
-
-INT WINAPI NtUserShowCursor(BOOL show) {
-    return show ? InterlockedIncrement(&g_cursor_count) : InterlockedDecrement(&g_cursor_count);
-}
-
-BOOL WINAPI NtUserClipCursor(const RECT* rect) {
-    LockGuard lock;
-    winexbox::IWinexboxDriver* d = Driver();
-    if (!d) return FALSE;
-    if (!rect) return d->CursorClip(nullptr, true);
-    const winexbox::Rect r{rect->left, rect->top, rect->right, rect->bottom};
-    return d->CursorClip(&r, false);
-}
-
-BOOL WINAPI NtUserGetClipCursor(RECT* rect) {
-    LockGuard lock;
-    if (!rect) return FALSE;
-    ScreenRect(rect);
     return TRUE;
 }
 
