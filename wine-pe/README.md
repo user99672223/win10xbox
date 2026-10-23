@@ -88,6 +88,8 @@ Current patches:
 |-------|-----|
 | `0001-keep-host-process-heap.patch` | `ntdll!loader_init` only creates a process heap if `PEB->ProcessHeap` is NULL. win10xbox runs Wine's ntdll in a host process that already owns the heap; heap calls are forwarded to the host ntdll. |
 | `0002-honour-tick-count-multiplier.patch` | `GetTickCount(64)` (kernelbase, kernel32), `NtGetTickCount` and win32u's message clock apply `KUSER_SHARED_DATA.TickCountMultiplier`. On a Windows host the guest reads the host's page, where `TickCount` is in 15.625 ms ticks; Wine assumed milliseconds (its own multiplier is `1 << 24`, so Wine hosts are unaffected). |
+| `0030-no-wine-exports.patch` | ntdll `wine_get_version` / `wine_get_build_id` / `wine_get_host_version` and kernel32 `wine_get_unix_file_name` / `wine_get_dos_file_name` leave the export tables (a program that looks for Wine calls `GetProcAddress` on them); shell32, their only importer, answers "no unix counterpart" itself. `wine_server_*` stay (conhost.exe imports them; Wine's own conformance tests detect Wine with `wine_server_call`). docs/slices/notells.md. |
+| `0031-neutral-version-info.patch` | The builtins' VERSIONINFO says no "Wine": ProductName "Microsoft(R) Windows(R) Operating System", Windows file descriptions (ntdll "NT Layer DLL", kernel32 "Windows NT BASE API Client DLL", user32 "Multi-User Windows USER API Client DLL"), a plain license line as LegalCopyright, default version 10.0.19045.3803 (the layer's `windows.ubr`). |
 
 ## Updating the Wine pin
 

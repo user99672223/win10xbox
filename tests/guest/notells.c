@@ -31,9 +31,14 @@
 #include <string.h>
 #include <wchar.h>
 
-#ifdef _MSC_VER
-#pragma comment(lib, "version.lib")
-#endif
+/* version.dll is loaded when the version checks run, not linked: on the shared machine folder the runner's native one
+ * would be bound at startup, and the whole program would die on a Wine import stub before printing a line. */
+typedef DWORD (WINAPI *GetFileVersionInfoSizeWFn)(LPCWSTR, LPDWORD);
+typedef BOOL (WINAPI *GetFileVersionInfoWFn)(LPCWSTR, DWORD, DWORD, LPVOID);
+typedef BOOL (WINAPI *VerQueryValueWFn)(LPCVOID, LPCWSTR, LPVOID *, PUINT);
+static GetFileVersionInfoSizeWFn p_GetFileVersionInfoSizeW;
+static GetFileVersionInfoWFn p_GetFileVersionInfoW;
+static VerQueryValueWFn p_VerQueryValueW;
 
 #define EXPECT_MAJOR 10u
 #define EXPECT_MINOR 0u
@@ -183,7 +188,7 @@ static int query_string(const void *block, WORD lang, WORD cp, const wchar_t *na
     void *p = NULL;
     _snwprintf(sub, sizeof(sub) / sizeof(sub[0]), L"\\StringFileInfo\\%04x%04x\\%ls", lang, cp, name);
     sub[sizeof(sub) / sizeof(sub[0]) - 1] = 0;
-    if (!VerQueryValueW(block, sub, &p, &len) || !p) return 0;
+    if (!p_VerQueryValueW(block, sub, &p, &len) || !p) return 0;
     *out = (const wchar_t *)p;
     return 1;
 }
@@ -202,14 +207,14 @@ static void check_version(const wchar_t *file, const wchar_t *want_description) 
     wcscat(path, L"\\");
     wcscat(path, file);
     DWORD handle = 0;
-    DWORD size = GetFileVersionInfoSizeW(path, &handle);
+    DWORD size = p_GetFileVersionInfoSizeW(path, &handle);
     if (!size) {
         printf("FAIL version %s: GetFileVersionInfoSizeW error %lu\n", nfile, GetLastError());
         g_fail++;
         return;
     }
     void *block = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, size);
-    if (!block || !GetFileVersionInfoW(path, 0, size, block)) {
+    if (!block || !p_GetFileVersionInfoW(path, 0, size, block)) {
         printf("FAIL version %s: GetFileVersionInfoW error %lu\n", nfile, GetLastError());
         g_fail++;
         return;
@@ -217,7 +222,7 @@ static void check_version(const wchar_t *file, const wchar_t *want_description) 
     /* The fixed part: file and product version 10.0.19045.x. */
     VS_FIXEDFILEINFO *ffi = NULL;
     UINT len = 0;
-    if (!VerQueryValueW(block, L"\\", (void **)&ffi, &len) || !ffi || len < sizeof(*ffi)) {
+    if (!p_VerQueryValueW(block, L"\\", (void **)&ffi, &len) || !ffi || len < sizeof(*ffi)) {
         printf("FAIL version %s: no VS_FIXEDFILEINFO\n", nfile);
         g_fail++;
     } else {
@@ -238,7 +243,7 @@ static void check_version(const wchar_t *file, const wchar_t *want_description) 
     /* Every translation the file offers carries the Windows strings. */
     struct { WORD lang, cp; } *tr = NULL;
     len = 0;
-    if (!VerQueryValueW(block, L"\\VarFileInfo\\Translation", (void **)&tr, &len) || !tr || len < 4) {
+    if (!p_VerQueryValueW(block, L"\\VarFileInfo\\Translation", (void **)&tr, &len) || !tr || len < 4) {
         printf("FAIL version %s: no Translation\n", nfile);
         g_fail++;
     } else {
@@ -352,8 +357,14 @@ static void check_drives(void) {
     /* DefineDosDevice: a drive the program makes itself shows up and goes away again (the guest's own namespace). */
     wchar_t qtarget[512];
     check(DefineDosDeviceW(0, L"Q:", L"C:\\Windows"), "DefineDosDeviceW(Q:) fails");
-    check(QueryDosDeviceW(L"Q:", qtarget, 512) != 0 && wcsncmp(qtarget, L"\\??\\C:", 7) == 0,
+    qtarget[0] = 0;
+    check(QueryDosDeviceW(L"Q:", qtarget, 512) != 0 && wcsncmp(qtarget, L"\\??\\C:", 6) == 0,
           "QueryDosDeviceW(Q:) does not return the definition");
+    {
+        char nq[128];
+        narrow(qtarget, nq, sizeof(nq));
+        printf("notells: info QueryDosDeviceW(Q:) = %s\n", nq);
+    }
     check(GetLogicalDrives() & (1u << ('Q' - 'A')), "Q: is not in GetLogicalDrives after DefineDosDeviceW");
     check(DefineDosDeviceW(DDD_REMOVE_DEFINITION, L"Q:", NULL), "DefineDosDeviceW(Q:, remove) fails");
     SetLastError(0);
@@ -440,6 +451,13 @@ int main(int argc, char **argv) {
     check_getprocaddress();
     check_exports(shared_folder);
     if (!shared_folder) {
+        HMODULE ver = LoadLibraryW(L"version.dll");
+        p_GetFileVersionInfoSizeW = ver ? (GetFileVersionInfoSizeWFn)GetProcAddress(ver, "GetFileVersionInfoSizeW") : NULL;
+        p_GetFileVersionInfoW = ver ? (GetFileVersionInfoWFn)GetProcAddress(ver, "GetFileVersionInfoW") : NULL;
+        p_VerQueryValueW = ver ? (VerQueryValueWFn)GetProcAddress(ver, "VerQueryValueW") : NULL;
+        check(p_GetFileVersionInfoSizeW && p_GetFileVersionInfoW && p_VerQueryValueW, "version.dll and its exports");
+    }
+    if (!shared_folder && p_VerQueryValueW) {
         check_version(L"ntdll.dll", L"NT Layer DLL");
         check_version(L"kernel32.dll", L"Windows NT BASE API Client DLL");
         check_version(L"user32.dll", L"Multi-User Windows USER API Client DLL");

@@ -11,7 +11,7 @@ resources, registry keys, environment, drives, OS version. Everything below is w
 
 wine-pe patches (applied by `wine-pe/build.sh` like the others; wine-pe.yml rebuilds on `wine-pe/` changes):
 
-* `0005-no-wine-exports.patch`: ntdll `wine_get_version`, `wine_get_build_id`, `wine_get_host_version` and kernel32
+* `0030-no-wine-exports.patch`: ntdll `wine_get_version`, `wine_get_build_id`, `wine_get_host_version` and kernel32
   `wine_get_unix_file_name`, `wine_get_dos_file_name` leave the `.spec` files (`-private` would keep them in the export
   table; only deleting the line removes the name). Importers among the modules of `dlls.txt` (found by grepping the sources
   and confirmed with the import tables of the built DLLs): only shell32 (`recyclebin.c`: `wine_get_host_version`,
@@ -21,7 +21,7 @@ wine-pe patches (applied by `wine-pe/build.sh` like the others; wine-pe.yml rebu
   already dead here. user32 (`SC_ABOUTWINE`) and shell32's About box look `wine_get_version` / `wine_get_build_id` up with
   `GetProcAddress` and test for NULL. Nothing in the layer calls these names on the guest's ntdll
   (`core/dispatch/process.cpp` and `nt_file.cpp` look `wine_get_version` up in the HOST's ntdll to detect a Wine host).
-* `0006-neutral-version-info.patch`: the strings of the version resources (see the table).
+* `0031-neutral-version-info.patch`: the strings of the version resources (see the table).
 
 Guest (`tests/guest/notells.c`) and registrations: `tests/guest/CMakeLists.txt`, `tests/integration/CMakeLists.txt`,
 `host-uwp/CMakeLists.txt` (console foreach and `HOST_UWP_GUESTS`), `host-uwp.yml` (package list).

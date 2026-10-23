@@ -42,7 +42,6 @@ else()
   enable_language(RC)
   add_executable(guest_notells notells.c identity.rc)
 endif()
-target_link_libraries(guest_notells PRIVATE version)
 win10xbox_add_guest(guest_notells)
 
 add_executable(guest_sleep sleep.c)

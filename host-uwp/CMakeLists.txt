@@ -229,9 +229,8 @@ target_link_libraries(guest_xinput PRIVATE xinput1_4 user32)
 # guest_identity: COM / WMI / registry, and the Windows 10 compatibility manifest the version checks need.
 target_sources(guest_identity PRIVATE "${WIN10XBOX_ROOT}/tests/guest/identity.manifest")
 target_link_libraries(guest_identity PRIVATE ole32 oleaut32 advapi32)
-# guest_notells: version resources through version.dll, and the same Windows 10 manifest (GetVersionExW).
+# guest_notells: the same Windows 10 manifest as guest_identity (GetVersionExW); it loads version.dll itself.
 target_sources(guest_notells PRIVATE "${WIN10XBOX_ROOT}/tests/guest/identity.manifest")
-target_link_libraries(guest_notells PRIVATE version)
 add_library(guest_dll SHARED "${WIN10XBOX_ROOT}/tests/guest/dll.c")
 set_target_properties(guest_dll PROPERTIES PREFIX "")
 add_executable(smoke_guest_cui "${WIN10XBOX_ROOT}/host-uwp-lite/smoke_guest.c")
