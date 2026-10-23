@@ -121,6 +121,25 @@ const UnixCallFn kWs2Funcs[] = {
     &U_ws_not_implemented,   // getnameinfo
 };
 
+// ---- crypt32's unix functions (dlls/crypt32/crypt32_private.h, enum unix_funcs) -------------
+// Wine's own build without a security library (no gnutls/Security.framework): attach and detach
+// succeed, the PFX import/export and the host root-certificate enumeration answer
+// STATUS_NOT_IMPLEMENTED. crypt32's DllMain fails (0xC0000142 in every importer: wintrust,
+// setupapi, the crypt32 tests) when the module has no unix library at all.
+NTSTATUS WINAPI U_crypt32_ok(void*) { return 0; }
+NTSTATUS WINAPI U_crypt32_not_implemented(void*) { return st::NotImplemented; }
+
+const UnixCallFn kCrypt32Funcs[] = {
+    &U_crypt32_ok,                // process_attach
+    &U_crypt32_ok,                // process_detach
+    &U_crypt32_not_implemented,   // open_cert_store
+    &U_crypt32_not_implemented,   // import_store_key
+    &U_crypt32_not_implemented,   // import_store_cert
+    &U_crypt32_not_implemented,   // close_cert_store
+    &U_crypt32_not_implemented,   // enum_root_certs
+    &U_crypt32_not_implemented,   // export_cert_store
+};
+
 // ---- Wine debug channels ---------------------------------------------------------
 constexpr unsigned char kInitBit = 1u << 7;
 struct WineSpec { std::string channel; unsigned char mask; bool on; };
@@ -189,6 +208,7 @@ void RegisterNtdllUnixLib() {
     LoadWineDebugSpec();
     if (!g_ntdll_handle) RegisterUnixLib(L"ntdll", kNtdllFuncs, std::size(kNtdllFuncs));
     RegisterUnixLib(L"ws2_32", kWs2Funcs, std::size(kWs2Funcs));
+    RegisterUnixLib(L"crypt32", kCrypt32Funcs, std::size(kCrypt32Funcs));
 }
 
 std::uint64_t UnixLibHandleByName(std::wstring_view module_name) {
