@@ -150,7 +150,11 @@ do_run() {
             < /dev/null > "$log" 2>&1
         rc=$?
         local secs=$(( $(date +%s) - t0 ))
-        local summary; summary="$(grep -aE "^[0-9a-f]+:$unit:.*$re" "$log" | tail -1)"
+        # Units that spawn the test exe again (file, dir) print a summary per process; the
+        # parent's is the one whose process id prefixes the first line of the log.
+        local pid0; pid0="$(grep -aoE '^[0-9a-f]+:' "$log" | head -1)"
+        local summary; summary="$(grep -aE "^${pid0:-[0-9a-f]+:}$unit:.*$re" "$log" | tail -1)"
+        [[ -z "$summary" ]] && summary="$(grep -aE "^[0-9a-f]+:$unit:.*$re" "$log" | tail -1)"
         [[ -z "$summary" ]] && summary="$(grep -aE "$re" "$log" | tail -1)"
         if [[ $rc -eq 124 || $rc -eq 137 ]]; then
             status=timeout
@@ -169,6 +173,9 @@ do_run() {
         echo "WINETEST msvcrt:$unit status=$status executed=$ex todo=$todo flaky=$fl failures=$fails skipped=$sk exit=$rc time=${secs}s"
         [[ -n "$last" ]] && echo "  last test line: $last"
         grep -a 'Test failed' "$log" | head -5 | cut -c1-200 | sed 's/^/  /'
+        if [[ $status != ok ]]; then   # how it ended: the last lines of the log
+            tail -n 8 "$log" | tr -d '\r' | cut -c1-200 | sed 's/^/  | /'
+        fi
         grep -a '^win10xbox: ' "$log" | head -3 | sed 's/^/  /'
         read -r expect max <<<"$(baseline_of "$unit")"
         if [[ $expect == run ]]; then
