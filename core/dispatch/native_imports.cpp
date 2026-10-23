@@ -257,12 +257,8 @@ std::size_t ExtendExports(const loader::MappedImage& img, const wchar_t* label, 
         std::size_t& n = a.wine ? nw : nh;
         if (n++ < 12) (s += s.empty() ? "" : ", ") += a.name;
     }
-    if (!rep.empty()) {
-        std::string r;
-        for (std::size_t k = 0; k < rep.size() && k < 12; ++k) (r += r.empty() ? "" : ", ") += rep[k].name;
-        TRACE(dispatch, "gui native: %ls: %zu Wine stub export(s) replaced by the host's function (%s%s)", label, rep.size(),
-              r.c_str(), rep.size() > 12 ? ", ..." : "");
-    }
+    for (auto& r : rep)   // one line per binding
+        TRACE(dispatch, "gui native: %ls!%s is a Wine stub export: bound to the host's function %p", label, r.name, r.target);
     TRACE(dispatch, "gui native: guest kernelbase: %zu exports added, %zu as jumps to Wine's kernel32 (%s%s), %zu to "
                     "the host kernelbase (%s%s); %zu forwarders moved",
           add.size(), from_wine, wine_names.c_str(), nw > 12 ? ", ..." : "", add.size() - from_wine,
