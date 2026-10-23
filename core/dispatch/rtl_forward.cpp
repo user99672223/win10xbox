@@ -93,20 +93,6 @@ bool HasRoom(const std::uint8_t* base, std::uint32_t rva) {
 
 }  // namespace
 
-// Wine's RtlCreateHeap makes a heap growable when no maximum size is given
-// (`if (!total_size) flags |= HEAP_GROWABLE`); Windows' ntdll leaves that to
-// kernelbase's HeapCreate, which Wine's kernelbase does not do. HeapCreate(0, 0, 0)
-// (msvcrt.dll's private heap) therefore needs the flag added before the call goes
-// to the host ntdll. Runs in guest mode on the caller's stack: no logging, no locks,
-// only a pointer resolved by ApplyRtlForwarding.
-static void* g_host_create_heap;
-extern "C" PVOID NTAPI w10x_RtlCreateHeap(ULONG flags, PVOID base, SIZE_T reserve, SIZE_T commit, PVOID lock,
-                                          PVOID params) {
-    using Fn = PVOID(NTAPI*)(ULONG, PVOID, SIZE_T, SIZE_T, PVOID, PVOID);
-    if (!reserve) flags |= HEAP_GROWABLE;
-    return reinterpret_cast<Fn>(g_host_create_heap)(flags, base, reserve, commit, lock, params);
-}
-
 bool PatchJump(void* from, const void* to) {
     auto* p = static_cast<std::uint8_t*>(from);
     const void* target = to;
@@ -134,7 +120,6 @@ bool PatchJump(void* from, const void* to) {
 
 ForwardResult ApplyRtlForwarding(const loader::MappedImage& img) {
     ForwardResult r;
-    g_host_create_heap = HostExport("RtlCreateHeap");
     auto* base = static_cast<std::uint8_t*>(img.base);
     auto patch = [&](const char* name, const void* target, const char* what) {
         std::string fwd;

@@ -21,6 +21,9 @@
 // boundary in both directions (the host frees what RtlCreateProcessParameters
 // or the guest allocated and vice versa), and heap handles from
 // GetProcessHeap()/RtlGetProcessHeaps() must mean the same heap to both.
+// RtlCreateHeap goes through core: Wine's kernelbase HeapCreate (msvcrt's private heap, git's malloc) passes
+// flags 0 and no maximum and relies on Wine's RtlCreateHeap making that heap growable; the host's would make it a
+// fixed 1 MB heap that runs dry (git: "deflateInit: out of memory").
 WINE_OVERRIDE(RtlCreateHeap, w10x_RtlCreateHeap)
 RTL_FORWARD(RtlDestroyHeap)
 RTL_FORWARD(RtlAllocateHeap)
