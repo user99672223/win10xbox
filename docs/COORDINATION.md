@@ -43,6 +43,11 @@ adding `owner: B` as the second line of its slice doc; otherwise leaves them alo
   markers in tests/guest/CMakeLists.txt, resolved in the merge), ci
   https://github.com/user99672223/win10xbox/actions/runs/39892636777, host-uwp
   https://github.com/user99672223/win10xbox/actions/runs/39892636936.
+* `-scroll`, `-clipboard`, `-realninja` and `-realpython` (Session A's, ready) merged at 8351827 (guest_window_scroll
+  and guest_clipboard added to the package; one fixup commit repairs the keep-both artefacts), ci
+  https://github.com/user99672223/win10xbox/actions/runs/39893468835, host-uwp
+  https://github.com/user99672223/win10xbox/actions/runs/39893468794, wine-pe
+  https://github.com/user99672223/win10xbox/actions/runs/39893468806.
 
 ## Protocol
 

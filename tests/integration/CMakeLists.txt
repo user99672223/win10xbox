@@ -406,6 +406,53 @@ if(MSVC OR WIN10XBOX_REAL_GUI_PROGRAMS)
   unset(_guest_machine)
 endif()
 
+# ---- Real program: Git for Windows (MinGit 2.47.1 x64) ------------------------------------------------------------
+# tools/ci/fetch_mingit.ps1 (a named ci.yml step of the windows job) unpacks MinGit into <machine>/guest/mingit before
+# ctest; prepare_machine.cmake mirrors it into the builtin-only folder these tests run on (git.exe imports msvcrt,
+# advapi32, user32 and ws2_32: on the shared folder the runner's native advapi32/sechost are mapped next to Wine's
+# msvcrt, the 0x80000100 import-stub failure of docs/TESTING.md). mingw64/bin/git.exe is run directly (cmd/git.exe
+# only wraps it). Registered where the Lua tests are: MSVC builds, or -DWIN10XBOX_REAL_PROGRAMS=ON with MinGit staged.
+# The tests share one repository, C:\guest\gitrepo, and are ordered by fixtures: prepare -> init -> add -> commit.
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  set(_git "C:\\guest\\mingit\\mingw64\\bin\\git.exe")
+  set(_repo "C:\\guest\\gitrepo")
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  add_test(NAME integration.real_git_prepare
+    COMMAND ${CMAKE_COMMAND} -DREPO=${WIN10XBOX_BUILTIN_MACHINE_DIR}/guest/gitrepo
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/real_git_prepare.cmake)
+  set_tests_properties(integration.real_git_prepare PROPERTIES
+    FIXTURES_REQUIRED w10x_machine FIXTURES_SETUP w10x_git_prepared)
+  # git's own configuration for the run: no pager, no CRLF conversion, no signing, a fixed identity, and the repository
+  # directory trusted (the ownership check is git's, not the layer's).
+  set(_gitcfg "--no-pager;-c;core.autocrlf=false;-c;commit.gpgsign=false;-c;user.name=w10x;-c;user.email=w10x@example.com;-c;safe.directory=*")
+  set(_guest_args "--version")
+  win10xbox_guest_test(real_git "${_git}" 0 "git version 2\\.47\\.1\\.windows\\.1")
+  set(_guest_args "${_gitcfg};init;${_repo}")
+  win10xbox_guest_test(real_git_init "${_git}" 0 "Initialized empty Git repository in .*gitrepo/\\.git/")
+  set_tests_properties(integration.real_git_init PROPERTIES
+    FIXTURES_REQUIRED "w10x_machine;w10x_git_prepared" FIXTURES_SETUP w10x_git_init)
+  set(_guest_args "${_gitcfg};-C;${_repo};add;hello.txt")
+  win10xbox_guest_test(real_git_add "${_git}" 0)
+  set_tests_properties(integration.real_git_add PROPERTIES
+    FIXTURES_REQUIRED "w10x_machine;w10x_git_init" FIXTURES_SETUP w10x_git_add)
+  set(_guest_args "${_gitcfg};-C;${_repo};status;--short")
+  win10xbox_guest_test(real_git_status "${_git}" 0 "A  hello\\.txt")
+  set_tests_properties(integration.real_git_status PROPERTIES
+    FIXTURES_REQUIRED "w10x_machine;w10x_git_add" FIXTURES_SETUP w10x_git_status)
+  set(_guest_args "${_gitcfg};-C;${_repo};commit;-m;layer commit")
+  win10xbox_guest_test(real_git_commit "${_git}" 0 "\\[[a-z]+ \\(root-commit\\) [0-9a-f]+\\] layer commit")
+  set_tests_properties(integration.real_git_commit PROPERTIES
+    FIXTURES_REQUIRED "w10x_machine;w10x_git_status" FIXTURES_SETUP w10x_git_commit)
+  set(_guest_args "${_gitcfg};-C;${_repo};log;--oneline")
+  win10xbox_guest_test(real_git_log "${_git}" 0 "[0-9a-f]+ layer commit")
+  set_tests_properties(integration.real_git_log PROPERTIES FIXTURES_REQUIRED "w10x_machine;w10x_git_commit")
+  unset(_guest_args)
+  unset(_guest_machine)
+  unset(_gitcfg)
+  unset(_git)
+  unset(_repo)
+endif()
+
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
 set_tests_properties(integration.guest_hello_appcontainer_sim PROPERTIES
   ENVIRONMENT "WIN10XBOX_TEST_NO_HOST_PATHS=1")
@@ -493,6 +540,30 @@ win10xbox_guest_tls_test(guest_view_violation_detected 42 "+dispatch,+modules"
   "WIN10XBOX_TEST_GUEST_VIEW_VIOLATION=1"
   "host state reached under the guest TLS view [0-9]+ times \\(last: dispatch::ExportCache\\), [1-9][0-9]* trace lines dropped"
   "")
+
+# ---- Real program: 7-Zip's 7zr.exe (docs/TESTING.md, "Real programs") --------------------------------------------
+# Built from the official source by tools/ci/build_7zip.ps1 (a named step of ci.yml's windows job, which leaves it at
+# <machine>/guest/7zr.exe before ctest runs). Registered only where that step exists (MSVC) or with
+# -DWIN10XBOX_REAL_PROGRAMS=ON after putting a 7zr.exe into the machine folder; never on linux-cross's skip floor.
+# real7z: 7zr a / t / l / x round trip (SHA-256 of every extracted file); real7z_bench: 7zr b -mmt1.
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  foreach(_mode roundtrip bench)
+    if(_mode STREQUAL "roundtrip")
+      set(_t integration.real7z)
+    else()
+      set(_t integration.real7z_bench)
+    endif()
+    add_test(NAME ${_t}
+      COMMAND ${CMAKE_COMMAND} -DHOST=$<TARGET_FILE:win10xbox> -DMACHINE=${WIN10XBOX_BUILTIN_MACHINE_DIR}
+        -DMODE=${_mode} -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR} -P ${CMAKE_CURRENT_SOURCE_DIR}/real7z.cmake)
+    set_tests_properties(${_t} PROPERTIES
+      FIXTURES_REQUIRED w10x_machine
+      SKIP_RETURN_CODE 77
+      SKIP_REGULAR_EXPRESSION "SKIP:"
+      LABELS "guest_e2e;real7z"
+      TIMEOUT 900)
+  endforeach()
+endif()
 
 # The SQLite shell and the regression guests its bring-up needed (tests/guest/sqlite).
 include(${CMAKE_CURRENT_LIST_DIR}/sqlite_tests.cmake)

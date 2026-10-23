@@ -25,6 +25,7 @@ gdi32
 
 # --- base services ---------------------------------------------------------
 advapi32
+cryptbase        # advapi32 forwards SystemFunction036 (RtlGenRandom, msvcrt's rand_s) here: git.exe
 sechost
 bcrypt             # CPython's os.urandom (BCryptGenRandom -> RtlGenRandom); no unix lib needed for that
 rpcrt4
@@ -63,6 +64,8 @@ msacm32     # winmm static import
 ole32
 oleaut32
 combase
+coml2     # hard import of ole32 (7zr.exe imports ole32/oleaut32)
+shcore    # hard import of shlwapi and so of shell32 (7zr.exe imports shell32)
 
 # --- helpers / programs ----------------------------------------------------
 programs/services
