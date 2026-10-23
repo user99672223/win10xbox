@@ -1,4 +1,6 @@
-status: wip
+status: ready
+
+Ready at 015b717 (code head; this commit is doc-only): ci https://github.com/user99672223/win10xbox/actions/runs/39950439416 (linux-cross 87 of 87, windows Debug and RelWithDebInfo green, gate: nothing skipped), wine-pe https://github.com/user99672223/win10xbox/actions/runs/39950439433 green.
 
 # Slice: wt-misc (small Wine conformance suites)
 
