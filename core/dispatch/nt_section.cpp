@@ -330,10 +330,23 @@ NTSTATUS MapImageView(const std::shared_ptr<ImageSection>& sec, const MapOptions
     std::vector<std::string> unmatched;
     view->stubs = loader::RewriteSyscallStubs(view->image, SyscallEntryAddress(), &patched, &unmatched);
     view->stubs_rewritten = view->stubs != 0;
+    // Dispatch by name: a native DLL's thunks carry its own build's ids (no-op for Wine's builtins).
+    if (!patched.empty()) RenumberSyscallThunks(patched, view->image.path.c_str());
     if (view->stubs_rewritten || !unmatched.empty())
         TRACE(dispatch, "%ls: %zu syscall stubs rewritten, %zu unmatched", view->image.path.c_str(), view->stubs,
               unmatched.size());
     for (auto& u : unmatched) WARN(dispatch, "%ls: stub %s not rewritten", view->image.path.c_str(), u.c_str());
+    // What an unmatched export actually is (a forwarder, or which bytes), for the first few: on a native win32u
+    // these are the calls that would reach the kernel without the dispatcher.
+    for (std::size_t i = 0; i < unmatched.size() && i < 6 && !patched.empty(); ++i) {
+        std::string fwd;
+        const auto* p = static_cast<const std::uint8_t*>(loader::FindExport(view->image.base, unmatched[i].c_str(), &fwd));
+        if (!fwd.empty()) { TRACE(dispatch, "  %s: forwarder to %s", unmatched[i].c_str(), fwd.c_str()); continue; }
+        if (!p) continue;
+        char hex[32 * 3 + 1] = {};
+        for (int b = 0; b < 32; ++b) std::snprintf(hex + 3 * b, 4, "%02X ", p[b]);
+        TRACE(dispatch, "  %s at %p: %s", unmatched[i].c_str(), static_cast<const void*>(p), hex);
+    }
 
     loader::ScanOptions so;
     so.patch_cpuid = config::Current().patch_cpuid;

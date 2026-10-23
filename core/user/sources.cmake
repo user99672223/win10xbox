@@ -17,6 +17,7 @@ target_sources(win10xbox_core PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/win_message.cpp
   ${CMAKE_CURRENT_LIST_DIR}/win_paint.cpp
   ${CMAKE_CURRENT_LIST_DIR}/win_sysparams.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/native_compose.cpp
   ${CMAKE_CURRENT_LIST_DIR}/win_scroll.cpp
   ${CMAKE_CURRENT_LIST_DIR}/win_clipboard.cpp
 )

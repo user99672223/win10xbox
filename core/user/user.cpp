@@ -170,11 +170,14 @@ winexbox::IWinexboxDriver* DisplayDriver() {
     return detail::g_driver;
 }
 
-std::uint64_t FrameSerial() { return static_cast<std::uint64_t>(detail::g_frame_serial); }
+std::uint64_t FrameSerial() {
+    return static_cast<std::uint64_t>(detail::g_frame_serial) + detail::NativeFrameSerial();   // + route B's
+}
 
 void ScreenSize(std::int32_t* width, std::int32_t* height) {
     if (width) *width = 0;
     if (height) *height = 0;
+    if (detail::NativeGui()) { detail::NativeScreenSize(width, height); return; }   // route B: the real screen
     if (!detail::g_driver) return;
     const winexbox::DisplayConfig dc = detail::g_driver->QueryDisplay();
     for (const winexbox::MonitorInfo& m : dc.monitors) {

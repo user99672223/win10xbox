@@ -255,9 +255,6 @@ set_target_properties(smoke_guest PROPERTIES OUTPUT_NAME "smoke")
 set(HOST_UWP_GUESTS window_guest hello_guest hello_guest_cui guest_hello guest_cpuid guest_sleep guest_dll
     smoke_guest_cui drv_client guest_window2 guest_window_input guest_window_input2 guest_window_text smoke_guest
     guest_spawn guest_window_nc guest_dialog guest_comctl guest_seh guest_seh_dll guest_window_scroll guest_clipboard)
-    smoke_guest_cui drv_client guest_window2 guest_window_input guest_window_input2 guest_window_scroll guest_window_text smoke_guest
-    guest_spawn guest_window_nc guest_dialog guest_comctl)
-    guest_spawn guest_window_nc guest_dialog guest_comctl guest_clipboard)
 
 # ---------------------------------------------------------------------------
 # The selftest: the launch.json parser (launch_config.cpp has no Windows or layer

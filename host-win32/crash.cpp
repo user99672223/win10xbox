@@ -1059,6 +1059,28 @@ void WriteTraceLine(const char* prefix, EXCEPTION_POINTERS* ep, DWORD tid)
         o.Hex(er->ExceptionInformation[0], 16);
         o.Str(" info1=0x");
         o.Hex(er->ExceptionInformation[1], 16);
+        // EXCEPTION_WINE_STUB: a Wine import stub was called; the two parameters are the DLL and function names.
+        if (er->ExceptionCode == 0x80000100)
+        {
+            auto str = [&](std::uintptr_t p) {
+                MEMORY_BASIC_INFORMATION mbi{};
+                if (!p || !VirtualQuery(reinterpret_cast<const void*>(p), &mbi, sizeof mbi) || mbi.State != MEM_COMMIT ||
+                    (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+                {
+                    o.Str("?");
+                    return;
+                }
+                const auto* s = reinterpret_cast<const char*>(p);
+                const std::size_t room = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) + mbi.RegionSize - p;
+                char buf[80] = {};
+                for (std::size_t i = 0; i + 1 < sizeof buf && i < room && s[i]; ++i) buf[i] = s[i];
+                o.Str(buf);
+            };
+            o.Str(" wine-stub=");
+            str(er->ExceptionInformation[0]);
+            o.Str(".");
+            str(er->ExceptionInformation[1]);
+        }
     }
     if (const CONTEXT* c = ep->ContextRecord)
     {

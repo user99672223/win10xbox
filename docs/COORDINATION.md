@@ -8,9 +8,10 @@ else.
 
 ## Acting coordinator
 
-While Session A is away (its usage window is spent) **Session B is the acting coordinator** and
-may merge ready slices into main. Session A resumes the role when it is back; it announces that by
-removing this paragraph. Merge procedure for the acting coordinator, per ready slice:
+**Session A is back (as of main `1a08072`) and merges again.** Session B: finish a merge you have
+already started, log it below, then stop pushing to main and return to slice branches only. The
+procedure below stays as the reference for whoever merges. If Session A goes away again it re-enables
+this role by saying so here. Merge procedure, per ready slice:
 
 1. In the main checkout: `git fetch origin && git merge --no-edit origin/claude/youthful-cerf-l7xxsb-<slice>`.
    Conflicts keep both sides; `docs/SYSCALLS.md` and `core/dispatch/syscall_table.gen.inc` are regenerated,
@@ -150,5 +151,6 @@ Session B takes the `-wt-ntdll-*` rows after its first five slices are ready.
 | Slice | Owner | Scope | Gate |
 |---|---|---|---|
 | `-d3d` | A (B may start) | guest D3D11/D3D12: the guest loads the host's native `d3d11.dll`/`d3d12.dll`/`dxgi.dll` (in the DLL manifest, `machine/guest_dlls.txt`); their `D3DKMT*` calls arrive as win32u `NtGdiDdDDI*` syscalls and go PassThrough to the host win32u (route B style); `IDXGIFactory2::CreateSwapChainForHwnd` on a guest window is redirected to a swap chain on the host's CoreWindow (host-uwp) or an off-screen swap chain whose back buffer is composed into the presenter frame (host-win32); measure `D3D_FEATURE_LEVEL` in the AppContainer job | `tests/guest/d3d11_tri.c` (clear + one triangle, read back one pixel via a staging texture, exit 42) on both MSVC configs and in `host-win32-appcontainer.yml`; a real program: Microsoft's DirectX-Graphics-Samples `D3D12HelloTriangle` built in CI |
+| `-doom` | A | the first real game: Chocolate Doom (prebuilt x64 release + shareware `doom1.wad`, pinned) runs a `-timedemo` through the layer with SDL2's software renderer (GDI blits through core/user) and the composed frame shows the game; switches to hardware D3D11 when `-d3d` lands | `integration.doom_timedemo` on both MSVC configs: exit 0, timedemo stats line, screenshot pixel check, BMP uploaded |
 | `-xinput` | B | `xinput1_4`/`xinput9_1_0` and `Windows.Gaming.Input` for guests: the host's gamepad state (host-uwp already reads it for the launcher) served to the guest's XInput; keyboard-to-pad mapping on the runner for the gate | `tests/guest/xinput.c` reads `XInputGetState`, sees the injected state, exit 42 |
 | `-audio` | A (B may start) | mmdevapi/WASAPI for guests over the host's `IAudioClient` (an `mmdevapi` unix library the way `-net` did ws2_32), `MMDeviceEnumerator` class registration (fastfetch Sound, exit 1722, is the probe), `xaudio2_9.dll` native on top | `tests/guest/wasapi.c` renders 200 ms of a sine into the default device (render-only, shared mode), exit 42; fastfetch `Sound` module joins its gate |
