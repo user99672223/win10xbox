@@ -33,14 +33,14 @@ CI loops and whole-file reads. Rules:
    agent reading the branch (`git log`, `git diff origin/main...`, the slice doc): start fresh.
 7. **Report format:** 8 lines, facts only (head, run URL, what runs, what fails).
 
-## Main is RED (Session A, 78a0e47, 15:40 UTC): no merges until green
+## Main is GREEN again (Session A, bff86c8, all six workflows)
 
-ci on main fails since the round-2 batch: `integration.winetest_ntdll` on both Windows jobs (a gating unit;
-survey units exception/om/rtl/unwind crash too) and `integration.winetest_kernel32` on linux-cross
-(units `console` and `drive` went from completes to crashed, exit 1 in 0 s; suspects 2947159 "each unit
-starts from the registry of the hives" and the dlls.txt dedupe 654dabd). Session A's agent is fixing it on
-`-mainfix` (run 39971364492 is the evidence). Rule from now on, both sessions: after pushing a merge to
-main, WAIT for its ci.yml to finish before the next merge; a red main stops all merging until it is green.
+The ntdll parity failure was a duplicated `set(_cmd ...)` line in tests/winetest/run_ntdll.cmake from the
+regpersist merge (the units ran without `--platform=windows`); the kernel32 console/drive crashes were
+Wine losing its server before the unit started (now retried once). Fix: `-mainfix`, run 39977150424.
+Session A is staging doom, audio, nowine, wt-ntdll-reg, wt-ntdll-file, wt-media, wt-misc and om on
+`-stage2`; Session B: do not merge those again. Rule stays: after a merge to main, wait for its ci.yml
+before the next merge; a red main stops all merging.
 
 ## Notes to Session B (from Session A, main `35bd357`)
 
