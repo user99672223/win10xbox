@@ -92,6 +92,47 @@ foreach(_dll propsys windowscodecs mlang gdiplus dwrite)
     TIMEOUT ${_media_timeout_${_dll}})
 endforeach()
 
+# Wine's kernel32 conformance units through the layer (docs/WINETEST.md):
+# wine-pe/tests/kernel32.sh builds every dlls/kernel32/tests source into one
+# kernel32_test.exe and runs it unit by unit against wine-pe/tests/kernel32.baseline
+# (0-failure allowlist, "run <max>" / crash / timeout for the rest). Same gate and
+# MSVC rule as advapi32 above.
+# Under bin/ so the linux-cross-bin artifact carries kernel32.tsv and the per-unit logs.
+set(_out ${CMAKE_BINARY_DIR}/bin/winetest-kernel32)
+add_test(NAME integration.winetest_kernel32
+  COMMAND ${WIN10XBOX_BASH} ${CMAKE_SOURCE_DIR}/wine-pe/tests/kernel32.sh all
+    --out ${_out}
+    --gen-include ${WIN10XBOX_WINE_GEN_INCLUDE_DIR}
+    --host $<TARGET_FILE:win10xbox>
+    --machine ${WIN10XBOX_MACHINE_DIR}
+    --emulator "${_emu}"
+    --timeout 30)
+set_tests_properties(integration.winetest_kernel32 PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "wine_conformance"
+  TIMEOUT 1500)
+
+# Wine's shell32 conformance units (dlls/shell32/tests, 19 units, 30 s each).
+# Units needing a desktop, COM servers or explorer may crash or time out; the
+# baseline in wine-pe/tests/shell32.baseline records what was measured.
+set(_out ${CMAKE_BINARY_DIR}/winetest/shell32)
+add_test(NAME integration.winetest_shell32
+  COMMAND ${WIN10XBOX_BASH} ${CMAKE_SOURCE_DIR}/wine-pe/tests/shell32.sh all
+    --out ${_out}
+    --gen-include ${WIN10XBOX_WINE_GEN_INCLUDE_DIR}
+    --host $<TARGET_FILE:win10xbox>
+    --machine ${WIN10XBOX_MACHINE_DIR}
+    --emulator "${_emu}"
+    --timeout 30)
+set_tests_properties(integration.winetest_shell32 PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "wine_conformance"
+  TIMEOUT 900)
+
 # Wine's msvcrt units (dlls/msvcrt/tests) through the layer, the same way: one
 # guest msvcrt_test.exe linked against Wine's builtin msvcrt.dll, gated on
 # wine-pe/tests/msvcrt.baseline. Per-unit cap 45 s (13 units fit the 600 s limit).
