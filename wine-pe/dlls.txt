@@ -61,7 +61,6 @@ msacm32     # winmm static import
 
 # --- imports of wbemprox (docs/slices/identity.md); its other imports are listed above ---
 winspool.drv=winspool.drv
-setupapi
 compstui     # winspool.drv
 
 # --- COM -------------------------------------------------------------------
@@ -87,15 +86,12 @@ psapi
 # userenv is NOT built: with it present kernel32's environ test calls GetUserProfileDirectory (environ.c:74) and fails
 # with ERROR_NONE_MAPPED, one assertion more than main's baseline (docs/slices/wt-misc.md); needs the ProfileList registry data first.
 xmllite
-propsys
 dbghelp
 msxml3
-setupapi
 urlmon
 wininet
 iertutil
 crypt32
-bcrypt
 ncrypt
 wintrust
 cryptnet    # crypt32 delay import
