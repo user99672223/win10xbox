@@ -2,6 +2,7 @@
 // generic host caller, emulated handles and the per-thread TEB view switch.
 // See docs/DISPATCHER.md.
 #include "internal.h"
+#include "nt_spawn.h"
 #include "win10xbox/config.h"
 #include <algorithm>
 #include <cctype>
@@ -588,6 +589,7 @@ NTSTATUS Initialize() {
     if (s.initialized) { ReleaseSRWLockExclusive(&s.lock); return st::Success; }
     if (!HostNtdll()) { ReleaseSRWLockExclusive(&s.lock); return st::DllNotFound; }
     ResolveHost(s.host);
+    PrimeChildProcesses();   // host kernel32 entry points and executable path, before the PEB take-over
     QueryPerformanceFrequency(&s.qpf);
 
     s.entries.clear();

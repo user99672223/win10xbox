@@ -1,13 +1,36 @@
-# Per-unit baseline for integration.winetest_kernel32 (wine-pe/tests/kernel32.sh --baseline).
-#   <unit> <run|crash|timeout> <max_failures>
-# PROVISIONAL: not measured yet; every unit is "crash" until the first measured run replaces this.
-file     crash 0
-path     crash 0
-sync     crash 0
-thread   crash 0
-virtual  crash 0
-heap     crash 0
-locale   crash 0
-codepage crash 0
-time     crash 0
-environ  crash 0
+# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/kernel32.sh; numbers in docs/WINETEST.md)
+# First registration: every unit is a generous "run" budget so the first CI run prints WINETEST lines
+# for every unit; the measured numbers replace these.
+actctx run 999999
+atom run 999999
+change run 999999
+codepage run 999999
+comm run 999999
+console run 999999
+debugger run 999999
+directory run 999999
+drive run 999999
+environ run 999999
+fiber run 999999
+file run 999999
+format_msg run 999999
+generated run 999999
+heap run 999999
+loader run 999999
+locale run 999999
+mailslot run 999999
+module run 999999
+path run 999999
+pipe run 999999
+power run 999999
+process run 999999
+profile run 999999
+resource run 999999
+sync run 999999
+thread run 999999
+time run 999999
+timer run 999999
+toolhelp run 999999
+version run 999999
+virtual run 999999
+volume run 999999

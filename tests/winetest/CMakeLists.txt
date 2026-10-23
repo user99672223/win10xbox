@@ -1,32 +1,54 @@
-# integration.winetest_kernel32: Wine's kernel32 conformance tests (dlls/kernel32/tests) built as one PE x64
-# program by wine-pe/tests/kernel32.sh and run unit by unit through win10xbox. Gated on the recorded per-unit
-# baseline (wine-pe/tests/kernel32.baseline): a unit with more failures than recorded, or a unit that no longer
-# completes, fails the test, as does a run with no assertion executed at all. Numbers: docs/WINETEST.md.
-#
-# Registered only for llvm-mingw on a Unix host (the guests run under Wine there): MSVC cannot build Wine's
-# tests, like tests/wine-tests. Without wine-pe/wine-src, the Wine builtins or the NLS data the test SKIPs (77),
-# which CI's tools/ci/check_ctest_run.py counts as a failure.
-if(MSVC OR NOT CMAKE_C_COMPILER_ID STREQUAL "Clang" OR NOT CMAKE_HOST_UNIX)
-  message(STATUS "winetest: integration.winetest_kernel32 needs llvm-mingw on a Unix host; not registered")
+# Wine's advapi32 conformance units through the layer, as one gated ctest entry
+# (docs/WINETEST.md). wine-pe/tests/advapi32.sh builds dlls/advapi32/tests from
+# wine-pe/wine-src into <build>/winetest/advapi32 and runs the units against the
+# baseline in wine-pe/tests/advapi32.baseline: a unit above its failure budget,
+# a recorded "completes" unit that no longer completes, or zero executed
+# assertions fail the test. With MSVC the guest cannot be built at all, so the
+# test is not registered (as tests/wine-tests does).
+if(MSVC OR NOT CMAKE_HOST_UNIX)
   return()
 endif()
-find_program(W10X_BASH bash)
-if(NOT W10X_BASH)
-  message(STATUS "winetest: bash not found; integration.winetest_kernel32 not registered")
+find_program(WIN10XBOX_BASH bash)
+if(NOT WIN10XBOX_BASH)
   return()
 endif()
-
-set(_out ${CMAKE_BINARY_DIR}/winetest-kernel32)
-add_test(NAME integration.winetest_kernel32
-  COMMAND ${W10X_BASH} ${CMAKE_SOURCE_DIR}/wine-pe/tests/kernel32.sh
-    --cc ${CMAKE_C_COMPILER}
+set(_out ${CMAKE_BINARY_DIR}/winetest/advapi32)
+set(_emu "")
+if(CMAKE_CROSSCOMPILING_EMULATOR)
+  list(GET CMAKE_CROSSCOMPILING_EMULATOR 0 _emu)
+endif()
+add_test(NAME integration.winetest_advapi32
+  COMMAND ${WIN10XBOX_BASH} ${CMAKE_SOURCE_DIR}/wine-pe/tests/advapi32.sh all
     --out ${_out}
+    --gen-include ${WIN10XBOX_WINE_GEN_INCLUDE_DIR}
     --host $<TARGET_FILE:win10xbox>
     --machine ${WIN10XBOX_MACHINE_DIR}
-    --emulator "${CMAKE_CROSSCOMPILING_EMULATOR}"
-    --baseline ${CMAKE_SOURCE_DIR}/wine-pe/tests/kernel32.baseline)
+    --emulator "${_emu}"
+    --timeout 120)
+set_tests_properties(integration.winetest_advapi32 PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "wine_conformance"
+  TIMEOUT 600)
+
+# Wine's kernel32 conformance units through the layer (docs/WINETEST.md):
+# wine-pe/tests/kernel32.sh builds every dlls/kernel32/tests source into one
+# kernel32_test.exe and runs it unit by unit against wine-pe/tests/kernel32.baseline
+# (0-failure allowlist, "run <max>" / crash / timeout for the rest). Same gate and
+# MSVC rule as advapi32 above.
+set(_out ${CMAKE_BINARY_DIR}/winetest/kernel32)
+add_test(NAME integration.winetest_kernel32
+  COMMAND ${WIN10XBOX_BASH} ${CMAKE_SOURCE_DIR}/wine-pe/tests/kernel32.sh all
+    --out ${_out}
+    --gen-include ${WIN10XBOX_WINE_GEN_INCLUDE_DIR}
+    --host $<TARGET_FILE:win10xbox>
+    --machine ${WIN10XBOX_MACHINE_DIR}
+    --emulator "${_emu}"
+    --timeout 30)
 set_tests_properties(integration.winetest_kernel32 PROPERTIES
   FIXTURES_REQUIRED w10x_machine
   SKIP_RETURN_CODE 77
-  LABELS "winetest"
-  TIMEOUT 900)
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "wine_conformance"
+  TIMEOUT 1500)

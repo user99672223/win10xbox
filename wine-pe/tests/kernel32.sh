@@ -1,188 +1,173 @@
 #!/usr/bin/env bash
 # Build Wine's kernel32 conformance tests (dlls/kernel32/tests) as one PE x64
-# program, kernel32_test.exe, and run selected units through win10xbox.
+# guest and run selected units through the layer (win10xbox.exe).
 #
-#   wine-pe/tests/kernel32.sh [--build-only] [--out DIR] [--units "file path ..."]
-#                             [--host win10xbox.exe --machine DIR] [--emulator wine]
-#                             [--baseline FILE] [--timeout S] [--jobs N] [--cc CC] [-h]
+#   wine-pe/tests/kernel32.sh build --out <dir> [--gen-include <dir>]
+#   wine-pe/tests/kernel32.sh run   --out <dir> --host <win10xbox.exe> --machine <dir>
+#                                   [--emulator <wine>] [--units "file path ..."]
+#                                   [--timeout <s>] [--baseline <file>]
+#   wine-pe/tests/kernel32.sh all   (build, then run; takes the options of both)
 #
-# Build: every unit .c listed in --units (default: the UNITS below) plus a
-# generated test list, compiled against Wine's headers exactly like
-# tests/wine-tests (STANDALONE wine/test.h, Wine's msvcrt headers, -w), into
-# <out>/kernel32_test.exe. The Wine sources come from wine-pe/wine-src
-# (wine-pe/fetch-wine.sh); nothing of Wine is copied into the repository.
+# build: compiles the kernel32 test sources of wine-pe/wine-src (fetch-wine.sh;
+#   LGPL, never copied into this repository) plus a generated test list into
+#   <out>/kernel32_test.exe with llvm-mingw, the same way tests/wine-tests does
+#   (Wine's headers, STANDALONE test.h). Wine's widl-generated headers
+#   (wine-pe/build/include, made by wine-pe/build.sh or the wine-pe-include CI
+#   artifact) are put on the include path when present.
+# run: copies the guest to <machine>/guest-wine/ and runs
+#   `C:\guest-wine\kernel32_test.exe <unit>` once per unit with a per-unit cap.
+#   Wine's harness ends a unit with "N tests executed (T marked as todo, F as
+#   flaky, K failures), S skipped."; no such line = crashed, exit 124 = timeout.
+#   One line per unit goes to <out>/kernel32.tsv and to stdout as
+#   "WINETEST kernel32:<unit> status=... executed=... failures=...".
 #
-# Run (with --host and --machine): the program is staged as
-# <machine>/guest-wine/kernel32_test.exe and each unit runs as
-# `win10xbox.exe --machine <machine> C:\guest-wine\kernel32_test.exe <unit>`
-# (under --emulator on Linux), WIN10XBOX_DEBUG=-all, capped at --timeout seconds.
-# Per unit it writes <out>/<unit>.log and one line of <out>/results.tsv:
-#   unit  status(ok|crashed|timeout)  executed  todo  flaky  failures  skipped  exit  seconds
-# status ok means Wine's "N tests executed (...)" summary line was printed.
-#
-# Gate (with --baseline): each baseline line is `<unit> <run|crash|timeout> <max_failures>`.
-#   run    the unit must complete with failures <= max_failures
-#   crash|timeout   the unit is recorded as not completing; completing is reported IMPROVED
-# and the total executed count over all units must be > 0. Exit 1 on a
-# regression, 77 (ctest SKIP) when the inputs are missing, 0 otherwise.
-set -euo pipefail
+# Gate (the baseline file, default wine-pe/tests/kernel32.baseline, lines
+# "<unit> <run|crash|timeout> <max_failures>"):
+#   run    the unit must complete with failures <= max (fewer prints IMPROVED)
+#   crash|timeout  must not complete; completing prints IMPROVED (record it)
+#   and at least one assertion must have executed over all units.
+# Exit: 0 baseline holds, 1 regression, 2 usage, 77 prerequisites missing
+# (the Wine sources, the builtins or the NLS data): ctest SKIP.
+set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO="$(cd "$HERE/../.." && pwd)"
-SRC="${WINE_SRC:-$REPO/wine-pe/wine-src}"
-UNITS="file path sync thread virtual heap locale codepage time environ"
-OUT="$REPO/wine-pe/build/tests/kernel32"
-HOST="" MACHINE="" EMULATOR="" BASELINE="" BUILD_ONLY=0
-TIMEOUT=90
-JOBS="$(nproc 2>/dev/null || echo 4)"
+ROOT="$(cd "$HERE/../.." && pwd)"
+SRC="${WINE_SRC:-$ROOT/wine-pe/wine-src}"
 LLVM_MINGW="${LLVM_MINGW:-/opt/llvm-mingw}"
-CC="${CC_PE:-}"
+[[ -d "$LLVM_MINGW/bin" ]] && export PATH="$LLVM_MINGW/bin:$PATH"
 
-usage() { sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; }
+MODE="${1:-}"; shift || true
+OUT=""; GEN="$ROOT/wine-pe/build/include"; HOST=""; MACHINE=""; EMULATOR=""
+UNITS=""; TIMEOUT=120; BASELINE="$HERE/kernel32.baseline"
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --build-only) BUILD_ONLY=1; shift ;;
-        --out)      OUT="${2:?}"; shift 2 ;;
-        --units)    UNITS="${2:?}"; shift 2 ;;
-        --host)     HOST="${2:?}"; shift 2 ;;
-        --machine)  MACHINE="${2:?}"; shift 2 ;;
-        --emulator) EMULATOR="${2-}"; shift 2 ;;
-        --baseline) BASELINE="${2:?}"; shift 2 ;;
-        --timeout)  TIMEOUT="${2:?}"; shift 2 ;;
-        --jobs|-j)  JOBS="${2:?}"; shift 2 ;;
-        --cc)       CC="${2:?}"; shift 2 ;;
-        -h|--help)  usage; exit 0 ;;
-        *) echo "kernel32.sh: unknown argument '$1'" >&2; usage >&2; exit 2 ;;
+        --out) OUT="$2"; shift 2 ;;
+        --gen-include) GEN="$2"; shift 2 ;;
+        --host) HOST="$2"; shift 2 ;;
+        --machine) MACHINE="$2"; shift 2 ;;
+        --emulator) EMULATOR="$2"; shift 2 ;;
+        --units) UNITS="$2"; shift 2 ;;
+        --timeout) TIMEOUT="$2"; shift 2 ;;
+        --baseline) BASELINE="$2"; shift 2 ;;
+        *) echo "kernel32.sh: unknown argument '$1'" >&2; exit 2 ;;
     esac
 done
+[[ -n "$OUT" ]] || { echo "kernel32.sh: --out is required" >&2; exit 2; }
+mkdir -p "$OUT"
+EXE="$OUT/kernel32_test.exe"
 
 skip() { echo "SKIP: $*"; exit 77; }
 
-# ---------------------------------------------------------------- build
-if [[ -z "$CC" ]]; then
-    [[ -d "$LLVM_MINGW/bin" ]] && export PATH="$LLVM_MINGW/bin:$PATH"
-    CC="x86_64-w64-mingw32-clang"
-fi
-command -v "$CC" >/dev/null 2>&1 || skip "$CC not found (llvm-mingw; set LLVM_MINGW or --cc)"
-[[ -f "$SRC/include/wine/test.h" ]] || skip "$SRC missing (run wine-pe/fetch-wine.sh)"
-RES_DIR="$("$CC" -print-resource-dir)"
-mkdir -p "$OUT/obj"
-EXE="$OUT/kernel32_test.exe"
-
-# The test list: one entry per unit, the generated main() picks one by argv[1].
-TL="$OUT/obj/testlist.c"
-{
-    echo "/* generated by wine-pe/tests/kernel32.sh */"
-    echo "#define WIN32_LEAN_AND_MEAN"
-    echo "#include <windows.h>"
-    echo "#define STANDALONE"
-    echo "#include \"wine/test.h\""
-    for u in $UNITS; do echo "extern void func_$u(void);"; done
-    echo "const struct test winetest_testlist[] = {"
-    for u in $UNITS; do echo "    { \"$u\", func_$u },"; done
-    echo "    { 0, 0 }"
-    echo "};"
-} > "$TL.new"
-cmp -s "$TL.new" "$TL" 2>/dev/null && rm -f "$TL.new" || mv -f "$TL.new" "$TL"
-
-CFLAGS=(-O1 -g0 -w -std=gnu17 -nostdinc -isystem "$RES_DIR/include"
-        -I "$SRC/include" -I "$SRC/include/msvcrt"
+do_build() {
+    local tdir="$SRC/dlls/kernel32/tests"
+    [[ -f "$SRC/include/wine/test.h" && -d "$tdir" ]] || skip "$SRC missing (run wine-pe/fetch-wine.sh)"
+    command -v x86_64-w64-mingw32-clang >/dev/null || skip "x86_64-w64-mingw32-clang not found (llvm-mingw)"
+    local cc=x86_64-w64-mingw32-clang
+    local res; res="$($cc -print-resource-dir)"
+    # Every test source the upstream Makefile lists (except dummy.c, the helper DLL's source), so the
+    # binary is Wine's kernel32_test.exe.
+    local srcs=() names=()
+    local f
+    for f in $(sed -n '/^SOURCES/,/^$/p' "$tdir/Makefile.in" | tr -d '\\' | tr ' \t' '\n\n' | grep '\.c$' | grep -vx 'dummy\.c'); do
+        srcs+=("$tdir/$f"); names+=("${f%.c}")
+    done
+    [[ ${#srcs[@]} -gt 0 ]] || { echo "kernel32.sh: no SOURCES in $tdir/Makefile.in" >&2; exit 1; }
+    local tl="$OUT/kernel32_testlist.c"
+    {
+        echo "/* generated by wine-pe/tests/kernel32.sh */"
+        echo "#define WIN32_LEAN_AND_MEAN"
+        echo "#include <windows.h>"
+        echo "#define STANDALONE"
+        echo "#include \"wine/test.h\""
+        for n in "${names[@]}"; do echo "extern void func_$n(void);"; done
+        echo "const struct test winetest_testlist[] = {"
+        for n in "${names[@]}"; do echo "    { \"$n\", func_$n },"; done
+        echo "    { 0, 0 }"
+        echo "};"
+    } > "$tl"
+    local flags=(-std=gnu17 -O1 -g0 -w -nostdinc -isystem "$res/include"
+        -I"$SRC/include" -I"$SRC/include/msvcrt"
         -D__WINESRC__ -D_NTSYSTEM_ -DWINE_NO_LONG_TYPES -D_UCRT)
-[[ -f "$REPO/wine-pe/build/include/unknwn.h" ]] && CFLAGS+=(-I "$REPO/wine-pe/build/include")
-OBJS=()
-compile() {   # <src> <obj>
-    if [[ ! -f "$2" || "$1" -nt "$2" || "$TL" -nt "$2" ]]; then
-        "$CC" "${CFLAGS[@]}" -c "$1" -o "$2"
-    fi
+    [[ -f "$GEN/unknwn.h" ]] && flags+=(-I"$GEN")
+    echo "kernel32.sh: compiling ${#srcs[@]} test sources (${names[*]})"
+    "$cc" "${flags[@]}" "${srcs[@]}" "$tl" "$ROOT/tests/wine-tests/wine_support.c" -o "$EXE" \
+        -lntdll -lkernel32 -luser32 -ladvapi32 -lgdi32 -lshell32 -lole32 -lversion -lws2_32 -lshlwapi \
+        -luuid -lwinmm -lsecur32 -lrpcrt4 -lcrypt32 \
+        || { echo "kernel32.sh: build failed" >&2; exit 1; }
+    echo "kernel32.sh: built $EXE"
 }
-pids=()
-for u in $UNITS; do
-    s="$SRC/dlls/kernel32/tests/$u.c"
-    [[ -f "$s" ]] || { echo "kernel32.sh: no such unit: $s" >&2; exit 2; }
-    compile "$s" "$OUT/obj/$u.o" & pids+=($!)
-    OBJS+=("$OUT/obj/$u.o")
-done
-compile "$TL" "$OUT/obj/testlist.o" & pids+=($!)
-compile "$REPO/tests/wine-tests/wine_support.c" "$OUT/obj/wine_support.o" & pids+=($!)
-for p in "${pids[@]}"; do wait "$p"; done
-OBJS+=("$OUT/obj/testlist.o" "$OUT/obj/wine_support.o")
-"$CC" -o "$EXE" "${OBJS[@]}" \
-    -lntdll -lkernel32 -luser32 -ladvapi32 -lgdi32 -lshell32 -lole32 -lversion -lws2_32 -lshlwapi -luuid -lwinmm
-echo "kernel32.sh: built $EXE ($(echo $UNITS | wc -w) units)"
-[[ $BUILD_ONLY == 1 ]] && exit 0
 
-# ---------------------------------------------------------------- run
-[[ -n "$HOST" && -n "$MACHINE" ]] || { echo "kernel32.sh: --host and --machine are needed to run" >&2; exit 2; }
-[[ -f "$HOST" ]] || skip "$HOST missing (build win10xbox)"
-[[ -f "$MACHINE/Windows/builtin/ntdll.dll" ]] || skip "$MACHINE/Windows/builtin/ntdll.dll missing (wine-pe/build.sh or the wine-pe artifact)"
-[[ -f "$MACHINE/Windows/System32/c_1252.nls" ]] || skip "$MACHINE/Windows/System32/c_1252.nls missing: stage the NLS data (docs/HANDOFF.md trap 1)"
-mkdir -p "$MACHINE/guest-wine"
-cp -f "$EXE" "$MACHINE/guest-wine/kernel32_test.exe"
-
-WMACHINE="$MACHINE"
-[[ -n "$EMULATOR" && "$WMACHINE" == /* ]] && WMACHINE="Z:$WMACHINE"   # Wine: Z: is the Unix root
-WMACHINE="${WMACHINE//\//\\}"
-export WIN10XBOX_DEBUG=-all
-
-run_unit() {   # <unit>: writes $OUT/<unit>.log and $OUT/<unit>.tsv
-    local u="$1" log="$OUT/$1.log" t0 rc=0 status executed=0 todo=0 flaky=0 failures=0 skipped=0 line
-    t0=$(date +%s)
-    timeout -k 5 "$TIMEOUT" $EMULATOR "$HOST" --machine "$WMACHINE" 'C:\guest-wine\kernel32_test.exe' "$u" \
-        </dev/null >"$log" 2>&1 || rc=$?
-    line="$(tail -c 65536 "$log" | tr -d '\r' \
-        | grep -aoE "^[0-9a-f]+:$u:[^ ]* [0-9]+ tests executed \([0-9]+ marked as todo, [0-9]+ as flaky, [0-9]+ failures?\), [0-9]+ skipped" \
-        | tail -n 1 || true)"
-    if [[ $rc == 124 || $rc == 137 ]]; then
-        status=timeout
-    elif [[ -n "$line" ]]; then
-        status=ok
-        read -r executed todo flaky failures skipped < <(echo "$line" \
-            | sed -E 's/.* ([0-9]+) tests executed \(([0-9]+) marked as todo, ([0-9]+) as flaky, ([0-9]+) failures?\), ([0-9]+) skipped.*/\1 \2 \3 \4 \5/')
-    else
-        status=crashed
-    fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$u" "$status" "$executed" "$todo" "$flaky" "$failures" \
-        "$skipped" "$rc" "$(( $(date +%s) - t0 ))" > "$OUT/$u.tsv"
+baseline_of() {   # <unit> -> "<expect> <max>"
+    [[ -f "$BASELINE" ]] || { echo "run 999999"; return; }
+    awk -v u="$1" '$1 == u { print $2, $3; found = 1 } END { if (!found) print "run 999999" }' "$BASELINE"
 }
-export -f run_unit
-export OUT TIMEOUT EMULATOR HOST WMACHINE
-rm -f "$OUT"/*.tsv
-printf '%s\n' $UNITS | xargs -P "$JOBS" -I{} bash -c 'run_unit "$@"' _ {}
 
-{
-    printf 'unit\tstatus\texecuted\ttodo\tflaky\tfailures\tskipped\texit\tseconds\n'
-    for u in $UNITS; do cat "$OUT/$u.tsv"; done
-} > "$OUT/results.tsv"
-column -t -s $'\t' "$OUT/results.tsv" 2>/dev/null || cat "$OUT/results.tsv"
-
-# ---------------------------------------------------------------- gate
-total=0 fail=0
-while IFS=$'\t' read -r u status executed todo flaky failures skipped rc secs; do
-    [[ "$u" == unit ]] && continue
-    total=$(( total + executed ))
-    [[ -n "$BASELINE" ]] || continue
-    expect="" max=0
-    read -r expect max < <(awk -v u="$u" '$1 == u { print $2, $3 }' "$BASELINE") || true
-    if [[ -z "${expect:-}" ]]; then
-        echo "REGRESSION: $u has no baseline line in $BASELINE"; fail=1; continue
-    fi
-    if [[ "$expect" == run ]]; then
-        if [[ "$status" != ok ]]; then
-            echo "REGRESSION: $u baseline is 'completes', now $status"; fail=1
-            grep -aoE "[A-Za-z0-9_]+\.c:[0-9]+:.*" "$OUT/$u.log" | tail -n 1 | cut -c1-200 | sed 's/^/  last: /' || true
-        elif (( failures > max )); then
-            echo "REGRESSION: $u $failures failures, baseline allows $max"; fail=1
-        elif (( failures < max )); then
-            echo "IMPROVED: $u $failures failures < baseline $max; lower it in $BASELINE"
+do_run() {
+    [[ -n "$HOST" && -n "$MACHINE" ]] || { echo "kernel32.sh: run needs --host and --machine" >&2; exit 2; }
+    [[ -f "$EXE" ]] || skip "$EXE missing (build step skipped or failed)"
+    [[ -f "$MACHINE/Windows/builtin/ntdll.dll" ]] || skip "$MACHINE/Windows/builtin/ntdll.dll missing (Wine PE builtins)"
+    [[ -f "$MACHINE/Windows/System32/c_1252.nls" ]] || skip "$MACHINE/Windows/System32/c_1252.nls missing (NLS data)"
+    mkdir -p "$MACHINE/guest-wine"
+    cp -f "$EXE" "$MACHINE/guest-wine/kernel32_test.exe"
+    local wmachine="$MACHINE"
+    if [[ -n "$EMULATOR" && "$wmachine" == /* ]]; then wmachine="Z:$wmachine"; fi
+    wmachine="${wmachine//\//\\}"
+    export WIN10XBOX_DEBUG="${WIN10XBOX_DEBUG_SPEC:--all}"
+    local tsv="$OUT/kernel32.tsv" total=0 bad=0
+    : > "$tsv"
+    local re='([0-9]+) tests executed \(([0-9]+) marked as todo, ([0-9]+) as flaky, ([0-9]+) failures?\), ([0-9]+) skipped'
+    local unit
+    [[ -n "$UNITS" ]] || UNITS="$(sed -n 's/^    { "\([a-z0-9_]*\)", func_.*/\1/p' "$OUT/kernel32_testlist.c")"
+    for unit in $UNITS; do
+        local log="$OUT/kernel32_$unit.log" t0 rc status=crashed ex=0 todo=0 fl=0 fails=0 sk=0 last=""
+        t0=$(date +%s)
+        timeout -k 5 "$TIMEOUT" $EMULATOR "$HOST" --machine "$wmachine" 'C:\guest-wine\kernel32_test.exe' "$unit" \
+            < /dev/null > "$log" 2>&1
+        rc=$?
+        local secs=$(( $(date +%s) - t0 ))
+        local summary; summary="$(grep -aE "^[0-9a-f]+:$unit:.*$re" "$log" | tail -1)"
+        [[ -z "$summary" ]] && summary="$(grep -aE "$re" "$log" | tail -1)"
+        if [[ $rc -eq 124 || $rc -eq 137 ]]; then
+            status=timeout
+        elif [[ -n "$summary" && "$summary" =~ $re ]]; then
+            status=ok; ex=${BASH_REMATCH[1]}; todo=${BASH_REMATCH[2]}; fl=${BASH_REMATCH[3]}
+            fails=${BASH_REMATCH[4]}; sk=${BASH_REMATCH[5]}
         fi
-    elif [[ "$status" == ok ]]; then
-        echo "IMPROVED: $u now completes ($executed executed, $failures failures), baseline is '$expect'; update $BASELINE"
-    else
-        echo "XFAIL: $u $status as recorded"
-    fi
-done < "$OUT/results.tsv"
-echo "kernel32.sh: $total assertions executed over $(echo $UNITS | wc -w) units"
-if (( total == 0 )); then
-    echo "REGRESSION: no assertion executed at all"; exit 1
-fi
-exit $fail
+        if [[ $status != ok ]]; then
+            last="$(grep -aoE '[A-Za-z0-9_]+\.c:[0-9]+:[^\r]*' "$log" | tail -1 | cut -c1-160)"
+        fi
+        # Executed counts survive a crash: Wine prints them only at the end, so a
+        # crashed unit contributes 0 to the total.
+        total=$(( total + ex ))
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$unit" "$status" "$ex" "$todo" "$fl" "$fails" "$sk" \
+            "$rc" "$secs" "$last" >> "$tsv"
+        echo "WINETEST kernel32:$unit status=$status executed=$ex todo=$todo flaky=$fl failures=$fails skipped=$sk exit=$rc time=${secs}s"
+        [[ -n "$last" ]] && echo "  last test line: $last"
+        grep -a '^win10xbox: ' "$log" | head -3 | sed 's/^/  /'
+        read -r expect max <<<"$(baseline_of "$unit")"
+        if [[ $expect == run ]]; then
+            if [[ $status != ok ]]; then
+                echo "  REGRESSION: baseline is 'completes', now $status"; bad=1
+            elif (( fails > max )); then
+                echo "  REGRESSION: $fails failures, baseline allows $max"; bad=1
+            elif (( fails < max )); then
+                echo "  IMPROVED: $fails failures < baseline $max; lower $BASELINE"
+            fi
+        elif [[ $status == ok ]]; then
+            echo "  IMPROVED: now completes ($ex executed, $fails failures), baseline is '$expect'; update $BASELINE"
+        else
+            echo "  XFAIL: $status as recorded"
+        fi
+    done
+    echo "WINETEST kernel32 total executed=$total"
+    if (( total < 1 )); then echo "FAIL: no assertion executed in any unit"; exit 1; fi
+    (( bad == 0 )) || { echo "FAIL: kernel32 conformance below baseline (logs in $OUT)"; exit 1; }
+    echo "PASS (baseline holds)"
+}
+
+case "$MODE" in
+    build) do_build ;;
+    run) do_run ;;
+    all) do_build; do_run ;;
+    *) sed -n '2,/^set -uo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac
