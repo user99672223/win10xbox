@@ -1,4 +1,4 @@
-status: ready
+status: wip
 
 # wt-shell32: Wine dlls/shell32/tests through the layer
 
