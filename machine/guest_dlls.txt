@@ -66,5 +66,7 @@ dwmapi.dll
 d3d12.dll
 D3D12Core.dll
 D3DSCache.dll
+#    What dxgi/d3d11 import through API sets the host's schema sends to these (Wine has no builtin of them)
+kernel.appcore.dll
 # -- apiset schema (needed by the loader to resolve api-ms-win-* names)
 apisetschema.dll

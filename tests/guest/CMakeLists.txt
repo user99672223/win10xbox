@@ -169,6 +169,12 @@ if(MSVC)
   add_executable(guest_d3d11_tri d3d11_tri.c)
   target_link_libraries(guest_d3d11_tri PRIVATE dxguid)
   win10xbox_add_guest(guest_d3d11_tri)
+  # The control: the same program run natively on the runner, outside the layer (exit 42 = it renders). Not for the
+  # emulator build; its stdout also lists the runner's modules, i.e. the DLL closure of d3d11 (docs/slices/d3d.md).
+  if(NOT CMAKE_CROSSCOMPILING_EMULATOR)
+    add_test(NAME guest.d3d11 COMMAND guest_d3d11_tri)
+    set_tests_properties(guest.d3d11 PROPERTIES PASS_REGULAR_EXPRESSION "d3d11: done" TIMEOUT 120)
+  endif()
 endif()
 
 # Dear ImGui's example_win32_directx11, unmodified, as a guest of route B + Direct3D 11 (tests/guest/imgui_d3d11.cpp
