@@ -1,4 +1,4 @@
-status: in progress (head and CI runs are added in the final commit)
+status: ready (host-uwp https://github.com/user99672223/win10xbox/actions/runs/40030941646 green, console report dirtree verdict=PASS (exit code 42 = directory-install); ci https://github.com/user99672223/win10xbox/actions/runs/40030929226 green, integration.guest_dirtree passed on windows Debug/RelWithDebInfo and linux-cross Wine; head ae8a5be)
 
 # Directory installs: a program that lives in a folder tree
 
