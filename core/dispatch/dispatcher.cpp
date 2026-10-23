@@ -152,7 +152,7 @@ void* FindImpl(const char* name) {
 void ResolveHost(HostNt& h) {
 #define R(field) h.field = reinterpret_cast<decltype(h.field)>(HostExport(#field))
     R(NtClose); R(NtCreateFile); R(NtOpenFile); R(NtQueryAttributesFile); R(NtQueryFullAttributesFile);
-    R(NtDeleteFile); R(NtQueryInformationFile); R(NtSetInformationFile); R(NtOpenDirectoryObject); R(NtOpenSymbolicLinkObject);
+    R(NtDeleteFile); R(NtQueryInformationFile); R(NtSetInformationFile); R(NtQueryObject); R(NtOpenDirectoryObject); R(NtOpenSymbolicLinkObject);
     R(NtCreateSection); R(NtCreateSectionEx); R(NtMapViewOfSection); R(NtMapViewOfSectionEx);
     R(NtUnmapViewOfSection); R(NtUnmapViewOfSectionEx); R(NtQuerySection); R(NtAreMappedFilesTheSame);
     R(NtDuplicateObject); R(NtQueryVirtualMemory); R(NtQueryInformationProcess); R(NtQueryInformationThread);
