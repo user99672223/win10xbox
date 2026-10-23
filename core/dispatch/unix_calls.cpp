@@ -15,6 +15,9 @@
 #if WIN10XBOX_HAVE_CLOCK
 #include "win10xbox/clock.h"
 #endif
+#if WIN10XBOX_HAVE_TOKEN
+#include "win10xbox/token.h"
+#endif
 #include <cstdio>
 #include <cstring>
 #include <cwctype>
@@ -87,6 +90,38 @@ const UnixCallFn kNtdllFuncs[] = {
     &U_fd_to_handle, &U_handle_to_fd, &U_spawnvp, &U_system_time_precise,
 };
 
+// ---- ws2_32's unix functions (dlls/ws2_32/ws2_32_private.h, enum ws_unix_funcs) ------------------
+// ws2_32's DllMain loads this library, so it must exist for any program that links winsock. The layer has no network:
+// name resolution answers WSAHOST_NOT_FOUND (what a resolver without any reachable DNS server reports), and
+// gethostname answers the machine identity's computer name.
+constexpr NTSTATUS kWsaEFault = 10014;
+constexpr NTSTATUS kWsaHostNotFound = 11001;
+
+struct WsGetHostnameParams { char* name; unsigned int size; };
+
+NTSTATUS WINAPI U_ws_name_resolution(void*) { return kWsaHostNotFound; }
+
+NTSTATUS WINAPI U_ws_gethostname(void* args) {
+    auto* p = static_cast<WsGetHostnameParams*>(args);
+#if WIN10XBOX_HAVE_TOKEN
+    const std::wstring computer = token::ComputerName();
+#else
+    const std::wstring computer = L"WIN10XBOX";
+#endif
+    if (!p->name || computer.size() >= p->size) return kWsaEFault;
+    for (std::size_t i = 0; i < computer.size(); ++i) p->name[i] = static_cast<char>(computer[i]);
+    p->name[computer.size()] = 0;
+    return 0;
+}
+
+const UnixCallFn kWs2Funcs[] = {
+    &U_ws_name_resolution,   // getaddrinfo
+    &U_ws_name_resolution,   // gethostbyaddr
+    &U_ws_name_resolution,   // gethostbyname
+    &U_ws_gethostname,
+    &U_ws_name_resolution,   // getnameinfo
+};
+
 // ---- Wine debug channels ---------------------------------------------------------
 constexpr unsigned char kInitBit = 1u << 7;
 struct WineSpec { std::string channel; unsigned char mask; bool on; };
@@ -154,6 +189,7 @@ std::uint64_t NtdllUnixLibHandle() { return g_ntdll_handle; }
 void RegisterNtdllUnixLib() {
     LoadWineDebugSpec();
     if (!g_ntdll_handle) RegisterUnixLib(L"ntdll", kNtdllFuncs, std::size(kNtdllFuncs));
+    RegisterUnixLib(L"ws2_32", kWs2Funcs, std::size(kWs2Funcs));
 }
 
 std::uint64_t UnixLibHandleByName(std::wstring_view module_name) {

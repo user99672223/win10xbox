@@ -319,6 +319,17 @@ TEST(dispatch_unix_calls) {
     CHECK_EQ(UnixCallDispatcher(h, 0 /*unix_load_so_dll*/, nullptr), static_cast<NTSTATUS>(0xC0000135));
     CHECK_EQ(UnixCallDispatcher(h, 99, nullptr), kNotImplemented);
     CHECK_EQ(UnixCallDispatcher(12345, 0, nullptr), kNotImplemented);
+
+    // ws2_32's library (loaded by its DllMain): gethostname answers a name, resolution answers WSAHOST_NOT_FOUND.
+    std::uint64_t ws = detail::UnixLibHandleByName(L"ws2_32.dll");
+    CHECK(ws != 0);
+    char name[64] = {};
+    struct { char* name; unsigned int size; } hn = {name, sizeof name};
+    CHECK_EQ(UnixCallDispatcher(ws, 3 /*ws_unix_gethostname*/, &hn), 0);
+    CHECK(name[0] != 0);
+    hn.size = 1;
+    CHECK_EQ(UnixCallDispatcher(ws, 3, &hn), 10014 /*WSAEFAULT*/);
+    CHECK_EQ(UnixCallDispatcher(ws, 0 /*ws_unix_getaddrinfo*/, nullptr), 11001 /*WSAHOST_NOT_FOUND*/);
 }
 
 TEST(dispatch_wine_debug_channels) {
