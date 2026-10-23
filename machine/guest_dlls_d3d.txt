@@ -7,3 +7,6 @@
 #   kernel.appcore.dll          ext-ms-win-core-resourcepolicy-l1-1-0 (dxcore) and api-ms-win-appmodel-runtime-*
 directxdatabasehelper.dll
 kernel.appcore.dll
+#   xaudio2_9.dll               the native XAudio2 2.9 the game loads (integration.guest_xaudio2_native, docs/slices/xaudio2play.md); the
+#                               shared and builtin-only folders keep Wine's builtin xaudio2_9 (integration.guest_xaudio2)
+xaudio2_9.dll

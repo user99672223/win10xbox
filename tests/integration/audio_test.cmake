@@ -11,6 +11,9 @@
 #   3. the layer must give the same exit code; with an endpoint the whole sequence (the guest prints one line per
 #      step and "RESULT played") must have run, without one the layer must answer with the same HRESULT as the host.
 # A layer that registered a made-up device, or that fails to reach the host's, differs from the host's answer here.
+# When the workflow installed a virtual render endpoint (tools/ci/install_virtual_audio.ps1 sets
+# WIN10XBOX_CI_AUDIO_ENDPOINT=1 only after guest_wasapi run directly on the host exited 42), no-endpoint is not an
+# accepted answer any more: the host must play (42) and so must the layer, with every step printed.
 # Prints "SKIP: ..." (exit 77) under the same conditions as run_guest.cmake.
 if(NOT EXISTS "${MACHINE}/Windows/builtin/ntdll.dll")
   message("SKIP: ${MACHINE}/Windows/builtin/ntdll.dll missing (Wine PE builtins)")
@@ -41,6 +44,10 @@ message("=== host verdict, guest_wasapi run directly on the host (exit ${rc_host
 if(NOT rc_host STREQUAL "42" AND NOT rc_host STREQUAL "43")
   message("--- host stderr ---\n${err_host}")
   message(FATAL_ERROR "guest_wasapi run directly on the host exited ${rc_host}: neither 42 (played) nor 43 (no endpoint)")
+endif()
+if("$ENV{WIN10XBOX_CI_AUDIO_ENDPOINT}" STREQUAL "1" AND NOT rc_host STREQUAL "42")
+  message(FATAL_ERROR "WIN10XBOX_CI_AUDIO_ENDPOINT=1 (the workflow installed a virtual render endpoint) but guest_wasapi "
+                      "run directly on the host exited ${rc_host}, not 42")
 endif()
 if(NOT "${GUEST_EXE}" STREQUAL "${PROBE_EXE}")
   execute_process(COMMAND ${EMULATOR} "${GUEST_EXE}" RESULT_VARIABLE rc_own OUTPUT_VARIABLE out_own
