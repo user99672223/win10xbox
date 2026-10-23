@@ -980,9 +980,7 @@ NTSTATUS NTAPI Xl_NtQueryObject(HANDLE h, ULONG cls, PVOID buf, ULONG len, PULON
         std::wstring name;
         if (NamedHandleGuestPath(h, &name)) return WriteNameInfo(name, buf, len, ret);
     }
-    using Fn = NTSTATUS(NTAPI*)(HANDLE, ULONG, PVOID, ULONG, PULONG);
-    auto fn = HostProc<Fn>("NtQueryObject");
-    return fn ? fn(h, cls, buf, len, ret) : nts::NotImplemented;
+    return QueryObjectHostFile(h, cls, buf, len, ret);
 }
 
 NTSTATUS NTAPI Xl_NtMakeTemporaryObject(HANDLE h) {
