@@ -39,7 +39,9 @@ namespace w10x_uwp
         std::string title;       // shown instead of the file name when not empty
         std::vector<std::string> args;                            // replaces launch.json "args" for this launch
         std::vector<std::pair<std::string, std::string>> env;     // set for this launch only
+        bool run_all = false;    // the top entry "Run every program (report)": no file, starts the all-programs run
     };
+    constexpr const char* kRunAllTitle = "Run every program (report)";
 
     struct LauncherResult
     {
@@ -48,14 +50,22 @@ namespace w10x_uwp
         bool ran = false;                  // the guest was started and exited (exit_code is valid)
         long exit_code = 0;
         std::vector<std::string> lines;    // last lines of the guest's stdout
+        int run = 1;                       // 1-based number of this run in the restart chain (launcher_result.txt "run=")
+        bool summary = false;              // the end-of-run summary: name = title, verdict = counts, lines = one per program
+        std::string note;                  // shown on the result screen: why the self-restart failed
     };
 
     // Last `n` non-empty-tail lines of a text file (the file's last 64 KiB are looked at), control
     // characters replaced by '?'. Empty when the file cannot be read.
     std::vector<std::string> TailLines(const std::wstring& path, std::size_t n);
 
-    // LocalState\launcher_result.txt: the test oracle of the CI gate and a record for the owner.
+    // LocalState\launcher_result.txt: the test oracle of the CI gate and a record for the owner. One block per
+    // run ("run=N" first line, a blank line after it); run 1 truncates the file, later runs append.
     bool WriteLauncherResult(const std::wstring& path, const LauncherResult& r);
+
+    // Whole-file helpers for LocalState\report.txt (the file stays below a few MiB).
+    bool WriteTextFile(const std::wstring& path, const std::string& text, bool append);
+    bool ReadTextFile(const std::wstring& path, std::string* out);   // at most 8 MiB
 
     class Launcher final : public FrameSource
     {
@@ -73,6 +83,7 @@ namespace w10x_uwp
         void ShowResult(const LauncherResult& r);  // result screen up (does not block)
         // Blocks until the result screen is dismissed (true) or `stop` is set (false).
         bool WaitDismiss(const std::atomic<bool>& stop);
+        bool PadSeen();                            // a gamepad was seen through Windows.Gaming.Input (any thread)
 
         // ---- UI thread -----------------------------------------------------------------------
         bool Consumes();                           // a launcher screen is up: keys are for it, not the guest
@@ -99,6 +110,6 @@ namespace w10x_uwp
         LauncherResult result_;
 
         unsigned pad_prev_ = 0;     // UI thread only
-        bool pad_seen_ = false;     // a gamepad was seen through Windows.Gaming.Input
+        std::atomic<bool> pad_seen_{false};     // a gamepad was seen through Windows.Gaming.Input
     };
 }  // namespace w10x_uwp
