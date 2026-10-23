@@ -1,4 +1,4 @@
-status: in progress
+status: ready
 
 # Slice: fastfetch
 
@@ -12,9 +12,25 @@ in ci.yml's windows job:
 * step "Gate - fastfetch, each working module prints its line": one process per module for OS, Host, Kernel, Uptime,
   Shell, Terminal, CPU, Memory, Swap, Disk, Locale; each must exit 0 and print its line.
 
-CI run: RUN_URL_PENDING
+CI run: https://github.com/user99672223/win10xbox/actions/runs/39876837957 (head 70842b7; linux-cross, windows (Debug) and
+windows (RelWithDebInfo) all green, `integration.fastfetch` passed).
 
-fastfetch's output through the layer: OUTPUT_PENDING
+fastfetch's output through the layer (windows RelWithDebInfo job, the per-module step):
+
+    OS: Windows 10 Pro (22H2) x86_64
+    Host: Virtual Machine (Hyper-V UEFI Release v4.1)
+    Kernel: Wine_11.9 10.0.19045.3803
+    Uptime: 5 mins
+    Shell: PowerShell
+    Terminal: svchost
+    CPU: AMD 4700S (4) @ 3.52 GHz
+    Memory: 2.80 GiB / 15.99 GiB (18%)
+    Swap: 0 B / 2.88 GiB (0%)
+    Disk (C:\): 4.04 GiB / 150.00 GiB (3%) - NTFS
+    Locale: en_US.UTF-8
+
+Host, Shell, Terminal and Disk are the runner's own answers (the layer passes those queries through); Kernel names Wine
+because the guest's ntdll is Wine's (DECISIONS.md E1); the CPU brand is the D18 identity, its clock the host's.
 
 ## What had to change
 
