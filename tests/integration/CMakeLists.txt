@@ -31,6 +31,7 @@ if(TARGET guest_hello)
                    guest_seh)
                    guest_window_input guest_window_input2 guest_window_scroll guest_window_text guest_window_nc guest_dialog
                    guest_comctl)
+                   guest_clipboard)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -196,6 +197,14 @@ win10xbox_guest_test(guest_window_scroll "C:\\guest\\guest_window_scroll.exe" 42
   "scroll: WM_VSCROLL code=1" "scroll: after click linedown=1 endscroll=1 pos=21" "scroll: done")
 set_tests_properties(integration.guest_window_scroll PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_scroll.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=391,250,ffc8c8c8;WIN10XBOX_TEST_INJECT_INPUT=sleep 2000\\;move 391,275\\;ldown\\;sleep 100\\;lup")
+# The clipboard (tests/guest/clipboard.c, core/user/win_clipboard.cpp): CF_UNICODETEXT set/read, CF_TEXT synthesis,
+# a registered format, delayed rendering, the sequence number. It creates a (hidden) window, so builtin-only folder.
+win10xbox_guest_test(guest_clipboard "C:\\guest\\guest_clipboard.exe" 42
+  "clipboard: window ok" "clipboard: set-unicode ok" "clipboard: sequence-number ok" "clipboard: get-unicode ok"
+  "clipboard: synthesized-text ok CF_TEXT=Hello Xbox clipboard" "clipboard: enum-formats ok count=4"
+  "clipboard: registered-format ok" "clipboard: delayed-render ok calls=1" "clipboard: listener-update ok count=1"
+  "clipboard: listener-removed ok" "clipboard: done")
+set_tests_properties(integration.guest_clipboard PROPERTIES FAIL_REGULAR_EXPRESSION "clipboard: FAIL")
 # The dialog manager (tests/guest/dialog.c): DialogBoxParamW with a DIALOG resource, WM_INITDIALOG, GetDlgItem,
 # Set/GetDlgItemText, tab order, WM_CTLCOLORSTATIC, a click on the OK button injected by the host (screen (160,163) =
 # the button's centre once the program placed the dialog at (100,100) and the button at client (10,50) 100x26),

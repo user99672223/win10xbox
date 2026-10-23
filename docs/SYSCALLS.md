@@ -6,6 +6,7 @@ Windows 10 x64 / 22H2 NT syscall numbers) and the hand-maintained policy
 `core/user/user_syscalls.h` registers them. Do not edit by hand.
 
 1798 syscalls. passthrough 155, translate 35, emulate 311, todo 1297. Generated 2026-10-23.
+1798 syscalls. passthrough 155, translate 35, emulate 324, todo 1284. Generated 2026-10-23.
 
 Policy: **PassThrough** calls the host ntdll export by name; **Translate**
 rewrites arguments (paths, handles, timeouts) then passes through;
@@ -1066,7 +1067,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1317 | NtUserAcquireIAMKey | 0 | Todo |  |
 | 0x1318 | NtUserAcquireInteractiveControlBackgroundAccess | 0 | Todo |  |
 | 0x1319 | NtUserActivateKeyboardLayout | 2 | Emulate | core/user |
-| 0x131a | NtUserAddClipboardFormatListener | 1 | Todo |  |
+| 0x131a | NtUserAddClipboardFormatListener | 1 | Emulate | core/user |
 | 0x131b | NtUserAddVisualIdentifier | 0 | Todo |  |
 | 0x131c | NtUserAllowForegroundActivation | 0 | Todo |  |
 | 0x131d | NtUserAllowSetForegroundWindow | 0 | Todo |  |
@@ -1105,7 +1106,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x133e | NtUserCallTwoParam | 3 | Emulate | core/user |
 | 0x133f | NtUserCanBrokerForceForeground | 0 | Todo |  |
 | 0x1340 | NtUserCancelQueueEventCompletionPacket | 0 | Todo |  |
-| 0x1341 | NtUserChangeClipboardChain | 2 | Todo |  |
+| 0x1341 | NtUserChangeClipboardChain | 2 | Emulate | core/user |
 | 0x1342 | NtUserChangeDisplaySettings | 5 | Todo |  |
 | 0x1343 | NtUserChangeWindowMessageFilter | 0 | Todo |  |
 | 0x1344 | NtUserChangeWindowMessageFilterEx | 0 | Todo |  |
@@ -1121,7 +1122,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x134e | NtUserClearWakeMask | 0 | Todo |  |
 | 0x134f | NtUserClearWindowState | 0 | Todo |  |
 | 0x1350 | NtUserClipCursor | 1 | Emulate | core/user |
-| 0x1351 | NtUserCloseClipboard | 0 | Todo |  |
+| 0x1351 | NtUserCloseClipboard | 0 | Emulate | core/user |
 | 0x1352 | NtUserCloseDesktop | 1 | Todo |  |
 | 0x1353 | NtUserCloseWindowStation | 1 | Todo |  |
 | 0x1354 | NtUserCompositionInputSinkLuidFromPoint | 0 | Todo |  |
@@ -1131,7 +1132,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1358 | NtUserConsoleControl | 0 | Todo |  |
 | 0x1359 | NtUserConvertMemHandle | 0 | Todo |  |
 | 0x135a | NtUserCopyAcceleratorTable | 3 | Todo |  |
-| 0x135b | NtUserCountClipboardFormats | 0 | Todo |  |
+| 0x135b | NtUserCountClipboardFormats | 0 | Emulate | core/user |
 | 0x135c | NtUserCreateAcceleratorTable | 2 | Todo |  |
 | 0x135d | NtUserCreateActivationGroup | 0 | Todo |  |
 | 0x135e | NtUserCreateActivationObject | 0 | Todo |  |
@@ -1204,7 +1205,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x13a1 | NtUserDwmLockScreenUpdates | 0 | Todo |  |
 | 0x13a2 | NtUserDwmValidateWindow | 0 | Todo |  |
 | 0x13a3 | NtUserDwmWindowNotificationsEnabled | 0 | Todo |  |
-| 0x13a4 | NtUserEmptyClipboard | 0 | Todo |  |
+| 0x13a4 | NtUserEmptyClipboard | 0 | Emulate | core/user |
 | 0x13a5 | NtUserEnableChildWindowDpiMessage | 0 | Todo |  |
 | 0x13a6 | NtUserEnableIAMAccess | 0 | Todo |  |
 | 0x13a7 | NtUserEnableMenuItem | 3 | Todo |  |
@@ -1230,7 +1231,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x13bb | NtUserEndMenu | 0 | Todo |  |
 | 0x13bc | NtUserEndPaint | 2 | Emulate | core/user |
 | 0x13bd | NtUserEnsureDpiDepSysMetCacheForPlateau | 0 | Todo |  |
-| 0x13be | NtUserEnumClipboardFormats | 1 | Todo |  |
+| 0x13be | NtUserEnumClipboardFormats | 1 | Emulate | core/user |
 | 0x13bf | NtUserEnumDisplayDevices | 4 | Emulate | core/user |
 | 0x13c0 | NtUserEnumDisplayMonitors | 4 | Emulate | core/user |
 | 0x13c1 | NtUserEnumDisplaySettings | 4 | Emulate | core/user |
@@ -1260,12 +1261,12 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x13d9 | NtUserGetClassName | 3 | Emulate | core/user |
 | 0x13da | NtUserGetClipCursor | 1 | Emulate | core/user |
 | 0x13db | NtUserGetClipboardAccessToken | 0 | Todo |  |
-| 0x13dc | NtUserGetClipboardData | 2 | Todo |  |
-| 0x13dd | NtUserGetClipboardFormatName | 3 | Todo |  |
+| 0x13dc | NtUserGetClipboardData | 2 | Emulate | core/user |
+| 0x13dd | NtUserGetClipboardFormatName | 3 | Emulate | core/user |
 | 0x13de | NtUserGetClipboardMetadata | 0 | Todo |  |
-| 0x13df | NtUserGetClipboardOwner | 0 | Todo |  |
-| 0x13e0 | NtUserGetClipboardSequenceNumber | 0 | Todo |  |
-| 0x13e1 | NtUserGetClipboardViewer | 0 | Todo |  |
+| 0x13df | NtUserGetClipboardOwner | 0 | Emulate | core/user |
+| 0x13e0 | NtUserGetClipboardSequenceNumber | 0 | Emulate | core/user |
+| 0x13e1 | NtUserGetClipboardViewer | 0 | Emulate | core/user |
 | 0x13e2 | NtUserGetComboBoxInfo | 0 | Todo |  |
 | 0x13e3 | NtUserGetControlBrush | 0 | Todo |  |
 | 0x13e4 | NtUserGetControlColor | 0 | Todo |  |
@@ -1347,7 +1348,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1430 | NtUserGetPointerProprietaryId | 0 | Todo |  |
 | 0x1431 | NtUserGetPointerType | 0 | Todo |  |
 | 0x1432 | NtUserGetPrecisionTouchPadConfiguration | 0 | Todo |  |
-| 0x1433 | NtUserGetPriorityClipboardFormat | 2 | Todo |  |
+| 0x1433 | NtUserGetPriorityClipboardFormat | 2 | Emulate | core/user |
 | 0x1434 | NtUserGetProcessDefaultLayout | 1 | Emulate | core/user |
 | 0x1435 | NtUserGetProcessDpiAwarenessContext | 1 | Emulate | core/user |
 | 0x1436 | NtUserGetProcessUIContextInformation | 0 | Todo |  |
@@ -1383,7 +1384,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1454 | NtUserGetUnpredictedMessagePos | 0 | Todo |  |
 | 0x1455 | NtUserGetUpdateRect | 3 | Emulate | core/user |
 | 0x1456 | NtUserGetUpdateRgn | 3 | Emulate | core/user |
-| 0x1457 | NtUserGetUpdatedClipboardFormats | 3 | Todo |  |
+| 0x1457 | NtUserGetUpdatedClipboardFormats | 3 | Emulate | core/user |
 | 0x1458 | NtUserGetWOWClass | 0 | Todo |  |
 | 0x1459 | NtUserGetWinStationInfo | 0 | Todo |  |
 | 0x145a | NtUserGetWindowBand | 0 | Todo |  |
@@ -1439,7 +1440,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x148c | NtUserInvalidateRect | 3 | Emulate | core/user |
 | 0x148d | NtUserInvalidateRgn | 3 | Emulate | core/user |
 | 0x148e | NtUserIsChildWindowDpiMessageEnabled | 1 | Emulate | core/user |
-| 0x148f | NtUserIsClipboardFormatAvailable | 1 | Todo |  |
+| 0x148f | NtUserIsClipboardFormatAvailable | 1 | Emulate | core/user |
 | 0x1490 | NtUserIsMouseInPointerEnabled | 0 | Emulate | core/user |
 | 0x1491 | NtUserIsMouseInputEnabled | 0 | Todo |  |
 | 0x1492 | NtUserIsNonClientDpiScalingEnabled | 0 | Todo |  |
@@ -1490,7 +1491,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x14bf | NtUserNotifyOverlayWindow | 0 | Todo |  |
 | 0x14c0 | NtUserNotifyProcessCreate | 0 | Todo |  |
 | 0x14c1 | NtUserNotifyWinEvent | 4 | Emulate | core/user |
-| 0x14c2 | NtUserOpenClipboard | 2 | Todo |  |
+| 0x14c2 | NtUserOpenClipboard | 2 | Emulate | core/user |
 | 0x14c3 | NtUserOpenDesktop | 3 | Todo |  |
 | 0x14c4 | NtUserOpenInputDesktop | 3 | Todo |  |
 | 0x14c5 | NtUserOpenThreadDesktop | 0 | Todo |  |
@@ -1579,7 +1580,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1518 | NtUserRemoteShadowStop | 0 | Todo |  |
 | 0x1519 | NtUserRemoteStopScreenUpdates | 0 | Todo |  |
 | 0x151a | NtUserRemoteThinwireStats | 0 | Todo |  |
-| 0x151b | NtUserRemoveClipboardFormatListener | 1 | Todo |  |
+| 0x151b | NtUserRemoveClipboardFormatListener | 1 | Emulate | core/user |
 | 0x151c | NtUserRemoveInjectionDevice | 0 | Todo |  |
 | 0x151d | NtUserRemoveMenu | 3 | Todo |  |
 | 0x151e | NtUserRemoveProp | 2 | Emulate | core/user |
@@ -1617,8 +1618,8 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x153e | NtUserSetClassLong | 4 | Emulate | core/user |
 | 0x153f | NtUserSetClassLongPtr | 4 | Emulate | core/user |
 | 0x1540 | NtUserSetClassWord | 3 | Emulate | core/user |
-| 0x1541 | NtUserSetClipboardData | 3 | Todo |  |
-| 0x1542 | NtUserSetClipboardViewer | 1 | Todo |  |
+| 0x1541 | NtUserSetClipboardData | 3 | Emulate | core/user |
+| 0x1542 | NtUserSetClipboardViewer | 1 | Emulate | core/user |
 | 0x1543 | NtUserSetCoreWindow | 0 | Todo |  |
 | 0x1544 | NtUserSetCoreWindowPartner | 0 | Todo |  |
 | 0x1545 | NtUserSetCoveredWindowStates | 0 | Todo |  |

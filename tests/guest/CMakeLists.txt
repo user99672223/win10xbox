@@ -102,6 +102,10 @@ endif()
 add_executable(guest_window_scroll window_scroll.c)
 target_link_libraries(guest_window_scroll PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window_scroll)
+# The clipboard guest (tests/guest/clipboard.c): user32 clipboard API -> win32u syscalls -> core/user/win_clipboard.cpp.
+add_executable(guest_clipboard clipboard.c)
+target_link_libraries(guest_clipboard PRIVATE user32)
+win10xbox_add_guest(guest_clipboard)
 # The dialog guest: DialogBoxParamW with a DIALOG resource (dialog.rc); the host clicks OK (tests/guest/dialog.c).
 enable_language(RC)
 add_executable(guest_dialog dialog.c dialog.rc)
