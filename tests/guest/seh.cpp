@@ -340,11 +340,11 @@ int main() {
 #endif
     );
     install_guard_veh();
-    test_cxx_basic();
-    test_cxx_dll();
     test_seh();
     test_veh();
     test_uef();
+    test_cxx_basic();
+    test_cxx_dll();
     std::printf("seh: done failures=%d\n", g_fail);
     return g_fail ? 1 : 42;
 }
