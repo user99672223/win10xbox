@@ -397,6 +397,7 @@ struct HostGui {
     decltype(&::IsIconic) IsIconic;
     decltype(&::GetWindowRect) GetWindowRect;
     decltype(&::GetWindowDC) GetWindowDC;
+    decltype(&::PrintWindow) PrintWindow;   // optional: a D3D swap chain's content (core/user/native_compose.cpp)
     decltype(&::ReleaseDC) ReleaseDC;
     decltype(&::GetSystemMetrics) GetSystemMetrics;
     decltype(&::CreateCompatibleDC) CreateCompatibleDC;
