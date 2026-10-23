@@ -509,7 +509,7 @@ set_tests_properties(integration.guest_d3d11 PROPERTIES
   SKIP_REGULAR_EXPRESSION "SKIP:"
   LABELS "guest_e2e"
   TIMEOUT 240
-  ENVIRONMENT "WIN10XBOX_WINEDEBUG=+loaddll,warn+module")
+  ENVIRONMENT "WIN10XBOX_WINEDEBUG=+loaddll,warn+module,+seh,+rpc,+service")
 endif()
 
 # Route B + Direct3D 11 (docs/DECISIONS.md G1): Dear ImGui's example_win32_directx11 (tests/guest/imgui_d3d11.cpp,
