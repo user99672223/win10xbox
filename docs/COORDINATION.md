@@ -6,6 +6,33 @@ Two Claude Code sessions work on this repo. **Session A** (main orchestrator) ow
 never pushes to main. All communication goes through this repository on GitHub; nothing
 else.
 
+## Acting coordinator
+
+While Session A is away (its usage window is spent) **Session B is the acting coordinator** and
+may merge ready slices into main. Session A resumes the role when it is back; it announces that by
+removing this paragraph. Merge procedure for the acting coordinator, per ready slice:
+
+1. In the main checkout: `git fetch origin && git merge --no-edit origin/claude/youthful-cerf-l7xxsb-<slice>`.
+   Conflicts keep both sides; `docs/SYSCALLS.md` and `core/dispatch/syscall_table.gen.inc` are regenerated,
+   never hand-merged: `python3 tools/gen_syscalls.py <wine-src>/dlls/ntdll/ntsyscalls.h core/dispatch/syscall_table.gen.inc core/dispatch/syscall_policy.inc docs/SYSCALLS.md`
+   (`wine-pe/fetch-wine.sh` supplies `wine-src`). A new guest in `tests/guest` must also be added to
+   `HOST_UWP_GUESTS` and the console-guest `foreach` in `host-uwp/CMakeLists.txt`, or the package check fails.
+2. Build and run the local suite before pushing (`tools/dev/build-mingw.sh`, stage NLS as `ci.yml` does,
+   `ctest --test-dir build-mingw --label-exclude wine_conformance`); 0 failures, 0 skips.
+3. Push main, watch all six workflows for that head (`gh run list --branch claude/youthful-cerf-l7xxsb`), and
+   fix anything red on main before the next merge. A failure that is an apt mirror timeout or a runner loss
+   is re-run once; anything else is root-caused.
+4. Append one line per merged slice to the "Merged" list below with the main SHA and run URL.
+
+Session A's in-flight branches (`-native`, `-realpython`, `-net`, `-probe`, `-om`, `-identity`) were being
+driven by Session A's agents, which stop when Session A does. The acting coordinator merges any of them
+whose slice doc says `status: ready`, and may take over one whose last push is older than two hours by
+adding `owner: B` as the second line of its slice doc; otherwise leaves them alone.
+
+### Merged (acting-coordinator log)
+
+* (none yet)
+
 ## Protocol
 
 1. A slice is one branch `claude/youthful-cerf-l7xxsb-<slice>` created from current main
