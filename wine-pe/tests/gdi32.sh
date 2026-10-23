@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+# Build Wine's gdi32 conformance tests (dlls/gdi32/tests, LGPL, compiled in place
+# from wine-pe/wine-src and never copied into this repository) as x64 PE guests
+# with llvm-mingw, and optionally run them through the layer.
+#
+#   wine-pe/tests/gdi32.sh [--out DIR] [--units u1,u2] [--jobs N]
+#                          [--host win10xbox.exe --machine DIR [--emulator wine]
+#                           [--timeout S] [--results DIR] [--baseline FILE]]
+#
+# Build: one guest per unit, <out>/gdi32_<unit>.exe (default out:
+# wine-pe/build/tests/gdi32), from <unit>.c + a generated STANDALONE test list +
+# tests/wine-tests/wine_support.c, with the same flags tests/wine-tests uses
+# (Wine's headers instead of the toolchain's, -nostdinc, -w). Incremental.
+#
+# Run (with --host and --machine): each guest is copied to
+# <machine>/guest-wine and started as
+#   [emulator] win10xbox.exe --machine <machine> C:\guest-wine\gdi32_<unit>.exe
+# under a per-unit cap (--timeout, default 60 s). Wine's test.h prints
+# "<unit>: N tests executed (T marked as todo, F as flaky, K failures), S skipped."
+# when the test function returns; that line is the result. A unit without it is
+# "crashed" (or "timeout" at the cap). Per-unit rows go to <results>/<unit>.tsv
+# (unit status executed todo flaky failures skipped exit secs last-line) and the
+# full output to <results>/<unit>.log; a Markdown table is printed at the end.
+#
+# Gate (with --baseline, lines "<unit> <run|crash|timeout> <max_failures>"):
+#   run       must complete with failures <= max_failures
+#   crash|timeout  may stay that way; completing prints IMPROVED (not a failure)
+#   and in total more than 0 assertions must have executed.
+#
+# Exit: 0 ok, 1 regression / build failure, 2 usage, 77 a prerequisite is
+# missing (no Wine sources, no llvm-mingw, no Wine builtins or NLS data in the
+# machine folder): the ctest entry reports that as SKIP.
+#
+# Environment: LLVM_MINGW (default /opt/llvm-mingw), WINE_SRC (default
+# wine-pe/wine-src), WIN10XBOX_DEBUG (default -all for the runs).
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HERE/../.." && pwd)"
+WINE_SRC="${WINE_SRC:-$REPO/wine-pe/wine-src}"
+LLVM_MINGW="${LLVM_MINGW:-/opt/llvm-mingw}"
+DEFAULT_UNITS="dc,gdiobj,bitmap,brush,pen,mapping,clipping,path"
+
+OUT="$REPO/wine-pe/build/tests/gdi32"
+UNITS="$DEFAULT_UNITS"
+JOBS="$(nproc 2>/dev/null || echo 4)"
+HOST=""
+MACHINE=""
+EMULATOR=""
+TIMEOUT=60
+RESULTS=""
+BASELINE=""
+
+usage() { sed -n '2,/^set -uo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; }
+skip() { echo "SKIP: $*"; exit 77; }
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --out)      OUT="${2:?}"; shift 2 ;;
+        --units)    UNITS="${2:?}"; shift 2 ;;
+        --jobs|-j)  JOBS="${2:?}"; shift 2 ;;
+        --host)     HOST="${2:?}"; shift 2 ;;
+        --machine)  MACHINE="${2:?}"; shift 2 ;;
+        --emulator) EMULATOR="${2-}"; shift 2 ;;
+        --timeout)  TIMEOUT="${2:?}"; shift 2 ;;
+        --results)  RESULTS="${2:?}"; shift 2 ;;
+        --baseline) BASELINE="${2:?}"; shift 2 ;;
+        -h|--help)  usage; exit 0 ;;
+        *) echo "gdi32.sh: unknown argument '$1'" >&2; usage >&2; exit 2 ;;
+    esac
+done
+IFS=',' read -r -a UNIT_LIST <<< "$UNITS"
+[[ -n "$RESULTS" ]] || RESULTS="$OUT/results"
+
+# ---------------------------------------------------------------- build
+[[ -f "$WINE_SRC/include/wine/test.h" ]] || skip "$WINE_SRC missing (run wine-pe/fetch-wine.sh)"
+[[ -d "$LLVM_MINGW/bin" ]] && export PATH="$LLVM_MINGW/bin:$PATH"
+CC=x86_64-w64-mingw32-clang
+command -v "$CC" >/dev/null 2>&1 || skip "$CC not found (set LLVM_MINGW)"
+RESOURCE_DIR="$("$CC" -print-resource-dir)" || skip "cannot determine the clang resource directory"
+
+mkdir -p "$OUT/obj"
+CFLAGS=(-O1 -g -std=gnu17 -w -nostdinc -isystem "$RESOURCE_DIR/include"
+        -I"$WINE_SRC/include" -I"$WINE_SRC/include/msvcrt"
+        -D__WINESRC__ -D_NTSYSTEM_ -DWINE_NO_LONG_TYPES -D_UCRT)
+[[ -f "$REPO/wine-pe/build/include/unknwn.h" ]] && CFLAGS+=(-I"$REPO/wine-pe/build/include")
+LIBS=(-lntdll -lkernel32 -luser32 -ladvapi32 -lgdi32 -lshell32 -lole32 -lversion -lws2_32 -lshlwapi -luuid -lwinmm)
+
+newer() { local t="$1"; shift; [[ -f "$t" ]] || return 0; local s; for s in "$@"; do [[ "$s" -nt "$t" ]] && return 0; done; return 1; }
+
+support_c="$REPO/tests/wine-tests/wine_support.c"
+support_o="$OUT/obj/wine_support.o"
+if newer "$support_o" "$support_c" "$0"; then
+    # Our own code, compiled against the toolchain's headers.
+    "$CC" -O1 -g -c "$support_c" -o "$support_o" || { echo "gdi32.sh: wine_support.c failed to build" >&2; exit 1; }
+fi
+
+build_unit() {
+    local u="$1" src="$WINE_SRC/dlls/gdi32/tests/$1.c"
+    local tl="$OUT/obj/${u}_testlist.c" exe="$OUT/gdi32_$u.exe" log="$OUT/obj/$u.build.log"
+    [[ -f "$src" ]] || { echo "gdi32.sh: $src missing" > "$log"; return 1; }
+    if newer "$exe" "$src" "$support_o" "$0"; then
+        cat > "$tl" <<EOF
+/* generated by wine-pe/tests/gdi32.sh */
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#define STANDALONE
+#include "wine/test.h"
+extern void func_$u(void);
+const struct test winetest_testlist[] = { { "$u", func_$u }, { 0, 0 } };
+EOF
+        "$CC" "${CFLAGS[@]}" -c "$src" -o "$OUT/obj/$u.o" > "$log" 2>&1 &&
+        "$CC" "${CFLAGS[@]}" -c "$tl" -o "$OUT/obj/${u}_testlist.o" >> "$log" 2>&1 &&
+        "$CC" -o "$exe" "$OUT/obj/$u.o" "$OUT/obj/${u}_testlist.o" "$support_o" "${LIBS[@]}" >> "$log" 2>&1 ||
+            { rm -f "$exe"; return 1; }
+    fi
+}
+
+build_fail=0
+pids=()
+for u in "${UNIT_LIST[@]}"; do
+    while (( $(jobs -rp | wc -l) >= JOBS )); do wait -n || true; done
+    build_unit "$u" & pids+=("$!:$u")
+done
+for p in "${pids[@]}"; do
+    if ! wait "${p%%:*}"; then
+        u="${p#*:}"
+        echo "gdi32.sh: build of $u failed:" >&2
+        tail -n 20 "$OUT/obj/$u.build.log" >&2
+        build_fail=1
+    fi
+done
+(( build_fail )) && exit 1
+echo "gdi32.sh: built ${#UNIT_LIST[@]} guests in $OUT"
+
+[[ -n "$HOST" ]] || exit 0
+
+# ---------------------------------------------------------------- run
+[[ -n "$MACHINE" ]] || { echo "gdi32.sh: --host needs --machine" >&2; exit 2; }
+[[ -f "$MACHINE/Windows/builtin/ntdll.dll" ]] || skip "$MACHINE/Windows/builtin/ntdll.dll missing (wine-pe/build.sh or the wine-pe artifact)"
+[[ -f "$MACHINE/Windows/builtin/gdi32.dll" ]] || skip "$MACHINE/Windows/builtin/gdi32.dll missing (wine-pe/build.sh or the wine-pe artifact)"
+[[ -f "$MACHINE/Windows/System32/c_1252.nls" ]] || skip "$MACHINE/Windows/System32/c_1252.nls missing (stage the NLS data, docs/HANDOFF.md trap 1)"
+[[ -f "$HOST" ]] || skip "$HOST missing"
+
+mkdir -p "$MACHINE/guest-wine" "$RESULTS"
+win_machine="$MACHINE"
+[[ -n "$EMULATOR" && "$win_machine" == /* ]] && win_machine="Z:$win_machine"
+win_machine="${win_machine//\//\\}"
+export WIN10XBOX_DEBUG="${WIN10XBOX_DEBUG:--all}"
+
+declare -A BL_EXPECT BL_MAX
+if [[ -n "$BASELINE" ]]; then
+    [[ -f "$BASELINE" ]] || { echo "gdi32.sh: baseline $BASELINE missing" >&2; exit 1; }
+    while read -r bu be bm _; do
+        [[ -z "${bu:-}" || "$bu" == \#* ]] && continue
+        BL_EXPECT[$bu]="$be"; BL_MAX[$bu]="${bm:-0}"
+    done < "$BASELINE"
+fi
+
+summary_re='([A-Za-z0-9_]+):[^ ]* ([0-9]+) tests executed \(([0-9]+) marked as todo, ([0-9]+) as flaky, ([0-9]+) failures?\), ([0-9]+) skipped'
+total_exec=0
+regress=0
+table="| unit | outcome | executed | todo | failures | skipped | exit | secs | baseline | last test line seen |
+|---|---|---:|---:|---:|---:|---:|---:|---|---|"
+for u in "${UNIT_LIST[@]}"; do
+    name="gdi32_$u"
+    cp -f "$OUT/$name.exe" "$MACHINE/guest-wine/$name.exe"
+    log="$RESULTS/$u.log"
+    t0=$(date +%s)
+    timeout -k 5 "$TIMEOUT" $EMULATOR "$HOST" --machine "$win_machine" "C:\\guest-wine\\$name.exe" \
+        < /dev/null > "$log" 2>&1
+    rc=$?
+    secs=$(( $(date +%s) - t0 ))
+    status=crashed executed=0 todo=0 flaky=0 failures=0 skipped=0 last=""
+    line="$(tail -c 65536 "$log" | grep -aE "$summary_re" | tail -n 1)"
+    if [[ $rc == 124 || $rc == 137 ]]; then
+        status=timeout
+    elif [[ -n "$line" && "$line" =~ $summary_re ]]; then
+        status=ok
+        executed=${BASH_REMATCH[2]} todo=${BASH_REMATCH[3]} flaky=${BASH_REMATCH[4]}
+        failures=${BASH_REMATCH[5]} skipped=${BASH_REMATCH[6]}
+    fi
+    if [[ $status != ok ]]; then
+        last="$(tail -c 65536 "$log" | grep -aoE '[A-Za-z0-9_]+\.c:[0-9]+:[^|]*' | tail -n 1 | cut -c1-140 | tr -d '\r')"
+    fi
+    total_exec=$(( total_exec + executed ))
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$u" "$status" "$executed" "$todo" "$flaky" \
+        "$failures" "$skipped" "$rc" "$secs" "$last" > "$RESULTS/$u.tsv"
+
+    verdict=""
+    if [[ -n "$BASELINE" ]]; then
+        be="${BL_EXPECT[$u]:-}" bm="${BL_MAX[$u]:-0}"
+        if [[ -z "$be" ]]; then
+            verdict="REGRESSION: no baseline line for $u"
+        elif [[ $be == run ]]; then
+            if [[ $status != ok ]]; then verdict="REGRESSION: baseline 'run', now $status"
+            elif (( executed < 1 )); then verdict="REGRESSION: no assertion executed"
+            elif (( failures > bm )); then verdict="REGRESSION: $failures failures > baseline $bm"
+            elif (( failures < bm )); then verdict="IMPROVED: $failures failures < baseline $bm (lower it)"
+            fi
+        elif [[ $status == ok ]]; then
+            verdict="IMPROVED: completes ($executed executed, $failures failures), baseline '$be' (update it)"
+        fi
+        [[ $verdict == REGRESSION* ]] && regress=1
+    fi
+    echo "WINE_RESULT gdi32_$u: status=$status executed=$executed todo=$todo flaky=$flaky failures=$failures" \
+         "skipped=$skipped exit=$rc time=${secs}s baseline=${BL_EXPECT[$u]:-none}/${BL_MAX[$u]:-}${verdict:+ $verdict}"
+    [[ -n "$last" ]] && echo "  last test line before it stopped: $last"
+    table+=$'\n'"| $u | $status | $executed | $todo | $failures | $skipped | $rc | $secs | ${BL_EXPECT[$u]:-} ${BL_MAX[$u]:-} | ${last//|//} |"
+done
+echo
+echo "$table"
+echo
+echo "gdi32.sh: $total_exec assertions executed in ${#UNIT_LIST[@]} units"
+if (( total_exec < 1 )); then
+    echo "gdi32.sh: FAIL: no assertion executed at all" >&2
+    exit 1
+fi
+if (( regress )); then
+    echo "gdi32.sh: FAIL: regression against $BASELINE" >&2
+    exit 1
+fi
+echo "gdi32.sh: PASS"

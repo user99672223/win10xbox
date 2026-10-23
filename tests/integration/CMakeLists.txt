@@ -26,8 +26,8 @@ set(_prepare_args
 add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
-  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_window guest_window2 guest_window_input
-                   guest_window_input2 guest_window_text)
+  add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
+                   guest_window_input guest_window_input2 guest_window_text)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -60,8 +60,10 @@ function(win10xbox_guest_test name program exit_code)
       "-DPROGRAM_ARGS=${_guest_args}"
       "-DDEBUG_SPEC=${_guest_debug}"
       "-DFORBID_TRACE_REGEX=${_guest_forbid_trace}"
+      "-DEXPECT_TRACE_REGEX=${_guest_expect_trace}"
       -DEXPECT_EXIT=${exit_code}
       "-DEXPECT_REGEX=${ARGN}"
+      "-DINPUT_FILE=${_guest_input}" "-DGUEST_FILE=${_guest_file}"
       -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
   set_tests_properties(integration.${name} PROPERTIES
@@ -90,6 +92,16 @@ win10xbox_guest_test(guest_cpuid "C:\\guest\\guest_cpuid.exe" 0
 # syscall stub and Clk_NtDelayExecution recursed until the stack ran out. No
 # other guest sleeps, so nothing exercised it.
 win10xbox_guest_test(guest_sleep "C:\\guest\\guest_sleep.exe" 7 "guest slept")
+
+# CreateProcess (docs/DISPATCHER.md "Child processes"): NtCreateUserProcess starts a new host process running the
+# host executable on the child's guest image. The parent (tests/guest/spawn.c) runs guest_hello.exe and waits for
+# its exit code 42 through the host handle, then runs itself with a quoted command line, a working directory and
+# an extra environment variable and checks the exit code 7; the children's stdout is the inherited pipe.
+win10xbox_guest_test(guest_spawn "C:\\guest\\guest_spawn.exe" 42
+  "hello from guest" "spawn: child exit 42"
+  "spawn-child: argc=5" "spawn-child: argv\\[1\\]=\\[child\\]" "spawn-child: argv\\[2\\]=\\[a b\\]"
+  "spawn-child: argv\\[3\\]=\\[c.d\\]" "spawn-child: argv\\[4\\]=\\[e\\]"
+  "spawn-child: cwd=C:\\\\Windows" "spawn-child: mark=mark42" "spawn: child2 exit 7" "spawn: done")
 
 # The host-uwp-lite smoke guest (built in tests/guest, MSVC only): the program
 # that ran on the console, in both subsystems. It prints facts and returns 42.
@@ -185,6 +197,69 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   unset(_guest_args)
   unset(_guest_debug)
   unset(_guest_forbid_trace)
+
+  # Sysinternals Coreinfo64.exe (tools/ci/fetch_sysinternals.ps1, pinned by SHA-256), a system-information program:
+  # it reads the CPU topology through NtQuerySystemInformation. PsInfo64 is not gated here (docs/slices/sysinfo.md).
+  # The anchors are lines every runner prints whatever its CPU vendor is (docs/slices/sysinfo.md).
+  # It imports comdlg32/shell32, whose native copies cannot load on the shared
+  # machine folder (docs/slices/sysinfo.md), so they run on the builtin-only one, like the GUI guests below.
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  set(_guest_args "-accepteula")
+  win10xbox_guest_test(coreinfo "C:\\guest\\Coreinfo64.exe" 0
+    "Logical to Physical Processor Map:"
+    "Logical Processor to Socket Map:")
+  unset(_guest_args)
+  unset(_guest_machine)
+endif()
+
+# ---- fastfetch: the first prebuilt real program ----------------------------------------------------------------------
+# fastfetch 2.70.0, the project's official Windows x64 release (tools/ci/fetch_fastfetch.ps1: pinned SHA-256, verified on
+# every run), left at <machine>/guest/fastfetch.exe by a named step of ci.yml's windows job before ctest runs. It is a
+# system-information tool: it asks the layer for the OS version, kernel, CPU, memory, locale and uptime. Gate: exit 0
+# and the four headline modules on stdout; the other modules (Disk, GPU, Display, ...) are run one by one, for information,
+# by a step of ci.yml (docs/slices/fastfetch.md).
+# It runs on the builtin-only folder (the console's DLL set): the shared folder's native DLLs (the runner's build 26100)
+# do not work under Wine's ntdll (see the GUI tests above), and fastfetch imports shell32, ole32 and advapi32.
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  set(_guest_args "--pipe;--logo;none;-s;OS:Kernel:CPU:Memory:Locale:Uptime")
+  win10xbox_guest_test(fastfetch "C:\\guest\\fastfetch.exe" 0 "OS: " "Kernel: " "CPU: " "Memory: ")
+  unset(_guest_args)
+  unset(_guest_machine)
+endif()
+
+# ---- Real GUI programs (not ours), built from source on the Windows runner ------------------------------------------
+# tools/ci/build_realgui.ps1 (a named ci.yml step of the windows job) leaves realgui_hellowin.exe (Microsoft's LearnWin32
+# Hello World) and realgui_putty.exe (PuTTY 0.85, cmake + MSVC) in <machine>/guest before ctest runs. Registered only
+# where that step exists: MSVC builds, or -DWIN10XBOX_REAL_GUI_PROGRAMS=ON after putting the exes there. These programs
+# never exit by themselves, so the host's inject script (host-win32/main.cpp) drives the run: `waitwin` until the first
+# window is painted, `shot` (writes WIN10XBOX_SCREENSHOT and logs the distinct colour count of the frame), `quit 0`.
+# The gate: the screenshot was written and holds at least 3 distinct colours (desktop + frame + client; a blank
+# screen has 1), and the wait did not time out.
+option(WIN10XBOX_REAL_GUI_PROGRAMS "Register the real GUI program tests (realgui_*.exe must be in <machine>/guest)" OFF)
+if(MSVC OR WIN10XBOX_REAL_GUI_PROGRAMS)
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  set(_guest_expect_trace "shot: distinct=([3-9]|[1-9][0-9]+) written=1")
+  set(_guest_forbid_trace "TIMEOUT: nothing painted")
+  set(_realgui_script "waitwin 60000\\;sleep 2000\\;shot\\;quit 0")
+  win10xbox_guest_test(realgui_hellowin "C:\\guest\\realgui_hellowin.exe" 0)
+  set_tests_properties(integration.realgui_hellowin PROPERTIES
+    ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/realgui_hellowin.bmp;WIN10XBOX_TEST_INJECT_INPUT=${_realgui_script}")
+  # PuTTY: not registered by default. It builds and starts, but the loader stops at its imports (ole32.dll and
+  # SHELL32.dll are not in the Wine builtin set the machine folder gets: STATUS_DLL_NOT_FOUND c0000135); register it
+  # with -DWIN10XBOX_REAL_GUI_PUTTY=ON once they are. With a host and a protocol on the command line it skips the configuration dialog and creates the terminal.
+  option(WIN10XBOX_REAL_GUI_PUTTY "Register integration.realgui_putty" OFF)
+  if(WIN10XBOX_REAL_GUI_PUTTY)
+    set(_guest_args "-telnet;127.0.0.1;-P;9")
+    win10xbox_guest_test(realgui_putty "C:\\guest\\realgui_putty.exe" 0)
+    set_tests_properties(integration.realgui_putty PROPERTIES
+      ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/realgui_putty.bmp;WIN10XBOX_TEST_INJECT_INPUT=${_realgui_script}")
+  endif()
+  unset(_guest_args)
+  unset(_guest_expect_trace)
+  unset(_guest_forbid_trace)
+  unset(_realgui_script)
+  unset(_guest_machine)
 endif()
 
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")
@@ -274,3 +349,6 @@ win10xbox_guest_tls_test(guest_view_violation_detected 42 "+dispatch,+modules"
   "WIN10XBOX_TEST_GUEST_VIEW_VIOLATION=1"
   "host state reached under the guest TLS view [0-9]+ times \\(last: dispatch::ExportCache\\), [1-9][0-9]* trace lines dropped"
   "")
+
+# The SQLite shell and the regression guests its bring-up needed (tests/guest/sqlite).
+include(${CMAKE_CURRENT_LIST_DIR}/sqlite_tests.cmake)

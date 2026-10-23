@@ -23,6 +23,10 @@
 //   exit_when_done    boolean  close the app when the guest has exited (default true)
 //   expect_exit_code  integer  status.txt reports PASS/FAIL against this guest exit code
 //   stage_native      array of file names to copy BY NAME from the console's System32 into the machine folder
+//   picker            boolean  show the on-console launcher (launcher.h) instead of running "guest" directly;
+//                              the default is true only when there is no launch.json at all
+//   autoselect        string   file name of a launcher entry to launch without waiting for input (test hook;
+//                              implies "picker"); the result is written to LocalState\launcher_result.txt
 //   input_pump        boolean  forward CoreWindow keyboard/pointer input to the winexbox backend (default true)
 #pragma once
 
@@ -56,6 +60,11 @@ namespace w10x_uwp
         // Machine folder / shell.
         std::vector<std::string> stage_native;   // System32 file names (leaf names only)
         bool input_pump = true;
+
+        // Launcher (launcher.h).
+        bool has_picker = false;         // "picker" was written
+        bool picker = false;
+        std::string autoselect;          // leaf name, empty = wait for the user
     };
 
     // Parses the text of a launch.json. On failure returns false and sets

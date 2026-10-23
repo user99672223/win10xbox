@@ -35,6 +35,25 @@ imm32
 ws2_32
 winmm
 
+# --- imported by the Sysinternals Coreinfo64 / PsInfo64 guests (docs/slices/sysinfo.md) ---
+comdlg32
+pdh
+mpr
+netapi32
+netutils
+iphlpapi
+dnsapi
+nsi
+shcore      # shlwapi
+coml2       # ole32
+cryptbase   # advapi32's SystemFunction036 forward
+# --- imports of fastfetch.exe (docs/slices/fastfetch.md) and what they pull in ---
+cfgmgr32
+hid
+secur32
+winbrand
+wtsapi32
+
 # --- COM -------------------------------------------------------------------
 ole32
 oleaut32
@@ -54,12 +73,30 @@ propsys
 dbghelp
 msxml3
 setupapi
-cfgmgr32
 urlmon
 wininet
 iertutil
-mpr
 crypt32
 bcrypt
 ncrypt
 wintrust
+
+# --- console programs (wine-pe/programs/*.sh, ctest integration.wineprog_*) --
+programs/xcopy
+programs/findstr
+programs/sort
+programs/where
+programs/attrib
+programs/reg
+programs/hostname
+programs/whoami
+programs/chcp
+programs/more
+programs/fc
+programs/timeout
+programs/choice
+programs/expand
+programs/icacls
+programs/cacls
+programs/explorer         # wine-pe/programs/explorer.sh: explorer /desktop=shell,WxH
+programs/conhost          # wine-pe/programs/conhost.sh: console host (DECISIONS.md)
