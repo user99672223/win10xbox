@@ -1,4 +1,7 @@
-status: wip
+status: ready
+
+Run: https://github.com/user99672223/win10xbox/actions/runs/39950148893 (head 40b0d4f, only this doc differs from the ready head): ci linux-cross, windows (Debug) and windows (RelWithDebInfo) green, "ctest gate: PASS (nothing skipped, nothing missing)", 84 registered / 84 ran; wine-pe run 39950148930 green. The run reproduced the numbers below (propsys, windowscodecs: same executed and failure counts per unit as the measuring run 39946633669, head 46b03a1) on the new baselines.
+Through the layer: `integration.winetest_propsys` and `integration.winetest_windowscodecs` first lines: `media-reg: propsys.dll DllRegisterServer=0x00000000 HKCR\CLSID\{B8967F85-58AE-4F46-9FB2-5D7904798F4B}\InprocServer32 open=0`, `WINETEST propsys:propsys status=ok executed=1159 todo=32 flaky=0 failures=0`. Syscalls added or changed: none. DLLs added to wine-pe/dlls.txt: atl100.
 
 # Slice: wt-media-atl
 
