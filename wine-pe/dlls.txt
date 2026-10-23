@@ -25,6 +25,7 @@ gdi32
 
 # --- base services ---------------------------------------------------------
 advapi32
+cryptsp          # api-ms-win-security-cryptoapi-l1-1-0 (apisetschema) resolves here: d3dcompiler_47 imports it
 cryptbase        # advapi32 forwards SystemFunction036 (RtlGenRandom, msvcrt's rand_s) here: git.exe
 sechost
 bcrypt             # CPython's os.urandom (BCryptGenRandom -> RtlGenRandom); no unix lib needed for that

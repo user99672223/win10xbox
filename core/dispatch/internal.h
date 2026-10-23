@@ -530,6 +530,13 @@ extern "C" const char* __cdecl w10x_wine_dbg_strdup(const char* str);
 // Replacement for the guest ntdll's RtlCreateHeap (the host's heap, with Wine's "no maximum means growable").
 extern "C" PVOID NTAPI w10x_RtlCreateHeap(ULONG flags, PVOID base, SIZE_T reserve, SIZE_T commit, PVOID lock, PVOID params);
 
+// ---- Wine TEB-frame exceptions (teb_frames.cpp) --------------------------------
+// The guest ntdll's RtlUnwind: a target that is a __TRY frame on TEB.NtTib.ExceptionList is unwound here.
+extern "C" void NTAPI w10x_RtlUnwind(PVOID target_frame, PVOID target_ip, PEXCEPTION_RECORD record, PVOID retval);
+// Adds the vectored handler that dispatches those frames (once per process, before the guest runs).
+void InstallTebFrameDispatch();
+void LogTebFrameStats();
+
 // ---- Function-level forwarding (rtl_forward.cpp) -----------------------------
 struct ForwardResult { std::size_t forwarded = 0, skipped = 0; };
 // Redirects listed guest ntdll exports to the host ntdll (and the Wine debug

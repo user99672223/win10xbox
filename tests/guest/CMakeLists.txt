@@ -124,10 +124,18 @@ add_executable(guest_comctl comctl.c)
 target_link_libraries(guest_comctl PRIVATE user32 gdi32 comctl32)
 win10xbox_add_guest(guest_comctl)
 
+# Wine __TRY frames (TEB.NtTib.ExceptionList) reached by an exception on the main thread and on worker threads
+# (tests/guest/tebframe.c; core/dispatch/teb_frames.cpp).
+add_executable(guest_tebframe tebframe.c)
+win10xbox_add_guest(guest_tebframe)
+
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
 add_test(NAME guest.seh COMMAND guest_seh)
 set_tests_properties(guest.seh PROPERTIES PASS_REGULAR_EXPRESSION "seh: done failures=0"
   FAIL_REGULAR_EXPRESSION "seh: [a-z_.]+ FAILED;seh: FAIL line")
+add_test(NAME guest.tebframe COMMAND guest_tebframe)
+set_tests_properties(guest.tebframe PROPERTIES PASS_REGULAR_EXPRESSION "tebframe: done failures=0"
+  FAIL_REGULAR_EXPRESSION "tebframe: FAIL line")
 add_test(NAME guest.hello COMMAND guest_hello)
 set_tests_properties(guest.hello PROPERTIES PASS_REGULAR_EXPRESSION "hello from guest")
 add_test(NAME guest.cpuid COMMAND guest_cpuid)

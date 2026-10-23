@@ -36,7 +36,7 @@ add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
 if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
                    guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog guest_comctl
-                   guest_seh guest_window_scroll guest_clipboard msctf_stub)
+                   guest_seh guest_tebframe guest_window_scroll guest_clipboard msctf_stub)
   if(TARGET guest_d3d11_tri)
     add_dependencies(prepare_machine guest_d3d11_tri)
   endif()
@@ -130,6 +130,11 @@ win10xbox_guest_test(guest_spawn "C:\\guest\\guest_spawn.exe" 42
 win10xbox_guest_test(guest_seh "C:\\guest\\guest_seh.exe" 42
   "seh: throw_catch ok" "seh: dll_boundary ok" "seh: seh ok" "seh: veh ok" "seh: uef ok" "seh: done failures=0")
 set_tests_properties(integration.guest_seh PROPERTIES FAIL_REGULAR_EXPRESSION "seh: [a-z_.]+ FAILED;seh: FAIL line")
+# Wine __TRY frames (kernelbase IsBadStringPtr*) caught on the main thread and on worker threads: the host's exception
+# dispatcher does not walk TEB.NtTib.ExceptionList, core/dispatch/teb_frames.cpp does (tests/guest/tebframe.c).
+win10xbox_guest_test(guest_tebframe "C:\\guest\\guest_tebframe.exe" 42
+  "tebframe: main ok" "tebframe: workers ok" "tebframe: done failures=0")
+set_tests_properties(integration.guest_tebframe PROPERTIES FAIL_REGULAR_EXPRESSION "tebframe: FAIL line")
 
 # The host-uwp-lite smoke guest (built in tests/guest, MSVC only): the program
 # that ran on the console, in both subsystems. It prints facts and returns 42.

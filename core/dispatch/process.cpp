@@ -389,6 +389,7 @@ NTSTATUS MapGuestNtdll(const std::wstring& root) {
     if (!view->stubs_rewritten) ERR(process, "guest ntdll: no syscall stub was rewritten");
 
     ApplyRtlForwarding(view->image);
+    InstallTebFrameDispatch();
 
     void* base = view->image.base;
     if (auto* p = static_cast<void**>(loader::FindExport(base, "__wine_unix_call_dispatcher")))
@@ -754,6 +755,7 @@ int WaitForGuest(DWORD timeout_ms) {
     InterlockedExchange(&g.exit_code, static_cast<LONG>(exit_code));
     InterlockedExchange(&g.exited, 1);
     TRACE(process, "guest exit, code %u", exit_code);
+    LogTebFrameStats();
     TerminateOtherGuestThreads(static_cast<NTSTATUS>(exit_code));
     RestorePebFields();
     ThreadState* self = CurrentThreadState();

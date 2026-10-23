@@ -1,5 +1,20 @@
-status: blocked
-blocked: first error (run 39974430791 @ 3b3f1b9, both MSVC jobs): the sechost device-notify thread connects to \\pipe\\wine_plugplay (c0000034), rpcrt4 raises 1722 (RPC_S_SERVER_UNAVAILABLE) and the exception skips sechost's Wine __TRY frame (teb->ExceptionList chain) and ends in RtlUserThreadStart's handler -> NtTerminateProcess(1722). No "d3d11: adapter=" line has printed in any run. Next: find why RtlDispatchException does not see the thread's ExceptionList frame (guest TLS view vs host TEB on host-created guest threads).
+status: pending-ci
+root cause (run 39974430791 @ 3b3f1b9): not specific to the device-notify thread. Wine's PE builtins are built without compiler SEH, so
+their __TRY/__EXCEPT are frames chained through TEB.NtTib.ExceptionList (wine/exception.h); Wine's own ntdll walks that chain
+(call_seh_handlers "hack: call wine handlers registered in the tib list", RtlUnwindEx), a Windows x64 host dispatcher does not
+(table-based unwind info only) and the kernel always delivers to the HOST ntdll. On every thread, main included, a Wine __TRY was
+invisible on a Windows host (a Wine host masked it: linux-cross never saw it); sechost's rpc_filter frame was skipped and the
+thread-start handler (table based) ended the process with 1722.
+fix: core/dispatch/teb_frames.cpp. TebFrameVeh (vectored handler, last position) unwinds from the exception context with the
+host's RtlVirtualUnwind like call_seh_handlers and calls the TEB frames' handlers when no table-based handler sits below the
+first one (otherwise it steps aside); w10x_RtlUnwind (WINE_OVERRIDE in rtl_forward.inc) unwinds a TEB-frame target (inner frames'
+unwind handlers, then the host's RtlUnwindEx to the owning function) and sends every other target to the host's RtlUnwind.
+Installed once after the guest ntdll is forwarded, so every guest thread has it. WIN10XBOX_TEB_FRAMES=0 turns it off (diagnostics).
+test: integration.guest_tebframe / guest.tebframe (tests/guest/tebframe.c): kernelbase IsBadStringPtrA/W (a Wine
+__EXCEPT_PAGE_FAULT frame) on the main thread and on 4 worker threads; passes under the Wine host locally. Known: a worker thread
+that RETURNS crashes under a Wine host (read at 0xF0 in the host ntdll after NtCreateEvent); the test parks its workers.
+also: wine-pe/dlls.txt gains cryptsp (apisetschema maps api-ms-win-security-cryptoapi-l1-1-0 to it; d3dcompiler_47 imports it).
+untested on Windows: everything above; the first Windows signal is integration.guest_tebframe and integration.guest_d3d11.
 handoff (run 39946954565 @ 8237882: linux-cross green, both MSVC jobs red on integration.guest_d3d11):
 - the guest reaches the host dxgkrnl: NtGdiDdDDIQueryAdapterInfo returns c000000d (host), QueryStatistics success.
 - RelWithDebInfo: exit 1722 (RPC_S_SERVER_UNAVAILABLE) before the "d3d11: adapter=" line; no d3d11: adapter line printed yet.

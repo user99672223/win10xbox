@@ -92,7 +92,9 @@ RTL_FORWARD(RtlAddFunctionTable)
 RTL_FORWARD(RtlDeleteFunctionTable)
 RTL_FORWARD(RtlInstallFunctionTableCallback)
 RTL_FORWARD(RtlLookupFunctionEntry)
-RTL_FORWARD(RtlUnwind)
+// RtlUnwind: ours; targets that are Wine TEB frames are unwound here, every other target goes to the host's RtlUnwind
+// (teb_frames.cpp).
+WINE_OVERRIDE(RtlUnwind, w10x_RtlUnwind)
 RTL_FORWARD(RtlUnwindEx)
 RTL_FORWARD(RtlVirtualUnwind)
 RTL_FORWARD(RtlCaptureContext)
