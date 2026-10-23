@@ -182,7 +182,8 @@ static HWND mk(const wchar_t *cls, int id, DWORD style, int x, int y, int w, int
 
 /* A window on a second thread: input is queued for, and delivered on, the thread that owns the window. */
 static char g_log3[512];
-static volatile LONG g_t3_ready;
+static HANDLE g_t3_ready;   /* manual-reset event: set by thread 3 once its window exists (CreateWindowEx has returned) */
+static HWND g_t3_hwnd;
 static DWORD g_t3_tid;
 static LRESULT CALLBACK wndproc3(HWND h, UINT m, WPARAM w, LPARAM l) {
     char b[64];
@@ -207,8 +208,8 @@ static DWORD WINAPI thread3(void *p) {
     wc.hInstance = GetModuleHandleW(NULL);
     wc.lpszClassName = L"W10XInput3";
     RegisterClassW(&wc);
-    CreateWindowExW(0, L"W10XInput3", L"t3", WS_POPUP | WS_VISIBLE, 900, 500, 300, 200, NULL, NULL, wc.hInstance, NULL);
-    InterlockedExchange(&g_t3_ready, 1);
+    g_t3_hwnd = CreateWindowExW(0, L"W10XInput3", L"t3", WS_POPUP | WS_VISIBLE, 900, 500, 300, 200, NULL, NULL, wc.hInstance, NULL);
+    SetEvent(g_t3_ready);
     while (GetMessageW(&m, NULL, 0, 0) > 0) {
         TranslateMessage(&m);
         DispatchMessageW(&m);
@@ -447,17 +448,38 @@ int main(void) {
 
     /* a window of another thread gets its input on that thread */
     {
-        HANDLE t = CreateThread(NULL, 0, thread3, NULL, 0, NULL);
-        DWORD wait_end = GetTickCount() + 5000;
-        while (!g_t3_ready && (int)(wait_end - GetTickCount()) > 0) Sleep(10);
-        Sleep(100);
+        HANDLE t;
+        DWORD wait_end;
+        POINT at3;
+        int ready = 0;
+        at3.x = 950;
+        at3.y = 550;
+        g_t3_ready = CreateEventW(NULL, TRUE, FALSE, NULL);
+        t = CreateThread(NULL, 0, thread3, NULL, 0, NULL);
+        /* Block until thread 3 says its window exists: no Sleep, no spin, so the wait costs thread 3 no CPU and does not
+         * depend on the clock. The wait pumps because creating a window on one thread may send messages to this one.
+         * The 60 s is only the bound for a hang; a slow runner just waits longer. */
+        wait_end = GetTickCount() + 60000;
+        for (;;) {
+            int left = (int)(wait_end - GetTickCount());
+            DWORD r;
+            if (left <= 0) break;
+            r = MsgWaitForMultipleObjectsEx(1, &g_t3_ready, (DWORD)left, QS_ALLINPUT, 0);
+            if (r == WAIT_OBJECT_0) { ready = 1; break; }
+            if (r != WAIT_OBJECT_0 + 1) break;
+            pump(0);
+        }
+        check("thread 3 created its window", ready && g_t3_hwnd != NULL);
+        check("thread 3's window is visible, owned by thread 3 and is the window at (950,550)",
+              g_t3_hwnd && IsWindowVisible(g_t3_hwnd) && GetWindowThreadProcessId(g_t3_hwnd, NULL) == g_t3_tid &&
+                  WindowFromPoint(at3) == g_t3_hwnd);
         moveto(950, 550);
-        t_end = GetTickCount() + 3000;
+        t_end = GetTickCount() + 10000;
         while (!strstr(g_log3, "3:MM(") && (int)(t_end - GetTickCount()) > 0) pump(30);
         printf("window_input2: thread 3 log [%s]\n", g_log3);
         check("another thread's window: delivered on that thread", strstr(g_log3, "3:MM(50,50;own-thread=1)") != NULL);
         click();
-        t_end = GetTickCount() + 3000;
+        t_end = GetTickCount() + 10000;
         while (!strstr(g_log3, "3:LD(") && (int)(t_end - GetTickCount()) > 0) pump(30);
         check("another thread's window: click", strstr(g_log3, "3:LD(50,50)") != NULL);
         (void)t;
