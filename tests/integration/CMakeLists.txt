@@ -430,6 +430,11 @@ win10xbox_guest_test(guest_net2 "C:\\guest\\guest_net2.exe" 42
   "net2: tls received 14 bytes: hello over tls" "net2: tls ok \\(TLS 1\\.[23]\\)" "net2: done")
 set_tests_properties(integration.guest_net2 PROPERTIES FAIL_REGULAR_EXPRESSION "net2: FAILED"
   FIXTURES_REQUIRED "w10x_machine;w10x_net2_server")
+# Control: the same program NOT through the layer (the runner's own SChannel on Windows, Wine's on linux-cross) against
+# the same server. If this fails where guest_net2 fails, the server/SChannel pairing is at fault, not the layer.
+add_test(NAME integration.net2_native COMMAND guest_net2 ${_net2_port})
+set_tests_properties(integration.net2_native PROPERTIES PASS_REGULAR_EXPRESSION "net2: tls ok \\(TLS 1\\.[23]\\)"
+  FAIL_REGULAR_EXPRESSION "net2: FAILED" FIXTURES_REQUIRED w10x_net2_server TIMEOUT 120 LABELS "guest_e2e")
 unset(_guest_args)
 unset(_guest_debug)
 unset(_guest_no_user32)

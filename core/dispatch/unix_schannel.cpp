@@ -93,8 +93,7 @@ struct SetTargetParams { Session64 session; const char* target; };
 struct SetDtlsTimeoutsParams { Session64 session; unsigned retrans; unsigned total; };
 
 constexpr ULONG kIscFlags = ISC_REQ_SEQUENCE_DETECT | ISC_REQ_REPLAY_DETECT | ISC_REQ_CONFIDENTIALITY |
-                            ISC_REQ_ALLOCATE_MEMORY | ISC_REQ_STREAM | ISC_REQ_MANUAL_CRED_VALIDATION |
-                            ISC_REQ_EXTENDED_ERROR;
+                            ISC_REQ_ALLOCATE_MEMORY | ISC_REQ_STREAM | ISC_REQ_MANUAL_CRED_VALIDATION;
 
 inline Session* Sess(Session64 h) { return reinterpret_cast<Session*>(h); }
 
@@ -114,7 +113,7 @@ NTSTATUS WINAPI U_schan_allocate_certificate_credentials(void* args) {
     if (p->cert_blob) return STATUS_NOT_IMPLEMENTED;                                   // no client certificate
     SCHANNEL_CRED sc{};
     sc.dwVersion = SCHANNEL_CRED_VERSION;
-    sc.dwFlags = SCH_CRED_MANUAL_CRED_VALIDATION | SCH_CRED_NO_DEFAULT_CREDS | SCH_CRED_NO_SERVERNAME_CHECK;
+    sc.dwFlags = SCH_CRED_MANUAL_CRED_VALIDATION | SCH_CRED_NO_DEFAULT_CREDS;
     auto* hc = new HostCred{};
     TimeStamp ts;
     SECURITY_STATUS ss = AcquireCredentialsHandleW(nullptr, const_cast<LPWSTR>(UNISP_NAME_W), SECPKG_CRED_OUTBOUND,
