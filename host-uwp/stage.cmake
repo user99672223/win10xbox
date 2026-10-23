@@ -5,7 +5,8 @@
 #         -DWINMD=<Win10XboxUwp.winmd or empty>
 #         -DMANIFEST=<AppxManifest.xml> -DASSETS_DIR=<dir with *.png>
 #         -DPAYLOAD_DIR=<host-uwp/payload> -DBUILTIN_DIR=<wine-pe/out/builtin>
-#         -DMACHINE_JSON=<machine.default.json> [-DGUEST_DLL_DIR=<bin/guest-dlls>: our own builtin DLLs]
+#         -DMACHINE_JSON=<machine.default.json> [-DMSCTF_STUB=<msctf.dll stand-in of tests/guest/msctf_stub.c>]
+#         [-DGUEST_DLL_DIR=<bin/guest-dlls>: our own builtin DLLs]
 #         -P stage.cmake
 #
 # Layout (see the header of host-uwp/CMakeLists.txt):
@@ -14,6 +15,9 @@
 #   payload\guest\* (every file of GUESTS: window.exe, hello.exe, ...)
 #   payload\nls\*.nls (Wine NLS data, -DNLS_DIR=<wine-pe/out/nls>)
 #   payload\builtin\*.dll (+ LICENSE.wine, MANIFEST.txt)
+#   payload\machine-native-d3d\machine.json  msctf.dll   the second machine folder (route B + Direct3D 11): its
+#       machine.json derived from MACHINE_JSON as prepare_machine.cmake D3D_MACHINE does, and the msctf stand-in;
+#       the builtins/guests/NLS are the same payload files, the native DLLs are read by name from the console's System32
 # At run time host_stage.cpp (StageMachineFiles) copies payload\builtin and payload\guest into
 # LocalState\machine, StageMachineJson copies payload\machine.json (never over an existing one),
 # host.cpp reads payload\launch.json as the packaged default launch configuration and
@@ -102,6 +106,31 @@ message(STATUS "stage.cmake: ${_nx} extra guest file(s) (sidecars, fetched progr
 
 if(NOT "${MACHINE_JSON}" STREQUAL "" AND EXISTS "${MACHINE_JSON}")
   file(COPY_FILE "${MACHINE_JSON}" "${STAGE}/payload/machine.json")
+endif()
+
+# Second machine folder, route B + Direct3D 11 (LocalState\machine-native-d3d, host.cpp / host_stage.cpp): the same
+# machine.json rewrite as tests/integration/prepare_machine.cmake D3D_MACHINE ("gui": "native", "*": "builtin,native",
+# "native" for the DLLs below = host-uwp/guest_sidecar.cpp D3dMachineNativeDlls) and the msctf.dll stand-in.
+if(NOT "${MACHINE_JSON}" STREQUAL "" AND EXISTS "${MACHINE_JSON}")
+  set(_d3d_native user32 win32u gdi32 gdi32full msvcp_win imm32 d3d11 dxgi d3dcompiler_47 d3d10warp dxcore dwmapi
+                  d3d12 D3D12Core D3DSCache powrprof umpdc directxdatabasehelper kernel.appcore)
+  file(READ "${MACHINE_JSON}" _json)
+  set(_ov "\"*\": \"builtin,native\"")
+  foreach(_b IN LISTS _d3d_native)
+    string(APPEND _ov ", \"${_b}\": \"native\"")
+  endforeach()
+  string(REGEX REPLACE "\"\\*\"[ \t]*:[ \t]*\"[^\"]*\"" "${_ov}" _json "${_json}")
+  string(REGEX REPLACE "\"version\"[ \t]*:[ \t]*1[ \t]*," "\"version\": 1,\n  \"gui\": \"native\"," _json "${_json}")
+  if(NOT _json MATCHES "\"gui\": \"native\"" OR NOT _json MATCHES "\"d3d11\": \"native\"")
+    message(FATAL_ERROR "stage.cmake: could not derive the Direct3D machine.json from ${MACHINE_JSON}")
+  endif()
+  file(MAKE_DIRECTORY "${STAGE}/payload/machine-native-d3d")
+  file(CONFIGURE OUTPUT "${STAGE}/payload/machine-native-d3d/machine.json" CONTENT "${_json}" @ONLY)
+  if(NOT "${MSCTF_STUB}" STREQUAL "" AND EXISTS "${MSCTF_STUB}")
+    file(COPY_FILE "${MSCTF_STUB}" "${STAGE}/payload/machine-native-d3d/msctf.dll")
+  else()
+    message(WARNING "stage.cmake: no msctf stand-in (MSCTF_STUB): the Direct3D machine folder lacks msctf.dll")
+  endif()
 endif()
 
 # Static payload files from the source tree: launch.json (the packaged default launch

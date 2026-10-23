@@ -1,0 +1,2 @@
+# Dear ImGui example_win32_directx11 needs the native D3D11 runtime (docs/slices/uwpd3d.md).
+machine-native-d3d

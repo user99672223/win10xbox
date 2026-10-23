@@ -157,6 +157,14 @@ struct Presenter::Impl
     FrameSource* source = nullptr;    // launcher screens, see SetFrameSource
 
     std::vector<std::string> notes;
+
+    // A route-B guest's swap chain on the CoreWindow (user::SetSwapChainTarget, core/dispatch/dxgi_interpose.cpp):
+    // a CoreWindow takes one swap chain, so the presenter's own is released and the guest's frames are what is on
+    // screen from then on. The request comes from a guest thread, the release happens in Tick (UI thread).
+    std::atomic<int> guest_request{0};   // 1: a guest asked for the CoreWindow
+    std::atomic<int> guest_owns{0};      // 1: the presenter's swap chain is gone
+    std::atomic<long> guest_hr{1};       // 1 = not created yet, else the HRESULT of the guest's CreateSwapChainForCoreWindow
+    bool guest_noted = false;
 };
 
 void Presenter::Impl::TakeDevice()
@@ -266,6 +274,23 @@ void Presenter::Impl::Present(ULONGLONG now)
 }
 
 // ----------------------------------------------------------------------
+namespace
+{
+    // user::SwapChainTargetFn: runs on the guest's thread.
+    long GuestSwapChainTarget(void* factory, void* device, const void* desc1, void** out, void* ctx)
+    {
+        auto* m = static_cast<Presenter::Impl*>(ctx);
+        m->guest_request = 1;
+        for (int i = 0; i < 300 && !m->guest_owns; ++i) Sleep(10);   // the UI thread releases its swap chain in Tick
+        if (!m->guest_owns || !m->window) return E_FAIL;
+        const HRESULT hr = static_cast<IDXGIFactory2*>(factory)->CreateSwapChainForCoreWindow(
+            static_cast<IUnknown*>(device), m->window.Get(), static_cast<const DXGI_SWAP_CHAIN_DESC1*>(desc1), nullptr,
+            reinterpret_cast<IDXGISwapChain1**>(out));
+        m->guest_hr = static_cast<long>(hr);
+        return static_cast<long>(hr);
+    }
+}  // namespace
+
 Presenter::Presenter() : impl_(new Impl) {}
 
 Presenter::~Presenter()
@@ -282,6 +307,7 @@ void Presenter::Configure(IUnknown* core_window, int window_width, int window_he
     m.scr_w = screen_width > 0 ? screen_width : (window_width > 0 ? window_width : 1920);
     m.scr_h = screen_height > 0 ? screen_height : (window_height > 0 ? window_height : 1080);
     m.frame.assign(static_cast<std::size_t>(m.scr_w) * static_cast<std::size_t>(m.scr_h), kBackground);
+    win10xbox::user::SetSwapChainTarget(&GuestSwapChainTarget, impl_.get());
 }
 
 void Presenter::OpenScreenshot(const std::wstring& path)
@@ -325,6 +351,7 @@ Presenter::Device Presenter::DeviceState() const
 
 bool Presenter::Presenting() const
 {
+    if (impl_->guest_owns) return SUCCEEDED(impl_->guest_hr.load());   // the guest's swap chain is on the CoreWindow
     return impl_->swap && !impl_->dead && impl_->presents != 0 && SUCCEEDED(impl_->last_present_hr);
 }
 
@@ -332,6 +359,27 @@ void Presenter::Tick(bool live)
 {
     Impl& m = *impl_;
     m.TakeDevice();
+    if (m.guest_request && !m.guest_owns)
+    {
+        if (m.context)
+        {
+            m.context->ClearState();
+            m.context->Flush();
+        }
+        m.swap.Reset();
+        m.guest_owns = 1;
+        m.Note("a guest asked for a swap chain on the CoreWindow: the presenter's own swap chain is released");
+    }
+    if (m.guest_owns)
+    {
+        if (!m.guest_noted && m.guest_hr.load() != 1)
+        {
+            m.guest_noted = true;
+            m.Note(Fmt("guest swap chain on the CoreWindow: CreateSwapChainForCoreWindow -> %s; its Present is on screen",
+                       Hr(static_cast<HRESULT>(m.guest_hr.load())).c_str()));
+        }
+        return;   // the guest presents; nothing of the composed desktop is drawn over it
+    }
     if (m.device && !m.dead && !m.swap && !m.swap_failed && m.window) m.CreateSwapChain();
 
     const ULONGLONG now = GetTickCount64();

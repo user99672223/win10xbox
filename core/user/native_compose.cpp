@@ -27,6 +27,21 @@ std::vector<std::uint32_t>* g_last = nullptr;   // last composed frame, g_last_w
 std::int32_t g_last_w = 0, g_last_h = 0;
 std::size_t g_last_windows = static_cast<std::size_t>(-1);
 
+// Frames a guest's Direct3D swap chain presented (NotifyClientFrame), one per window, newest copy; under g_native_lock.
+struct ClientFrame {
+    HWND hwnd;
+    std::int32_t w, h;
+    std::vector<std::uint32_t> px;
+};
+std::vector<ClientFrame>* g_client_frames = nullptr;
+
+const ClientFrame* FindClientFrame(HWND hwnd) {
+    if (!g_client_frames) return nullptr;
+    for (const ClientFrame& f : *g_client_frames)
+        if (f.hwnd == hwnd) return &f;
+    return nullptr;
+}
+
 struct EnumState {
     const HostGui* h;
     std::vector<DWORD> guest_tids;
@@ -38,8 +53,13 @@ BOOL CALLBACK CollectGuestWindow(HWND hwnd, LPARAM lp) {
     DWORD pid = 0;
     const DWORD tid = es->h->GetWindowThreadProcessId(hwnd, &pid);
     if (pid != GetCurrentProcessId()) return TRUE;
-    if (std::find(es->guest_tids.begin(), es->guest_tids.end(), tid) == es->guest_tids.end()) return TRUE;
-    if (!es->h->IsWindowVisible(hwnd) || es->h->IsIconic(hwnd)) return TRUE;
+    // A window that received a swap chain frame belongs to the guest even when its creating thread is not in the
+    // guest thread list (route B: native windows, docs/slices/swapchain2.md).
+    if (std::find(es->guest_tids.begin(), es->guest_tids.end(), tid) == es->guest_tids.end() && !FindClientFrame(hwnd))
+        return TRUE;
+    // The presenting window counts even when the guest's SW_SHOWDEFAULT resolved to the launcher's hidden startup
+    // state (imgui_d3d11: visible 0 in CI): its swap chain frame is what the guest shows.
+    if ((!es->h->IsWindowVisible(hwnd) && !FindClientFrame(hwnd)) || es->h->IsIconic(hwnd)) return TRUE;
     es->windows.push_back(hwnd);
     return TRUE;
 }
@@ -52,6 +72,14 @@ bool ComposeLive(const HostGui& h, std::uint32_t* out, std::int32_t w, std::int3
     if (es.guest_tids.empty()) return false;
     h.EnumWindows(&CollectGuestWindow, reinterpret_cast<LPARAM>(&es));
     *nwin = es.windows.size();
+    if (es.windows.empty() && g_client_frames)
+        for (const ClientFrame& f : *g_client_frames) {
+            DWORD fpid = 0;
+            const DWORD ftid = h.GetWindowThreadProcessId(f.hwnd, &fpid);
+            TRACE(user, "native compose: frame for hwnd %p not composed: pid %lu (ours %lu) tid %lu visible %d iconic %d",
+                  static_cast<void*>(f.hwnd), static_cast<unsigned long>(fpid), static_cast<unsigned long>(GetCurrentProcessId()),
+                  static_cast<unsigned long>(ftid), h.IsWindowVisible(f.hwnd) ? 1 : 0, h.IsIconic(f.hwnd) ? 1 : 0);
+        }
     std::memset(out, 0, static_cast<std::size_t>(w) * h_px * 4);
     if (!es.windows.empty()) {
         HDC mem = h.CreateCompatibleDC(nullptr);
@@ -82,6 +110,21 @@ bool ComposeLive(const HostGui& h, std::uint32_t* out, std::int32_t w, std::int3
             // window DC then reads nothing. When the blit left the whole rectangle black, ask the compositor for the
             // window's content (PW_RENDERFULLCONTENT) into a private DIB and copy that over.
             const int rw = r.right - r.left, rh = r.bottom - r.top;
+            // A swap chain's presented frame (dxgi_interpose.cpp) is the real content: it replaces the client area.
+            const ClientFrame* cf = FindClientFrame(*it);
+            POINT origin{0, 0};
+            if (cf && h.ClientToScreen(*it, &origin)) {
+                auto* dst = static_cast<std::uint32_t*>(bits);
+                for (int y = 0; y < cf->h; ++y) {
+                    const int sy = origin.y + y;
+                    if (sy < 0 || sy >= h_px) continue;
+                    for (int x = 0; x < cf->w; ++x) {
+                        const int sx = origin.x + x;
+                        if (sx >= 0 && sx < w) dst[static_cast<std::size_t>(sy) * w + sx] = cf->px[static_cast<std::size_t>(y) * cf->w + x];
+                    }
+                }
+                continue;
+            }
             if (h.PrintWindow && rw <= 16384 && rh <= 16384) {
                 h.GdiFlush();
                 bool blank = true;
@@ -176,6 +219,55 @@ bool NativeComposeFrame(std::uint32_t* bgra, std::int32_t width, std::int32_t he
 }
 
 }  // namespace win10xbox::user::detail
+
+namespace win10xbox::user {
+namespace {
+SwapChainTargetFn g_swap_target = nullptr;   // trivially initialised
+void* g_swap_target_ctx = nullptr;
+}  // namespace
+
+void SetSwapChainTarget(SwapChainTargetFn fn, void* ctx) {
+    g_swap_target_ctx = ctx;
+    g_swap_target = fn;
+}
+
+SwapChainTargetFn GetSwapChainTarget(void** ctx) {
+    if (ctx) *ctx = g_swap_target_ctx;
+    return g_swap_target;
+}
+
+bool NotifyClientFrame(void* hwnd, const std::uint32_t* bgra, std::int32_t width, std::int32_t height,
+                       std::int32_t stride_bytes) {
+    const dispatch::detail::HostGui* h = dispatch::detail::HostGuiFunctions();
+    if (!h || !hwnd || !bgra || width <= 0 || height <= 0 || width > 16384 || height > 16384 || stride_bytes < width * 4)
+        return false;
+    std::vector<std::uint32_t> px(static_cast<std::size_t>(width) * height);
+    for (std::int32_t y = 0; y < height; ++y)
+        std::memcpy(px.data() + static_cast<std::size_t>(y) * width,
+                    reinterpret_cast<const std::uint8_t*>(bgra) + static_cast<std::size_t>(y) * stride_bytes,
+                    static_cast<std::size_t>(width) * 4);
+    std::int32_t sw = 0, sh = 0;
+    detail::NativeScreenSize(&sw, &sh);
+    AcquireSRWLockExclusive(&detail::g_native_lock);
+    if (!detail::g_client_frames) detail::g_client_frames = new std::vector<detail::ClientFrame>;
+    auto& v = *detail::g_client_frames;
+    detail::ClientFrame* slot = nullptr;
+    for (auto& f : v)
+        if (f.hwnd == static_cast<HWND>(hwnd)) slot = &f;
+    if (!slot) {
+        v.push_back({static_cast<HWND>(hwnd), 0, 0, {}});
+        slot = &v.back();
+    }
+    slot->w = width;
+    slot->h = height;
+    slot->px.swap(px);
+    detail::RefreshLocked(*h, sw, sh);   // the cache is what the screenshot shows once the window is gone
+    InterlockedIncrement64(&detail::g_native_serial);
+    ReleaseSRWLockExclusive(&detail::g_native_lock);
+    return true;
+}
+
+}  // namespace win10xbox::user
 
 namespace win10xbox::dispatch::detail {
 

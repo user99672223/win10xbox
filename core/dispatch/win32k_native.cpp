@@ -180,7 +180,7 @@ NTSTATUS ConfigureNativeGui() {
     bool ok = true;
 #define R(mod, fn) ok &= (h.fn = reinterpret_cast<decltype(h.fn)>(GetProcAddress(mod, #fn))) != nullptr
     R(user32, EnumWindows); R(user32, GetWindowThreadProcessId); R(user32, IsWindowVisible); R(user32, IsIconic);
-    R(user32, GetWindowRect); R(user32, GetWindowDC); R(user32, ReleaseDC); R(user32, GetSystemMetrics);
+    R(user32, GetWindowRect); R(user32, ClientToScreen); R(user32, GetWindowDC); R(user32, ReleaseDC); R(user32, GetSystemMetrics);
     R(gdi32, CreateCompatibleDC); R(gdi32, CreateDIBSection); R(gdi32, SelectObject); R(gdi32, BitBlt);
     R(gdi32, DeleteDC); R(gdi32, DeleteObject); R(gdi32, GdiFlush);
 #undef R

@@ -43,6 +43,9 @@ if(TARGET guest_hello)
   if(TARGET guest_d3d11_tri)
     add_dependencies(prepare_machine guest_d3d11_tri)
   endif()
+  if(TARGET guest_d3d11_swap)
+    add_dependencies(prepare_machine guest_d3d11_swap)
+  endif()
 endif()
 # Import lists of the guests that run on the machine folders (tools/game/dump_imports.py), written into the guest folder
 # (<bin>/guest/<guest>.exe_imports.txt, staged with the guests as C:\guest): the input of integration.guest_closure*.
@@ -834,6 +837,36 @@ set_tests_properties(integration.guest_d3d11 PROPERTIES
   ENVIRONMENT "WIN10XBOX_WINEDEBUG=+loaddll,warn+module,+seh,+rpc,+service")
 endif()
 
+# A swap chain on a window, route B (docs/slices/swapchain2.md): tests/guest/d3d11_swap.c on the same machine. The layer
+# interposes the guest's dxgi (CreateDXGIFactory*) and d3d11 (D3D11CreateDeviceAndSwapChain), so the swap chain is
+# a wrapper around the real one; after each Present the real back buffer is copied to a staging texture and handed
+# to core/user, which shows it in the window's client rectangle. Exit 42 (readback centre red, corner blue) and the
+# composed screenshot at the window (100,100, 256x256): centre (228,228) red, (101,101) blue. Same condition as
+# integration.guest_d3d11.
+if(NOT CMAKE_CROSSCOMPILING AND TARGET guest_d3d11_swap)
+add_test(NAME integration.guest_d3d11_swap
+  COMMAND ${CMAKE_COMMAND}
+    -DHOST=$<TARGET_FILE:win10xbox>
+    -DMACHINE=${WIN10XBOX_D3D_MACHINE_DIR}
+    -DPROGRAM=C:\\guest\\guest_d3d11_swap.exe
+    -DEXPECT_EXIT=42
+    -DSAVE_STDOUT=${CMAKE_BINARY_DIR}/bin/guest_d3d11_swap.log
+    "-DEXPECT_REGEX=swap: window hwnd=;swap: CreateDXGIFactory1 -> 00000000;swap: CreateSwapChain -> 00000000;swap: readback centre=ffff0000 corner=ff0000ff;swap: presented 60 frames;swap: done"
+    "-DEXPECT_TRACE_REGEX=dxgi: dxgi.dll: 3 export\\(s\\) interposed;dxgi: d3d11.dll: 1 export\\(s\\) interposed;dxgi: CreateDXGIFactory1 -> 00000000;dxgi: IDXGIFactory::CreateSwapChain\\(window [0-9a-fA-Fx]+, 256x256[^)]*\\) -> 00000000;dxgi: IDXGISwapChain::Present\\(1, 0x0\\) -> 0000000[0-9] \\(back buffer copied\\)"
+    "-DFORBID_TRACE_REGEX=host state reached under the guest TLS view;not handed to the compositor"
+    -DDEBUG_SPEC=+dispatch,+modules,+process,+user
+    -DREQUIRE=Windows/System32/d3d11.dll
+    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
+set_tests_properties(integration.guest_d3d11_swap PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "guest_e2e"
+  TIMEOUT 240
+  ENVIRONMENT "WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_d3d11_swap.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=228,228,ffff0000|101,101,ff0000ff")
+endif()
+
 # Route B + Direct3D 11 (docs/DECISIONS.md G1): Dear ImGui's example_win32_directx11 (tests/guest/imgui_d3d11.cpp,
 # built when CI provides the Dear ImGui source) on machine-native-d3d: native user32/gdi32/win32u and the native
 # d3d11/dxgi/d3dcompiler_47/d3d10warp as guest code, every win32u syscall -- the D3DKMT ones (NtGdiDdDDI*) included --
@@ -855,16 +888,16 @@ add_test(NAME integration.guest_imgui_d3d11
     -DREQUIRE=Windows/System32/d3d11.dll
     -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
     -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
-# The on-screen check of the presented frames (WIN10XBOX_EXPECT_SCREENSHOT_VARIED over the client area) belongs
-# to the -swapchain slice, which composes a guest swap chain into the frame; this slice gates the device, the
-# 60 presented frames and the exit code (the BMP is still written for the artifact).
+# The on-screen check of the presented frames (WIN10XBOX_EXPECT_SCREENSHOT_VARIED over the client area): the layer's
+# D3D11CreateDeviceAndSwapChain wrapper copies each presented back buffer into the composed frame
+# (docs/slices/swapchain2.md).
 set_tests_properties(integration.guest_imgui_d3d11 PROPERTIES
   FIXTURES_REQUIRED w10x_machine
   SKIP_RETURN_CODE 77
   SKIP_REGULAR_EXPRESSION "SKIP:"
   LABELS "guest_e2e"
   TIMEOUT 240
-  ENVIRONMENT "WIN10XBOX_IMGUI_FRAMES=60;WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_imgui_d3d11.bmp")
+  ENVIRONMENT "WIN10XBOX_IMGUI_FRAMES=60;WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_imgui_d3d11.bmp;WIN10XBOX_EXPECT_SCREENSHOT_VARIED=110,140,1010,760,40,3,ff738c99")
 endif()
 
 # The DLL/import closure (docs/slices/gameclosure.md): tests/guest/closure.c LoadLibrary's and GetProcAddress's every import of the
