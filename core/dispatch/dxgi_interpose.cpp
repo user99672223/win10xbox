@@ -71,10 +71,19 @@ CreateFactory2Fn g_real_create_factory2 = nullptr;
 CreateDeviceFn g_real_create_device = nullptr;
 CreateDeviceAndSwapFn g_real_create_device_and_swap = nullptr;
 
+// The layer's functions below run on guest threads under the guest's TLS view: anything touching host C++ runtime
+// state (trace, allocation, the compositor hand-off) runs in a HostModeScope; calls into the guest's native
+// d3d11/dxgi objects stay in the guest view.
+#define W10X_TR(...) do { HostModeScope w10x_host_; TRACE(dispatch, __VA_ARGS__); } while (0)
+#define W10X_WN(...) do { HostModeScope w10x_host_; WARN(dispatch, __VA_ARGS__); } while (0)
+#define W10X_HOST_NEW_DELETE                                                                        \
+    static void* operator new(std::size_t n) { HostModeScope w10x_host_; return ::operator new(n); } \
+    static void operator delete(void* p) { HostModeScope w10x_host_; ::operator delete(p); }
+
 #define W10X_TRACE_HR(name, hr_expr)                                                    \
     do {                                                                                \
         const HRESULT w10x_hr_ = (hr_expr);                                             \
-        TRACE(dispatch, "dxgi: " name " -> %08lx", static_cast<unsigned long>(w10x_hr_)); \
+        W10X_TR( "dxgi: " name " -> %08lx", static_cast<unsigned long>(w10x_hr_)); \
         return w10x_hr_;                                                                \
     } while (0)
 
@@ -99,6 +108,7 @@ bool IsWrappedFactoryIid(REFIID r) {
 
 class WrapSwap final : public IDXGISwapChain1 {
 public:
+    W10X_HOST_NEW_DELETE
     // Takes over the caller's reference to `sc`. `hwnd` is the window to report frames for (null: no capture).
     WrapSwap(IDXGISwapChain* sc, HWND hwnd) : sc0_(sc), hwnd_(hwnd) {
         sc0_->QueryInterface(__uuidof(IDXGISwapChain1), reinterpret_cast<void**>(&sc1_));
@@ -142,7 +152,7 @@ public:
     HRESULT STDMETHODCALLTYPE Present(UINT sync, UINT flags) override {
         const bool cap = (flags & DXGI_PRESENT_TEST) == 0 && Capture();
         const HRESULT hr = sc0_->Present(sync, flags);
-        TRACE(dispatch, "dxgi: IDXGISwapChain::Present(%u, 0x%x) -> %08lx%s", sync, flags, static_cast<unsigned long>(hr),
+        W10X_TR( "dxgi: IDXGISwapChain::Present(%u, 0x%x) -> %08lx%s", sync, flags, static_cast<unsigned long>(hr),
               cap ? " (back buffer copied)" : "");
         if (cap && SUCCEEDED(hr)) Deliver();
         return hr;
@@ -174,7 +184,7 @@ public:
         if (!sc1_) return E_NOTIMPL;
         const bool cap = (flags & DXGI_PRESENT_TEST) == 0 && Capture();
         const HRESULT hr = sc1_->Present1(sync, flags, p);
-        TRACE(dispatch, "dxgi: IDXGISwapChain1::Present1(%u, 0x%x) -> %08lx%s", sync, flags, static_cast<unsigned long>(hr),
+        W10X_TR( "dxgi: IDXGISwapChain1::Present1(%u, 0x%x) -> %08lx%s", sync, flags, static_cast<unsigned long>(hr),
               cap ? " (back buffer copied)" : "");
         if (cap && SUCCEEDED(hr)) Deliver();
         return hr;
@@ -228,7 +238,7 @@ private:
                     if (SUCCEEDED(ctx->Map(staging_, 0, D3D11_MAP_READ, 0, &m)) && m.pData) {
                         pix_w_ = static_cast<std::int32_t>(td.Width);
                         pix_h_ = static_cast<std::int32_t>(td.Height);
-                        pix_.resize(static_cast<std::size_t>(pix_w_) * pix_h_);
+                        { HostModeScope w10x_host_; pix_.resize(static_cast<std::size_t>(pix_w_) * pix_h_); }
                         for (std::int32_t y = 0; y < pix_h_; ++y) {
                             const auto* src = reinterpret_cast<const std::uint32_t*>(static_cast<const std::uint8_t*>(m.pData) +
                                                                                     static_cast<std::size_t>(y) * m.RowPitch);
@@ -250,7 +260,7 @@ private:
         if (dev) dev->Release();
         return ok;
     }
-    void Deliver() { user::NotifyClientFrame(hwnd_, pix_.data(), pix_w_, pix_h_, pix_w_ * 4); }
+    void Deliver() { HostModeScope w10x_host_; user::NotifyClientFrame(hwnd_, pix_.data(), pix_w_, pix_h_, pix_w_ * 4); }
     bool Refuse(const char* fmt, ...) {
         if (!no_capture_) {
             no_capture_ = true;
@@ -259,7 +269,7 @@ private:
             va_start(ap, fmt);
             std::vsnprintf(buf, sizeof buf, fmt, ap);
             va_end(ap);
-            WARN(dispatch, "dxgi: swap chain on window %p: %s: its frames are not handed to the compositor", static_cast<void*>(hwnd_), buf);
+            W10X_WN( "dxgi: swap chain on window %p: %s: its frames are not handed to the compositor", static_cast<void*>(hwnd_), buf);
         }
         return false;
     }
@@ -280,6 +290,7 @@ private:
 
 class WrapFactory final : public IDXGIFactory2 {
 public:
+    W10X_HOST_NEW_DELETE
     // Takes over the caller's reference to `f0` (the real IDXGIFactory); queries the newer interfaces itself.
     explicit WrapFactory(IDXGIFactory* f0) : f0_(f0) {
         f0_->QueryInterface(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&f1_));
@@ -345,7 +356,7 @@ public:
             hr = f0_->CreateSwapChain(dev, d, &real);
         }
         if (SUCCEEDED(hr) && real) *out = new WrapSwap(real, target ? nullptr : d->OutputWindow);
-        TRACE(dispatch, "dxgi: IDXGIFactory::CreateSwapChain(window %p, %ux%u fmt %u, %u buffers, effect %u)%s -> %08lx",
+        W10X_TR( "dxgi: IDXGIFactory::CreateSwapChain(window %p, %ux%u fmt %u, %u buffers, effect %u)%s -> %08lx",
               static_cast<void*>(d->OutputWindow), d->BufferDesc.Width, d->BufferDesc.Height,
               static_cast<unsigned>(d->BufferDesc.Format), d->BufferCount, static_cast<unsigned>(d->SwapEffect),
               target ? " on the host's target" : "", static_cast<unsigned long>(hr));
@@ -377,7 +388,7 @@ public:
             hr = f2_->CreateSwapChainForHwnd(dev, hwnd, d, fs, restrict_out, &real);
         }
         if (SUCCEEDED(hr) && real) *out = new WrapSwap(real, target ? nullptr : hwnd);
-        TRACE(dispatch, "dxgi: IDXGIFactory2::CreateSwapChainForHwnd(window %p, %ux%u fmt %u, %u buffers, effect %u)%s -> %08lx",
+        W10X_TR( "dxgi: IDXGIFactory2::CreateSwapChainForHwnd(window %p, %ux%u fmt %u, %u buffers, effect %u)%s -> %08lx",
               static_cast<void*>(hwnd), d->Width, d->Height, static_cast<unsigned>(d->Format), d->BufferCount,
               static_cast<unsigned>(d->SwapEffect), target ? " on the host's target" : "", static_cast<unsigned long>(hr));
         return hr;
@@ -486,7 +497,7 @@ HRESULT WINAPI W10x_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* adapter, D3D_DRI
     ID3D11DeviceContext* ctx = nullptr;
     D3D_FEATURE_LEVEL level = static_cast<D3D_FEATURE_LEVEL>(0);
     HRESULT hr = g_real_create_device(adapter, type, sw, flags, levels, n_levels, sdk, &dev, &level, &ctx);
-    TRACE(dispatch, "dxgi: D3D11CreateDevice (for D3D11CreateDeviceAndSwapChain, driver type %d) -> %08lx feature level 0x%x",
+    W10X_TR( "dxgi: D3D11CreateDevice (for D3D11CreateDeviceAndSwapChain, driver type %d) -> %08lx feature level 0x%x",
           static_cast<int>(type), static_cast<unsigned long>(hr), static_cast<unsigned>(level));
     if (FAILED(hr) || !dev) return FAILED(hr) ? hr : E_FAIL;
     IDXGIFactory* real_factory = nullptr;
@@ -557,7 +568,7 @@ std::size_t ReplaceExports(const loader::MappedImage& img, const Replace* list, 
         mem = static_cast<std::uint8_t*>(VirtualAlloc(reinterpret_cast<void*>(a), total, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
     }
     if (!mem) {
-        WARN(dispatch, "dxgi: %s: no room within 4 GiB of the image for the interposition slots", label);
+        W10X_WN( "dxgi: %s: no room within 4 GiB of the image for the interposition slots", label);
         return 0;
     }
     std::size_t done = 0;
@@ -583,7 +594,7 @@ std::size_t ReplaceExports(const loader::MappedImage& img, const Replace* list, 
     DWORD old = 0;
     VirtualProtect(mem, total, PAGE_EXECUTE_READ, &old);
     FlushInstructionCache(GetCurrentProcess(), mem, total);
-    TRACE(dispatch, "dxgi: %s: %zu export(s) interposed (%s)", label, done, names_done.c_str());
+    W10X_TR( "dxgi: %s: %zu export(s) interposed (%s)", label, done, names_done.c_str());
     return done;
 }
 
@@ -620,7 +631,7 @@ bool InterposeDxgiImage(const loader::MappedImage& img, const std::wstring& id) 
                 !(functions[ords[i]] >= dd.VirtualAddress && functions[ords[i]] < dd.VirtualAddress + dd.Size))
                 g_real_create_device = reinterpret_cast<CreateDeviceFn>(base + functions[ords[i]]);
         if (!g_real_create_device) {
-            WARN(dispatch, "dxgi: d3d11.dll has no D3D11CreateDevice code export: D3D11CreateDeviceAndSwapChain not interposed");
+            W10X_WN( "dxgi: d3d11.dll has no D3D11CreateDevice code export: D3D11CreateDeviceAndSwapChain not interposed");
             return false;
         }
         const std::size_t n = ReplaceExports(img, list, 1, "d3d11.dll");
