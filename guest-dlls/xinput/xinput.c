@@ -76,7 +76,7 @@ static void init_unix_call(void) {
     unsigned long long handle = 0;
     if (!ntdll) return;
     query = (NtQueryVirtualMemoryFn)(void *)GetProcAddress(ntdll, "NtQueryVirtualMemory");
-    dispatcher = (UnixCallFn *)(void *)GetProcAddress(ntdll, "__wine_unix_call_dispatcher");
+    dispatcher = (UnixCallFn *)(void *)GetProcAddress(ntdll, (LPCSTR)(ULONG_PTR)1455 /* unix call dispatcher: exported by ordinal only */);
     if (!query || !dispatcher || !*dispatcher) return;
     us.Length = sizeof(name) - sizeof(WCHAR);
     us.MaximumLength = sizeof(name);
