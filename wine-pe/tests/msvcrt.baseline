@@ -1,0 +1,14 @@
+# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/msvcrt.sh; measured numbers in docs/slices/wt-msvcrt.md)
+cpp run 999999
+data run 999999
+dir run 999999
+environ run 999999
+file run 999999
+heap run 999999
+locale run 999999
+misc run 999999
+printf run 999999
+scanf run 999999
+signal run 999999
+string run 999999
+time run 999999

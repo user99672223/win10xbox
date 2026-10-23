@@ -9,6 +9,7 @@
  * only (as Wine links the tests of a CRT DLL against that DLL), so it gets this
  * minimal entry point instead of mingw-w64's UCRT startup code.
  */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -20,6 +21,12 @@ const char* __cdecl __wine_dbg_strdup(const char* str) {
 }
 
 #ifdef WIN10XBOX_CRT_MSVCRT
+/* Wine's headers define stdin/stdout/stderr as __acrt_iob_func(n); msvcrt.dll has no such
+ * export, Wine's msvcrt import library carries this shim (dlls/msvcrt/iob.c). */
+#undef __iob_func
+extern FILE* __cdecl __iob_func(void);
+FILE* __cdecl __acrt_iob_func(unsigned idx) { return __iob_func() + idx; }
+
 typedef struct { int newmode; } w10x_startupinfo;
 extern void __cdecl __getmainargs(int*, char***, char***, int, w10x_startupinfo*);
 extern int main(int, char**);
