@@ -51,7 +51,7 @@ guest_wasapi.exe 42=endpoint 43=no-endpoint
 guest_xaudio2.exe 42=endpoint 43=no-endpoint
 guest_xaudio2_play.exe 42=played 43=no-endpoint
 
-# Gamepad: 42 with a pad, 1 after the 30 s wait without one
+# Gamepad: 42 with a pad, 1 after the 10 s wait without one
 guest_xinput.exe 42=pad 1=no-pad
 
 # Every display answer equals the host's one mode (no argument: the picker run only checks the four answers agree)
