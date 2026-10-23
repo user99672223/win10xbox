@@ -27,7 +27,8 @@ add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
   COMMENT "Preparing integration machine folder ${WIN10XBOX_MACHINE_DIR}" VERBATIM)
 if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
-                   guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog guest_comctl)
+                   guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog guest_comctl
+                   guest_seh)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -103,6 +104,14 @@ win10xbox_guest_test(guest_spawn "C:\\guest\\guest_spawn.exe" 42
   "spawn-child: argc=5" "spawn-child: argv\\[1\\]=\\[child\\]" "spawn-child: argv\\[2\\]=\\[a b\\]"
   "spawn-child: argv\\[3\\]=\\[c.d\\]" "spawn-child: argv\\[4\\]=\\[e\\]"
   "spawn-child: cwd=C:\\\\Windows" "spawn-child: mark=mark42" "spawn: child2 exit 7" "spawn: done")
+
+# Exception handling (tests/guest/seh.cpp): C++ throw/catch across frames and a DLL boundary, SEH __try/__except
+# around an access violation / divide by zero / RaiseException / a fault in a DLL frame, vectored handlers, the
+# unhandled-exception filter. Exceptions are delivered by the host kernel to the host ntdll and unwound with the
+# guest's .pdata (docs/DECISIONS.md E2). A failed section prints "seh: <name> FAILED".
+win10xbox_guest_test(guest_seh "C:\\guest\\guest_seh.exe" 42
+  "seh: throw_catch ok" "seh: dll_boundary ok" "seh: seh ok" "seh: veh ok" "seh: uef ok" "seh: done failures=0")
+set_tests_properties(integration.guest_seh PROPERTIES FAIL_REGULAR_EXPRESSION "seh: [a-z_.]+ FAILED;seh: FAIL line")
 
 # The host-uwp-lite smoke guest (built in tests/guest, MSVC only): the program
 # that ran on the console, in both subsystems. It prints facts and returns 42.
