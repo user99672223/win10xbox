@@ -43,18 +43,21 @@ constexpr ULONG kSystemTimeOfDayInformation = 3;
 #endif
 constexpr ULONG kSystemWineVersionInformation = 1000;
 
+// A UNICODE_STRING followed by its characters, written into the caller's buffer (the string points into it).
 NTSTATUS WriteUnicodeStringInfo(const std::wstring& s, PVOID buffer, ULONG length, PULONG ret_len) {
     const ULONG bytes = static_cast<ULONG>(s.size() * sizeof(wchar_t));
     const ULONG need = static_cast<ULONG>(sizeof(UNICODE_STRING)) + bytes + sizeof(wchar_t);
-    if (ret_len) *ret_len = need;
+    if (NTSTATUS ps = probe::ProbeWrite(buffer, length)) return ps;
+    if (ret_len)
+        if (NTSTATUS ps = probe::Store<ULONG>(ret_len, need)) return ps;
     if (length < need) return st::InfoLengthMismatch;
-    auto* us = static_cast<UNICODE_STRING*>(buffer);
-    auto* text = reinterpret_cast<wchar_t*>(us + 1);
-    std::memcpy(text, s.c_str(), bytes + sizeof(wchar_t));
-    us->Buffer = text;
+    std::vector<std::uint8_t> image(need);
+    auto* us = reinterpret_cast<UNICODE_STRING*>(image.data());
+    std::memcpy(image.data() + sizeof(UNICODE_STRING), s.c_str(), bytes + sizeof(wchar_t));
+    us->Buffer = reinterpret_cast<wchar_t*>(static_cast<std::uint8_t*>(buffer) + sizeof(UNICODE_STRING));
     us->Length = static_cast<USHORT>(bytes);
     us->MaximumLength = static_cast<USHORT>(bytes + sizeof(wchar_t));
-    return st::Success;
+    return probe::CopyToUser(buffer, image.data(), image.size());
 }
 
 std::wstring StripModuleName(std::wstring_view name) {
@@ -66,15 +69,30 @@ std::wstring StripModuleName(std::wstring_view name) {
 }  // namespace
 
 std::string ModuleExportName(const void* image_base) {
+    // `image_base` is a guest pointer (MemoryWineLoadUnixLib hands over whatever the caller passed): every read is
+    // guarded, and anything that is not a PE image with an export name gives an empty string.
     auto* base = static_cast<const std::uint8_t*>(image_base);
-    auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return {};
-    auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE || nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) return {};
-    const auto& d = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    IMAGE_DOS_HEADER dos;
+    if (probe::Load<IMAGE_DOS_HEADER>(reinterpret_cast<const IMAGE_DOS_HEADER*>(base), &dos) != st::Success ||
+        dos.e_magic != IMAGE_DOS_SIGNATURE || dos.e_lfanew < 0)
+        return {};
+    IMAGE_NT_HEADERS64 nt;
+    if (probe::Load<IMAGE_NT_HEADERS64>(reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos.e_lfanew), &nt) != st::Success ||
+        nt.Signature != IMAGE_NT_SIGNATURE || nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+        return {};
+    const auto& d = nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
     if (!d.VirtualAddress || !d.Size) return {};
-    auto* exp = reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(base + d.VirtualAddress);
-    return exp->Name ? std::string(reinterpret_cast<const char*>(base + exp->Name)) : std::string();
+    IMAGE_EXPORT_DIRECTORY exp;
+    if (probe::Load<IMAGE_EXPORT_DIRECTORY>(reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(base + d.VirtualAddress),
+                                            &exp) != st::Success || !exp.Name)
+        return {};
+    std::string name;
+    for (std::size_t i = 0; i < 256; ++i) {   // a module name is short; stop at the NUL or at 256 characters
+        char c;
+        if (probe::CopyFromUser(&c, base + exp.Name + i, 1) != st::Success || !c) break;
+        name.push_back(c);
+    }
+    return name;
 }
 
 // ---- Handles ----------------------------------------------------------------------
@@ -114,9 +132,15 @@ static NTSTATUS NTAPI Xl_NtDuplicateObject(HANDLE src_process, HANDLE src, HANDL
         FIXME(dispatch, "duplicating emulated handle %p (kind %d)", src, static_cast<int>(o.kind));
         return st::NotImplemented;
     }
+    if (dst)
+        if (NTSTATUS ps = probe::ProbeWrite(dst, sizeof(HANDLE))) return ps;
     HANDLE h = DuplicateImageSection(o);
     if (!h) return st::NoMemory;
-    if (dst) *dst = h;
+    if (dst)
+        if (NTSTATUS ws = probe::Store<HANDLE>(dst, h)) {
+            Xl_NtClose(h);   // the caller's slot vanished: do not leak the duplicate
+            return ws;
+        }
     if (options & DUPLICATE_CLOSE_SOURCE) Xl_NtClose(src);
     return st::Success;
 }
@@ -133,20 +157,22 @@ static NTSTATUS NTAPI Xl_NtQueryVirtualMemory(HANDLE process, PVOID addr, ULONG 
         TRACE(dispatch, "MemoryWineLoadUnixLib %p (%s) -> %llx", addr, name.c_str(), static_cast<unsigned long long>(h));
         if (!h) return st::DllNotFound;
         if (length < sizeof(h)) return st::InfoLengthMismatch;
-        std::memcpy(buffer, &h, sizeof(h));
-        if (ret_len) *ret_len = sizeof(h);
-        return st::Success;
+        if (NTSTATUS ws = probe::CopyToUser(buffer, &h, sizeof(h))) return ws;
+        return probe::StoreIfPresent<SIZE_T>(ret_len, sizeof(h));
     }
     case kMemoryWineLoadUnixLibByName: {
-        auto* us = static_cast<const UNICODE_STRING*>(addr);
-        std::wstring name = us && us->Buffer ? StripModuleName(std::wstring_view(us->Buffer, us->Length / 2)) : L"";
+        std::wstring name;
+        if (addr) {
+            probe::String module;
+            if (NTSTATUS cs = probe::CaptureString(static_cast<const UNICODE_STRING*>(addr), &module)) return cs;
+            name = StripModuleName(module.view());
+        }
         std::uint64_t h = name.empty() ? 0 : UnixLibHandleByName(name);
         TRACE(dispatch, "MemoryWineLoadUnixLibByName %ls -> %llx", name.c_str(), static_cast<unsigned long long>(h));
         if (!h) return st::DllNotFound;
         std::uint64_t res[2] = {h, h};
         if (length < sizeof(res[0])) return st::InfoLengthMismatch;
-        std::memcpy(buffer, res, length >= sizeof(res) ? sizeof(res) : sizeof(res[0]));
-        return st::Success;
+        return probe::CopyToUser(buffer, res, length >= sizeof(res) ? sizeof(res) : sizeof(res[0]));
     }
     case kMemoryWineLoadUnixLibWow64:
     case kMemoryWineLoadUnixLibByNameWow64:
@@ -163,18 +189,23 @@ static NTSTATUS NTAPI Xl_NtQueryVirtualMemory(HANDLE process, PVOID addr, ULONG 
         FindView(addr, &v)) {
         // Our views are private memory; report them like SEC_IMAGE views
         // (Wine's build_ntdll_module takes AllocationBase as the module base).
-        auto* mbi = static_cast<MEMORY_BASIC_INFORMATION*>(buffer);
-        if (mbi->State != MEM_FREE) {
-            mbi->Type = MEM_IMAGE;
-            mbi->AllocationBase = v.image.base;
-            mbi->AllocationProtect = PAGE_EXECUTE_WRITECOPY;
+        MEMORY_BASIC_INFORMATION mbi;
+        if (probe::Load<MEMORY_BASIC_INFORMATION>(static_cast<const MEMORY_BASIC_INFORMATION*>(buffer), &mbi) != st::Success)
+            return s;   // the host has just filled it, so this only happens to a buffer unmapped meanwhile
+        if (mbi.State != MEM_FREE) {
+            mbi.Type = MEM_IMAGE;
+            mbi.AllocationBase = v.image.base;
+            mbi.AllocationProtect = PAGE_EXECUTE_WRITECOPY;
+            if (NTSTATUS ws = probe::Store<MEMORY_BASIC_INFORMATION>(static_cast<MEMORY_BASIC_INFORMATION*>(buffer), mbi))
+                return ws;
         }
     } else if (klass == kMemoryMappedFilenameInformation && FindView(addr, &v)) {
         std::wstring guest = v.section ? v.section->guest_path : std::wstring();
         if (guest.empty()) return s;
         ULONG rl = 0;
         s = WriteUnicodeStringInfo(GuestWin32ToDevicePath(guest), buffer, static_cast<ULONG>(length), &rl);
-        if (ret_len) *ret_len = rl;
+        if (s != st::AccessViolation && ret_len)
+            if (NTSTATUS ws = probe::Store<SIZE_T>(ret_len, rl)) return ws;
         if (s == st::InfoLengthMismatch) s = st::BufferOverflow;
     }
     return s;
@@ -189,10 +220,11 @@ static NTSTATUS NTAPI Xl_NtQueryInformationProcess(HANDLE process, ULONG klass, 
         switch (klass) {
         case kProcessImageInformation:
             if (const std::uint8_t* info = MainImageInfo()) {
-                if (ret_len) *ret_len = 0x40;
+                if (NTSTATUS ps = probe::ProbeWrite(buffer, length)) return ps;
+                if (ret_len)
+                    if (NTSTATUS ps = probe::Store<ULONG>(ret_len, 0x40)) return ps;
                 if (length != 0x40) return st::InfoLengthMismatch;
-                std::memcpy(buffer, info, 0x40);
-                return st::Success;
+                return probe::CopyToUser(buffer, info, 0x40);
             }
             break;
         case kProcessImageFileName:
@@ -201,11 +233,16 @@ static NTSTATUS NTAPI Xl_NtQueryInformationProcess(HANDLE process, ULONG klass, 
         case kProcessImageFileNameWin32:
             if (!guest.empty()) return WriteUnicodeStringInfo(guest, buffer, length, ret_len);
             break;
-        case kProcessWow64Information:
-            if (ret_len) *ret_len = sizeof(ULONG_PTR);
+        case kProcessWow64Information: {
+            // The length is checked first and the caller's memory is untouched when it is wrong; a NULL buffer is an
+            // access violation, as when the host kernel answers.
             if (length != sizeof(ULONG_PTR)) return st::InfoLengthMismatch;
-            *static_cast<ULONG_PTR*>(buffer) = 0;
-            return st::Success;
+            if (NTSTATUS ps = probe::ProbeWrite(buffer, length)) return ps;
+            if (ret_len)
+                if (NTSTATUS ps = probe::ProbeWrite(ret_len, sizeof(ULONG), sizeof(ULONG))) return ps;
+            if (NTSTATUS ws = probe::Store<ULONG_PTR>(static_cast<ULONG_PTR*>(buffer), 0)) return ws;
+            return probe::StoreIfPresent<ULONG>(ret_len, sizeof(ULONG_PTR));
+        }
         default:
             break;
         }
@@ -219,9 +256,12 @@ static NTSTATUS NTAPI Xl_NtQueryInformationThread(HANDLE thread, ULONG klass, PV
         ThreadState* self = CurrentThreadState();
         if (self && (self->flags & kThreadGuest)) {
             if (length != sizeof(ULONG)) return st::InfoLengthMismatch;
-            *static_cast<ULONG*>(buffer) = GuestThreads().size() <= 1 ? 1 : 0;
-            if (ret_len) *ret_len = sizeof(ULONG);
-            return st::Success;
+            if (NTSTATUS ps = probe::ProbeWrite(buffer, length, sizeof(ULONG))) return ps;
+            if (ret_len)
+                if (NTSTATUS ps = probe::ProbeWrite(ret_len, sizeof(ULONG), sizeof(ULONG))) return ps;
+            if (NTSTATUS ws = probe::Store<ULONG>(static_cast<ULONG*>(buffer), GuestThreads().size() <= 1 ? 1 : 0))
+                return ws;
+            return probe::StoreIfPresent<ULONG>(ret_len, sizeof(ULONG));
         }
     }
     return Host().NtQueryInformationThread(thread, klass, buffer, length, ret_len);
@@ -234,10 +274,11 @@ static NTSTATUS NTAPI Xl_NtQuerySystemInformation(ULONG klass, PVOID buffer, ULO
     if (klass == kSystemWineVersionInformation) {
         // Wine's layout: version\0build id\0sysname\0release\0
         static const char kInfo[] = "11.9\0win10xbox\0Windows\0" "10.0";
-        if (ret_len) *ret_len = sizeof(kInfo);
+        if (NTSTATUS ps = probe::ProbeWrite(buffer, length)) return ps;
+        if (ret_len)
+            if (NTSTATUS ps = probe::Store<ULONG>(ret_len, sizeof(kInfo))) return ps;
         if (length < sizeof(kInfo)) return st::InfoLengthMismatch;
-        std::memcpy(buffer, kInfo, sizeof(kInfo));
-        return st::Success;
+        return probe::CopyToUser(buffer, kInfo, sizeof(kInfo));
     }
     return Host().NtQuerySystemInformation(klass, buffer, length, ret_len);
 }
@@ -276,31 +317,45 @@ static NTSTATUS NTAPI Xl_NtTerminateThread(HANDLE thread, NTSTATUS code) {
 
 static NTSTATUS NTAPI Xl_NtRaiseHardError(NTSTATUS error, ULONG nparams, ULONG string_mask, PULONG_PTR params,
                                           ULONG options, PULONG response) {
+    if (response)
+        if (NTSTATUS ps = probe::ProbeWrite(response, sizeof(ULONG), sizeof(ULONG))) return ps;
+    // The parameter array and the strings in it are the caller's: copied before they are printed.
+    ULONG_PTR values[8] = {};
+    const ULONG shown = nparams < 8 ? nparams : 8;
+    if (params && shown)
+        if (NTSTATUS cs = probe::CopyFromUser(values, params, shown * sizeof(ULONG_PTR))) return cs;
     std::string text;
-    for (ULONG i = 0; i < nparams && i < 8 && params; ++i) {
+    for (ULONG i = 0; i < shown && params; ++i) {
         char buf[600];
         if (string_mask & (1u << i)) {
-            auto* us = reinterpret_cast<const UNICODE_STRING*>(params[i]);
-            std::snprintf(buf, sizeof buf, " %.*ls", us && us->Buffer ? int(us->Length / 2) : 0,
-                          us && us->Buffer ? us->Buffer : L"");
+            probe::String us;
+            if (values[i])
+                if (NTSTATUS cs = probe::CaptureString(reinterpret_cast<const UNICODE_STRING*>(values[i]), &us)) return cs;
+            std::snprintf(buf, sizeof buf, " %.*ls", int(us.text.size()), us.text.c_str());
         } else {
-            std::snprintf(buf, sizeof buf, " %llx", static_cast<unsigned long long>(params[i]));
+            std::snprintf(buf, sizeof buf, " %llx", static_cast<unsigned long long>(values[i]));
         }
         text += buf;
     }
     ERR(process, "hard error %08lx (option %lu):%s", static_cast<unsigned long>(error), options, text.c_str());
-    if (response) *response = 6;   // ResponseOk
-    return st::Success;
+    return probe::StoreIfPresent<ULONG>(response, 6);   // ResponseOk
 }
 
 // ---- Context switches: the TEB must show the guest view when guest code resumes ----
 
+// NtContinue reads a whole CONTEXT, aligned to 16 bytes: Windows says so before it switches anything.
+static NTSTATUS CheckContext(const CONTEXT* ctx) {
+    return probe::ProbeRead(ctx, sizeof(CONTEXT), 16);
+}
+
 static NTSTATUS NTAPI Xl_NtContinue(PCONTEXT ctx, BOOLEAN alert) {
+    if (NTSTATUS ps = CheckContext(ctx)) return ps;
     NoteGuestEntry(ctx);   // dumps the guest module list once, at the launch continuation
     return CallInGuestView(Host().NtContinue, ctx, alert);
 }
 
 static NTSTATUS NTAPI Xl_NtContinueEx(PCONTEXT ctx, PVOID arg) {
+    if (NTSTATUS ps = CheckContext(ctx)) return ps;
     NoteGuestEntry(ctx);
     return CallInGuestView(Host().NtContinueEx, ctx, arg);
 }
@@ -347,8 +402,14 @@ NTSTATUS NTAPI Xl_NtGetNextThread(HANDLE process, HANDLE thread, ACCESS_MASK acc
         if (!NtSuccess(s)) return s;
         const DWORD tid = GetThreadId(next);
         if (std::find(guests.begin(), guests.end(), tid) != guests.end()) {
-            if (handle) *handle = next;
-            else Host().NtClose(next);
+            if (handle) {
+                if (NTSTATUS ws = probe::Store<HANDLE>(handle, next)) {
+                    Host().NtClose(next);
+                    return ws;
+                }
+            } else {
+                Host().NtClose(next);
+            }
             return st::Success;
         }
         cur = next;

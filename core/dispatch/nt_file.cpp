@@ -148,6 +148,18 @@ bool IsKnownDllsName(const OBJECT_ATTRIBUTES* oa) {
     return IStartsWith(n, L"\\KnownDlls");
 }
 
+// The same test on a caller's OBJECT_ATTRIBUTES, read once. *error is set when the memory cannot be read
+// (STATUS_ACCESS_VIOLATION); a Length the structure is not allowed to have is left to the host, which refuses it.
+bool IsKnownDllsName(const OBJECT_ATTRIBUTES* user, NTSTATUS* error) {
+    *error = st::Success;
+    if (!user) return false;
+    probe::ObjectAttributes cap;
+    const NTSTATUS cs = probe::CaptureObjectAttributes(user, &cap);
+    if (cs == st::InvalidParameter) return false;
+    if (cs) { *error = cs; return false; }
+    return IsKnownDllsName(&cap.oa);
+}
+
 }  // namespace
 
 std::wstring_view OAName(const OBJECT_ATTRIBUTES* oa) {
@@ -280,10 +292,16 @@ NTSTATUS RootRelativeGuestName(const OBJECT_ATTRIBUTES* in, std::wstring* nt) {
 }  // namespace
 #endif
 
-NTSTATUS TranslateOA(const OBJECT_ATTRIBUTES* in, TranslatedOA* out) {
+NTSTATUS TranslateOA(const OBJECT_ATTRIBUTES* user_in, TranslatedOA* out) {
     out->attr = nullptr;
     out->keep.reset();
-    if (!in || !in->ObjectName) return st::Success;
+    if (!user_in) return st::Success;
+    // The caller's attributes and name are read once, here; what follows works on the copy. Memory that cannot be
+    // read is an access violation, a Length the structure may not have is the host's to refuse.
+    probe::ObjectAttributes cap;
+    if (NTSTATUS cs = probe::CaptureObjectAttributes(user_in, &cap)) return cs == st::InvalidParameter ? st::Success : cs;
+    const OBJECT_ATTRIBUTES* in = &cap.oa;
+    if (!in->ObjectName) return st::Success;
 #if WIN10XBOX_HAVE_VFS
     if (in->RootDirectory) {
         std::wstring nt;
@@ -370,9 +388,14 @@ static NTSTATUS NTAPI Xl_NtCreateNamedPipeFile(PHANDLE handle, ACCESS_MASK acces
                                                ULONG max_instances, ULONG inbound_quota, ULONG outbound_quota,
                                                PLARGE_INTEGER timeout) {
     LARGE_INTEGER default_wait;
-    if (timeout && timeout->QuadPart == 0) {
-        default_wait.QuadPart = -50 * 10000;   // 50 ms, relative
-        timeout = &default_wait;
+    if (timeout) {
+        // Read once; a pointer that cannot be read is an access violation (the host would say the same).
+        LARGE_INTEGER requested;
+        if (NTSTATUS cs = probe::Load<LARGE_INTEGER>(timeout, &requested)) return cs;
+        if (requested.QuadPart == 0) {
+            default_wait.QuadPart = -50 * 10000;   // 50 ms, relative
+            timeout = &default_wait;
+        }
     }
     return Host().NtCreateNamedPipeFile(handle, access, attr, io, sharing, disposition, options, pipe_type, read_mode,
                                         completion_mode, max_instances, inbound_quota, outbound_quota, timeout);
@@ -409,14 +432,19 @@ static NTSTATUS NTAPI Xl_NtQueryInformationFile(HANDLE file, PIO_STATUS_BLOCK io
     // FILE_NAME_INFORMATION: drive-relative name ("\Windows\x.dll").
     std::wstring_view name = std::wstring_view(guest).substr(2);
     const ULONG bytes = static_cast<ULONG>(name.size() * sizeof(wchar_t));
-    auto* out = static_cast<std::uint8_t*>(buffer);
     const ULONG room = length > 4 ? length - 4 : 0;
     const ULONG copy = bytes < room ? bytes : room & ~1u;
-    *reinterpret_cast<ULONG*>(out) = bytes;
-    std::memcpy(out + 4, name.data(), copy);
-    io->Information = 4 + copy;
+    // The host has just filled the same buffer, so these succeed; they are guarded for the caller that unmaps it
+    // meanwhile.
+    std::vector<std::uint8_t> image(4 + copy);
+    std::memcpy(image.data(), &bytes, 4);
+    std::memcpy(image.data() + 4, name.data(), copy);
+    if (NTSTATUS ws = probe::CopyToUser(buffer, image.data(), image.size())) return ws;
     s = copy < bytes ? st::BufferOverflow : st::Success;
-    io->Status = s;
+    IO_STATUS_BLOCK done{};
+    done.Status = s;
+    done.Information = 4 + copy;
+    if (NTSTATUS ws = probe::Store<IO_STATUS_BLOCK>(io, done)) return ws;
     return s;
 }
 
@@ -441,15 +469,17 @@ static NTSTATUS NTAPI Xl_NtQueryObject(HANDLE h, ULONG klass, PVOID buffer, ULON
                     const std::wstring nt = L"\\??\\" + guest;
                     const ULONG bytes = static_cast<ULONG>(nt.size() * sizeof(wchar_t));
                     const ULONG need = static_cast<ULONG>(sizeof(UNICODE_STRING)) + bytes + sizeof(wchar_t);
-                    if (ret_len) *ret_len = need;
+                    if (NTSTATUS ps = probe::ProbeWrite(buffer, length)) return ps;
+                    if (ret_len)
+                        if (NTSTATUS ps = probe::Store<ULONG>(ret_len, need)) return ps;
                     if (length < need) return st::BufferOverflow;
-                    auto* out = static_cast<UNICODE_STRING*>(buffer);
-                    auto* text = reinterpret_cast<wchar_t*>(out + 1);
-                    std::memcpy(text, nt.c_str(), bytes + sizeof(wchar_t));
-                    out->Buffer = text;
+                    std::vector<std::uint8_t> image(need);
+                    auto* out = reinterpret_cast<UNICODE_STRING*>(image.data());
+                    std::memcpy(image.data() + sizeof(UNICODE_STRING), nt.c_str(), bytes + sizeof(wchar_t));
+                    out->Buffer = reinterpret_cast<wchar_t*>(static_cast<std::uint8_t*>(buffer) + sizeof(UNICODE_STRING));
                     out->Length = static_cast<USHORT>(bytes);
                     out->MaximumLength = static_cast<USHORT>(bytes + sizeof(wchar_t));
-                    return st::Success;
+                    return probe::CopyToUser(buffer, image.data(), image.size());
                 }
             }
         }
@@ -496,15 +526,22 @@ static NTSTATUS NTAPI Xl_NtSetInformationFile(HANDLE file, PIO_STATUS_BLOCK io, 
     }
     constexpr ULONG kHeader = 20;   // offsetof(FILE_RENAME_INFORMATION, FileName) on x64
     if (!buffer || length < kHeader) return Host().NtSetInformationFile(file, io, buffer, length, klass);
-    auto* in = static_cast<const std::uint8_t*>(buffer);
+    // The caller's header and target name are copied once; a buffer that cannot be read is an access violation.
+    std::uint8_t header[kHeader];
+    if (NTSTATUS cs = probe::CopyFromUser(header, buffer, kHeader)) return cs;
     HANDLE root;
     ULONG name_bytes;
-    std::memcpy(&root, in + 8, sizeof root);
-    std::memcpy(&name_bytes, in + 16, sizeof name_bytes);
+    std::memcpy(&root, header + 8, sizeof root);
+    std::memcpy(&name_bytes, header + 16, sizeof name_bytes);
     if (root || name_bytes > length - kHeader)   // relative to a host handle, or malformed: the host decides
         return Host().NtSetInformationFile(file, io, buffer, length, klass);
+    std::wstring target(name_bytes / 2, L'\0');
+    if (NTSTATUS cs = probe::CopyFromUser(target.data(), static_cast<const std::uint8_t*>(buffer) + kHeader,
+                                          target.size() * sizeof(wchar_t)))
+        return cs;
+    const std::uint8_t* in = header;
     std::wstring host;
-    NTSTATUS s = TranslateGuestNtPath(std::wstring_view(reinterpret_cast<const wchar_t*>(in + kHeader), name_bytes / 2), &host);
+    NTSTATUS s = TranslateGuestNtPath(target, &host);
     if (s == st::NotSupported) return Host().NtSetInformationFile(file, io, buffer, length, klass);
     if (s) return s;
     const ULONG new_bytes = static_cast<ULONG>(host.size() * sizeof(wchar_t));
@@ -512,19 +549,23 @@ static NTSTATUS NTAPI Xl_NtSetInformationFile(HANDLE file, PIO_STATUS_BLOCK io, 
     std::memcpy(out.data(), in, 16);   // flags + RootDirectory (padding included)
     std::memcpy(out.data() + 16, &new_bytes, sizeof new_bytes);
     std::memcpy(out.data() + kHeader, host.data(), new_bytes);
-    TRACE(dispatch, "NtSetInformationFile class %lu: target '%.*ls' -> '%ls'", static_cast<unsigned long>(klass),
-          static_cast<int>(name_bytes / 2), reinterpret_cast<const wchar_t*>(in + kHeader), host.c_str());
+    TRACE(dispatch, "NtSetInformationFile class %lu: target '%ls' -> '%ls'", static_cast<unsigned long>(klass),
+          target.c_str(), host.c_str());
     return Host().NtSetInformationFile(file, io, out.data(), static_cast<ULONG>(out.size()), klass);
 }
 
 static NTSTATUS NTAPI Xl_NtOpenDirectoryObject(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr) {
     // E3: no KnownDlls, so Wine's loader searches the file system through the VFS.
-    if (IsKnownDllsName(attr)) return st::ObjectNameNotFound;
+    NTSTATUS cs;
+    if (IsKnownDllsName(attr, &cs)) return st::ObjectNameNotFound;
+    if (cs) return cs;
     return Host().NtOpenDirectoryObject(handle, access, attr);
 }
 
 static NTSTATUS NTAPI Xl_NtOpenSymbolicLinkObject(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr) {
-    if (IsKnownDllsName(attr)) return st::ObjectNameNotFound;
+    NTSTATUS cs;
+    if (IsKnownDllsName(attr, &cs)) return st::ObjectNameNotFound;
+    if (cs) return cs;
     return Host().NtOpenSymbolicLinkObject(handle, access, attr);
 }
 
@@ -550,7 +591,11 @@ static NTSTATUS NTAPI Xl_NtLockFile(HANDLE file, HANDLE event, PVOID apc, PVOID 
     if (!host) return st::NotImplemented;
     if (HostIsWine()) {
         NTSTATUS s = host(file, event, apc, apc_context, nullptr, offset, length, key, fail_immediately, exclusive);
-        if (io) { io->Status = s; io->Information = 0; }
+        if (io) {
+            IO_STATUS_BLOCK done{};
+            done.Status = s;
+            if (NTSTATUS ws = probe::Store<IO_STATUS_BLOCK>(io, done)) return ws;
+        }
         return s;
     }
     if (io) return host(file, event, apc, apc_context, io, offset, length, key, fail_immediately, exclusive);
@@ -568,8 +613,9 @@ static NTSTATUS NTAPI Xl_NtUnlockFile(HANDLE file, PIO_STATUS_BLOCK io, PLARGE_I
     NTSTATUS s = host(file, io, offset, length, key);
     if (s == st::NotImplemented && io && HostIsWine()) {
         s = host(file, nullptr, offset, length, key);
-        io->Status = s;
-        io->Information = 0;
+        IO_STATUS_BLOCK done{};
+        done.Status = s;
+        if (NTSTATUS ws = probe::Store<IO_STATUS_BLOCK>(io, done)) return ws;
     }
     return s;
 }
