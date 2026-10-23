@@ -56,7 +56,12 @@ guest_cpuid, guest_sleep, guest_dll.dll, smoke_cui, smoke, drv_client, guest_win
 guest_window_input2, guest_window_text) and `payload/guests.txt` (one file name per line, written by stage.cmake).
 host-uwp.yml step "Verify package contents + size report" opens the .msix, fails if any guests.txt entry or any
 tests/guest/*.c guest is missing, if no builtins are present, or if the package exceeds a 500 MB sideload budget, and
-writes a per-directory size table to the job summary. Gaps: NLS files are not bundled; tests/guest/lua is not bundled.
+writes a per-directory size table to the job summary. NLS: Wine's `nls/*.nls` (published by wine-pe.yml as `wine-pe-nls`) are bundled as `payload/nls/*.nls`
+(host-uwp and host-uwp-lite); the host copies them to `LocalState\machine\Windows\System32` (`sortdefault.nls` to
+`...\Globalization\Sorting`) at first run, where the emulated `NtGetNlsSectionPtr` reads them (it reads only the machine
+folder, no host-System32 fallback). The package assert fails when `l_intl.nls`, `c_10000.nls`, `c_1252.nls`, `locale.nls`
+or `sortdefault.nls` is missing. Host System32 NLS is only a fallback in StageMachineFiles (log group `stage[nls]`, the
+package's own is `stage[nls-pkg]`; the run job prints both). Gap: tests/guest/lua is not bundled.
 
 ## Install the package on the console
 

@@ -100,6 +100,20 @@ jobs:
             exit 1
           }
           Write-Host "downloaded wine-pe-builtin from run $id ($n DLLs, ntdll.dll present)"
+          # The NLS data (same run): bundled as payload/nls so the package does not need the target's System32.
+          New-Item -ItemType Directory -Force -Path wine-pe/out/nls | Out-Null
+          foreach ($attempt in 1..3) {
+            gh run download $id --repo ${{ github.repository }} --name wine-pe-nls --dir wine-pe/out/nls
+            if ((Get-ChildItem wine-pe/out/nls -Filter *.nls -ErrorAction SilentlyContinue).Count -gt 0) { break }
+            Write-Host "attempt ${attempt}: NLS download produced no files; retrying in $(5 * $attempt)s"
+            Start-Sleep -Seconds (5 * $attempt)
+          }
+          $nn = (Get-ChildItem wine-pe/out/nls -Filter *.nls -ErrorAction SilentlyContinue).Count
+          if ($nn -eq 0) {
+            Write-Host "::error::wine-pe run $id has no wine-pe-nls artifact (or it is empty). Dispatch wine-pe.yml on this branch first. Failing rather than publishing a package whose guests crash in RtlInitNlsTables."
+            exit 1
+          }
+          Write-Host "downloaded wine-pe-nls from run $id ($nn files)"
 
       # Mirror ci.yml's proven windows Configure. No -DCMAKE_POLICY_VERSION_MINIMUM:
       # ci.yml builds the same third_party/zydis + core/ on this runner without it,
@@ -176,6 +190,13 @@ jobs:
             Write-Host "::error::the package bundles $n builtin DLL(s) and ntdll.dll present=$ntdll, so it CANNOT run a guest: the host fails at startup with 'no Wine PE builtins in the machine folder'. That is exactly what shipped in run 39809498419 and wasted an on-hardware test. Failing instead of publishing it."
             exit 1
           }
+          $nlsNeeded = @('l_intl.nls','c_10000.nls','c_1252.nls','locale.nls','sortdefault.nls')
+          $nlsMissing = @($nlsNeeded | Where-Object { -not (Test-Path "$stage/payload/nls/$_") })
+          Write-Host ("packaged NLS: " + @(Get-ChildItem "$stage/payload/nls" -Filter *.nls -ErrorAction SilentlyContinue).Count + " file(s); missing: " + ($nlsMissing -join ', '))
+          if ($nlsMissing.Count -gt 0) {
+            Write-Host "::error::the package lacks NLS file(s) $($nlsMissing -join ', ') (payload/nls): every guest crashes in Wine's RtlInitNlsTables on a console whose System32 does not have them. Failing instead of publishing it."
+            exit 1
+          }
           if ($mb -lt 10) {
             Write-Host "::error::package is only $mb MB; a complete one is about 21 MB. The builtins are probably missing from the payload even though the staging directory has them."
             exit 1
@@ -236,6 +257,9 @@ jobs:
           $lines += @($groups | ForEach-Object { "| $($_.Dir) | $($_.Files) | $($_.MB) |" })
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           if ($entries -notcontains 'payload/guests.txt') { Write-Host '::error::payload/guests.txt manifest missing from package'; exit 1 }
+          foreach ($f in 'l_intl.nls','c_10000.nls','c_1252.nls','locale.nls','sortdefault.nls') {
+            if ($entries -notcontains "payload/nls/$f") { Write-Host "::error::payload/nls/$f missing from the .msix"; exit 1 }
+          }
           if (-not ($entries | Where-Object { $_ -like 'payload/builtin/*.dll' })) { Write-Host '::error::no Wine builtins in package'; exit 1 }
           if ($missing.Count -gt 0) { Write-Host "::error::guest(s) missing from the .msix: $($missing -join ', ')"; exit 1 }
           if ($mb -gt 500) { Write-Host "::error::package is $mb MB, over the 500 MB sideload budget"; exit 1 }
@@ -424,6 +448,14 @@ jobs:
             Get-Content -Path $status | ForEach-Object { Write-Host $_ }
             $first = (Get-Content -Path $status -TotalCount 1)
           }
+          # Which source served each NLS file: nls-pkg = the package's payload/nls, nls = copied from the runner's own
+          # System32 (a fallback that would mask a package without NLS; there must be none). The guest-side reads come
+          # only from LocalState\machine (nt_nls.cpp has no host-System32 fallback).
+          Write-Host '--- NLS staging lines (stage[nls-pkg] = package, stage[nls] = host System32 fallback) ---'
+          $nlsLines = @(Get-ChildItem -Path $ls -File -ErrorAction SilentlyContinue | ForEach-Object { Select-String -Path $_.FullName -Pattern 'stage\[nls(-pkg)?\]' -ErrorAction SilentlyContinue } | ForEach-Object { $_.Line })
+          $nlsLines | Select-Object -First 40 | ForEach-Object { Write-Host $_ }
+          $fromHost = @($nlsLines | Where-Object { $_ -match 'stage\[nls\].*: copied' })
+          if ($fromHost.Count -gt 0) { Write-Host "::warning::$($fromHost.Count) NLS file(s) came from the runner's System32, not the package" }
           foreach ($f in 'crash.txt') {
             $p = Join-Path $ls $f
             if (Test-Path $p) { Write-Host "--- $f (first 60 lines) ---"; Get-Content -Path $p -TotalCount 60 | ForEach-Object { Write-Host $_ } }

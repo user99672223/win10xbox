@@ -66,6 +66,9 @@ jobs:
             New-Item -ItemType Directory -Force -Path wine-pe/out/builtin | Out-Null
             gh run download $id --repo ${{ github.repository }} --name wine-pe-builtin --dir wine-pe/out/builtin
             Write-Host "downloaded wine-pe-builtin from run $id ($((Get-ChildItem wine-pe/out/builtin -Filter *.dll).Count) DLLs)"
+            New-Item -ItemType Directory -Force -Path wine-pe/out/nls | Out-Null
+            gh run download $id --repo ${{ github.repository }} --name wine-pe-nls --dir wine-pe/out/nls
+            Write-Host "downloaded wine-pe-nls from run $id ($((Get-ChildItem wine-pe/out/nls -Filter *.nls -ErrorAction SilentlyContinue).Count) files)"
           } else {
             Write-Host "no successful wine-pe run yet; the package will be built WITHOUT the Wine builtins"
           }

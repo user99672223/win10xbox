@@ -78,6 +78,8 @@ endif()
 
 set(UWP_LITE_PACKAGE_VERSION "1.0.0.0" CACHE STRING
     "Identity Version of the package, a.b.c.d (CI passes 1.0.0.<run number> so each build installs over the last)")
+set(UWP_LITE_NLS_DIR "${WIN10XBOX_ROOT}/wine-pe/out/nls" CACHE PATH
+    "Wine NLS data (*.nls) to bundle as payload\\nls (the wine-pe-nls artifact). Without it the package depends on the console's System32 for NLS")
 set(UWP_LITE_BUILTIN_DIR "${WIN10XBOX_ROOT}/wine-pe/out/builtin" CACHE PATH
     "Wine PE builtin DLLs to bundle in the package (the wine-pe-builtin artifact). Optional: without them the package is still produced and the owner drops the DLLs into LocalState\\machine\\Windows\\builtin")
 option(UWP_LITE_SKIP_WINMD "Skip midl (the package then lacks the WinRT metadata the Xbox launcher wants; CI debugging only)" OFF)
@@ -224,6 +226,7 @@ add_custom_target(stage_appx ALL
           "-DMANIFEST=${CMAKE_BINARY_DIR}/AppxManifest.xml"
           "-DASSETS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/assets"
           "-DBUILTIN_DIR=${UWP_LITE_BUILTIN_DIR}"
+          "-DNLS_DIR=${UWP_LITE_NLS_DIR}"
           "-DMACHINE_JSON=${WIN10XBOX_ROOT}/machine/machine.default.json"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/stage.cmake"
   COMMENT "Staging the AppX layout in ${UWP_LITE_STAGE_DIR}"
