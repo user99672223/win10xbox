@@ -126,40 +126,48 @@ LONG CALLBACK TebFrameVeh(EXCEPTION_POINTERS* ep) {
         b->tid.store(0, std::memory_order_release);               // left over from an unwind that never returned
     }
 
-    // Walk the table-based frames from the exception context up to the function that owns the first TEB frame.
+    // Walk the frames from the exception context upward like call_seh_handlers: at each function, a table-based
+    // handler ends our part (the host dispatcher offers the exception to it, and everything above it), and the TEB
+    // frames that lie below the function's unwound stack pointer belong to it. Frames of one chain can sit in several
+    // functions (rpcrt4's NdrClientCall2 inside sechost's __TRY), so the walk goes on until the chain is used up.
     CONTEXT c = *ctx;
     c.ContextFlags &= ~0x40u;   // CONTEXT_XSTATE: the copy has no extended area
-    bool owns = false;
-    for (int depth = 0; depth < 1024 && !owns; ++depth) {
-        const Step s = UnwindOne(c);
-        if (!s.ok) return EXCEPTION_CONTINUE_SEARCH;
-        owns = reinterpret_cast<DWORD64>(frame) < c.Rsp;
-        if (s.handler && !s.in_host_ntdll) {   // a table-based handler at or below the first TEB frame goes first
-            g_stepped.fetch_add(1, std::memory_order_relaxed);
-            return EXCEPTION_CONTINUE_SEARCH;
-        }
-    }
-    if (!owns) return EXCEPTION_CONTINUE_SEARCH;
-
     volatile char marker = 0;   // below the faulting context's stack pointer: a nested fault is deeper than this
-    if (!EnterBusy(tid, reinterpret_cast<DWORD64>(&marker))) return EXCEPTION_CONTINUE_SEARCH;
+    bool busy = false;
     LONG result = EXCEPTION_CONTINUE_SEARCH;
-    for (int n = 0; n < 4096 && frame && IsLive(frame, ctx->Rsp) && reinterpret_cast<DWORD64>(frame) < c.Rsp; ++n) {
-        TebFrame* const current = frame;
-        void* dispatcher = nullptr;
-        const EXCEPTION_DISPOSITION r = reinterpret_cast<TebHandler>(current->handler)(rec, current, ctx, &dispatcher);
-        if (r == ExceptionContinueExecution) {
-            if (!(rec->ExceptionFlags & EXCEPTION_NONCONTINUABLE)) {
-                g_handled.fetch_add(1, std::memory_order_relaxed);
-                result = EXCEPTION_CONTINUE_EXECUTION;
-            }
+    for (int depth = 0; depth < 1024 && frame && IsLive(frame, ctx->Rsp); ++depth) {
+        const Step s = UnwindOne(c);
+        if (!s.ok) break;
+        if (s.handler && !s.in_host_ntdll) {   // a table-based handler at or below the next TEB frame goes first
+            g_stepped.fetch_add(1, std::memory_order_relaxed);
             break;
         }
-        if (r == ExceptionNestedException) rec->ExceptionFlags |= EXCEPTION_NESTED_CALL;
-        else if (r != ExceptionContinueSearch) break;   // an invalid disposition: leave it to the host
-        frame = current->prev;
+        if (reinterpret_cast<DWORD64>(frame) >= c.Rsp) continue;   // no TEB frame in this function
+        if (!busy) {
+            busy = EnterBusy(tid, reinterpret_cast<DWORD64>(&marker));
+            if (!busy) break;
+        }
+        bool done = false;
+        while (frame && IsLive(frame, ctx->Rsp) && reinterpret_cast<DWORD64>(frame) < c.Rsp) {
+            TebFrame* const current = frame;
+            void* dispatcher = nullptr;
+            const EXCEPTION_DISPOSITION r =
+                reinterpret_cast<TebHandler>(current->handler)(rec, current, ctx, &dispatcher);
+            if (r == ExceptionContinueExecution) {
+                if (!(rec->ExceptionFlags & EXCEPTION_NONCONTINUABLE)) {
+                    g_handled.fetch_add(1, std::memory_order_relaxed);
+                    result = EXCEPTION_CONTINUE_EXECUTION;
+                }
+                done = true;
+                break;
+            }
+            if (r == ExceptionNestedException) rec->ExceptionFlags |= EXCEPTION_NESTED_CALL;
+            else if (r != ExceptionContinueSearch) { done = true; break; }   // an invalid disposition: the host's call
+            frame = current->prev;
+        }
+        if (done) break;
     }
-    LeaveBusy(tid);
+    if (busy) LeaveBusy(tid);
     return result;
 }
 
@@ -212,6 +220,7 @@ extern "C" void NTAPI w10x_RtlUnwind(PVOID target_frame, PVOID target_ip, PEXCEP
         if (c.Rsp > reinterpret_cast<DWORD64>(target_frame)) break;
     }
     CONTEXT scratch;
+    if (!owner) for (;;) RaiseException(0xC0000029 /* STATUS_INVALID_UNWIND_TARGET */, EXCEPTION_NONCONTINUABLE, 0, nullptr);
     RtlUnwindEx(reinterpret_cast<PVOID>(owner), target_ip, rec, retval, &scratch, nullptr);
     // RtlUnwindEx does not return; if it did, the frame's setjmp point can no longer be reached.
     for (;;) RaiseException(0xC0000029 /* STATUS_INVALID_UNWIND_TARGET */, EXCEPTION_NONCONTINUABLE, 0, nullptr);

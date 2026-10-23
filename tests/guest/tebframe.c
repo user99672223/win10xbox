@@ -35,6 +35,7 @@ static void bad_pointers(int rounds)
 }
 
 static HANDLE g_done[4];
+static HANDLE g_never;
 
 struct worker_arg { int index; int rounds; };
 
@@ -45,7 +46,8 @@ static DWORD WINAPI worker(void *arg)
     struct worker_arg *a = (struct worker_arg *)arg;
     bad_pointers(a->rounds);
     SetEvent(g_done[a->index]);
-    for (;;) Sleep(INFINITE);
+    WaitForSingleObject(g_never, INFINITE);
+    return 0;
 }
 
 int main(int argc, char **argv)
@@ -54,6 +56,7 @@ int main(int argc, char **argv)
     int rounds = argc > 1 ? atoi(argv[1]) : 200;   /* a diagnostic knob: worker rounds */
     int i;
 
+    g_never = CreateEventW(NULL, TRUE, FALSE, NULL);
     printf("tebframe: start\n");
     fflush(stdout);
     bad_pointers(50);

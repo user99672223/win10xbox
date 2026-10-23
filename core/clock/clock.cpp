@@ -529,6 +529,12 @@ NTSTATUS Clk_NtDelayExecution(BOOLEAN Alertable, PLARGE_INTEGER Timeout) {
     if (!host) host = reinterpret_cast<NtDelayExecutionFn>(HostNtdllExport("NtDelayExecution"));
     if (!host) return kStatusInsufficientResources;
     LARGE_INTEGER tmp;
+    // Wine's SleepEx(INFINITE) passes a NULL interval, which Wine's own NtDelayExecution reads as "forever" and the
+    // Windows kernel rejects with an access violation (the sleeper then spins): hand the host the infinite interval.
+    if (!Timeout) {
+        tmp.QuadPart = INT64_MIN;
+        return host(Alertable, &tmp);
+    }
     PLARGE_INTEGER t = TranslateTimeout(Timeout, &tmp);
     return host(Alertable, t);
 }

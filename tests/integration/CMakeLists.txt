@@ -132,8 +132,17 @@ win10xbox_guest_test(guest_seh "C:\\guest\\guest_seh.exe" 42
 set_tests_properties(integration.guest_seh PROPERTIES FAIL_REGULAR_EXPRESSION "seh: [a-z_.]+ FAILED;seh: FAIL line")
 # Wine __TRY frames (kernelbase IsBadStringPtr*) caught on the main thread and on worker threads: the host's exception
 # dispatcher does not walk TEB.NtTib.ExceptionList, core/dispatch/teb_frames.cpp does (tests/guest/tebframe.c).
+# On the builtin-only machine folder: the shared one has the host's native kernel32, whose IsBadStringPtr is table based.
+set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+set(_guest_console ON)
+set(_guest_debug "+dispatch")
+set(_guest_expect_trace "TEB-frame dispatch: [0-9]+ exceptions with a live frame, [0-9]+ continued, [0-9]+ stepped aside for a table-based handler, [1-9][0-9]* unwinds to a frame")
 win10xbox_guest_test(guest_tebframe "C:\\guest\\guest_tebframe.exe" 42
   "tebframe: main ok" "tebframe: workers ok" "tebframe: done failures=0")
+unset(_guest_expect_trace)
+unset(_guest_debug)
+unset(_guest_console)
+unset(_guest_machine)
 set_tests_properties(integration.guest_tebframe PROPERTIES FAIL_REGULAR_EXPRESSION "tebframe: FAIL line")
 
 # The host-uwp-lite smoke guest (built in tests/guest, MSVC only): the program
