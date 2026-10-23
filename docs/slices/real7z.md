@@ -9,3 +9,9 @@ LdrShutdownThread -> heap_thread_detach() does RtlEnterCriticalSection(&process_
 process_heap, which is NULL because the process heap is the host's (patch 0001). Fix: wine-pe/patches/0003-heap-thread-detach-host-heap.patch
 (returns early when Wine's ntdll owns no heap; same patch file as the net slice, so the merge is identical on both sides).
 The retrace now deletes the half-written archive first.
+
+Third run (4ab6912, 39880605699): a, t, l and the bench pass through the layer; all extracted files compare equal, but
+`7zr x` exits 2: "Cannot set file attribute : Access denied" for every extracted item. Wine's SetFileAttributesW opens
+the file with SYNCHRONIZE only and calls NtSetInformationFile(FileBasicInformation); the host refuses that on a handle
+without FILE_WRITE_ATTRIBUTES (c0000022). Fix in core/dispatch/nt_file.cpp: on that refusal the information is set
+through a FILE_WRITE_ATTRIBUTES reopen of the same file (relative open of the handle, as ReOpenFile does).
