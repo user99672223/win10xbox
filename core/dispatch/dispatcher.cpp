@@ -398,35 +398,11 @@ NTSTATUS UseHostWin32u(HMODULE win32u) {
 // NtGdiDdDDI*. Those (and only those) win32u syscalls pass through to the host's win32u by name; every window call
 // stays with core/user.
 HostD3dModules g_d3d_mods;   // trivially initialised; set once before the guest starts
-// The host user32's PEB.KernelCallbackTable (captured when it is loaded, before the guest's Wine user32 replaces the
-// PEB's). The host kernel calls back through it during a passed-through NtGdiDdDDI* (thread setup, library loads: Windows
-// indices, up to ~0x70), which Wine's much shorter table cannot serve (entry 0x54 was NULL: call to rip=0).
-void* g_d3d_host_callbacks = nullptr;
-void* g_emu_callbacks = nullptr;   // Wine's user32 table, which core/user calls (UserModeCallback)
-
-// d3d native: PEB.KernelCallbackTable must be the HOST user32's, because the host functions bound into the guest (stub
-// exports, exports added from the host's user32/gdi32/win32u) execute real win32k syscalls on the guest's threads, and
-// the kernel calls back (thread setup, library loads: Windows indices up to ~0x70) through that table. Wine's user32
-// installs its own (about 20 entries, other meaning) at start: it is kept here for core/user and the PEB gets the host's.
-void* EmuCallbackTable() {
-    void* cur = PebField<void*>(peb::KernelCallbackTable);
-    if (!g_d3d_host_callbacks) return cur;
-    if (cur && cur != g_d3d_host_callbacks) {
-        g_emu_callbacks = cur;
-        PebField<void*>(peb::KernelCallbackTable) = g_d3d_host_callbacks;
-        TRACE(dispatch, "d3d native: Wine's KernelCallbackTable %p kept for core/user, PEB has the host's %p", cur,
-              g_d3d_host_callbacks);
-    }
-    return g_emu_callbacks;
-}
 
 const HostD3dModules& HostD3dMods() { return g_d3d_mods; }
 
 NTSTATUS UseHostD3dkmt(HMODULE win32u, HMODULE user32, HMODULE gdi32, HMODULE gdi32full) {
     g_d3d_mods = HostD3dModules{win32u, user32, gdi32, gdi32full};
-    g_d3d_host_callbacks = PebField<void*>(peb::KernelCallbackTable);
-    TRACE(dispatch, "d3d native: host KernelCallbackTable %p serves the kernel's callbacks during D3DKMT calls",
-          g_d3d_host_callbacks);
     State& s = S();
     if (!s.initialized || !win32u) return st::Unsuccessful;
     AcquireSRWLockExclusive(&s.lock);
@@ -454,6 +430,7 @@ std::uint32_t NargsOverride(const char* name) {
     static const struct { const char* name; std::uint32_t nargs; } kFix[] = {
         {"NtMapUserPhysicalPagesScatter", 3}, {"NtWaitForMultipleObjects32", 5}, {"NtApphelpCacheControl", 2},
         {"NtCreateProcessEx", 9}, {"NtTraceEvent", 4},
+        {"NtUserGetProcessUIContextInformation", 2},   // a Wine `stub` syscall: the table says 0
     };
     for (auto& f : kFix)
         if (!std::strcmp(f.name, name)) return f.nargs;
@@ -1047,7 +1024,6 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
     NTSTATUS status;
     // The win32u surface returns whole 64-bit values (HWND, LRESULT, LONG_PTR, pointers).
     const bool win32u = e->id >= kWin32uFirstId;
-    if (g_state.d3dkmt_host) EmuCallbackTable();
     std::uint64_t result64 = 0;
     // Route B (gui native): a win32u syscall handed to the host's own win32k. win32k reports errors by writing
     // TEB.LastErrorValue itself, which the guest must see.

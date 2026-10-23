@@ -734,13 +734,12 @@ int Launch(const LaunchOptions& opts) {
 #if WIN10XBOX_HAVE_VFS
         if (cfg.gui != config::Gui::Native && mi.d3d == L"native") {
             // The emulated GUI with the native Direct3D runtime (machine-emu-d3d): D3DKMT goes to the host's dxgkrnl.
-            // The host's GUI DLLs: their exports fill what Wine's user32/gdi32/win32u lack for the native dxgi/d3d11
-            // (native_imports.cpp), and the gdi32full stand-in is completed from the host's gdi32full.
+            // The host's gdi32/gdi32full supply the D3DKMT* exports the native dxgi/d3d11 import (native_imports.cpp);
+            // nothing of the host's user32 is loaded or bound: the guest's window manager is core/user.
             HMODULE hw32u = LoadLibraryW(L"win32u.dll");
-            HMODULE huser32 = LoadLibraryW(L"user32.dll");
             HMODULE hgdi32 = LoadLibraryW(L"gdi32.dll");
             HMODULE hgdi32full = LoadLibraryW(L"gdi32full.dll");
-            if (!hw32u || !huser32 || !hgdi32 || !hgdi32full || (s = UseHostD3dkmt(hw32u, huser32, hgdi32, hgdi32full))) {
+            if (!hw32u || !hgdi32 || !hgdi32full || (s = UseHostD3dkmt(hw32u, nullptr, hgdi32, hgdi32full))) {
                 ERR(process, "d3d native could not be configured (host win32u %p gdi32 %p)", static_cast<void*>(hw32u),
                     static_cast<void*>(hgdi32));
                 return static_cast<int>(s ? s : st::DllNotFound);

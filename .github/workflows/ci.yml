@@ -260,6 +260,15 @@ jobs:
       - name: Stage the Direct3D machine's extra natives
         shell: pwsh
         run: ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine-d3d-extra -CI -ListFile machine/guest_dlls_d3d.txt
+      # docs/slices/uwpswap.md: what the NATIVE Direct3D closure imports from DLLs Wine's builtins provide in the guest and Wine
+      # implements only as a spec stub (or not at all), and what the host answers for the first two such imports (informational).
+      - name: Probe - the native d3d closure's imports of Wine stubs, host control runs
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $od = Join-Path $env:LLVM_MINGW_WIN "bin/llvm-objdump.exe"
+          ./tools/ci/probe_gui_imports.ps1 -ObjDump $od -WineBuiltin wine-pe/out/builtin -WineSrc wine-pe/wine-src 2>&1 | Out-String | Write-Host
+          foreach ($c in 'uictx', 'devcaps') { pwsh -NoProfile -File ./tools/ci/probe_gui_imports.ps1 -Control $c 2>&1 | Out-String | Write-Host; Write-Host "control $c exit $LASTEXITCODE" }
       # A real program that is not ours: 7-Zip 24.09's 7zr.exe from the official source tarball (pinned SHA-256, the
       # cache key carries it), nmake in CPP/7zip/Bundles/Alone7z -> build/bin/machine/guest/7zr.exe; run by
       # integration.real7z (tests/integration/real7z.cmake).

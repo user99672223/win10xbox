@@ -94,10 +94,12 @@ bool EndsWithI(const std::wstring& s, const wchar_t* tail) {
 //      gdi32full stand-in), when it has one; else
 //   2. the host module's function (a forwarder resolved with GetProcAddress, D3DKMT* names only; other forwarders are
 //      skipped).
-// `replace_stubs`: a Wine spec `stub` export of the image (it raises EXCEPTION_WINE_STUB) is pointed at the host's function.
-// `only_ddi`: only the host's D3DKMT* exports; `resolve_forwarders`: host forwarders are added too (GetProcAddress).
+// `only_ddi`: the host's function is used for D3DKMT* names only (they are thin NtGdiDdDDI* syscall wrappers, which the
+// dispatcher passes through to the host's win32u); a host user32/gdi32 function would run win32k calls against thread
+// state the emulated window manager never set up, so every other name stays unresolved (a call names itself).
+// `resolve_forwarders`: host forwarders are added too (GetProcAddress).
 std::size_t ExtendExports(const loader::MappedImage& img, const wchar_t* label, HMODULE host_kb, const void* wine,
-                          bool only_ddi, bool resolve_forwarders, bool replace_stubs = true) {
+                          bool only_ddi, bool resolve_forwarders) {
     Exports guest, host, k32;
     if (!guest.Open(img.base) || !host.Open(host_kb)) {
         WARN(dispatch, "gui native: guest %ls exports not extended (%s)", label,
@@ -105,57 +107,27 @@ std::size_t ExtendExports(const loader::MappedImage& img, const wchar_t* label, 
         return 0;
     }
     const bool have_k32 = k32.Open(wine);
-    struct Add { const char* name; const void* target; bool wine; long fn; };
-    std::vector<Add> add;   // names the image lacks
-    std::vector<Add> rep;   // Wine `stub` exports of the image (they raise EXCEPTION_WINE_STUB when called): fn = index
+    struct Add { const char* name; const void* target; bool wine; };
+    std::vector<Add> add;
     std::size_t from_wine = 0;
-    // A Wine spec `stub` export is a tiny function that loads (lea reg,[rip+disp32]) the strings of its dll name and
-    // of its OWN name and raises EXCEPTION_WINE_STUB.
-    auto is_wine_stub = [&](const char* name, std::uint32_t rva) {
-        if (!guest.IsCode(rva)) return false;
-        const std::uint8_t* code = guest.base + rva;
-        const std::size_t n = std::strlen(name) + 1;
-        for (int k = 0; k + 7 <= 48; ++k) {
-            if ((code[k] == 0x48 || code[k] == 0x4C) && code[k + 1] == 0x8D && (code[k + 2] & 0xC7) == 0x05) {
-                std::int32_t d;
-                std::memcpy(&d, code + k + 3, 4);
-                const std::uint8_t* tgt = code + k + 7 + d;
-                if (tgt >= guest.base && tgt + n <= guest.base + img.size && std::memcmp(tgt, name, n) == 0) return true;
-            }
-        }
-        return false;
-    };
     for (std::uint32_t i = 0; i < host.dir->NumberOfNames; ++i) {
         const char* name = host.Name(i);
         const std::uint32_t rva = host.functions[host.ordinals[i]];
         const bool ddi = std::strncmp(name, "D3DKMT", 6) == 0;
-        if (only_ddi && !ddi) continue;
-        const long gi = guest.Find(name);
-        long fn = -1;
-        if (gi >= 0) {
-            if (!replace_stubs) continue;
-            fn = guest.ordinals[gi];
-            if (!is_wine_stub(name, guest.functions[fn])) continue;
-        }
-        const void* target = nullptr;
-        bool from_w = false;
+        if (guest.Find(name) >= 0) continue;
         if (const void* w = have_k32 ? k32.Code(name) : nullptr) {
-            target = w;
-            from_w = true;
+            add.push_back({name, w, true});
+            ++from_wine;
+        } else if (only_ddi && !ddi) {
+            continue;   // never a host user32/gdi32 function: the guest's window manager is core/user (docs/slices/uwpswap.md)
         } else if (host.IsCode(rva)) {
-            target = host.base + rva;
+            add.push_back({name, host.base + rva, false});
         } else if (ddi || resolve_forwarders) {   // a forwarder: the function the host's loader resolves it to
-            target = reinterpret_cast<const void*>(GetProcAddress(host_kb, name));
+            if (const void* target = reinterpret_cast<const void*>(GetProcAddress(host_kb, name)))
+                add.push_back({name, target, false});
         }
-        if (!target) {
-            if (fn >= 0)   // keeps Wine's export (it raises EXCEPTION_WINE_STUB when called)
-                ERR(dispatch, "stub-export: %ls!%s has no host function", label, name);
-            continue;
-        }
-        if (from_w) ++from_wine;
-        (fn >= 0 ? rep : add).push_back({name, target, from_w, fn});
     }
-    if (add.empty() && rep.empty()) return 0;
+    if (add.empty()) return 0;
     const std::uint32_t old_funcs = guest.dir->NumberOfFunctions, old_names = guest.dir->NumberOfNames;
     std::size_t strings = 0;
     for (auto& a : add) strings += std::strlen(a.name) + 1;
@@ -164,7 +136,7 @@ std::size_t ExtendExports(const loader::MappedImage& img, const wchar_t* label, 
     for (std::uint32_t i = 0; i < old_funcs; ++i)
         if (guest.functions[i] >= guest.dir_rva && guest.functions[i] < guest.dir_rva + guest.dir_size)
             strings += std::strlen(reinterpret_cast<const char*>(guest.base + guest.functions[i])) + 1;
-    const std::size_t thunks = (add.size() + rep.size()) * kJumpSlot;
+    const std::size_t thunks = add.size() * kJumpSlot;
     const std::size_t total = thunks + sizeof(IMAGE_EXPORT_DIRECTORY) + 4 * (old_funcs + add.size()) +
                               4 * (old_names + add.size()) + 2 * (old_names + add.size()) + strings + 64;
     SYSTEM_INFO si;
@@ -185,15 +157,14 @@ std::size_t ExtendExports(const loader::MappedImage& img, const wchar_t* label, 
     }
     auto rva_of = [&](const void* p) { return static_cast<DWORD>(reinterpret_cast<std::uintptr_t>(p) - base); };
     std::uint8_t* t = mem;
-    std::vector<DWORD> fn_rva, rep_rva;
-    for (int pass = 0; pass < 2; ++pass)
-    for (auto& a : pass ? rep : add) {
+    std::vector<DWORD> fn_rva;
+    for (auto& a : add) {
         const std::uint8_t code[6] = {0xFF, 0x25, 0, 0, 0, 0};   // jmp [rip+0]
         std::memcpy(t, code, sizeof code);
         const std::uint64_t target = reinterpret_cast<std::uint64_t>(a.target);
         std::memcpy(t + 6, &target, 8);
         std::memset(t + 14, 0xCC, kJumpSlot - 14);
-        (pass ? rep_rva : fn_rva).push_back(rva_of(t));
+        fn_rva.push_back(rva_of(t));
         t += kJumpSlot;
     }
     auto* dir = reinterpret_cast<IMAGE_EXPORT_DIRECTORY*>(mem + thunks);
@@ -201,7 +172,6 @@ std::size_t ExtendExports(const loader::MappedImage& img, const wchar_t* label, 
     auto* functions = reinterpret_cast<DWORD*>(dir + 1);
     std::memcpy(functions, guest.functions, 4 * old_funcs);
     for (std::size_t k = 0; k < add.size(); ++k) functions[old_funcs + k] = fn_rva[k];
-    for (std::size_t k = 0; k < rep.size(); ++k) functions[rep[k].fn] = rep_rva[k];   // the Wine stubs become the host's
     auto* names = functions + old_funcs + add.size();
     auto* ords = reinterpret_cast<WORD*>(names + old_names + add.size());
     char* str = reinterpret_cast<char*>(ords + old_names + add.size());
@@ -261,13 +231,11 @@ std::size_t ExtendExports(const loader::MappedImage& img, const wchar_t* label, 
         std::size_t& n = a.wine ? nw : nh;
         if (n++ < 12) (s += s.empty() ? "" : ", ") += a.name;
     }
-    for (auto& r : rep)   // one line per binding
-        TRACE(dispatch, "gui native: %ls!%s is a Wine stub export: bound to the host's function %p", label, r.name, r.target);
     TRACE(dispatch, "gui native: guest kernelbase: %zu exports added, %zu as jumps to Wine's kernel32 (%s%s), %zu to "
                     "the host kernelbase (%s%s); %zu forwarders moved",
           add.size(), from_wine, wine_names.c_str(), nw > 12 ? ", ..." : "", add.size() - from_wine,
           host_names.c_str(), nh > 12 ? ", ..." : "", old_forwarders);
-    return add.size() + rep.size();
+    return add.size();
 }
 
 }  // namespace
@@ -289,7 +257,7 @@ void NoteNativeGuestImage(const loader::MappedImage& img, const std::wstring& ho
     // machine-emu-d3d: the gdi32full.dll stand-in (tests/guest/gdi32full_stub.c) gets the host's gdi32full exports.
     if (HostD3dkmtActive() && EndsWithI(id, L"gdi32full.dll") &&
         (id.size() == 13 || id[id.size() - 14] == L'\\' || id[id.size() - 14] == L'/')) {
-        const std::size_t n = ExtendExports(img, L"gdi32full.dll", HostD3dMods().gdi32full, g_guest_gdi32, false, true);
+        const std::size_t n = ExtendExports(img, L"gdi32full.dll", HostD3dMods().gdi32full, g_guest_gdi32, true, true);
         TRACE(dispatch, "d3d native: gdi32full stand-in: %zu export(s) added from the host's gdi32full (Wine gdi32 %s)", n,
               g_guest_gdi32 ? "mapped" : "NOT mapped yet");
         return;
@@ -301,27 +269,14 @@ void NoteNativeGuestImage(const loader::MappedImage& img, const std::wstring& ho
         g_guest_kernel32 = img.base;
     else if (EndsWithI(id, L"kernelbase.dll") &&
              (id.size() == 14 || id[id.size() - 15] == L'\\' || id[id.size() - 15] == L'/'))
-        ExtendExports(img, L"kernelbase.dll", GetModuleHandleW(L"kernelbase.dll"), g_guest_kernel32, false, false, false);
-    else if (HostD3dkmtActive()) {
-        // machine-emu-d3d: Wine's user32/gdi32/win32u next to the native dxgi/d3d11/d3d10warp, which import functions of
-        // the host's builds that Wine's lack (user32!GetProcessUIContextInformation, D3DKMT* ...): every export of the
-        // host's module the Wine one lacks is added, as a jump to the host's function.
-        const HostD3dModules& m = HostD3dMods();
-        auto leaf = [&](const wchar_t* n) {
-            const std::size_t k = std::wcslen(n);
-            return EndsWithI(id, n) && (id.size() == k || id[id.size() - k - 1] == L'\\' || id[id.size() - k - 1] == L'/');
-        };
-        if (leaf(L"gdi32.dll")) {
-            g_guest_gdi32 = img.base;
-            const std::size_t n = ExtendExports(img, L"gdi32.dll", m.gdi32, nullptr, false, true);
-            TRACE(dispatch, "d3d native: guest gdi32: %zu export(s) added from the host's gdi32", n);
-        } else if (leaf(L"user32.dll")) {
-            const std::size_t n = ExtendExports(img, L"user32.dll", m.user32, nullptr, false, true);
-            TRACE(dispatch, "d3d native: guest user32: %zu export(s) added from the host's user32", n);
-        } else if (leaf(L"win32u.dll")) {
-            const std::size_t n = ExtendExports(img, L"win32u.dll", m.win32u, nullptr, false, true);
-            TRACE(dispatch, "d3d native: guest win32u: %zu export(s) added from the host's win32u", n);
-        }
+        ExtendExports(img, L"kernelbase.dll", GetModuleHandleW(L"kernelbase.dll"), g_guest_kernel32, false, false);
+    else if (HostD3dkmtActive() && EndsWithI(id, L"gdi32.dll") &&
+             (id.size() == 9 || id[id.size() - 10] == L'\\' || id[id.size() - 10] == L'/')) {
+        // machine-emu-d3d: Wine's gdi32 next to the native dxgi/d3d11, which import D3DKMT* Wine's gdi32 does not export:
+        // those (and only those) come from the host's gdi32. Wine's user32/gdi32/win32u are otherwise left as they are.
+        g_guest_gdi32 = img.base;
+        const std::size_t n = ExtendExports(img, L"gdi32.dll", HostD3dMods().gdi32, nullptr, true, true);
+        TRACE(dispatch, "d3d native: guest gdi32: %zu D3DKMT export(s) added from the host's gdi32", n);
     }
 }
 
