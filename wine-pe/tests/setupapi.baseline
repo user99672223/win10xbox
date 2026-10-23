@@ -1,10 +1,10 @@
 # <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/misc.sh --dll setupapi; measured on the linux-cross CI job, numbers in docs/slices/wt-misc.md)
-devinst run 999999
-dialog run 999999
-diskspace run 999999
-install run 999999
-misc run 999999
-parser run 999999
-query run 999999
-setupcab run 999999
-stringtable run 999999
+devinst run 0
+dialog run 0
+diskspace run 0
+install run 6
+misc run 4
+parser run 0
+query run 1
+setupcab run 0
+stringtable run 0
