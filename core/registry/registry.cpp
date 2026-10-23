@@ -868,6 +868,18 @@ void ApplySystemFidelity(State& st, Node* sys, bool hive_missing) {
         SetDword(st, sys, L"Select", L"LastKnownGood", 1);
         SetStr(st, sys, L"ControlSet001\\Control\\ProductOptions", L"ProductType", L"WinNT");
         SetDword(st, sys, L"ControlSet001\\Control\\Windows", L"CSDVersion", 0);
+        // The system environment every Windows install has (programs such as Sysinternals PsInfo read it).
+        const wchar_t* env = L"ControlSet001\\Control\\Session Manager\\Environment";
+        SYSTEM_INFO si;
+        GetNativeSystemInfo(&si);
+        SetStr(st, sys, env, L"OS", L"Windows_NT");
+        SetStr(st, sys, env, L"PROCESSOR_ARCHITECTURE", L"AMD64");
+        SetStr(st, sys, env, L"NUMBER_OF_PROCESSORS", std::to_wstring(si.dwNumberOfProcessors));
+        SetStr(st, sys, env, L"PATHEXT", L".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC");
+        SetStr(st, sys, env, L"ComSpec", L"%SystemRoot%\\system32\\cmd.exe", 2);
+        SetStr(st, sys, env, L"windir", L"%SystemRoot%", 2);
+        SetStr(st, sys, env, L"TEMP", L"%SystemRoot%\\TEMP", 2);
+        SetStr(st, sys, env, L"TMP", L"%SystemRoot%\\TEMP", 2);
     }
     std::wstring cn = Widen(f.computer_name);
     SetStr(st, sys, L"ControlSet001\\Control\\ComputerName\\ComputerName", L"ComputerName", cn);
