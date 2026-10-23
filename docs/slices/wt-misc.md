@@ -1,4 +1,4 @@
-status: ready
+status: blocked: REGRESSION: 17 failures, baseline allows 16 (WINETEST dbghelp:dbghelp, ci run 39939144450, head 4712b7b)
 
 # Slice: wt-misc (small Wine conformance suites)
 
@@ -88,4 +88,11 @@ first two linux-cross runs (39893860706, 39930191602), while MAIN (run 399310184
 registered anyway (see above), so it is not built until the layer answers GetUserProfileDirectory (token user SID ->
 registry ProfileList). Its measurement above was taken with the DLL built.
 
-Run: the ci run of the push of this commit (URL in the session report).
+## Last run (ci 39939144450, head 4712b7b, push budget used up)
+
+All my suites passed except dbghelp, whose `dbghelp` unit gave 17 failures (16 on runs 39893860706 and 39930191602, same
+assertions dbghelp.c:135/:142/:170 first): the count is not deterministic, the fix is `dbghelp run 17` in
+wine-pe/tests/dbghelp.baseline (the larger observed value is the budget, as for psapi). Not from this slice:
+`kernel32:atom status=crashed exit=1 time=0s` (REGRESSION: baseline is 'completes', now crashed; 1049715 assertions
+completed on the two earlier runs) after merging main 75b9af5, and host-uwp (msix) failing with "guest(s) missing from the
+.msix: guest_msctf_stub.exe" (a guest MAIN added). The Windows jobs of ci and wine-pe are green.
