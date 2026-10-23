@@ -832,7 +832,7 @@ void WakeThread(UserThread* t, DWORD qs_bits) {
 LRESULT CallWindowProcInternal(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, bool ansi) {
     WindowObj* w = Win(hwnd);
     if (!w) return 0;
-    if (w->flags & (kWinIsDesktop | kWinIsMsgParent)) return DefWindowProcInternal(w->handle, msg, wp, lp, ansi);
+    if (IsPassiveWindow(w)) return DefWindowProcInternal(w->handle, msg, wp, lp, ansi);
     if (w->proc.Empty()) return DefWindowProcInternal(w->handle, msg, wp, lp, ansi);
     abi::WinProcParams p{};
     FillWinProcParams(&p, w, msg, wp, lp, ansi, abi::WmCharMapSendMessage);
@@ -873,7 +873,7 @@ LRESULT SendMessageInternal(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, bool ansi
         return 0;
     }
     hwnd = w->handle;
-    if (w->tid == GetCurrentThreadId() || (w->flags & (kWinIsDesktop | kWinIsMsgParent)))
+    if (w->tid == GetCurrentThreadId() || IsPassiveWindow(w))
         return CallWindowProcHooked(hwnd, msg, wp, lp, ansi, true);
     UserThread* target = FindUserThreadById(w->tid);
     if (!target || target->exiting) return 0;
@@ -918,7 +918,7 @@ bool PostMessageInternal(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     WindowObj* w = WinChecked(hwnd);
     if (!w) return false;
-    if (w->flags & (kWinIsDesktop | kWinIsMsgParent)) return true;   // nobody pumps the desktop: dropped like a full queue
+    if (IsPassiveWindow(w)) return true;   // nobody pumps the desktop: dropped like a full queue
     return PostThreadMessageInternal(FindUserThreadById(w->tid), w->handle, msg, wp, lp);
 }
 
@@ -1032,7 +1032,7 @@ LRESULT WINAPI NtUserMessageCall(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
     case abi::McSendMessage: {
         auto* p = static_cast<abi::WinProcParams*>(result_info);
         WindowObj* w = Win(hwnd);
-        if (p && w && w->tid == GetCurrentThreadId() && !(w->flags & (kWinIsDesktop | kWinIsMsgParent)) && !w->proc.Empty() &&
+        if (p && w && w->tid == GetCurrentThreadId() && !IsPassiveWindow(w) && !w->proc.Empty() &&
             (!CurrentUserThread().info || CurrentUserThread().info->recursion_count <= kMaxRecursion)) {
             // the caller dispatches it itself (user32 dispatch_send_message)
             FillWinProcParams(p, w, msg, wparam, lparam, ansi != 0, abi::WmCharMapSendMessage);
@@ -1096,6 +1096,14 @@ LRESULT WINAPI NtUserMessageCall(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
     case abi::McSpyEnter:
     case abi::McSpyExit:
         return 0;
+    case abi::McClipboardWindowProc:
+        // explorer.exe's clipboard manager window: this module owns the clipboard (win_clipboard.cpp), the window
+        // only has to exist
+        return msg == WM_NCCREATE ? TRUE : 0;
+    case abi::McSystemTrayCall:
+        // WINE_SYSTRAY_NOTIFY_ICON (msg 0): -1 = no display driver docks tray icons, explorer's tray window shows them;
+        // the DOCK_* and cleanup calls are the driver's business
+        return msg == 0 ? static_cast<LRESULT>(-1) : 0;
     }
     FIXME(user, "NtUserMessageCall type %#lx (hwnd %p msg %04x)", type, hwnd, msg);
     SetLastErr(ERROR_CALL_NOT_IMPLEMENTED);

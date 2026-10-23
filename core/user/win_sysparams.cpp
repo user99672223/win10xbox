@@ -93,6 +93,10 @@ void ScreenRect(RECT* out) {
 }
 
 void WorkAreaRect(RECT* out) {
+    if (State* st = StateIfAny(); st && st->work_area_set) {
+        *out = st->work_area;
+        return;
+    }
     // no taskbar: the work area is the whole monitor
     if (winexbox::IWinexboxDriver* d = Driver()) {
         const winexbox::DisplayConfig c = d->QueryDisplay();
@@ -287,7 +291,19 @@ bool SysParamsInfo(UINT action, UINT val, void* ptr, UINT winini) {
         return true;
     }
     switch (action) {
-    case SPI_SETSCREENSAVEACTIVE: case SPI_SETDESKWALLPAPER: case SPI_SETWORKAREA: case SPI_SETMOUSE:
+    case SPI_SETWORKAREA: {
+        // explorer.exe's taskbar reserves its strip: windows maximize into the rest
+        const auto* r = static_cast<const RECT*>(ptr);
+        if (!r) {
+            SetLastErr(ERROR_INVALID_PARAMETER);
+            return false;
+        }
+        State& st = S();
+        st.work_area = *r;
+        st.work_area_set = true;
+        return true;
+    }
+    case SPI_SETSCREENSAVEACTIVE: case SPI_SETDESKWALLPAPER: case SPI_SETMOUSE:
     case SPI_SETKEYBOARDSPEED: case SPI_SETKEYBOARDDELAY: case SPI_SETDOUBLECLICKTIME: case SPI_SETMOUSETRAILS:
     case SPI_SETBEEP: case SPI_SETMENUDROPALIGNMENT: case SPI_SETICONTITLEWRAP: case SPI_SETFASTTASKSWITCH:
     case SPI_SETDRAGFULLWINDOWS: case SPI_SETNONCLIENTMETRICS: case SPI_SETSTICKYKEYS: case SPI_SETFILTERKEYS:

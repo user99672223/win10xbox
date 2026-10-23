@@ -395,6 +395,7 @@ void SetWindowTextInternal(WindowObj* w, const WCHAR* text) {
             d->WindowSetText(reinterpret_cast<winexbox::WindowId>(w->handle),
                              std::u16string(reinterpret_cast<const char16_t*>(w->text.c_str()), w->text.size()));
     if ((w->style & WS_CAPTION) == WS_CAPTION) w->nc_pending = true;
+    if (IsTopLevel(w)) ShellNotify(6 /* HSHELL_REDRAW */, w->handle);
 }
 
 // ---- Activation and focus ------------------------------------------------------------------
@@ -465,6 +466,7 @@ bool SetActiveWindowInternal(HWND hwnd, bool mouse) {
             if (Win(h)) SendMessageInternal(h, WM_ACTIVATEAPP, TRUE, 0);
     }
     if (!Win(hwnd) || t.active != hwnd) return true;
+    ShellNotify(4 /* HSHELL_WINDOWACTIVATED */, hwnd);
     if (winexbox::IWinexboxDriver* d = Driver())
         d->WindowActivate(reinterpret_cast<winexbox::WindowId>(hwnd), reinterpret_cast<winexbox::WindowId>(prev));
     SendMessageInternal(hwnd, WM_NCACTIVATE, TRUE, reinterpret_cast<LPARAM>(prev));
@@ -771,6 +773,8 @@ BOOL DestroyWindowInternal(HWND hwnd) {
     if (child && !(w->ex_style & WS_EX_NOPARENTNOTIFY) && Win(w->parent))
         SendMessageInternal(w->parent, WM_PARENTNOTIFY, MAKEWPARAM(WM_DESTROY, static_cast<WORD>(w->id)),
                             reinterpret_cast<LPARAM>(hwnd));
+    else if (!child) ShellWindowDestroyed(w);
+    if (!(w = Win(hwnd))) return TRUE;
     if ((w = Win(hwnd)) && (w->style & WS_VISIBLE)) {
         if (child) ShowWindowInternal(hwnd, SW_HIDE);
         else SetWindowPosInternal(hwnd, nullptr, 0, 0, 0, 0,
@@ -798,7 +802,19 @@ BOOL DestroyWindowInternal(HWND hwnd) {
 }
 
 void DestroyThreadWindows(UserThread* t) {
-    // A thread that exits takes its windows with it, without running any of its code.
+    // A thread that exits takes its windows with it, without running any of its code. The desktop and the message
+    // parent an explorer.exe adopted go back to being thread-less.
+    for (WindowObj* o : S().windows)
+        if (o && o->tid == t->tid && (o->flags & (kWinIsDesktop | kWinIsMsgParent))) {
+            o->tid = 0;
+            o->thread = nullptr;
+            o->proc = o->cls ? o->cls->proc : WinProc{};
+        }
+    if (State* st = StateIfAny()) {
+        st->shell_hooks.erase(std::remove_if(st->shell_hooks.begin(), st->shell_hooks.end(),
+                                             [&](HWND h) { WindowObj* w = Win(h); return !w || w->tid == t->tid; }),
+                              st->shell_hooks.end());
+    }
     for (;;) {
         HWND victim = nullptr;
         for (WindowObj* o : S().windows)
@@ -874,6 +890,11 @@ HWND WINAPI NtUserCreateWindowEx(DWORD ex_style, UNICODE_STRING* class_name, UNI
         SetLastErr(ERROR_CANNOT_FIND_WND_CLASS);
         return nullptr;
     }
+    if (!parent)
+        if (WindowObj* adopted = AdoptSpecialWindow(cls, t)) {
+            if (window_name && window_name->Buffer) adopted->text.assign(window_name->Buffer, window_name->Length / sizeof(WCHAR));
+            return adopted->handle;
+        }
     CREATESTRUCTW cs{};
     cs.lpCreateParams = params;
     cs.hInstance = instance ? instance : class_instance;
@@ -1021,8 +1042,10 @@ HWND WINAPI NtUserCreateWindowEx(DWORD ex_style, UNICODE_STRING* class_name, UNI
         SendMessageInternal(w->parent, WM_PARENTNOTIFY, MAKEWPARAM(WM_CREATE, static_cast<WORD>(w->id)),
                             reinterpret_cast<LPARAM>(hwnd));
     if (!Win(hwnd)) return nullptr;
+    ShellNotify(1 /* HSHELL_WINDOWCREATED */, hwnd);
     if (cs.style & WS_VISIBLE) ShowWindowInternal(hwnd, sw);
-    if (!Win(hwnd)) return nullptr;
+    if (!(w = Win(hwnd))) return nullptr;
+    if (!(w->style & WS_CHILD)) ShellWindowCreated(w);   // the taskbar's WM_PARENTNOTIFY and the shell hook
     TRACE(user, "created %p", hwnd);
     return hwnd;
 }
@@ -1098,7 +1121,7 @@ LONG_PTR SetWindowLongSize(HWND hwnd, INT offset, UINT size, LONG_PTR newval, bo
     WindowObj* w = WinChecked(hwnd);
     if (!w) return 0;
     hwnd = w->handle;
-    if (w->flags & kWinIsDesktop) {
+    if ((w->flags & kWinIsDesktop) && !(w->tid && w->tid == GetCurrentThreadId())) {
         SetLastErr(ERROR_ACCESS_DENIED);
         return 0;
     }
@@ -1821,9 +1844,9 @@ ULONG_PTR WINAPI NtUserCallNoParam(ULONG code) {
     }
     case abi::NoParamGetDialogBaseUnits: return MAKELONG(8, 16);
     case abi::NoParamGetLastInputTime: return S().last_input_time;
-    case abi::NoParamGetProgmanWindow:
-    case abi::NoParamGetShellWindow:
-    case abi::NoParamGetTaskmanWindow: return 0;
+    case abi::NoParamGetProgmanWindow: return HandleToUlong(S().progman_window);
+    case abi::NoParamGetShellWindow: return HandleToUlong(S().shell_window);
+    case abi::NoParamGetTaskmanWindow: return HandleToUlong(S().taskman_window);
     case abi::NoParamDisplayModeChanged: return FALSE;
     case abi::NoParamExitingThread: {
         if (UserThread* t = FindUserThread()) {
@@ -1883,10 +1906,18 @@ ULONG_PTR WINAPI NtUserCallOneParam(ULONG_PTR arg, ULONG code) {
     }
     case abi::OneParamGetMenuItemCount: return MenuItemCount(arg);
     case abi::OneParamCreateCursorIcon: return HandleToUlong(CreateCursorObject(arg != 0));
+    case abi::OneParamGetDeskPattern:
+        if (arg) *reinterpret_cast<WCHAR*>(arg) = 0;   // no pattern (user32's update_wallpaper is then skipped)
+        return 0;
     case abi::OneParamEnableThunkLock:
         return 0;   // the thunk lock exists for 16-bit code, which never runs here
     case abi::OneParamSetKeyboardAutoRepeat:
         return 0;
+    }
+    {
+        bool handled = false;
+        const ULONG_PTR r = ShellCallOneParam(code, arg, &handled);
+        if (handled) return r;
     }
     FIXME(user, "NtUserCallOneParam code %lu (arg %#llx)", code, static_cast<unsigned long long>(arg));
     SetLastErr(ERROR_CALL_NOT_IMPLEMENTED);

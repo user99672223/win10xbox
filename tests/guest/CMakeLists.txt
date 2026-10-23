@@ -118,6 +118,11 @@ win10xbox_add_guest(guest_gdi_bitmap)
 add_executable(guest_window_menu window_menu.c)
 target_link_libraries(guest_window_menu PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window_menu)
+# Shell hook messages (tests/guest/shellhook.c): RegisterShellHookWindow and WM_SHELLHOOK for the top-level windows another
+# thread creates, activates and destroys. Console program, exits 42; the second window needs no input injection.
+add_executable(guest_shellhook shellhook.c)
+target_link_libraries(guest_shellhook PRIVATE user32)
+win10xbox_add_guest(guest_shellhook)
 # Cursors and icons (tests/guest/cursor.c): LoadCursor of Wine's own IDC_ARROW / IDC_IBEAM, GetIconInfo, GetCursorInfo,
 # SetCursor, ShowCursor, DrawIconEx, and the cursor composed onto the screen, which the host looks at with screenshots
 # taken by the inject script. Nothing to see without that injection, so there is no native smoke test.

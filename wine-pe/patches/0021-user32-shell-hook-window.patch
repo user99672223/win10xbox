@@ -1,0 +1,32 @@
+user32: RegisterShellHookWindow / DeregisterShellHookWindow through the window manager.
+
+Wine 11.9 leaves both as FIXME stubs that return FALSE (its shell hooks are WH_SHELL hooks only). The
+layer owns the window manager (core/user/win_shell.cpp): it keeps the list of shell hook windows and posts
+WM_SHELLHOOK (HSHELL_WINDOWCREATED / DESTROYED / ACTIVATED / REDRAW) to them. The two functions call
+NtUserCallOneParam with the codes 0x10001 / 0x10002, outside the range of Wine's own codes.
+
+diff --git a/dlls/user32/misc.c b/dlls/user32/misc.c
+index 6333fcb..eea9d7c 100644
+--- a/dlls/user32/misc.c
++++ b/dlls/user32/misc.c
+@@ -243,8 +243,8 @@ void WINAPI RegisterSystemThread(DWORD flags, DWORD reserved)
+  */
+ BOOL WINAPI RegisterShellHookWindow(HWND hWnd)
+ {
+-    FIXME("(%p): stub\n", hWnd);
+-    return FALSE;
++    /* win10xbox: the shell hook list lives in the window manager (NtUserCallOneParam code 0x10001) */
++    return NtUserCallOneParam( (ULONG_PTR)hWnd, 0x10001 );
+ }
+ 
+ 
+@@ -253,8 +253,7 @@ BOOL WINAPI RegisterShellHookWindow(HWND hWnd)
+  */
+ BOOL WINAPI DeregisterShellHookWindow(HWND hWnd)
+ {
+-    FIXME("(%p): stub\n", hWnd);
+-    return FALSE;
++    return NtUserCallOneParam( (ULONG_PTR)hWnd, 0x10002 );
+ }
+ 
+ 

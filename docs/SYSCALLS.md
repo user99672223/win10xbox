@@ -5,7 +5,7 @@ Windows 10 x64 / 22H2 NT syscall numbers) and the hand-maintained policy
 `core/dispatch/syscall_policy.inc`; win32u entries (ids 0x1000..) are Emulate when
 `core/user/user_syscalls.h` registers them. Do not edit by hand.
 
-1798 syscalls. passthrough 129, translate 60, emulate 362, todo 1247. Generated 2026-10-23.
+1798 syscalls. passthrough 129, translate 60, emulate 381, todo 1228. Generated 2026-10-23.
 
 Policy: **PassThrough** calls the host ntdll export by name; **Translate**
 rewrites arguments (paths, handles, timeouts) then passes through;
@@ -1106,7 +1106,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x133f | NtUserCanBrokerForceForeground | 0 | Todo |  |
 | 0x1340 | NtUserCancelQueueEventCompletionPacket | 0 | Todo |  |
 | 0x1341 | NtUserChangeClipboardChain | 2 | Emulate | core/user |
-| 0x1342 | NtUserChangeDisplaySettings | 5 | Todo |  |
+| 0x1342 | NtUserChangeDisplaySettings | 5 | Emulate | core/user |
 | 0x1343 | NtUserChangeWindowMessageFilter | 0 | Todo |  |
 | 0x1344 | NtUserChangeWindowMessageFilterEx | 0 | Todo |  |
 | 0x1345 | NtUserCheckAccessForIntegrityLevel | 0 | Todo |  |
@@ -1122,8 +1122,8 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x134f | NtUserClearWindowState | 0 | Todo |  |
 | 0x1350 | NtUserClipCursor | 1 | Emulate | core/user |
 | 0x1351 | NtUserCloseClipboard | 0 | Emulate | core/user |
-| 0x1352 | NtUserCloseDesktop | 1 | Todo |  |
-| 0x1353 | NtUserCloseWindowStation | 1 | Todo |  |
+| 0x1352 | NtUserCloseDesktop | 1 | Emulate | core/user |
+| 0x1353 | NtUserCloseWindowStation | 1 | Emulate | core/user |
 | 0x1354 | NtUserCompositionInputSinkLuidFromPoint | 0 | Todo |  |
 | 0x1355 | NtUserCompositionInputSinkViewInstanceIdFromPoint | 0 | Todo |  |
 | 0x1356 | NtUserConfigureActivationObject | 0 | Todo |  |
@@ -1138,7 +1138,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x135f | NtUserCreateBaseWindow | 0 | Todo |  |
 | 0x1360 | NtUserCreateCaret | 4 | Emulate | core/user |
 | 0x1361 | NtUserCreateDCompositionHwndTarget | 0 | Todo |  |
-| 0x1362 | NtUserCreateDesktopEx | 6 | Todo |  |
+| 0x1362 | NtUserCreateDesktopEx | 6 | Emulate | core/user |
 | 0x1363 | NtUserCreateEmptyCursorObject | 0 | Todo |  |
 | 0x1364 | NtUserCreateInputContext | 1 | Todo |  |
 | 0x1365 | NtUserCreateLocalMemHandle | 0 | Todo |  |
@@ -1149,7 +1149,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x136a | NtUserCreateSystemThreads | 0 | Todo |  |
 | 0x136b | NtUserCreateWindowEx | 17 | Emulate | core/user |
 | 0x136c | NtUserCreateWindowGroup | 0 | Todo |  |
-| 0x136d | NtUserCreateWindowStation | 7 | Todo |  |
+| 0x136d | NtUserCreateWindowStation | 7 | Emulate | core/user |
 | 0x136e | NtUserCsDdeUninitialize | 0 | Todo |  |
 | 0x136f | NtUserCtxDisplayIOCtl | 0 | Todo |  |
 | 0x1370 | NtUserDWP_GetEnabledPopupOffset | 0 | Todo |  |
@@ -1193,7 +1193,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1396 | NtUserDrainThreadCoreMessagingCompletions2 | 0 | Todo |  |
 | 0x1397 | NtUserDrawAnimatedRects | 0 | Todo |  |
 | 0x1398 | NtUserDrawCaption | 0 | Todo |  |
-| 0x1399 | NtUserDrawCaptionTemp | 7 | Todo |  |
+| 0x1399 | NtUserDrawCaptionTemp | 7 | Emulate | core/user |
 | 0x139a | NtUserDrawIconEx | 9 | Emulate | core/user |
 | 0x139b | NtUserDrawMenuBar | 1 | Emulate | core/user |
 | 0x139c | NtUserDrawMenuBarTemp | 5 | Todo |  |
@@ -1328,7 +1328,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x141d | NtUserGetMinuserIdForBaseWindow | 0 | Todo |  |
 | 0x141e | NtUserGetModernAppWindow | 0 | Todo |  |
 | 0x141f | NtUserGetMouseMovePointsEx | 5 | Todo |  |
-| 0x1420 | NtUserGetObjectInformation | 5 | Todo |  |
+| 0x1420 | NtUserGetObjectInformation | 5 | Emulate | core/user |
 | 0x1421 | NtUserGetOemBitmapSize | 0 | Todo |  |
 | 0x1422 | NtUserGetOpenClipboardWindow | 0 | Emulate | core/user |
 | 0x1423 | NtUserGetOwnerTransformedMonitorRect | 0 | Todo |  |
@@ -1351,7 +1351,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1434 | NtUserGetProcessDefaultLayout | 1 | Emulate | core/user |
 | 0x1435 | NtUserGetProcessDpiAwarenessContext | 1 | Emulate | core/user |
 | 0x1436 | NtUserGetProcessUIContextInformation | 0 | Todo |  |
-| 0x1437 | NtUserGetProcessWindowStation | 0 | Todo |  |
+| 0x1437 | NtUserGetProcessWindowStation | 0 | Emulate | core/user |
 | 0x1438 | NtUserGetProp | 2 | Emulate | core/user |
 | 0x1439 | NtUserGetProp2 | 0 | Todo |  |
 | 0x143a | NtUserGetQueueIocp | 0 | Todo |  |
@@ -1373,7 +1373,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x144a | NtUserGetSystemContentRects | 0 | Todo |  |
 | 0x144b | NtUserGetSystemDpiForProcess | 1 | Emulate | core/user |
 | 0x144c | NtUserGetSystemMenu | 2 | Emulate | core/user |
-| 0x144d | NtUserGetThreadDesktop | 1 | Todo |  |
+| 0x144d | NtUserGetThreadDesktop | 1 | Emulate | core/user |
 | 0x144e | NtUserGetThreadState | 1 | Emulate | core/user |
 | 0x144f | NtUserGetTitleBarInfo | 2 | Emulate | core/user |
 | 0x1450 | NtUserGetTopLevelWindow | 0 | Todo |  |
@@ -1491,10 +1491,10 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x14c0 | NtUserNotifyProcessCreate | 0 | Todo |  |
 | 0x14c1 | NtUserNotifyWinEvent | 4 | Emulate | core/user |
 | 0x14c2 | NtUserOpenClipboard | 2 | Emulate | core/user |
-| 0x14c3 | NtUserOpenDesktop | 3 | Todo |  |
-| 0x14c4 | NtUserOpenInputDesktop | 3 | Todo |  |
+| 0x14c3 | NtUserOpenDesktop | 3 | Emulate | core/user |
+| 0x14c4 | NtUserOpenInputDesktop | 3 | Emulate | core/user |
 | 0x14c5 | NtUserOpenThreadDesktop | 0 | Todo |  |
-| 0x14c6 | NtUserOpenWindowStation | 2 | Todo |  |
+| 0x14c6 | NtUserOpenWindowStation | 2 | Emulate | core/user |
 | 0x14c7 | NtUserPaintDesktop | 0 | Todo |  |
 | 0x14c8 | NtUserPaintMenuBar | 0 | Todo |  |
 | 0x14c9 | NtUserPaintMonitor | 0 | Todo |  |
@@ -1667,7 +1667,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1570 | NtUserSetMonitorWorkArea | 0 | Todo |  |
 | 0x1571 | NtUserSetMouseInputRateLimitingTimer | 0 | Todo |  |
 | 0x1572 | NtUserSetMsgBox | 0 | Todo |  |
-| 0x1573 | NtUserSetObjectInformation | 4 | Todo |  |
+| 0x1573 | NtUserSetObjectInformation | 4 | Emulate | core/user |
 | 0x1574 | NtUserSetParent | 2 | Emulate | core/user |
 | 0x1575 | NtUserSetPrecisionTouchPadConfiguration | 0 | Todo |  |
 | 0x1576 | NtUserSetProcessDefaultLayout | 1 | Emulate | core/user |
@@ -1677,15 +1677,15 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x157a | NtUserSetProcessMousewheelRoutingMode | 0 | Todo |  |
 | 0x157b | NtUserSetProcessRestrictionExemption | 0 | Todo |  |
 | 0x157c | NtUserSetProcessUIAccessZorder | 0 | Todo |  |
-| 0x157d | NtUserSetProcessWindowStation | 1 | Todo |  |
-| 0x157e | NtUserSetProgmanWindow | 1 | Todo |  |
+| 0x157d | NtUserSetProcessWindowStation | 1 | Emulate | core/user |
+| 0x157e | NtUserSetProgmanWindow | 1 | Emulate | core/user |
 | 0x157f | NtUserSetProp | 3 | Emulate | core/user |
 | 0x1580 | NtUserSetProp2 | 0 | Todo |  |
 | 0x1581 | NtUserSetScrollInfo | 4 | Emulate | core/user |
 | 0x1582 | NtUserSetSensorPresence | 0 | Todo |  |
 | 0x1583 | NtUserSetSharedWindowData | 0 | Todo |  |
 | 0x1584 | NtUserSetShellChangeNotifyHWND | 0 | Todo |  |
-| 0x1585 | NtUserSetShellWindowEx | 2 | Todo |  |
+| 0x1585 | NtUserSetShellWindowEx | 2 | Emulate | core/user |
 | 0x1586 | NtUserSetSysColors | 3 | Emulate | core/user |
 | 0x1587 | NtUserSetSysMenu | 0 | Todo |  |
 | 0x1588 | NtUserSetSystemContentRects | 0 | Todo |  |
@@ -1694,8 +1694,8 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x158b | NtUserSetSystemTimer | 3 | Emulate | core/user |
 | 0x158c | NtUserSetTSFEventState | 0 | Todo |  |
 | 0x158d | NtUserSetTargetForResourceBrokering | 0 | Todo |  |
-| 0x158e | NtUserSetTaskmanWindow | 1 | Todo |  |
-| 0x158f | NtUserSetThreadDesktop | 1 | Todo |  |
+| 0x158e | NtUserSetTaskmanWindow | 1 | Emulate | core/user |
+| 0x158f | NtUserSetThreadDesktop | 1 | Emulate | core/user |
 | 0x1590 | NtUserSetThreadInputBlocked | 0 | Todo |  |
 | 0x1591 | NtUserSetThreadLayoutHandles | 0 | Todo |  |
 | 0x1592 | NtUserSetThreadQueueMergeSetting | 0 | Todo |  |
@@ -1753,7 +1753,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x15c6 | NtUserSuppressWindowActions | 0 | Todo |  |
 | 0x15c7 | NtUserSuppressWindowDisplayChange | 0 | Todo |  |
 | 0x15c8 | NtUserSwapMouseButton | 0 | Todo |  |
-| 0x15c9 | NtUserSwitchDesktop | 1 | Todo |  |
+| 0x15c9 | NtUserSwitchDesktop | 1 | Emulate | core/user |
 | 0x15ca | NtUserSwitchToThisWindow | 0 | Todo |  |
 | 0x15cb | NtUserSystemParametersInfo | 4 | Emulate | core/user |
 | 0x15cc | NtUserSystemParametersInfoForDpi | 5 | Emulate | core/user |

@@ -257,6 +257,10 @@ struct WindowObj {
     WORD fnid = 0;
 };
 
+// The desktop and the message parent have no thread (tid 0) until a program (explorer.exe) adopts them with a
+// CreateWindowEx of their class; messages for a thread-less one are answered by DefWindowProc in place.
+inline bool IsPassiveWindow(const WindowObj* w) { return (w->flags & (kWinIsDesktop | kWinIsMsgParent)) && !w->tid; }
+
 // ---- Message queues ------------------------------------------------------------
 struct QueuedMsg {
     MSG msg{};
@@ -362,6 +366,12 @@ struct State {
     HWND desktop = nullptr;
     HWND msg_parent = nullptr;
     HWND foreground = nullptr;
+    // shell (win_shell.cpp): the windows SetShellWindowEx / SetProgmanWindow / SetTaskmanWindow registered, the windows
+    // that asked for WM_SHELLHOOK (RegisterShellHookWindow), and the work area SPI_SETWORKAREA chose
+    HWND shell_window = nullptr, shell_listview = nullptr, progman_window = nullptr, taskman_window = nullptr;
+    std::vector<HWND> shell_hooks;
+    bool work_area_set = false;
+    RECT work_area{};
     // threads
     std::vector<UserThread*> threads;
     // process
@@ -581,6 +591,23 @@ BOOL MenuAttachToWindow(WindowObj* w, HMENU menu);                  // SetMenu: 
 ULONG_PTR MenuItemCount(ULONG_PTR handle);
 BOOL MenuGetInfo(ULONG_PTR handle, MENUINFO* info);
 LRESULT MenuPopupWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, bool ansi);   // the `#32768` class procedure
+
+// win_shell.cpp (the desktop an explorer.exe runs: docs/GUI.md "Shell")
+// Posts WM_SHELLHOOK(code, hwnd) to every registered shell hook window; lock held. Only top-level windows that
+// belong in a taskbar (no owner, not a tool window, not the desktop or message parent) are announced.
+void ShellNotify(UINT code, HWND hwnd);
+// A top-level window was shown after its creation (WM_PARENTNOTIFY for the desktop's owner: the taskbar buttons; the
+// creation itself is announced to the shell hooks before the first show). Lock held.
+void ShellWindowCreated(WindowObj* w);
+// A top-level window is about to be destroyed: WM_PARENTNOTIFY and the shell hook; it also stops being the
+// shell / taskman / progman window or a shell hook window. Lock held.
+void ShellWindowDestroyed(WindowObj* w);
+// The desktop / message-parent window object a CreateWindowEx of the desktop (#32769) or Message class adopts for the
+// creating thread (explorer.exe makes "its" desktop window); null when `cls` is neither or one is already adopted.
+WindowObj* AdoptSpecialWindow(const ClassObj* cls, UserThread& t);
+// NtUserCallOneParam codes win10xbox adds to Wine's list (user32 is patched to use them, wine-pe/patches).
+constexpr ULONG kOneParamRegisterShellHook = 0x10001, kOneParamDeregisterShellHook = 0x10002;
+ULONG_PTR ShellCallOneParam(ULONG code, ULONG_PTR arg, bool* handled);
 
 // win_sysparams.cpp
 int SystemMetric(int index);

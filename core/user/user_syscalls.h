@@ -357,6 +357,29 @@ BOOL WINAPI NtGdiAlphaBlend(HDC hdc_dst, INT x_dst, INT y_dst, INT width_dst, IN
 BOOL WINAPI NtGdiTransparentBlt(HDC hdc, INT x_dst, INT y_dst, INT width_dst, INT height_dst, HDC hdc_src, INT x_src,
                                 INT y_src, INT width_src, INT height_src, UINT color);
 
+// ---- win_shell.cpp ----
+HDESK WINAPI NtUserCreateDesktopEx(OBJECT_ATTRIBUTES* attr, UNICODE_STRING* device, DEVMODEW* devmode, DWORD flags,
+                                   ACCESS_MASK access, ULONG heap_size);
+HDESK WINAPI NtUserOpenDesktop(OBJECT_ATTRIBUTES* attr, DWORD flags, ACCESS_MASK access);
+HDESK WINAPI NtUserOpenInputDesktop(DWORD flags, BOOL inherit, ACCESS_MASK access);
+HWINSTA WINAPI NtUserCreateWindowStation(OBJECT_ATTRIBUTES* attr, ACCESS_MASK mask, ULONG arg3, ULONG arg4, ULONG arg5,
+                                         ULONG arg6, ULONG arg7);
+HWINSTA WINAPI NtUserOpenWindowStation(OBJECT_ATTRIBUTES* attr, ACCESS_MASK access);
+BOOL WINAPI NtUserCloseDesktop(HDESK handle);
+BOOL WINAPI NtUserCloseWindowStation(HWINSTA handle);
+HDESK WINAPI NtUserGetThreadDesktop(DWORD thread);
+BOOL WINAPI NtUserSetThreadDesktop(HDESK handle);
+HWINSTA WINAPI NtUserGetProcessWindowStation();
+BOOL WINAPI NtUserSetProcessWindowStation(HWINSTA handle);
+BOOL WINAPI NtUserSwitchDesktop(HDESK desktop);
+BOOL WINAPI NtUserGetObjectInformation(HANDLE handle, INT index, void* info, DWORD len, DWORD* needed);
+BOOL WINAPI NtUserSetObjectInformation(HANDLE handle, INT index, void* info, DWORD len);
+BOOL WINAPI NtUserDrawCaptionTemp(HWND hwnd, HDC hdc, const RECT* rect, HFONT font, HICON icon, const WCHAR* str, UINT flags);
+LONG WINAPI NtUserChangeDisplaySettings(UNICODE_STRING* devname, DEVMODEW* devmode, HWND hwnd, DWORD flags, void* lparam);
+BOOL WINAPI NtUserSetShellWindowEx(HWND shell, HWND list_view);
+HWND WINAPI NtUserSetProgmanWindow(HWND hwnd);
+HWND WINAPI NtUserSetTaskmanWindow(HWND hwnd);
+
 }  // namespace win10xbox::user::sys
 #include "win_scroll.h"   // the scroll bar syscalls (prototypes)
 
@@ -438,4 +461,10 @@ BOOL WINAPI NtGdiTransparentBlt(HDC hdc, INT x_dst, INT y_dst, INT width_dst, IN
     X(NtGdiGetPixel) X(NtGdiSetPixel) X(NtGdiRectangle) X(NtGdiEllipse) X(NtGdiMoveTo) \
     X(NtGdiLineTo) X(NtGdiPolyPolyDraw) X(NtGdiFillRgn) X(NtGdiFrameRgn) X(NtGdiInvertRgn) X(NtGdiExtTextOutW) \
     X(NtGdiSetDIBitsToDeviceInternal) X(NtGdiStretchDIBitsInternal) \
-    X(NtGdiAlphaBlend) X(NtGdiTransparentBlt)
+    X(NtGdiAlphaBlend) X(NtGdiTransparentBlt) \
+    \
+    X(NtUserCreateDesktopEx) X(NtUserOpenDesktop) X(NtUserOpenInputDesktop) X(NtUserCreateWindowStation) \
+    X(NtUserOpenWindowStation) X(NtUserCloseDesktop) X(NtUserCloseWindowStation) X(NtUserGetThreadDesktop) \
+    X(NtUserSetThreadDesktop) X(NtUserGetProcessWindowStation) X(NtUserSetProcessWindowStation) X(NtUserSwitchDesktop) \
+    X(NtUserGetObjectInformation) X(NtUserSetObjectInformation) X(NtUserSetShellWindowEx) X(NtUserSetProgmanWindow) \
+    X(NtUserSetTaskmanWindow) X(NtUserDrawCaptionTemp) X(NtUserChangeDisplaySettings)
