@@ -332,9 +332,15 @@ void Host::Impl::RecordAllRun(bool timed_out, long exit_code, const std::string&
     ReportBlock b;
     b.program = picked_name;
     b.exit_code = exit_code;
-    int expected = 0;
-    const bool known = KnownExpectedExit(picked_name, launcher != nullptr && launcher->PadSeen(), &expected);
-    b.verdict = ReportVerdict(timed_out, exit_code, known, expected);
+    // The expected-exit table of the package (tests/guest/expected_exit.txt); the built-in fallback covers five programs.
+    ExpectedTable table;
+    std::string table_text, table_err;
+    if (ReadTextFile(info.package_dir + L"\\payload\\expected_exit.txt", &table_text) && !ParseExpectedTable(table_text, &table, &table_err))
+    {
+        diag::Line("launcher: expected_exit.txt ignored (%s)", table_err.c_str());
+        table.clear();
+    }
+    b.verdict = ReportVerdict(timed_out, exit_code, FindExpected(table, picked_name));
     b.screen = screen;
     b.stdout_lines = TailLines(info.local_state + L"\\stdout.txt", 10);
     std::string crash;

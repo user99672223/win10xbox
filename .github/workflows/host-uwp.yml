@@ -297,6 +297,7 @@ jobs:
           $doomMissing = @('chocolate-doom.exe', 'doom1.wad', 'SDL2.dll', 'chocolate-doom.args', 'chocolate-doom.env',
                            'chocolate-doom.title', 'doom-timedemo.launch') | Where-Object { $entries -notcontains "payload/guest/$_" }
           if ($entries -notcontains 'payload/guests.txt') { Write-Host '::error::payload/guests.txt manifest missing from package'; exit 1 }
+          if ($entries -notcontains 'payload/expected_exit.txt') { Write-Host '::error::payload/expected_exit.txt missing from package'; exit 1 }
           foreach ($f in 'l_intl.nls','c_10000.nls','c_1252.nls','locale.nls','sortdefault.nls') {
             if ($entries -notcontains "payload/nls/$f") { Write-Host "::error::payload/nls/$f missing from the .msix"; exit 1 }
           }
@@ -656,6 +657,7 @@ jobs:
           $result = Join-Path $ls 'launcher_result.txt'
           $text = if (Test-Path $result) { Get-Content -Path $result -Raw } else { '' }
           $fail = @()
+          $countLine = ''
           if (-not $text) { $fail += 'LocalState\launcher_result.txt was not written (the launcher did not run the entry)' }
           else {
             $blocks = @($text -split '(?m)^(?=run=)' | Where-Object { $_ -match '(?m)^run=' })
@@ -709,28 +711,60 @@ jobs:
           $pkg = Get-AppxPackage -Name win10xbox.uwp
           $ls = Join-Path $env:LOCALAPPDATA ("Packages\" + $pkg.PackageFamilyName + "\LocalState")
           New-Item -ItemType Directory -Force -Path uwp-evidence-all | Out-Null
-          foreach ($f in 'report.txt', 'status.txt', 'crash.txt') { $p = Join-Path $ls $f; if (Test-Path $p) { Copy-Item $p uwp-evidence-all -Force } }
+          foreach ($f in 'report.txt', 'status.txt', 'crash.txt', 'stdout.txt', 'trace.log') { $p = Join-Path $ls $f; if (Test-Path $p) { Copy-Item $p uwp-evidence-all -Force } }
           Get-ChildItem -Path $ls -Filter *.bmp -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName uwp-evidence-all -Force }
           $p = Join-Path $ls 'report.txt'
           $text = if (Test-Path $p) { Get-Content -Path $p -Raw } else { '' }
           if ($text) { Write-Host '--- report.txt (header and verdict lines) ---'; $text -split "`n" | Where-Object { $_ -match '^(# |os_build|package|date_utc|programs|pass|fail|exited|timeout|crash=|crash$|skipped|program=|verdict=)' } | ForEach-Object { Write-Host $_ } }
           $fail = @()
+          $countLine = ''
           if (-not $text) { $fail += 'LocalState\report.txt was not written' }
           else {
             if ($text -notmatch '(?m)^os_build=\d+\.\d+\.\d+') { $fail += 'the report header has no os_build' }
             $dir = Join-Path $pkg.InstallLocation 'payload\guest'
-            $bundled = @(Get-ChildItem -Path $dir -Filter *.exe -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
-            if ($bundled.Count -eq 0) { $bundled = @('window.exe', 'hello.exe', 'hello_cui.exe', 'guest_hello.exe', 'guest_cpuid.exe', 'guest_xinput.exe') }
+            $bundled = @(Get-ChildItem -Path $dir -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '\.(exe|launch)$' } | ForEach-Object { $_.Name })
             Write-Host "bundled programs: $($bundled.Count)"
-            foreach ($n in $bundled) {
-              if ($text -notmatch ('(?m)^program=' + [regex]::Escape($n) + '\s*$')) { $fail += "no block for $n" }
+            # The expected-exit table (tests/guest/expected_exit.txt, staged next to guests.txt): <program> <code>[=<label>] ...
+            $tablePath = Join-Path $pkg.InstallLocation 'payload\expected_exit.txt'
+            $table = @{}
+            if (-not (Test-Path $tablePath)) { $fail += 'payload\expected_exit.txt is not in the package' }
+            else {
+              foreach ($tl in Get-Content $tablePath) {
+                $w = @(($tl -replace '#.*$', '') -split '\s+' | Where-Object { $_ })
+                if ($w.Count -ge 2) { $table[$w[0].ToLower()] = [bool](@($w[1..($w.Count - 1)] | Where-Object { $_ -match '^TIMEOUT(=|$)' }).Count) }
+              }
             }
-            foreach ($n in 'window.exe', 'hello_cui.exe', 'guest_hello.exe', 'guest_cpuid.exe', 'guest_xinput.exe') {
-              if ($text -notmatch ('(?ms)^program=' + [regex]::Escape($n) + '\s*\r?\n(?:(?!program=).)*?^verdict=PASS\b')) { $fail += "$n is not PASS" }
+            Write-Host "expected-exit table: $($table.Count) programs"
+            foreach ($n in $bundled) {
+              if (-not $table.ContainsKey($n.ToLower())) { $fail += "$n is bundled but has no row in expected_exit.txt" }
+            }
+            foreach ($n in ($table.Keys | Sort-Object)) {
+              if (-not ($bundled | Where-Object { $_.ToLower() -eq $n })) { Write-Host "table row $n is not bundled: skipped"; continue }
+              $m = [regex]::Match($text, '(?ms)^program=' + [regex]::Escape($n) + '\s*\r?\n(?:(?!^program=).)*?^verdict=(\w+)')
+              if (-not $m.Success) { $fail += "no block for $n"; continue }
+              $word = $m.Groups[1].Value
+              if ($word -eq 'PASS') { continue }
+              if ($word -eq 'TIMEOUT' -and $table[$n]) { continue }
+              $fail += "$n is $word, not PASS"
+            }
+            $counts = @{ PASS = 0; FAIL = 0; EXITED = 0; TIMEOUT = 0; CRASH = 0 }
+            foreach ($m in [regex]::Matches($text, '(?m)^verdict=(\w+)')) { $k = $m.Groups[1].Value; if ($counts.ContainsKey($k)) { $counts[$k]++ } }
+            $countLine = "pass=$($counts.PASS) fail=$($counts.FAIL) exited=$($counts.EXITED) timeout=$($counts.TIMEOUT) crash=$($counts.CRASH)"
+            Write-Host $countLine
+            # The Doom timedemo runs the whole demo (it exits through I_Error with -1, table label "timedemo"): its last frame is not black.
+            $bmp = Join-Path $ls 'doom-timedemo.bmp'
+            if (-not (Test-Path $bmp)) { $fail += 'doom-timedemo.bmp was not written' }
+            else {
+              $bytes = [System.IO.File]::ReadAllBytes($bmp)
+              $seen = New-Object 'System.Collections.Generic.HashSet[uint32]'
+              for ($i = 54; $i + 3 -lt $bytes.Length; $i += 4 * 997) { [void]$seen.Add([BitConverter]::ToUInt32($bytes, $i)) }
+              Write-Host "doom-timedemo.bmp: $($bytes.Length) bytes, $($seen.Count) distinct sampled pixels"
+              if ($seen.Count -lt 8) { $fail += 'doom-timedemo.bmp is black or flat' }
             }
           }
           $lines = @('### host-uwp launcher: Run every program (autoselect all)')
-          if ($fail.Count -eq 0) { $lines += '- PASS: every bundled program has a block in report.txt and the known-good ones are PASS' }
+          if ($countLine) { $lines += "- $countLine" }
+          if ($fail.Count -eq 0) { $lines += '- PASS: every bundled program has a row in expected_exit.txt and is PASS (TIMEOUT only where the table says so); doom-timedemo.bmp is not black' }
           else { $fail | ForEach-Object { $lines += "- FAIL: $_"; Write-Host "::error::$_" } }
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           if ($fail.Count -gt 0) { exit 1 }

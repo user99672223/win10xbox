@@ -173,7 +173,7 @@ if no pad is ever seen) and keyboard (arrows, Enter/Space, Esc/Backspace).
   programs (restart argument `picker run=N all=K select=<name>`), except entries with a `<name>.exe.skip-auto`
   or `<name>.skip-auto` file beside them (they get a SKIPPED block). Per program `report.txt` gets a block:
   `program=`, `exit_code=`, `verdict=` (PASS or FAIL against the built-in expected exit code of the known
-  programs, `KnownExpectedExit`; else EXITED, CRASH for an NTSTATUS-style exit code, TIMEOUT), `screen=<name>.bmp`
+  programs, `tests/guest/expected_exit.txt` staged as `payload\expected_exit.txt` (`FindExpected`, five built-in fallbacks); else EXITED, CRASH for an NTSTATUS-style exit code, TIMEOUT), `screen=<name>.bmp`
   (`user::WriteScreenshot` right after the guest exits or at the timeout, the periodic `screen.bmp` as fallback),
   `crash=yes|no` plus the first 5 new lines of `crash.txt`, and the last 10 stdout lines. At the end the header
   (`os_build` from `RtlGetVersion`, package, version, date, counts) is put on top of `report.txt` and a summary
@@ -187,8 +187,9 @@ if no pad is ever seen) and keyboard (arrows, Enter/Space, Esc/Backspace).
   app, waits for the `run=2` block and asserts two blocks, each `ran=yes` and `exit_code=42`, run
   numbers 1 and 2, and `hello from guest` in the first. Parser keys and the restart argument are covered
   by `host_uwp.selftest`. The same job then runs `"autoselect": "all"` (20 s per program) and asserts on
-  `report.txt`: a block per bundled program, PASS for window.exe, hello_cui.exe, guest_hello.exe,
-  guest_cpuid.exe and guest_xinput.exe (without a pad its own expected exit code is 1).
+  `report.txt`: a block per bundled program and PASS for every program of `tests/guest/expected_exit.txt`
+  (`<program> <code>[=<label>] ...`, TIMEOUT allowed only where a row lists it), plus a non-black
+  `doom-timedemo.bmp`; the pass/fail/exited/timeout/crash counts are printed.
 * **Not proven.** Gamepad/keyboard navigation (CI cannot press buttons) and `RequestRestartAsync` itself
   on the runner and on the Series S (written against the documented API; the first CI run and the first
   console run are the evidence). `uwp_activate` may see the first process end; the job polls for `run=2`.
