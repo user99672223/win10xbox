@@ -79,6 +79,25 @@ void WINAPI NtUserNotifyWinEvent(DWORD event, HWND hwnd, LONG object_id, LONG ch
 BOOL WINAPI NtUserShowOwnedPopups(HWND owner, BOOL show);
 HICON WINAPI NtUserInternalGetWindowIcon(HWND hwnd, UINT type);
 
+// ---- win_menu.cpp ----
+HMENU WINAPI NtUserCreateMenu();
+HMENU WINAPI NtUserCreatePopupMenu();
+BOOL WINAPI NtUserDestroyMenu(HMENU handle);
+BOOL WINAPI NtUserRemoveMenu(HMENU handle, UINT id, UINT flags);
+BOOL WINAPI NtUserDeleteMenu(HMENU handle, UINT id, UINT flags);
+DWORD WINAPI NtUserCheckMenuItem(HMENU handle, UINT id, UINT flags);
+BOOL WINAPI NtUserEnableMenuItem(HMENU handle, UINT id, UINT flags);
+BOOL WINAPI NtUserSetMenuDefaultItem(HMENU handle, UINT item, UINT bypos);
+BOOL WINAPI NtUserHiliteMenuItem(HWND hwnd, HMENU handle, UINT item, UINT hilite);
+BOOL WINAPI NtUserGetMenuItemRect(HWND hwnd, HMENU handle, UINT item, RECT* rect);
+INT WINAPI NtUserMenuItemFromPoint(HWND hwnd, HMENU handle, int x, int y);
+BOOL WINAPI NtUserGetMenuBarInfo(HWND hwnd, LONG id, LONG item, MENUBARINFO* info);
+UINT WINAPI NtUserThunkedMenuItemInfo(HMENU handle, UINT pos, UINT flags, UINT method, MENUITEMINFOW* info,
+                                      UNICODE_STRING* str);
+BOOL WINAPI NtUserThunkedMenuInfo(HMENU handle, const MENUINFO* info);
+BOOL WINAPI NtUserTrackPopupMenuEx(HMENU handle, UINT flags, INT x, INT y, HWND hwnd, TPMPARAMS* params);
+BOOL WINAPI NtUserEndMenu();
+
 // ---- win_message.cpp ----
 BOOL WINAPI NtUserGetMessage(MSG* msg, HWND hwnd, UINT first, UINT last);
 BOOL WINAPI NtUserPeekMessage(MSG* msg, HWND hwnd, UINT first, UINT last, UINT flags);
@@ -341,6 +360,10 @@ BOOL WINAPI NtGdiTransparentBlt(HDC hdc, INT x_dst, INT y_dst, INT width_dst, IN
     X(NtUserSetProp) X(NtUserGetProp) X(NtUserRemoveProp) X(NtUserGetWindowPlacement) X(NtUserSetWindowPlacement) \
     X(NtUserSetWindowFNID) X(NtUserGetGUIThreadInfo) X(NtUserFlashWindowEx) X(NtUserIsChildWindowDpiMessageEnabled) \
     X(NtUserGetTitleBarInfo) X(NtUserSetMenu) X(NtUserGetSystemMenu) X(NtUserDrawMenuBar) \
+    X(NtUserCreateMenu) X(NtUserCreatePopupMenu) X(NtUserDestroyMenu) X(NtUserRemoveMenu) X(NtUserDeleteMenu) \
+    X(NtUserCheckMenuItem) X(NtUserEnableMenuItem) X(NtUserSetMenuDefaultItem) X(NtUserHiliteMenuItem) \
+    X(NtUserGetMenuItemRect) X(NtUserMenuItemFromPoint) X(NtUserGetMenuBarInfo) X(NtUserThunkedMenuItemInfo) \
+    X(NtUserThunkedMenuInfo) X(NtUserTrackPopupMenuEx) X(NtUserEndMenu) \
     \
     X(NtUserGetWindowContextHelpId) X(NtUserSetWindowContextHelpId) X(NtUserNotifyWinEvent) \
     X(NtUserShowOwnedPopups) X(NtUserInternalGetWindowIcon) \

@@ -33,7 +33,7 @@ if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
                    guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog guest_comctl
                    guest_seh guest_window_scroll guest_clipboard guest_net msctf_stub guest_gdi_bitmap
-                   guest_window_hooks)
+                   guest_window_hooks guest_window_menu)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -210,6 +210,25 @@ win10xbox_guest_test(guest_window_text "C:\\guest\\guest_window_text.exe" 42
   "text: done")
 set_tests_properties(integration.guest_window_text PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_text.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=121,123,ff000000|123,123,ffffffff|131,123,ff000000")
+# Menus (tests/guest/window_menu.c, core/user/win_menu.cpp): CreateMenu / CreatePopupMenu / SetMenu, the menu bar the
+# window reserves under its caption (client height shrinks by SM_CYMENU = 20), the bar pixels, and the host clicking
+# "File" then "Exit" (WM_COMMAND id=102) and then an item of TrackPopupMenu(TPM_RETURNCMD). The window is at (100,100)
+# 400x300 with the Windows 10 frame (8 px) and caption (23 px): the bar is (108,131)-(492,151), the item "File"
+# (108,131)-(156,150), the popup below it at (108,151): Open (109,154)-(219,176), Exit (109,185)-(219,207). The
+# TrackPopupMenu popup opens at (300,250): its first item is at y 253..275. The screenshot shows the bar background
+# (COLOR_MENU f0f0f0) and the top pixel row of the "F" glyph (COLOR_MENUTEXT) at (116,134).
+win10xbox_guest_test(guest_window_menu "C:\\guest\\guest_window_menu.exe" 42
+  "menu: api items=4 id0=101 checked=1 grayed=1"
+  "menu: client height before=[0-9]+ after=[0-9]+ delta=20 SM_CYMENU=20"
+  "menu: bar rect=108,131,492,151" "menu: item File rect=108,131,156,150"
+  "menu: pixels bg=00f0f0f0 glyph=00000000"
+  "menu: WM_INITMENUPOPUP popup=1"
+  "menu: popup items open=109,154,219,176 exit=109,185,219,207"
+  "menu: WM_COMMAND id=102" "menu: TrackPopupMenu returned 101"
+  "menu: loops enter=2 exit=2 init=2" "menu: done")
+set_tests_properties(integration.guest_window_menu PROPERTIES
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_menu.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=300,140,fff0f0f0|116,134,ff000000;WIN10XBOX_TEST_INJECT_INPUT=waitwin 60000\\;sleep 2000\\;move 132,140\\;ldown\\;lup\\;sleep 1500\\;move 128,196\\;ldown\\;lup\\;sleep 2500\\;move 320,264\\;ldown\\;lup"
+  FAIL_REGULAR_EXPRESSION "FAIL ")
 # Scroll bars (tests/guest/window_scroll.c, core/user/win_scroll.cpp): range/position round trip, HTVSCROLL hit test,
 # ScrollWindowEx / ScrollDC pixels, and a host-injected click on the vertical bar's down arrow that must arrive as
 # WM_VSCROLL SB_LINEDOWN + SB_ENDSCROLL. The screenshot shows the bar's track colour (COLOR_SCROLLBAR, ffc8c8c8) at

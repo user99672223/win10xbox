@@ -79,6 +79,7 @@ more. Presentation is the host's: it only needs `ComposeFrame`.
 | `win_class.cpp` | classes and the user atom table (`NtUserRegisterClassExWOW`, `NtUserGetClassInfoEx`, `NtUserGetClassName`, `NtUserGetAtomName`, `NtUserRegisterWindowMessage`, class longs), the builtin classes (Button ... `#32769`, `Message`) with the procs from `NtUserInitializeClientPfnArrays`; procedures are kept as raw (A, W) pairs |
 | `win_window.cpp` | handle table, tree and z-order, rects, `NtUserCreateWindowEx` (Wine's message sequence), `ShowWindow`, `SetWindowPos` (WINDOWPOSCHANGING / NCCALCSIZE / WINDOWPOSCHANGED), `DestroyWindow` (WM_DESTROY parent first, WM_NCDESTROY children first), activation and focus, window longs, props, `NtUserCall{Hwnd,HwndParam,NoParam,OneParam,TwoParam}` codes, `FindWindowEx`, `BuildHwndList`, `WindowFromPoint`, capture, enable |
 | `win_defwnd.cpp` | the default window procedure (`NtUserMessageCall(NtUserDefWindowProc)`): text, WM_NCCALCSIZE from the style (Windows 10 frame metrics), WM_NCHITTEST, WM_NCPAINT, WM_ERASEBKGND with the class brush, WM_CTLCOLOR*, WM_CLOSE, WM_WINDOWPOSCHANGED -> WM_MOVE/WM_SIZE, WM_ACTIVATE -> focus, Alt+F4 |
+| `win_menu.cpp` | menu objects and the `NtUserThunkedMenuItemInfo` family, the menu bar (layout, paint, hit test, `WM_NCLBUTTONDOWN` -> popup), `NtUserTrackPopupMenuEx` / `NtUserEndMenu` and the shared modal loop, the `#32768` popup window procedure |
 | `win_message.cpp` | per-thread queues (posted, input, cross-thread sent), WM_PAINT and WM_TIMER pseudo-messages, `GetMessage`, `PeekMessage`, `MsgWaitForMultipleObjectsEx`, `WaitMessage`, `GetQueueStatus`, `NtUserMessageCall` codes, `DispatchMessage` (WM_PAINT / timer procs), `TranslateMessage` (US layout), timers, the input sink and the thread-side processing of mouse input (hit test, activation, `WM_SETCURSOR`, double clicks), key state, `SendInput`, cursor, caret (tracked, not drawn) |
 | `win_hook.cpp` | in-process `SetWindowsHookEx` / `UnhookWindowsHook[Ex]` / `CallNextHookEx` / `CallMsgFilter` (design: item 9a), the `CbCallWindowsHook` call-out, WH_CALLWNDPROC / WH_CALLWNDPROCRET around window procedure calls |
 | `win_paint.cpp` | update regions (bounding rectangle + erase / frame / internal-paint flags), `InvalidateRect`/`Rgn`, `ValidateRect`/`Rgn`, `RedrawWindow`, `GetUpdateRect`/`Rgn`, `BeginPaint`/`EndPaint`, `GetDC`/`GetDCEx`/`GetWindowDC`/`ReleaseDC`, `ScrollWindowEx`, the non-client frame (solid colours), window surfaces from the driver, flush, `ComposeFrame` / `ComposeLastPaintedFrame` |
@@ -94,7 +95,7 @@ except the few that return an `NTSTATUS` (`NtUserBuildHwndList`, `NtUserInitiali
 
 ### What is implemented (2026-10-22)
 
-235 win32u syscalls are registered (`W10X_USER_SYSCALLS`, listed as Emulate in docs/SYSCALLS.md; plus the ntdll-side `NtCallbackReturn`): enough for
+251 win32u syscalls are registered (`W10X_USER_SYSCALLS`, listed as Emulate in docs/SYSCALLS.md; plus the ntdll-side `NtCallbackReturn`): enough for
 `tests/guest/window.c` (frameless popup, FillRect, GetPixel, timers, PostMessage) and `tests/guest/window2.c`
 (captioned overlapped window, AdjustWindowRectEx, Set/GetWindowText, ShowWindow/UpdateWindow, memory DC +
 CreateCompatibleBitmap + BitBlt, InvalidateRect, KillTimer, DestroyWindow, PeekMessage on
@@ -117,9 +118,28 @@ Not implemented yet (they stay Todo or are documented FIXMEs), roughly in the or
   strike-out styling, no kerning, no justification (`SetTextJustification` is accepted and ignored), no
   `GetGlyphIndices` beyond the identity map. `GetFontData`, `GetOutlineTextMetrics`, `EnumFontFamilies` and
   `AddFontResource` stay Todo / failing.
-* **Menus** (`NtUserCreateMenu`, `NtUserThunkedMenuItemInfo`, `TrackPopupMenu`...): Todo; `LoadMenu` fails, so
-  windows get no menu bar. **Icons and cursors** (`NtUserSetCursorIconData`, `NtUserDrawIconEx`, `LoadImage` of
-  icons/cursors): Todo. **Scroll bars**: `win_scroll.cpp` (see the module table); thumb dragging and button auto-repeat are not implemented. **Clipboard**, **WinEvent hooks** (`SetWinEventHook`), **IME**,
+* **Menus** (`win_menu.cpp`, gated by `tests/guest/window_menu.c`): menu objects are HMENU handles in their own table
+  (`(0x8000 + slot) | generation << 16`, never a window handle); `CreateMenu`/`CreatePopupMenu`/`DestroyMenu` (recursive),
+  `AppendMenu`/`InsertMenu`/`ModifyMenu`/`Get|SetMenuItemInfo[AW]` (`NtUserThunkedMenuItemInfo`), `GetMenuState`,
+  `GetMenuItemID`, `GetSubMenu`, `GetMenuItemCount`, `CheckMenuItem`, `CheckMenuRadioItem`, `EnableMenuItem`,
+  `Delete|RemoveMenu`, `Get|SetMenuDefaultItem`, `Get|SetMenuInfo`, `IsMenu`, `HiliteMenuItem`, `MenuItemFromPoint`,
+  `GetMenuItemRect`, `GetMenuBarInfo` (screen coordinates), `LoadMenuIndirect`/`LoadMenu` through user32. `SetMenu` and
+  `DrawMenuBar` attach the menu and re-run `WM_NCCALCSIZE` (`SWP_FRAMECHANGED`): a top-level window with a menu reserves
+  `SM_CYMENU` (20 px) under the caption (`NcInsets`), `WM_NCPAINT` paints the bar (COLOR_MENU, items in the built-in
+  8x16 face, 8 px padding each side, the open item COLOR_HIGHLIGHT), `WM_NCHITTEST` answers `HTMENU` over it and
+  `WM_NCLBUTTONDOWN` there opens the item's popup. `TrackPopupMenu[Ex]` and the bar share one modal loop inside the
+  syscall: a `#32768` window (WS_POPUP, topmost, owned by the owner window; item height 22, separator 9, check column
+  24 px, 1 px border), mouse capture, the thread's queue pumped through `NtUserGetMessage` (other messages are
+  dispatched), a click on an enabled item posts `WM_COMMAND(MAKEWPARAM(id, 0), 0)` to the owner (or returns the id with
+  `TPM_RETURNCMD`), a click outside or VK_ESCAPE cancels, VK_UP/DOWN/RETURN/LEFT/RIGHT navigate, moving over another
+  bar item switches popups. Messages to the owner: `WM_ENTERMENULOOP`, `WM_INITMENU`, `WM_INITMENUPOPUP`,
+  `WM_MENUSELECT` (also `0xFFFF` on exit), `WM_EXITMENULOOP`; `TPM_NONOTIFY` suppresses them. `NtUserEndMenu` ends the
+  loop. Not done: cascading submenus of popup items (they are drawn with an arrow, not opened), keyboard
+  mnemonics / Alt and F10 activation, accelerator tables (`NtUserTranslateAccelerator`), owner-draw and bitmap items
+  (laid out empty), `GetSystemMenu` / `SetSystemMenu` (the window system menu), menu bar wrapping onto a second row,
+  scrolling of tall popups, `MIM_BACKGROUND`, the class menu name of `RegisterClass`.
+  **Icons and cursors** (`NtUserSetCursorIconData`, `NtUserDrawIconEx`, `LoadImage` of
+  icons/cursors): Todo. **Scroll bars**: `win_scroll.cpp` (see the module table); thumb dragging and button auto-repeat are not implemented. **Clipboard**, **hooks** (`SetWindowsHookEx`, `SetWinEventHook`), **IME**,
   **raw input**, **layered windows** (`SetLayeredWindowAttributes`, `UpdateLayeredWindow`), **window regions**,
   `GradientFill` / `MaskBlt`, `PrintWindow`, `DeferWindowPos`,
   window stations / desktops: Todo.

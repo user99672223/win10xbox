@@ -87,6 +87,12 @@ set_source_files_properties(${CMAKE_CURRENT_BINARY_DIR}/gdi_bitmap.rc PROPERTIES
   OBJECT_DEPENDS "${W10X_BMP_DIR}/rgb24.bmp;${W10X_BMP_DIR}/pal8.bmp")
 target_link_libraries(guest_gdi_bitmap PRIVATE user32 gdi32 msimg32)
 win10xbox_add_guest(guest_gdi_bitmap)
+# Menus (tests/guest/window_menu.c): the menu API, the menu bar of a window, popup menus and TrackPopupMenu, driven by
+# host-injected clicks (WIN10XBOX_TEST_INJECT_INPUT, tests/integration/CMakeLists.txt). Like window_input it cannot do
+# anything useful without that injection, so there is no native smoke test.
+add_executable(guest_window_menu window_menu.c)
+target_link_libraries(guest_window_menu PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_window_menu)
 # Exception handling coverage (seh.cpp + the DLL it throws across): C++ throw/catch, SEH, vectored handlers.
 # __try/__except is native on MSVC. For clang's mingw target it is used when a configure-time compile+link of a
 # __try/__except program with -fms-extensions succeeds (SEH_NATIVE); otherwise seh.cpp falls back to a vectored

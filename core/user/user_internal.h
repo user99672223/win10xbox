@@ -549,6 +549,17 @@ void PaintNonClient(HWND hwnd);
 HDC BeginPaintInternal(HWND hwnd, PAINTSTRUCT* ps);
 BOOL EndPaintInternal(HWND hwnd, const PAINTSTRUCT* ps);
 
+// win_menu.cpp (menus; docs/GUI.md)
+int MenuBarHeight(const WindowObj* w);                              // SM_CYMENU when `w` shows a menu bar, else 0
+void MenuPaintBar(WindowObj* w, DcObj* dc, const DrawTarget& t);    // window DC target (device (0,0) = window top-left)
+bool MenuBarHitTest(const WindowObj* w, POINT screen_pt);
+void MenuBarClick(HWND hwnd, POINT screen_pt);                      // WM_NCLBUTTONDOWN on HTMENU; lock held, dropped while tracking
+void MenuDestroyWindowMenu(WindowObj* w);                           // WM_NCDESTROY
+BOOL MenuAttachToWindow(WindowObj* w, HMENU menu);                  // SetMenu: validates and stores the menu
+ULONG_PTR MenuItemCount(ULONG_PTR handle);
+BOOL MenuGetInfo(ULONG_PTR handle, MENUINFO* info);
+LRESULT MenuPopupWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, bool ansi);   // the `#32768` class procedure
+
 // win_sysparams.cpp
 int SystemMetric(int index);
 void ScreenRect(RECT* out);

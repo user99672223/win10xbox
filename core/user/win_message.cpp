@@ -1004,11 +1004,8 @@ LRESULT WINAPI NtUserMessageCall(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         return DefWindowProcInternal(hwnd, msg, wparam, lparam, ansi != 0);
     case abi::McScrollBarWndProc:
         return ScrollBarWndProcInternal(hwnd, msg, wparam, lparam, ansi != 0);   // win_scroll.cpp
-    case abi::McPopupMenuWndProc: {
-        static volatile LONG reported = 0;   // plain flag
-        if (!InterlockedExchange(&reported, 1)) FIXME(user, "popup menu window procedures are not implemented");
-        return DefWindowProcInternal(hwnd, msg, wparam, lparam, ansi != 0);
-    }
+    case abi::McPopupMenuWndProc:
+        return MenuPopupWndProc(hwnd, msg, wparam, lparam, ansi != 0);   // win_menu.cpp
     case abi::McCallWindowProc: {
         auto* p = static_cast<abi::WinProcParams*>(result_info);
         if (!p || !p->func) return FALSE;
