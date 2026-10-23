@@ -287,7 +287,10 @@ void DumpGuestModules(const char* why) {
 void NoteGuestEntry(const CONTEXT* ctx) {
     if (!ctx) return;
     void* thunk = GuestEntryThunk();
-    if (!thunk || ctx->Rip != reinterpret_cast<DWORD64>(thunk)) return;   // not the main-thread launch continuation
+    DWORD64 rip = 0;
+    if (!thunk || probe::Load<DWORD64>(&ctx->Rip, &rip) != st::Success ||   // the host's NtContinue reports a bad context
+        rip != reinterpret_cast<DWORD64>(thunk))
+        return;                                                             // not the main-thread launch continuation
     static volatile LONG done = 0;
     if (InterlockedExchange(&done, 1)) return;                            // once per process
     TRACE(modules, "guest entry reached (RtlUserThreadStart at %p)", thunk);
@@ -428,13 +431,22 @@ NTSTATUS NTAPI Xl_NtCreateSection(PHANDLE handle, ACCESS_MASK access, POBJECT_AT
                                   ULONG protect, ULONG attributes, HANDLE file) {
     if (!(attributes & kSecImage) || !file)
         return Host().NtCreateSection(handle, access, attr, size, protect, attributes, file);
-    if (OAName(attr).size()) FIXME(dispatch, "named image section %.*ls not supported, creating it unnamed",
-                                   static_cast<int>(OAName(attr).size()), OAName(attr).data());
+    // The attributes are optional, the handle is not; both are caller memory.
+    if (NTSTATUS ps = probe::ProbeWrite(handle, sizeof(HANDLE))) return ps;
+    probe::ObjectAttributes cap;
+    if (attr)
+        if (NTSTATUS cs = probe::CaptureObjectAttributes(attr, &cap)) return cs;
+    const std::wstring_view name = cap.name.view();
+    if (name.size()) FIXME(dispatch, "named image section %.*ls not supported, creating it unnamed",
+                           static_cast<int>(name.size()), name.data());
     std::shared_ptr<ImageSection> sec;
     if (NTSTATUS s = CreateImageSectionFromFile(file, &sec)) return s;
     HANDLE h = NewSectionHandle(sec);
     if (!h) return st::NoMemory;
-    *handle = h;
+    if (NTSTATUS ws = probe::Store<HANDLE>(handle, h)) {
+        Xl_NtClose(h);   // the caller's slot vanished: do not leak the section
+        return ws;
+    }
     TRACE(dispatch, "image section %p for %ls", h, sec->host_path.c_str());
     TRACE(modules, "section %p: %ls (%zu bytes, host path %ls)", h, ImageLabel(sec.get()).c_str(), sec->bytes.size(),
           sec->host_path.empty() ? L"<unknown>" : sec->host_path.c_str());
@@ -455,19 +467,32 @@ static NTSTATUS MapOurs(const std::shared_ptr<ImageSection>& sec, HANDLE process
         FIXME(dispatch, "mapping an image section into another process");
         return st::NotSupported;
     }
+    // The base address is read and written back, the view size is optional: probed before anything is mapped.
+    PVOID preferred = nullptr;
+    if (NTSTATUS ps = probe::ProbeWrite(base, sizeof(PVOID))) return ps;
+    if (NTSTATUS ps = probe::Load<PVOID>(base, &preferred)) return ps;
+    if (view_size)
+        if (NTSTATUS ps = probe::ProbeWrite(view_size, sizeof(SIZE_T))) return ps;
     MapOptions opts;
-    opts.preferred = base ? *base : nullptr;
+    opts.preferred = preferred;
     ImageView* view = nullptr;
     NTSTATUS s = MapImageView(sec, opts, &view);
     if (!NtSuccess(s)) {
         WARN(modules, "map of %ls failed: %08lx", ImageLabel(sec.get()).c_str(), static_cast<unsigned long>(s));
         return s;
     }
-    *base = view->image.base;
-    if (view_size) *view_size = view->image.size;
-    TRACE(modules, "map %ls at %p, %zu bytes%s", ImageLabel(sec.get()).c_str(), view->image.base, view->image.size,
-          view->image.relocated ? ", relocated" : "");
-    return view->image.relocated ? st::ImageNotAtBase : st::Success;
+    void* const mapped_base = view->image.base;
+    const SIZE_T mapped_size = view->image.size;
+    const bool relocated = view->image.relocated;
+    NTSTATUS ws = probe::Store<PVOID>(base, mapped_base);
+    if (ws == st::Success && view_size) ws = probe::Store<SIZE_T>(view_size, mapped_size);
+    if (ws != st::Success) {
+        UnmapView(mapped_base);   // the caller's output vanished: do not leave an unreachable view behind
+        return ws;
+    }
+    TRACE(modules, "map %ls at %p, %zu bytes%s", ImageLabel(sec.get()).c_str(), mapped_base, mapped_size,
+          relocated ? ", relocated" : "");
+    return relocated ? st::ImageNotAtBase : st::Success;
 }
 
 NTSTATUS NTAPI Xl_NtMapViewOfSection(HANDLE section, HANDLE process, PVOID* base, ULONG_PTR zero_bits,
@@ -498,21 +523,23 @@ static NTSTATUS NTAPI Xl_NtUnmapViewOfSectionEx(HANDLE process, PVOID base, ULON
 static NTSTATUS NTAPI Xl_NtQuerySection(HANDLE section, ULONG klass, PVOID buffer, SIZE_T length, PSIZE_T ret_len) {
     auto sec = SectionFromHandle(section);
     if (!sec) return Host().NtQuerySection(section, klass, buffer, length, ret_len);
+    // Both caller buffers are probed before either is written.
+    if (NTSTATUS ps = probe::ProbeWrite(buffer, length)) return ps;
+    if (ret_len)
+        if (NTSTATUS ps = probe::ProbeWrite(ret_len, sizeof(SIZE_T))) return ps;
     switch (klass) {
     case 0: {   // SectionBasicInformation
         struct { PVOID BaseAddress; ULONG Attributes; LARGE_INTEGER Size; } info{};
         info.Attributes = kSecImage | kSecFile;
         info.Size.QuadPart = sec->size_of_image;
         if (length < sizeof(info)) return st::InfoLengthMismatch;
-        std::memcpy(buffer, &info, sizeof(info));
-        if (ret_len) *ret_len = sizeof(info);
-        return st::Success;
+        if (NTSTATUS ws = probe::CopyToUser(buffer, &info, sizeof(info))) return ws;
+        return probe::StoreIfPresent<SIZE_T>(ret_len, sizeof(info));
     }
     case 1:     // SectionImageInformation
         if (length < sizeof(sec->info)) return st::InfoLengthMismatch;
-        std::memcpy(buffer, sec->info, sizeof(sec->info));
-        if (ret_len) *ret_len = sizeof(sec->info);
-        return st::Success;
+        if (NTSTATUS ws = probe::CopyToUser(buffer, sec->info, sizeof(sec->info))) return ws;
+        return probe::StoreIfPresent<SIZE_T>(ret_len, sizeof(sec->info));
     default:
         FIXME(dispatch, "NtQuerySection class %lu on an image section", klass);
         return st::InvalidInfoClass;
