@@ -53,6 +53,8 @@ hid
 secur32
 winbrand
 wtsapi32
+# --- SDL2.dll (docs/slices/realsdl.md) static imports: setupapi (-> cfgmgr32, advapi32, rpcrt4, already built) ---
+setupapi
 
 # --- COM -------------------------------------------------------------------
 ole32

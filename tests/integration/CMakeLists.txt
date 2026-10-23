@@ -228,6 +228,20 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   unset(_guest_machine)
 endif()
 
+# ---- SDL2: a real third-party DLL and a GUI program on top of it ------------------------------------------------------
+# sdl_rects.exe (tests/guest/sdl2/sdl_rects.c) is linked against the official SDL2 2.30.9 x64 release; SDL2.dll sits next to
+# it in <machine>/guest (tools/ci/build_sdl_guest.ps1, a named ci.yml step of the windows job). A borderless 320x240 window
+# at (100,100), software surface: blue clear + red rect (20,20,60,60) + green rect (120,40,50,50), pixels read back through
+# GetPixel, exit 42. The screenshot is checked at screen = client + (100,100). Builtin-only folder, like the GUI tests above.
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  win10xbox_guest_test(real_sdl2 "C:\\guest\\sdl_rects.exe" 42
+    "sdl: init video=windows" "sdl: surface 320x240" "sdl: pixels 00dc5000 000000ff 0000ff00" "sdl: done")
+  set_tests_properties(integration.real_sdl2 PROPERTIES
+    ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/real_sdl2.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=105,105,ff0050dc|130,130,ffff0000|230,150,ff00ff00")
+  unset(_guest_machine)
+endif()
+
 # ---- Real GUI programs (not ours), built from source on the Windows runner ------------------------------------------
 # tools/ci/build_realgui.ps1 (a named ci.yml step of the windows job) leaves realgui_hellowin.exe (Microsoft's LearnWin32
 # Hello World) and realgui_putty.exe (PuTTY 0.85, cmake + MSVC) in <machine>/guest before ctest runs. Registered only
