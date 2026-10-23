@@ -233,6 +233,8 @@ NTSTATUS ConfigureNativeGui() {
 // the host's user32 (the trampolines, installed by NoteNativeWin32uCall once the guest's user32 has its own table
 // in), and the host windows the swap chains present into live on a thread started here, before the take-over
 // (a host thread created afterwards would initialise against the guest's loader lists).
+HMODULE g_host_user32 = nullptr, g_host_gdi32 = nullptr;   // for native_imports.cpp (GetModuleHandle fails after the PEB take-over)
+
 NTSTATUS ConfigureHostD3dkmt() {
     HMODULE user32 = LoadLibraryW(L"user32.dll");
     HMODULE gdi32 = LoadLibraryW(L"gdi32.dll");
@@ -242,6 +244,8 @@ NTSTATUS ConfigureHostD3dkmt() {
             static_cast<void*>(user32), static_cast<void*>(gdi32), static_cast<void*>(win32u), GetLastError());
         return st::DllNotFound;
     }
+    g_host_user32 = user32;
+    g_host_gdi32 = gdi32;
     auto get_desktop = reinterpret_cast<HWND(WINAPI*)()>(GetProcAddress(user32, "GetDesktopWindow"));
     if (!get_desktop) return st::NotImplemented;
     const HWND desktop = get_desktop();   // connects this process to win32k

@@ -92,9 +92,12 @@ bool EndsWithI(const std::wstring& s, const wchar_t* tail) {
 // user32!GetProcessUIContextInformation that Wine's user32 does not have).
 std::size_t ExtendExports(const loader::MappedImage& img, const wchar_t* host_name, bool prefer_k32) {
     Exports guest, host, k32;
-    const HMODULE host_kb = GetModuleHandleW(host_name);
+    HMODULE host_kb = GetModuleHandleW(host_name);
+    if (!host_kb && !_wcsicmp(host_name, L"user32.dll")) host_kb = g_host_user32;
+    if (!host_kb && !_wcsicmp(host_name, L"gdi32.dll")) host_kb = g_host_gdi32;
     if (!guest.Open(img.base) || !host.Open(host_kb)) {
-        WARN(dispatch, "gui native: guest %ls exports not extended (no export directory)", host_name);
+        WARN(dispatch, "gui native: guest %ls exports not extended (no export directory; guest base %p, host module %p)",
+             host_name, img.base, static_cast<void*>(host_kb));
         return 0;
     }
     const bool have_k32 = prefer_k32 && k32.Open(g_guest_kernel32);

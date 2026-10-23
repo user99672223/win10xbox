@@ -579,5 +579,6 @@ void SetDdiHostFn(const char* name, void* fn);
 NTSTATUS ConfigureHostD3dkmt();
 NTSTATUS UseHostD3dkmt(HMODULE win32u);
 bool HostD3dkmtActive();
+extern HMODULE g_host_user32, g_host_gdi32;   // set by ConfigureHostD3dkmt
 
 }  // namespace win10xbox::dispatch::detail
