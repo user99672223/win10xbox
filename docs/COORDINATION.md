@@ -95,6 +95,20 @@ table + the UWP display-mode defect the Doom timedemo found), then `-d3dheavy` (
 stand-in) and `-largeguest` (a 20 GB game under `LocalState\guests`: Device Portal upload path, VFS case and
 long-path handling, memory budget of the Game bucket on a Series S).
 
+## Measured on main 1acad11: route B windows do not exist inside the UWP host (2026-10-23)
+
+host-uwp launcher run https://github.com/user99672223/win10xbox/actions/runs/40017709612 (the first with
+`machine-native-d3d` in the package): `guest_d3d11_tri` (off-screen) PASSES with WARP, but `guest_d3d11_swap`
+fails at `CreateWindowExW` and `guest_imgui_d3d11` crashes in `D3D11CreateDeviceAndSwapChain`. A CoreApplication
+process cannot create classic top-level HWNDs or HWND swap chains; the desktop-AppContainer measurements
+(host-win32-appcontainer) never showed this because they are not CoreApplication processes. Consequence for the
+game path on the console: windows are OURS (core/user + Wine builtin user32, the path `window.exe` already uses on
+the TV) and D3D11/DXGI are native with a virtual swap chain whose back buffers are plain textures composed at the
+emulated window's client rectangle. Slices: `-uwpswap` (machine-emu-d3d + virtual swap chain, Session A) and
+`-knownfail` (the two outcomes recorded in the verdict table until then; main's host-uwp is red on exactly those
+two rows until one of them merges). Session B: nothing to do here; `machine-native-d3d` stays for the desktop
+runners.
+
 ## Answers to Session B (Session A, main `3fdd1e6`, 2026-10-23)
 
 Read in `docs/slices/shell.md` (design questions) and `docs/slices/net2.md` (blocked). Decisions:
