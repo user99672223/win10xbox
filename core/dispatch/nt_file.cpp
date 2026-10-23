@@ -339,6 +339,14 @@ NTSTATUS NTAPI Xl_NtOpenFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBU
                              ULONG sharing, ULONG options) {
     TranslatedOA t;
     if (NTSTATUS s = TranslateOA(attr, &t)) return s;
+    // Wine's SetFileAttributesW (git hides ".git" with it) opens with SYNCHRONIZE alone and then sets
+    // FileBasicInformation, which Wine's server allows; Windows demands FILE_WRITE_ATTRIBUTES for that. Ask for it,
+    // and fall back to the caller's access when the file will not grant it (a read-only ACL).
+    if (access == SYNCHRONIZE) {
+        constexpr ACCESS_MASK kFileWriteAttributes = 0x100;
+        NTSTATUS s = Host().NtOpenFile(handle, access | kFileWriteAttributes, t.Get(attr), io, sharing, options);
+        if (s != st::AccessDenied) return s;
+    }
     return Host().NtOpenFile(handle, access, t.Get(attr), io, sharing, options);
 }
 
@@ -401,6 +409,40 @@ static NTSTATUS NTAPI Xl_NtQueryInformationFile(HANDLE file, PIO_STATUS_BLOCK io
     s = copy < bytes ? st::BufferOverflow : st::Success;
     io->Status = s;
     return s;
+}
+
+// Wine's GetFinalPathNameByHandleW (git's getcwd and realpath) asks for ObjectNameInformation and only accepts an
+// NT path in the "\\??\\C:\\..." form, which is what Wine's own ntdll answers for a file handle. The host answers
+// "\\Device\\HarddiskVolumeN\\<host path>"; give a file handle the guest's name instead. Other objects, and files
+// outside every guest drive, keep the host's answer.
+static NTSTATUS NTAPI Xl_NtQueryObject(HANDLE h, ULONG klass, PVOID buffer, ULONG length, PULONG ret_len) {
+    constexpr ULONG kObjectNameInformation = 1;
+    if (klass == kObjectNameInformation) {
+        alignas(8) std::uint8_t probe[4096];
+        ULONG probe_len = 0;
+        if (Host().NtQueryObject(h, klass, probe, sizeof probe, &probe_len) == st::Success) {
+            const auto* us = reinterpret_cast<const UNICODE_STRING*>(probe);
+            const std::wstring_view name(us->Buffer ? us->Buffer : L"", us->Buffer ? us->Length / sizeof(wchar_t) : 0);
+            if (IStartsWith(name, L"\\Device\\HarddiskVolume") || IStartsWith(name, L"\\Device\\Mup")) {
+                std::wstring host = HostPathOfHandle(h), guest;
+                if (!host.empty() && UntranslateHostWin32Path(host, &guest) && guest.size() >= 2) {
+                    const std::wstring nt = L"\\??\\" + guest;
+                    const ULONG bytes = static_cast<ULONG>(nt.size() * sizeof(wchar_t));
+                    const ULONG need = static_cast<ULONG>(sizeof(UNICODE_STRING)) + bytes + sizeof(wchar_t);
+                    if (ret_len) *ret_len = need;
+                    if (length < need) return st::BufferOverflow;
+                    auto* out = static_cast<UNICODE_STRING*>(buffer);
+                    auto* text = reinterpret_cast<wchar_t*>(out + 1);
+                    std::memcpy(text, nt.c_str(), bytes + sizeof(wchar_t));
+                    out->Buffer = text;
+                    out->Length = static_cast<USHORT>(bytes);
+                    out->MaximumLength = static_cast<USHORT>(bytes + sizeof(wchar_t));
+                    return st::Success;
+                }
+            }
+        }
+    }
+    return Host().NtQueryObject(h, klass, buffer, length, ret_len);
 }
 
 // FILE_RENAME_INFORMATION / FILE_LINK_INFORMATION carry the target as an NT path inside the buffer (Wine's
@@ -530,6 +572,7 @@ const ImplDef* FileImpls() {
         {"NtDeleteFile", reinterpret_cast<void*>(&Xl_NtDeleteFile)},
         {"NtQueryInformationFile", reinterpret_cast<void*>(&Xl_NtQueryInformationFile)},
         {"NtSetInformationFile", reinterpret_cast<void*>(&Xl_NtSetInformationFile)},
+        {"NtQueryObject", reinterpret_cast<void*>(&Xl_NtQueryObject)},
         {"NtOpenDirectoryObject", reinterpret_cast<void*>(&Xl_NtOpenDirectoryObject)},
         {"NtOpenSymbolicLinkObject", reinterpret_cast<void*>(&Xl_NtOpenSymbolicLinkObject)},
         {"NtLockFile", reinterpret_cast<void*>(&Xl_NtLockFile)},
