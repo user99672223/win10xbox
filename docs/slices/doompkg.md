@@ -1,4 +1,4 @@
-status: wip (implemented, not yet run on CI)
+status: ready (host-uwp https://github.com/user99672223/win10xbox/actions/runs/39994518461 msix+run+launcher green, RESULT: PASS; ci https://github.com/user99672223/win10xbox/actions/runs/39994510420 green; package 32.8 MB; head db7a172)
 
 Handoff (implement agent -> CI agent):
 * What: Chocolate Doom is in the .msix and listed by the launcher. msix job: cache + `tools/ci/fetch_doom.ps1 -Out $RUNNER_TEMP/doom-guest`,
