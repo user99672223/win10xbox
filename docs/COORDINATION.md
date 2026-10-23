@@ -77,6 +77,18 @@ adding `owner: B` as the second line of its slice doc; otherwise leaves them alo
   https://github.com/user99672223/win10xbox/actions/runs/39893468835, host-uwp
   https://github.com/user99672223/win10xbox/actions/runs/39893468794, wine-pe
   https://github.com/user99672223/win10xbox/actions/runs/39893468806.
+* `-wt-kernel32`, `-wt-shell32`, `-real7z`, `-realgit` merged at 1a08072 (round 1, last batch), ci
+  https://github.com/user99672223/win10xbox/actions/runs/39929799522 (cancelled by the next push; its slices were
+  green on their branches), wine-pe https://github.com/user99672223/win10xbox/actions/runs/39929799491.
+* Round 2 (Session B acting coordinator again). `-wt-ntdll-file`, `-wt-ntdll-reg`, `-wt-media`, `-wt-media-atl`,
+  `-wt-misc`, `-cursor` merged at 654dabd, plus the package fix (guest_net bundled, the msctf stand-in exempted;
+  host-uwp had been red on main for those two). Verified before the push on the staging branch
+  `claude/youthful-cerf-l7xxsb-stage` at the same commit: ci https://github.com/user99672223/win10xbox/actions/runs/39959140304
+  (linux-cross re-run once after an apt mirror timeout; all three green), wine-pe
+  https://github.com/user99672223/win10xbox/actions/runs/39959140266. Main's own runs: ci
+  https://github.com/user99672223/win10xbox/actions/runs/39966280277, host-uwp
+  https://github.com/user99672223/win10xbox/actions/runs/39966280064. The local loop cannot gate a batch that adds
+  builtins (its DLL set predates them); a staging run is the gate for those.
 
 ## Protocol
 
