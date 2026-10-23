@@ -41,6 +41,7 @@
 #include "host_diag.h"
 #include "host_shell.h"
 #include "host_util.h"
+#include "launch_config.h"
 #include "launcher.h"
 #include "presenter.h"
 
@@ -48,12 +49,52 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <exception>
 #include <string>
 
 namespace wac = winrt::Windows::ApplicationModel::Core;
 namespace wam = winrt::Windows::ApplicationModel;
 namespace wact = winrt::Windows::ApplicationModel::Activation;
+
+namespace
+{
+// CoreApplication::RequestRestartAsync(arg): ends this process and starts the app again with `arg` as the launch
+// argument. Called on the host worker thread after a guest has exited. Returns only on failure, with the reason
+// (AppRestartFailureReason: RestartPending, InvalidUser, Other, or the exception text); never polls the
+// operation with a blocking get() on a dispatcher thread.
+std::string RequestAppRestart(const std::string& arg)
+{
+    try
+    {
+        auto op = winrt::Windows::ApplicationModel::Core::CoreApplication::RequestRestartAsync(winrt::to_hstring(arg));
+        for (int i = 0; i < 300 && op.Status() == winrt::Windows::Foundation::AsyncStatus::Started; ++i) Sleep(100);
+        if (op.Status() == winrt::Windows::Foundation::AsyncStatus::Started) return "RequestRestartAsync did not complete within 30 s";
+        if (op.Status() != winrt::Windows::Foundation::AsyncStatus::Completed)
+        {
+            char b[16];
+            snprintf(b, sizeof b, "%08x", static_cast<unsigned>(op.ErrorCode().value));
+            return std::string("RequestRestartAsync failed (HRESULT 0x") + b + ")";
+        }
+        switch (op.GetResults())
+        {
+        case wac::AppRestartFailureReason::RestartPending: return "AppRestartFailureReason::RestartPending (a restart is already pending)";
+        case wac::AppRestartFailureReason::NotInForeground: return "AppRestartFailureReason::NotInForeground";
+        case wac::AppRestartFailureReason::InvalidUser: return "AppRestartFailureReason::InvalidUser";
+        case wac::AppRestartFailureReason::Other: return "AppRestartFailureReason::Other";
+        }
+        return "RequestRestartAsync returned an unknown reason";
+    }
+    catch (const winrt::hresult_error& e)
+    {
+        return "RequestRestartAsync threw: " + winrt::to_string(e.message());
+    }
+    catch (...)
+    {
+        return "RequestRestartAsync threw";
+    }
+}
+}  // namespace
 namespace wui = winrt::Windows::UI::Core;
 namespace wuin = winrt::Windows::UI::Input;
 namespace wf = winrt::Windows::Foundation;
@@ -338,6 +379,7 @@ namespace
                 // constructor hands the display backend to core/user; the worker is not running yet.
                 Host* const host = new Host(info);
                 host->AttachLauncher(&launcher_);          // launcher.h: picker / autoselect in launch.json
+                host->SetRestart(restart_.valid, restart_.run, restart_.select, restart_.all_k, [](const std::string& arg) { return RequestAppRestart(arg); });
                 presenter_.SetFrameSource(&launcher_);
 
                 StartPresenter(window, dispatcher, info, px);
@@ -494,6 +536,15 @@ namespace
         {
             try
             {
+                // The app's own restart (host.h SetRestart) comes back as the launch argument. Activation runs on
+                // the UI thread before StartHost (RunShell pumps the settle rounds first).
+                if (args.Kind() == wact::ActivationKind::Launch && !restart_.valid)
+                {
+                    const std::string a = winrt::to_string(args.as<wact::ILaunchActivatedEventArgs>().Arguments());
+                    const RestartArgs ra = ParseRestartArgs(a);
+                    if (ra.valid) restart_ = ra;
+                    Note(Fmt("launch arguments: \"%s\"%s", a.c_str(), ra.valid ? " (restart)" : ""));
+                }
                 Note(Fmt("activated: kind=%d, previous state %s", static_cast<int>(args.Kind()),
                          ExecutionStateName(args.PreviousExecutionState())));
             }
@@ -611,6 +662,7 @@ namespace
 
         ShellDiagnostics diagnostics_;
         Presenter presenter_;          // UI thread only (its device thread is internal)
+        RestartArgs restart_;          // the restart argument of this activation (launch_config.h), valid == false on a normal start
         Launcher launcher_;            // launcher.h: screens drawn by presenter_, input from the pump and OnKey
         float pointer_scale_ = 1.0f;   // view pixels -> physical pixels (UI thread)
         std::atomic<Host*> host_{nullptr};

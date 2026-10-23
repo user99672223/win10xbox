@@ -58,7 +58,18 @@ jobs:
         continue-on-error: true
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
-          $id = gh run list --repo ${{ github.repository }} --workflow wine-pe.yml --branch ${{ github.ref_name }} --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+          # The wine-pe run of this commit first (waited for while it runs; see host-uwp.yml), else the newest success.
+          $id = $null
+          foreach ($attempt in 1..40) {
+            $own = @(gh run list --repo ${{ github.repository }} --workflow wine-pe.yml --commit ${{ github.sha }} --limit 1 --json databaseId,status,conclusion 2>$null | ConvertFrom-Json)
+            if ($own.Count -eq 0) { break }
+            if ($own[0].status -eq 'completed') { if ($own[0].conclusion -eq 'success') { $id = $own[0].databaseId }; break }
+            Write-Host "attempt ${attempt}: wine-pe run $($own[0].databaseId) for this commit is $($own[0].status); waiting 60s"
+            Start-Sleep -Seconds 60
+          }
+          if (-not $id) {
+            $id = gh run list --repo ${{ github.repository }} --workflow wine-pe.yml --branch ${{ github.ref_name }} --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+          }
           if (-not $id) {
             $id = gh run list --repo ${{ github.repository }} --workflow wine-pe.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId'
           }

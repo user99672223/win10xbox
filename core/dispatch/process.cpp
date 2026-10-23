@@ -630,7 +630,7 @@ int Launch(const LaunchOptions& opts) {
     AcquireSRWLockExclusive(&g.lock);
     if (g.launched) {
         ReleaseSRWLockExclusive(&g.lock);
-        ERR(process, "Launch: a guest process is already running in this host (D1: one per host for now)");
+        ERR(process, "Launch: this host process has already run a guest; D1 allows one guest per host process, so the shell must restart the app (host-uwp: CoreApplication::RequestRestartAsync) before the next program");
         return static_cast<int>(st::Unsuccessful);
     }
     g.launched = true;
@@ -697,6 +697,12 @@ int Launch(const LaunchOptions& opts) {
         const DWORD n = GetEnvironmentVariableW(L"WIN10XBOX_TEST_LEAK_GUEST_ACTCTX", v, 8);
         g.leak_actctx = n != 0 && n < 8 && v[0] != L'0';
     }
+    {
+        // Test hook, latched here for the same reason: rdrand/rdseed sites become ud2 so the emulation runs on a CPU that has them.
+        wchar_t v[8];
+        const DWORD n = GetEnvironmentVariableW(L"WIN10XBOX_TEST_FORCE_RDRAND_TRAP", v, 8);
+        SetForceRandomTrap(n != 0 && n < 8 && v[0] != L'0');
+    }
 #if WIN10XBOX_HAVE_VFS
     {
         CpuPolicy cp;
@@ -748,7 +754,7 @@ int Launch(const LaunchOptions& opts) {
         const CpuPolicy cp = GetCpuPolicy();
         vendor = cp.vendor.empty() ? std::string("AuthenticAMD") : cp.vendor;
         dispatch::detail::BuildFirmwareTables(vendor);
-        if (cp.advertise_rdrand) InstallRandomInstructionEmulation();
+        if (cp.advertise_rdrand || ForceRandomTrap()) InstallRandomInstructionEmulation();
     }
 #if WIN10XBOX_HAVE_AFD
     afd::PrimeHost();   // before the PEB take-over (see afd.h)
@@ -831,6 +837,26 @@ int WaitForGuest(DWORD timeout_ms) {
     }
     WaitForSingleObject(g.main_thread, 5000);   // GuestExit signals, then terminates the thread
     return static_cast<int>(g.exit_code);
+}
+
+bool GuestOwnsPeb() { return G().peb.saved; }
+
+void AbortGuest(std::uint32_t exit_code) {
+    Globals& g = G();
+    if (!g.main_thread) return;
+    InterlockedExchange(&g.exit_code, static_cast<LONG>(exit_code));
+    InterlockedExchange(&g.exited, 1);
+    TRACE(process, "guest aborted by the host, code %u", exit_code);
+#if WIN10XBOX_HAVE_REGISTRY
+    registry::PersistOverlay();
+#endif
+    // Called from a host thread: every guest thread is "other". The main thread is terminated too (it may not be
+    // in the guest thread list yet), then the host's PEB view comes back (ActivationContextData included).
+    TerminateOtherGuestThreads(static_cast<NTSTATUS>(exit_code));
+    Host().NtTerminateThread(g.main_thread, static_cast<NTSTATUS>(exit_code));
+    WaitForSingleObject(g.main_thread, 5000);
+    RestorePebFields();
+    if (g.exit_event) SetEvent(g.exit_event);
 }
 
 [[noreturn]] void GuestExit(std::uint32_t exit_code) {

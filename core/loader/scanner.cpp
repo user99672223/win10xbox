@@ -199,6 +199,8 @@ std::vector<TrapSite> g_traps;
 std::vector<TrapSite>& Traps() { return g_traps; }
 std::vector<KuserRec> g_kuser_sites;
 std::vector<KuserRec>& KuserSites() { return g_kuser_sites; }
+std::vector<KuserRec> g_random_sites;   // rdrand/rdseed rewritten to ud2 (trap_random); namespace scope: read from a VEH
+std::vector<KuserRec>& RandomSites() { return g_random_sites; }
 std::vector<ArenaRec>& Arenas() { static std::vector<ArenaRec> v; return v; }
 PVOID                  g_veh = nullptr;
 
@@ -499,6 +501,7 @@ bool WantKind(const ScanOptions& o, SiteKind k) {
     case SiteKind::Rdtsc: case SiteKind::Rdtscp: return o.patch_rdtsc;
     case SiteKind::Syscall: case SiteKind::Sysenter: case SiteKind::Int2E: return o.patch_syscall;
     case SiteKind::KuserRead: return o.patch_kuser_reads;
+    case SiteKind::Random: return o.trap_random;
     }
     return false;
 }
@@ -510,6 +513,10 @@ bool Classify(const Decoded& d, SiteKind* k) {
     case ZYDIS_MNEMONIC_RDTSCP: *k = SiteKind::Rdtscp; return true;
     case ZYDIS_MNEMONIC_SYSCALL: *k = SiteKind::Syscall; return true;
     case ZYDIS_MNEMONIC_SYSENTER: *k = SiteKind::Sysenter; return true;
+    case ZYDIS_MNEMONIC_RDRAND: case ZYDIS_MNEMONIC_RDSEED:
+        if (d.ins.length < 3 || d.ins.operand_count_visible < 1 || d.ops[0].type != ZYDIS_OPERAND_TYPE_REGISTER) return false;
+        *k = SiteKind::Random;
+        return true;
     case ZYDIS_MNEMONIC_INT:
         if (d.ins.operand_count_visible >= 1 && d.ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE &&
             d.ops[0].imm.value.u == 0x2E) {
@@ -614,7 +621,7 @@ NTSTATUS ScanCore(const Job& job, const ScanOptions& opts, ScanResult* result) {
 
     // ---- pass 2: plan each site -------------------------------------------------
     struct Plan {
-        enum Mode { Skip, Inline, Trap } mode = Skip;
+        enum Mode { Skip, Inline, Trap, Ud } mode = Skip;
         std::size_t region_len = 0;
         u64 stub = 0;
     };
@@ -626,6 +633,7 @@ NTSTATUS ScanCore(const Job& job, const ScanOptions& opts, ScanResult* result) {
         const SiteInfo& s = sites[i];
         const u64 sa = reinterpret_cast<u64>(s.addr);
         Plan& pl = plans[i];
+        if (s.kind == SiteKind::Random) { pl.mode = Plan::Ud; pl.region_len = s.len; continue; }
         const Range* range = nullptr;
         for (auto& r : job.exec)
             if (sa >= reinterpret_cast<u64>(r.start) && sa < reinterpret_cast<u64>(r.start) + r.size) range = &r;
@@ -720,6 +728,31 @@ NTSTATUS ScanCore(const Job& job, const ScanOptions& opts, ScanResult* result) {
             continue;
         }
         const u64 sa = reinterpret_cast<u64>(s.addr);
+        if (pl.mode == Plan::Ud) {
+            KuserRec rr{};
+            rr.addr = sa;
+            rr.len = s.len;
+            std::memcpy(rr.bytes, s.addr, s.len);   // before the site is overwritten
+            {
+                LockEx lk;
+                auto& v = RandomSites();
+                auto it = std::lower_bound(v.begin(), v.end(), sa, [](const KuserRec& r, u64 x) { return r.addr < x; });
+                if (it != v.end() && it->addr == sa) *it = rr; else v.insert(it, rr);
+            }
+            detail::ScopedWritable w(s.addr, 2);
+            if (!w.ok()) {
+                LockEx lk;
+                auto& v = RandomSites();
+                v.erase(std::remove_if(v.begin(), v.end(), [&](const KuserRec& r) { return r.addr == sa; }), v.end());
+                if (result) ++result->skipped;
+                continue;
+            }
+            s.addr[1] = 0x0B;   // 0F xx -> 0F 0B (ud2); the bytes after are never executed, the handler skips s.len
+            s.addr[0] = 0x0F;
+            detail::AddProtectedRange(s.addr, s.len);
+            if (result) { ++result->trapped; result->sites.push_back({s.kind, s.addr, s.len, false}); }
+            continue;
+        }
         if (s.kind == SiteKind::KuserRead && s.len <= sizeof(KuserRec::bytes)) {   // before the site is overwritten
             KuserRec kr{};
             kr.addr = sa;
@@ -783,6 +816,16 @@ NTSTATUS ScanCore(const Job& job, const ScanOptions& opts, ScanResult* result) {
 bool KuserSiteBytes(std::uint64_t addr, std::uint8_t* out, std::uint8_t* len) {
     LockSh lk;
     auto& v = KuserSites();
+    auto it = std::lower_bound(v.begin(), v.end(), addr, [](const KuserRec& r, u64 x) { return r.addr < x; });
+    if (it == v.end() || it->addr != addr) return false;
+    std::memcpy(out, it->bytes, it->len);
+    *len = it->len;
+    return true;
+}
+
+bool RandomSiteBytes(std::uint64_t addr, std::uint8_t* out, std::uint8_t* len) {
+    LockSh lk;
+    auto& v = RandomSites();
     auto it = std::lower_bound(v.begin(), v.end(), addr, [](const KuserRec& r, u64 x) { return r.addr < x; });
     if (it == v.end() || it->addr != addr) return false;
     std::memcpy(out, it->bytes, it->len);
@@ -957,6 +1000,8 @@ void ReleaseScanSites(const void* start, std::size_t size) {
         t.erase(std::remove_if(t.begin(), t.end(), [&](const TrapSite& s) { return s.addr >= lo && s.addr < hi; }), t.end());
         auto& k = KuserSites();
         k.erase(std::remove_if(k.begin(), k.end(), [&](const KuserRec& r) { return r.addr >= lo && r.addr < hi; }), k.end());
+        auto& rs = RandomSites();
+        rs.erase(std::remove_if(rs.begin(), rs.end(), [&](const KuserRec& r) { return r.addr >= lo && r.addr < hi; }), rs.end());
         auto& a = Arenas();
         for (auto it = a.begin(); it != a.end();) {
             if (it->owner_lo >= lo && it->owner_lo < hi) {

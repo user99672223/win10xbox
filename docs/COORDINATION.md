@@ -32,6 +32,10 @@ CI loops and whole-file reads. Rules:
 6. **Resuming a stopped agent** whose transcript is over 150k tokens is more expensive than a fresh
    agent reading the branch (`git log`, `git diff origin/main...`, the slice doc): start fresh.
 7. **Report format:** 8 lines, facts only (head, run URL, what runs, what fails).
+8. **Worktrees and submodules.** An agent that symlinks `third_party/*` or `wine-pe/out` into its worktree
+   stages by explicit path only, never `git add -A`/`git add .`: the `-rdrand` docs commit f5949c9 replaced
+   all 11 submodule gitlinks with absolute symlinks, and `[skip ci]` hid it from CI. The coordinator checks
+   `git diff --stat <main>...<branch> -- third_party .gitmodules` is empty before every merge.
 
 ## Main is GREEN again (Session A, bff86c8, all six workflows)
 
@@ -124,6 +128,8 @@ adding `owner: B` as the second line of its slice doc; otherwise leaves them alo
 
 ### Merged (acting-coordinator log)
 
+* `-relaunch` merged by Session A at 26017eb/4332e9a (main runs: host-uwp https://github.com/user99672223/win10xbox/actions/runs/40009489508 = package 1.0.0.352, the trip-2 candidate; ci https://github.com/user99672223/win10xbox/actions/runs/40009489636). The all-programs run: 37 programs, 10 PASS, 25 EXITED (no table entry), Doom interactive TIMEOUT (restart after timeout proven), Doom timedemo CRASH under UWP, guest_d3d11_tri cannot load d3d11 (default machine only). Follow-ups started by A: `-report2` (expected-exit table, timedemo crash), `-uwpd3d` (native-d3d machine in the package, per-guest machine sidecar). `-swapchain2` round 2 running.
+* `-rdrand` merged by Session A at 1ad9a02 (slice CI on 39e4e59: ci https://github.com/user99672223/win10xbox/actions/runs/40000187575, host-uwp https://github.com/user99672223/win10xbox/actions/runs/40000194945). The slice's docs commit f5949c9 had replaced the submodule gitlinks with symlinks; the merge keeps main's gitlinks (rule 8). Same push: host-uwp.yml/uwp-lite.yml wait for their own commit's wine-pe run (adde079's host-uwp needed one re-run for that race). Main runs dispatched by hand on 21fa29a because the docs head carried `[skip ci]`: do not end a push with a `[skip ci]` commit when the push carries code.
 * `-nlspkg` merged by Session A at adde079 (slice CI: host-uwp https://github.com/user99672223/win10xbox/actions/runs/39998856104, wine-pe https://github.com/user99672223/win10xbox/actions/runs/39998179308, ci https://github.com/user99672223/win10xbox/actions/runs/39998017789; 76 NLS files in payload/nls). Main 518d537 was green on all six workflows before this merge.
 * `-doompkg` merged by Session A at 518d537 (slice CI: host-uwp https://github.com/user99672223/win10xbox/actions/runs/39994518461, ci https://github.com/user99672223/win10xbox/actions/runs/39994510420; Doom + timedemo in the package, 32.8 MB). Same push: guest_tebframe/guest_d3d11_tri added to HOST_UWP_GUESTS (the d3d merge at 3fdd1e6 left the host-uwp package assert red).
 * `-doom`, `-audio`, `-nowine`, `-om` merged by Session A via `-stage2` (25c4495; ci

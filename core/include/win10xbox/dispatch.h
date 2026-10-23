@@ -118,7 +118,9 @@ void SetCpuPolicy(const CpuPolicy& p);
 CpuPolicy GetCpuPolicy();
 // D18: RDRAND/RDSEED are advertised; where the host lacks them the #UD is emulated (BCryptGenRandom, CF=1).
 void InstallRandomInstructionEmulation();                 // first-chance VEH, idempotent
-bool EmulateRandomInstruction(CONTEXT* context);          // the handler's core: decodes at Rip, advances it on success
+bool EmulateRandomInstruction(CONTEXT* context);
+void SetForceRandomTrap(bool on);   // WIN10XBOX_TEST_FORCE_RDRAND_TRAP: the scanner rewrites rdrand/rdseed sites to ud2
+bool ForceRandomTrap();          // the handler's core: decodes at Rip, advances it on success
 // Scanner handler (loader::SiteHandler) used for every guest image we map.
 bool CpuSiteHandler(loader::SiteKind kind, loader::ScanRegs* regs, void* ctx);
 
@@ -188,6 +190,11 @@ std::uint32_t GuestExitCode();
 bool IsGuestThread();   // true on threads running guest code (TLS flag set by Launch/thread start)
 // Waits for the guest started by Launch(wait=false); returns its exit code.
 int WaitForGuest(DWORD timeout_ms = INFINITE);
+// From a host thread: ends a guest that is still running (all its threads) and gives the process its own PEB view
+// back (as after a normal exit). The launcher's watchdog uses it before asking for an app restart.
+void AbortGuest(std::uint32_t exit_code);
+// True while the guest's PEB view (ProcessParameters, ActivationContextData, ...) is installed instead of the host's.
+bool GuestOwnsPeb();
 // Guest path of the main image ("C:\\..."), empty before Launch.
 std::wstring GuestImagePath();
 // A child started by a guest (NtCreateUserProcess) is this same host program with `--guest-env`: its guest

@@ -1,6 +1,7 @@
 // launch_config.cpp - launch.json parser. Portable C++20, see launch_config.h.
 #include "launch_config.h"
 
+#include <cstdlib>
 #include <cstddef>
 #include <cstdint>
 #include <set>
@@ -736,17 +737,42 @@ bool ParseLaunchConfig(std::string_view text, LaunchConfig* out, std::string* er
         }
         else if (k == "autoselect")
         {
-            if (!WantString(v, k, &s, error)) return false;
-            if (!s.empty() && !IsLeafNameUtf8(s))
-                return Fail(error, v.line, "\"autoselect\" must be a bare file name such as \"hello_cui.exe\"");
-            c.autoselect = s;
+            c.autoselect.clear();
+            c.autoselect_all = false;
+            if (v.type == Value::Type::String && v.str == "all")
+            {
+                c.autoselect_all = true;
+            }
+            else if (v.type == Value::Type::Array)
+            {
+                if (v.items.size() > kMaxListEntries) return Fail(error, v.line, "\"autoselect\" has too many entries");
+                for (const Value& a : v.items)
+                {
+                    if (a.type != Value::Type::String || a.str.empty() || !IsLeafNameUtf8(a.str))
+                        return Fail(error, a.line,
+                                    "\"autoselect\" list entries must be bare file names such as \"hello_cui.exe\"");
+                    c.autoselect.push_back(a.str);
+                }
+            }
+            else
+            {
+                if (!WantString(v, k, &s, error)) return false;
+                if (!s.empty() && !IsLeafNameUtf8(s))
+                    return Fail(error, v.line, "\"autoselect\" must be a bare file name such as \"hello_cui.exe\"");
+                if (!s.empty()) c.autoselect.push_back(s);
+            }
+        }
+        else if (k == "autoselect_timeout_sec")
+        {
+            if (!WantInt(v, k, 1, 3600, &iv, error)) return false;
+            c.autoselect_timeout_sec = static_cast<std::uint32_t>(iv);
         }
         else
         {
             return Fail(error, kl,
                         "unknown key \"" + k +
                             "\" (known: guest, args, cwd, trace, winedebug, trace_log_max_mb, timeout_sec, exit_when_done, "
-                            "expect_exit_code, stage_native, input_pump, picker, autoselect)");
+                            "expect_exit_code, stage_native, input_pump, picker, autoselect, autoselect_timeout_sec)");
         }
     }
 
@@ -774,8 +800,154 @@ std::string DescribeLaunchConfig(const LaunchConfig& c)
     s += "stage_native=" + (names.empty() ? std::string("(none)") : names) + "\n";
     s += std::string("input_pump=") + (c.input_pump ? "true" : "false") + "\n";
     if (c.has_picker) s += std::string("picker=") + (c.picker ? "true" : "false") + "\n";
-    if (!c.autoselect.empty()) s += "autoselect=" + c.autoselect + "\n";
+    if (c.autoselect_all) s += "autoselect=all\nautoselect_timeout_sec=" + std::to_string(c.autoselect_timeout_sec) + "\n";
+    if (!c.autoselect.empty())
+    {
+        std::string list;
+        for (const std::string& n : c.autoselect) list += (list.empty() ? "" : ",") + n;
+        s += "autoselect=" + list + "\n";
+    }
     return s;
+}
+
+std::string FormatRestartArgs(int run, const std::string& select, int all_k)
+{
+    std::string s = "picker run=" + std::to_string(run);
+    if (all_k >= 0) s += " all=" + std::to_string(all_k);
+    if (!select.empty()) s += " select=" + select;
+    return s;
+}
+
+RestartArgs ParseRestartArgs(const std::string& args)
+{
+    RestartArgs r;
+    std::string_view a(args);
+    while (!a.empty() && (a.front() == ' ' || a.front() == '\t')) a.remove_prefix(1);
+    while (!a.empty() && (a.back() == ' ' || a.back() == '\t' || a.back() == '\r' || a.back() == '\n')) a.remove_suffix(1);
+    constexpr std::string_view kWord = "picker";
+    if (a.substr(0, kWord.size()) != kWord) return r;
+    a.remove_prefix(kWord.size());
+    if (!a.empty() && a.front() != ' ') return r;
+    int run = 0;
+    int all_k = -1;
+    std::string select;
+    while (!a.empty())
+    {
+        a.remove_prefix(1);   // the separating blank
+        if (a.substr(0, 4) == "run=")
+        {
+            a.remove_prefix(4);
+            std::size_t n = 0;
+            long v = 0;
+            while (n < a.size() && a[n] >= '0' && a[n] <= '9' && n < 6) v = v * 10 + (a[n++] - '0');
+            if (n == 0 || v > kMaxRestartRun || (n < a.size() && a[n] != ' ')) return r;
+            run = static_cast<int>(v);
+            a.remove_prefix(n);
+        }
+        else if (a.substr(0, 4) == "all=")
+        {
+            a.remove_prefix(4);
+            std::size_t n = 0;
+            long v = 0;
+            while (n < a.size() && a[n] >= '0' && a[n] <= '9' && n < 6) v = v * 10 + (a[n++] - '0');
+            if (n == 0 || v > kMaxRestartRun || (n < a.size() && a[n] != ' ')) return r;
+            all_k = static_cast<int>(v);
+            a.remove_prefix(n);
+        }
+        else if (a.substr(0, 7) == "select=")
+        {
+            select.assign(a.substr(7));   // the rest of the string: a file name may hold blanks
+            if (!select.empty() && !IsLeafNameUtf8(select)) return r;
+            a = {};
+        }
+        else
+            return r;
+    }
+    r.valid = true;
+    r.run = run;
+    r.all_k = all_k;
+    r.select = select;
+    return r;
+}
+
+std::string FormatReportBlock(const ReportBlock& b)
+{
+    std::string t;
+    t += "program=" + b.program + "\n";
+    t += "exit_code=" + std::to_string(b.exit_code) + "\n";
+    t += "verdict=" + b.verdict + "\n";
+    t += "screen=" + (b.screen.empty() ? std::string("none") : b.screen) + "\n";
+    t += std::string("crash=") + (b.crash ? "yes" : "no") + "\n";
+    for (const std::string& l : b.crash_lines) t += "  ! " + l + "\n";
+    t += "stdout_last_lines=" + std::to_string(b.stdout_lines.size()) + "\n";
+    for (const std::string& l : b.stdout_lines) t += "  | " + l + "\n";
+    t += "\n";
+    return t;
+}
+
+std::vector<ReportBlock> ParseReport(const std::string& text)
+{
+    std::vector<ReportBlock> out;
+    std::size_t pos = 0;
+    while (pos < text.size())
+    {
+        std::size_t e = text.find('\n', pos);
+        if (e == std::string::npos) e = text.size();
+        std::string line = text.substr(pos, e - pos);
+        pos = e + 1;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.rfind("program=", 0) == 0)
+        {
+            out.emplace_back();
+            out.back().program = line.substr(8);
+        }
+        else if (out.empty()) continue;
+        else if (line.rfind("exit_code=", 0) == 0) out.back().exit_code = std::strtol(line.c_str() + 10, nullptr, 10);
+        else if (line.rfind("verdict=", 0) == 0) out.back().verdict = line.substr(8);
+        else if (line.rfind("screen=", 0) == 0) out.back().screen = line.substr(7);
+        else if (line.rfind("crash=", 0) == 0) out.back().crash = line.substr(6) == "yes";
+        else if (line.rfind("  ! ", 0) == 0) out.back().crash_lines.push_back(line.substr(4));
+        else if (line.rfind("  | ", 0) == 0) out.back().stdout_lines.push_back(line.substr(4));
+    }
+    return out;
+}
+
+std::string VerdictWord(const std::string& verdict)
+{
+    const std::size_t sp = verdict.find(' ');
+    return sp == std::string::npos ? verdict : verdict.substr(0, sp);
+}
+
+bool KnownExpectedExit(const std::string& name, bool pad_present, int* code)
+{
+    std::string n;
+    for (char ch : name) n += (ch >= 'A' && ch <= 'Z') ? static_cast<char>(ch - 'A' + 'a') : ch;
+    struct Row { const char* name; int code; };
+    const Row kRows[] = {{"window.exe", 42},      {"hello.exe", 42},        {"hello_cui.exe", 42}, {"smoke.exe", 42},
+                                {"smoke_cui.exe", 42},   {"guest_hello.exe", 42},  {"guest_cpuid.exe", 0}, {"guest_sleep.exe", 7},
+                                {"drv_client.exe", 2}};
+    for (const Row& r : kRows)
+        if (n == r.name)
+        {
+            *code = r.code;
+            return true;
+        }
+    if (n == "guest_xinput.exe")
+    {
+        *code = pad_present ? 42 : 1;   // without a pad the guest gives up after 30 s with exit code 1
+        return true;
+    }
+    return false;
+}
+
+std::string ReportVerdict(bool timed_out, long exit_code, bool expected_known, int expected)
+{
+    if (timed_out) return "TIMEOUT (the guest did not exit within the per-program timeout)";
+    if (expected_known)
+        return exit_code == expected ? "PASS (exit code " + std::to_string(exit_code) + " as expected)"
+                                     : "FAIL (exit code " + std::to_string(exit_code) + ", expected " + std::to_string(expected) + ")";
+    if ((static_cast<unsigned long>(exit_code) & 0xC0000000ul) == 0xC0000000ul) return "CRASH (exit code " + std::to_string(exit_code) + " is an NTSTATUS error)";
+    return "EXITED (exit code " + std::to_string(exit_code) + ", no expected code known)";
 }
 
 }  // namespace w10x_uwp

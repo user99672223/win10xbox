@@ -71,7 +71,23 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
           $id = $null
+          # Prefer the wine-pe run of THIS commit (wine-pe/ or wine-pe.yml changed in the push) and wait while it
+          # runs, so a new wine-pe.yml (a new artifact, a new DLL) is never paired with an older run's artifacts;
+          # that pairing is what failed run 40003374002 (no wine-pe-nls on the previous run). No run for this
+          # commit = wine-pe did not change: the newest successful run on the branch is the right one.
+          foreach ($attempt in 1..40) {
+            $own = @(gh run list --repo ${{ github.repository }} --workflow wine-pe.yml --commit ${{ github.sha }} --limit 1 --json databaseId,status,conclusion 2>$null | ConvertFrom-Json)
+            if ($own.Count -eq 0) { break }
+            if ($own[0].status -eq 'completed') {
+              if ($own[0].conclusion -eq 'success') { $id = $own[0].databaseId }
+              else { Write-Host "wine-pe run $($own[0].databaseId) for this commit ended $($own[0].conclusion); falling back to the newest successful run" }
+              break
+            }
+            Write-Host "attempt ${attempt}: wine-pe run $($own[0].databaseId) for this commit is $($own[0].status); waiting 60s"
+            Start-Sleep -Seconds 60
+          }
           foreach ($attempt in 1..3) {
+            if ($id) { break }
             foreach ($scope in @("--branch ${{ github.ref_name }}", "")) {
               $args = @('run','list','--repo','${{ github.repository }}','--workflow','wine-pe.yml',
                         '--status','success','--limit','1','--json','databaseId','--jq','.[0].databaseId')
@@ -224,7 +240,7 @@ jobs:
                         'guest_spawn.exe', 'guest_dialog.exe', 'guest_comctl.exe', 'guest_clipboard.exe',
                         'guest_seh.exe', 'guest_seh_dll.dll', 'guest_gdi_bitmap.exe', 'guest_window_menu.exe', 'guest_xinput.exe',
                         'guest_cursor.exe', 'guest_regpersist.exe', 'guest_identity.exe',
-                        'guest_net.exe', 'guest_wasapi.exe', 'guest_xaudio2.exe', 'guest_nowine.exe', 'guest_named_objects.exe', 'guest_shellhook.exe', 'guest_shell_launch.exe')
+                        'guest_net.exe', 'guest_wasapi.exe', 'guest_xaudio2.exe', 'guest_nowine.exe', 'guest_named_objects.exe', 'guest_shellhook.exe', 'guest_shell_launch.exe', 'guest_rdrand.exe')
           $missing = @($expected | Where-Object { -not (Test-Path "$stage/payload/guest/$_") })
           Write-Host ("bundled guests: " + (@(Get-ChildItem "$stage/payload/guest" -File | ForEach-Object { $_.Name }) -join ', '))
           if ($missing.Count -gt 0) {
@@ -528,9 +544,10 @@ jobs:
   # `launcher`: GATING. The on-console launcher (host-uwp/launcher.cpp, docs/HANDOFF.md "Launcher") on the runner's CoreWindow.
   #
   # Installs the same signed .msix as `run`, writes LocalState\launch.json with "picker": true and the test hook
-  # "autoselect": "hello_cui.exe" (the launcher chooses that entry itself, no gamepad needed), activates the app and asserts on
-  # LocalState\launcher_result.txt: the guest ran (ran=yes), its exit code was captured (42) and its stdout reached the result
-  # screen's tail (the launcher's "last 20 lines"). The list and result screens go through the real presenter on the runner's
+  # "autoselect": ["hello_cui.exe", "guest_hello.exe"] (the launcher chooses those entries itself, no gamepad needed; between the
+  # two the app restarts itself with CoreApplication.RequestRestartAsync, one guest per process), activates the app and asserts
+  # on LocalState\launcher_result.txt: TWO blocks (run=1 hello_cui.exe, run=2 guest_hello.exe), each ran=yes and exit_code=42, and
+  # the first guest's stdout reached the result screen's tail (the launcher's "last 20 lines"). The list and result screens go through the real presenter on the runner's
   # CoreWindow; only the gamepad/keyboard navigation itself is not driven here.
   #
   # Unlike `run` (an experiment) this job is not continue-on-error: `run` has installed and activated the package on
@@ -540,7 +557,7 @@ jobs:
     needs: msix
     if: ${{ !cancelled() && needs.msix.result == 'success' }}
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
         with:
@@ -585,13 +602,13 @@ jobs:
 
       # LocalState\launch.json: the picker with the test hook. The folder may not exist before the first run, and a folder
       # made by this user is not writable by the AppContainer unless it is granted (ALL APPLICATION PACKAGES, S-1-15-2-1).
-      - name: Write LocalState launch.json (picker + autoselect hello_cui.exe)
+      - name: Write LocalState launch.json (picker + autoselect hello_cui.exe, guest_hello.exe)
         shell: powershell
         run: |
           $pkg = Get-AppxPackage -Name win10xbox.uwp
           $ls = Join-Path $env:LOCALAPPDATA ("Packages\" + $pkg.PackageFamilyName + "\LocalState")
           New-Item -ItemType Directory -Force -Path $ls | Out-Null
-          $json = '{ "picker": true, "autoselect": "hello_cui.exe", "expect_exit_code": 42, "exit_when_done": true, "timeout_sec": 180 }'
+          $json = '{ "picker": true, "autoselect": ["hello_cui.exe", "guest_hello.exe"], "expect_exit_code": 42, "exit_when_done": true, "timeout_sec": 180 }'
           Set-Content -Path (Join-Path $ls 'launch.json') -Value $json -Encoding ascii
           & icacls $ls /grant '*S-1-15-2-1:(OI)(CI)F' /T | Out-Host
           Write-Host "LocalState: $ls"
@@ -607,6 +624,16 @@ jobs:
           $rc = $LASTEXITCODE
           Write-Host "uwp_activate exit status: $rc (0 ended, 10 activation refused, 11 still running at the timeout, 12 COM setup failed)"
           Set-Content -Path uwp-activate.rc -Value $rc
+          # The app restarts itself between the two runs: uwp_activate may see the FIRST process end. Wait for the second
+          # run's block (run=2) in launcher_result.txt and for the restarted process to end.
+          $ls = Join-Path $env:LOCALAPPDATA ("Packages\" + $pkg.PackageFamilyName + "\LocalState")
+          $result = Join-Path $ls 'launcher_result.txt'
+          for ($i = 0; $i -lt 90; $i++) {
+            if ((Test-Path $result) -and (Select-String -Path $result -Pattern '^run=2' -Quiet)) { break }
+            Start-Sleep -Seconds 2
+          }
+          for ($i = 0; $i -lt 30 -and (Get-Process -Name 'win10xbox*' -ErrorAction SilentlyContinue); $i++) { Start-Sleep -Seconds 2 }
+          Write-Host ("launcher_result.txt run=2 block present: " + ((Test-Path $result) -and (Select-String -Path $result -Pattern '^run=2' -Quiet)))
           exit 0
 
       - name: Collect the evidence and assert on launcher_result.txt
@@ -631,16 +658,90 @@ jobs:
           $fail = @()
           if (-not $text) { $fail += 'LocalState\launcher_result.txt was not written (the launcher did not run the entry)' }
           else {
-            if ($text -notmatch '(?m)^guest=hello_cui\.exe\s*$') { $fail += 'result is not for hello_cui.exe' }
-            if ($text -notmatch '(?m)^ran=yes\s*$') { $fail += 'the guest did not run (ran=yes missing)' }
-            if ($text -notmatch '(?m)^exit_code=42\s*$') { $fail += 'exit code 42 was not captured' }
-            if ($text -notmatch '(?m)^\s+\| hello from guest\s*$') { $fail += 'the guest stdout (hello from guest) is not in the result tail' }
+            $blocks = @($text -split '(?m)^(?=run=)' | Where-Object { $_ -match '(?m)^run=' })
+            if ($blocks.Count -ne 2) { $fail += "expected 2 result blocks (one per run, the app restarts between them), found $($blocks.Count)" }
+            $want = @('hello_cui.exe', 'guest_hello.exe')
+            for ($i = 0; $i -lt [Math]::Min($blocks.Count, 2); $i++) {
+              $b = $blocks[$i]; $n = $i + 1
+              if ($b -notmatch "(?m)^run=$n\s*$") { $fail += "block $n is not run=$n" }
+              if ($b -notmatch ('(?m)^guest=' + [regex]::Escape($want[$i]) + '\s*$')) { $fail += "block $n is not for $($want[$i])" }
+              if ($b -notmatch '(?m)^ran=yes\s*$') { $fail += "block ${n}: the guest did not run (ran=yes missing)" }
+              if ($b -notmatch '(?m)^exit_code=42\s*$') { $fail += "block ${n}: exit code 42 was not captured" }
+            }
+            if ($blocks.Count -ge 1 -and $blocks[0] -notmatch '(?m)^\s+\| hello from guest\s*$') { $fail += 'the first guest stdout (hello from guest) is not in the result tail' }
           }
-          $lines = @('### host-uwp launcher (picker + autoselect on the runner CoreWindow)')
-          if ($fail.Count -eq 0) { $lines += '- PASS: hello_cui.exe launched from the picker, exit code 42 and its stdout captured in launcher_result.txt' }
+          $lines = @('### host-uwp launcher (picker + autoselect list, two runs with a self-restart, on the runner CoreWindow)')
+          if ($fail.Count -eq 0) { $lines += '- PASS: hello_cui.exe then guest_hello.exe launched from the picker across an app restart, exit code 42 each, two blocks in launcher_result.txt' }
           else { $fail | ForEach-Object { $lines += "- FAIL: $_"; Write-Host "::error::$_" } }
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           if ($fail.Count -gt 0) { exit 1 }
+
+      # "Run every program (report)": launch.json "autoselect": "all" runs every bundled program in turn (the app restarts
+      # between them), 60 s each (guest_cursor.exe waits for input up to its own 40 s watchdog), and writes LocalState\report.txt (header + one block per program) and <name>.bmp. The
+      # runner has no gamepad, so guest_xinput.exe's expected result is its own "no pad" exit code (the verdict says PASS).
+      - name: Write LocalState launch.json (autoselect all) and run every program
+        id: all
+        if: ${{ !cancelled() }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $pkg = Get-AppxPackage -Name win10xbox.uwp
+          $ls = Join-Path $env:LOCALAPPDATA ("Packages\" + $pkg.PackageFamilyName + "\LocalState")
+          foreach ($f in 'launcher_result.txt', 'report.txt') { Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $ls $f) }
+          $json = '{ "picker": true, "autoselect": "all", "autoselect_timeout_sec": 60, "exit_when_done": true }'
+          Set-Content -Path (Join-Path $ls 'launch.json') -Value $json -Encoding ascii
+          & .\uwp_activate.exe "$($pkg.PackageFamilyName)!App" --package-full-name $pkg.PackageFullName --timeout 300
+          $report = Join-Path $ls 'report.txt'
+          # Up to 40 min: Chocolate Doom (interactive, bundled by -doompkg) and any guest that waits for input run
+          # to the 60 s limit each, plus one restart per program.
+          for ($i = 0; $i -lt 1200; $i++) {
+            if ((Test-Path $report) -and (Select-String -Path $report -Pattern '^programs=' -Quiet)) { break }
+            Start-Sleep -Seconds 2
+          }
+          Write-Host ("report.txt finished: " + ((Test-Path $report) -and (Select-String -Path $report -Pattern '^programs=' -Quiet)))
+          exit 0
+
+      - name: Assert on report.txt
+        if: ${{ !cancelled() }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $pkg = Get-AppxPackage -Name win10xbox.uwp
+          $ls = Join-Path $env:LOCALAPPDATA ("Packages\" + $pkg.PackageFamilyName + "\LocalState")
+          New-Item -ItemType Directory -Force -Path uwp-evidence-all | Out-Null
+          foreach ($f in 'report.txt', 'status.txt', 'crash.txt') { $p = Join-Path $ls $f; if (Test-Path $p) { Copy-Item $p uwp-evidence-all -Force } }
+          Get-ChildItem -Path $ls -Filter *.bmp -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName uwp-evidence-all -Force }
+          $p = Join-Path $ls 'report.txt'
+          $text = if (Test-Path $p) { Get-Content -Path $p -Raw } else { '' }
+          if ($text) { Write-Host '--- report.txt (header and verdict lines) ---'; $text -split "`n" | Where-Object { $_ -match '^(# |os_build|package|date_utc|programs|pass|fail|exited|timeout|crash=|crash$|skipped|program=|verdict=)' } | ForEach-Object { Write-Host $_ } }
+          $fail = @()
+          if (-not $text) { $fail += 'LocalState\report.txt was not written' }
+          else {
+            if ($text -notmatch '(?m)^os_build=\d+\.\d+\.\d+') { $fail += 'the report header has no os_build' }
+            $dir = Join-Path $pkg.InstallLocation 'payload\guest'
+            $bundled = @(Get-ChildItem -Path $dir -Filter *.exe -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+            if ($bundled.Count -eq 0) { $bundled = @('window.exe', 'hello.exe', 'hello_cui.exe', 'guest_hello.exe', 'guest_cpuid.exe', 'guest_xinput.exe') }
+            Write-Host "bundled programs: $($bundled.Count)"
+            foreach ($n in $bundled) {
+              if ($text -notmatch ('(?m)^program=' + [regex]::Escape($n) + '\s*$')) { $fail += "no block for $n" }
+            }
+            foreach ($n in 'window.exe', 'hello_cui.exe', 'guest_hello.exe', 'guest_cpuid.exe', 'guest_xinput.exe') {
+              if ($text -notmatch ('(?ms)^program=' + [regex]::Escape($n) + '\s*\r?\n(?:(?!program=).)*?^verdict=PASS\b')) { $fail += "$n is not PASS" }
+            }
+          }
+          $lines = @('### host-uwp launcher: Run every program (autoselect all)')
+          if ($fail.Count -eq 0) { $lines += '- PASS: every bundled program has a block in report.txt and the known-good ones are PASS' }
+          else { $fail | ForEach-Object { $lines += "- FAIL: $_"; Write-Host "::error::$_" } }
+          $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($fail.Count -gt 0) { exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: host-uwp-launcher-all-evidence
+          path: uwp-evidence-all
+          if-no-files-found: ignore
+          retention-days: 7
 
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}

@@ -25,8 +25,13 @@
 //   stage_native      array of file names to copy BY NAME from the console's System32 into the machine folder
 //   picker            boolean  show the on-console launcher (launcher.h) instead of running "guest" directly;
 //                              the default is true only when there is no launch.json at all
-//   autoselect        string   file name of a launcher entry to launch without waiting for input (test hook;
-//                              implies "picker"); the result is written to LocalState\launcher_result.txt
+//   autoselect        string or array of strings: file name(s) of launcher entries to launch without waiting
+//                              for input (test hook; implies "picker"). With a list the app runs the first,
+//                              restarts itself (RequestRestartAsync), runs the second, and so on; one block per
+//                              run is appended to LocalState\launcher_result.txt
+//                              "all" runs EVERY listed program in order (restarting between them) and writes
+//                              LocalState\report.txt plus one <name>.bmp per program
+//   autoselect_timeout_sec integer  per-program watchdog of the "all" run in seconds (default 60)
 //   input_pump        boolean  forward CoreWindow keyboard/pointer input to the winexbox backend (default true)
 #pragma once
 
@@ -64,7 +69,9 @@ namespace w10x_uwp
         // Launcher (launcher.h).
         bool has_picker = false;         // "picker" was written
         bool picker = false;
-        std::string autoselect;          // leaf name, empty = wait for the user
+        bool autoselect_all = false;           // "autoselect": "all"
+        std::uint32_t autoselect_timeout_sec = 60;
+        std::vector<std::string> autoselect;   // leaf names, run k = autoselect[k]; empty = wait for the user
     };
 
     // Parses the text of a launch.json. On failure returns false and sets
@@ -120,4 +127,48 @@ namespace w10x_uwp
 
     inline std::string QuoteArg(const std::string& a) { return QuoteArgT<char>(a); }
     inline std::wstring QuoteArg(const std::wstring& a) { return QuoteArgT<wchar_t>(a); }
+
+    // ---- the restart argument (docs/HANDOFF.md "Launcher") -------------------------------------------
+    // After a guest has exited the app restarts itself with CoreApplication::RequestRestartAsync(arg) so the
+    // next guest gets a fresh process (core/dispatch/process.cpp allows one Launch per process). The argument
+    // comes back in the launch activation as "picker run=<N> [all=<K>] select=<leaf name>": N is the number of guests
+    // this chain has already run (it indexes launch.json "autoselect" and numbers the launcher_result.txt
+    // blocks), select is the program that just ran (the cursor starts on it).
+    struct RestartArgs
+    {
+        bool valid = false;      // the argument was a restart argument
+        int run = 0;             // guests already run in this chain, 0..kMaxRestartRun
+        int all_k = -1;          // "Run every program" chain: index of the next program (all=K), -1 = no such chain
+        std::string select;      // leaf name, may be empty
+    };
+    constexpr int kMaxRestartRun = 10000;
+    std::string FormatRestartArgs(int run, const std::string& select, int all_k = -1);
+    // Anything that is not "picker [run=N] [select=NAME]" (a normal launch, an empty string, a leaf name that
+    // is not a leaf name, a number out of range) gives valid == false.
+    RestartArgs ParseRestartArgs(const std::string& args);
+
+
+    // ---- "Run every program": LocalState\report.txt (docs/HANDOFF.md "Launcher") ---------------------------
+    // One block per program, appended after each run:
+    //   program=<name>\nexit_code=<n>\nverdict=<PASS|FAIL|EXITED|TIMEOUT|CRASH|SKIPPED> (<detail>)\nscreen=<x>.bmp|none\n
+    //   crash=yes|no\n[  ! <first lines of crash.txt>]\nstdout_last_lines=<n>\n  | <line>...\n\n
+    struct ReportBlock
+    {
+        std::string program;
+        long exit_code = 0;
+        std::string verdict;        // the whole line after "verdict="
+        std::string screen;         // "none" or the .bmp file name
+        bool crash = false;
+        std::vector<std::string> stdout_lines;
+        std::vector<std::string> crash_lines;
+    };
+    std::string FormatReportBlock(const ReportBlock& b);
+    std::vector<ReportBlock> ParseReport(const std::string& text);   // the blocks of a report body (a header is ignored)
+    // The first word of a verdict line ("PASS (...)" gives "PASS").
+    std::string VerdictWord(const std::string& verdict);
+    // The exit code the bundled program is known to end with. `pad_present`: guest_xinput needs a gamepad.
+    bool KnownExpectedExit(const std::string& name, bool pad_present, int* code);
+    // PASS / FAIL when `expected_known`, else TIMEOUT / CRASH (an NTSTATUS-style exit code) / EXITED.
+    std::string ReportVerdict(bool timed_out, long exit_code, bool expected_known, int expected);
+
 }  // namespace w10x_uwp

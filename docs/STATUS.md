@@ -1,5 +1,23 @@
 # Status
 
+## Trip-2 package: 1.0.0.352 = run 40009489508 (main 4332e9a, 2026-10-23)
+
+Everything the first console trip asked for is in this package and proven on the Windows runner (host-uwp
+launcher job, artifact `host-uwp-launcher-all-evidence`): Wine's NLS files bundled (`payload/nls`, 76 files),
+Chocolate Doom + shareware WAD with the "Doom" / "Doom (timedemo)" picker entries, RDRAND/RDSEED trapped and
+emulated (the forced-trap test mode runs the handler on every CI job), and the restart chain: after each guest
+the app restarts into the picker. The picker's top entry **"Run every program (report)"** runs all 37 bundled
+programs one after another (60 s each) and writes `LocalState\report.txt` plus one `<name>.bmp` per program.
+On the runner: `programs=37 pass=10 fail=0 exited=25 timeout=1 crash=1`; the one timeout is interactive Doom
+(it reached its title screen; the restart after a timeout worked), the one crash is the Doom timedemo under the
+UWP host (`CreateUpscaledTexture: Limited texture size to 0x0`, `-report2` root-causes it). The 25 "exited" are
+programs the verdict table does not know yet (most exit 42; the input-driven ones time out at 3/1/5 without the
+harness; `-report2` adds the table). `guest_d3d11_tri.exe` cannot load d3d11 under the launcher because the
+package stages only the default machine folder; `-uwpd3d` stages `machine-native-d3d` and selects it per guest.
+
+To test on the console: install the .msix of run 40009489508, start the app, pick "Run every program (report)",
+wait for the summary screen, then read `LocalState\report.txt` and the `.bmp` files from Device Portal.
+
 ## On the console (Xbox Series S, OS 26100.9445, package 1.0.0.333 = run 39981119649, commit bff86c8)
 
 First GUI run on hardware, reported by the owner's local session from the TV and Device Portal:
