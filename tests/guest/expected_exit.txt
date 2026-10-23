@@ -61,6 +61,11 @@ guest_imgui_d3d11.exe 0=frames KNOWNFAIL=-2147483392:uwp-no-hwnd-swapchain(-uwps
 # The swap-chain guest on machine-native-d3d (guest_d3d11_swap.machine): 60 frames presented through the DXGI interposition.
 guest_d3d11_swap.exe 42=presented KNOWNFAIL=2:uwp-no-hwnd(-uwpswap)
 
+# UDP + TLS (tests/guest/net2.c): the TLS half needs the test server (integration.net2_tls_server); standalone the connect fails = 20
+guest_net2.exe 42=udp+tls 20=no-tls-server
+# DLL/import closure (tests/guest/closure.c): 42 when every listed import resolves, 43 when some are missing or no *_imports.txt is bundled
+guest_closure.exe 42=closed 43=open-or-no-lists
+
 # Chocolate Doom (fetched, not in tests/guest): interactive; the timedemo ends through I_Error, which exits with -1
 chocolate-doom.exe TIMEOUT=interactive
 doom-timedemo.launch -1=timedemo
