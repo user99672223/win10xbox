@@ -231,7 +231,7 @@ Not implemented yet (they stay Todo or are documented FIXMEs), roughly in the or
    deadline is the previous deadline plus `elapse` (no accumulated lag; periods missed entirely are skipped, one
    WM_TIMER stands for them), a thread blocked in `GetMessage` / `MsgWaitForMultipleObjectsEx` wakes at the next
    deadline, `SetTimer` on an existing id restarts it, `KillTimer` drops a WM_TIMER that is already due, and a timer
-   with a TIMERPROC carries it in lParam for `DispatchMessage` to call.
+   with a TIMERPROC carries it in lParam for `DispatchMessage` to call. Tolerance gated by `guest_window_hooks`: 20 ticks of a 50 ms timer take 950..1400 ms by the performance counter with no gap under 40 ms (CI measures about 1000 ms, shortest gap 49.7 ms), and a `SetTimer(..., 1)` x10 takes at least about 100 ms.
 10. **The first target is `tests/guest/window.c`** (`integration.guest_window`): RegisterClass,
    CreateWindowEx(WS_POPUP|WS_VISIBLE, 400x300 at 100,100), WM_PAINT with two FillRects, GetPixel
    read-back, PostMessage/SetTimer, GetMessage loop, exit 42; plus the screenshot pixels. It must
