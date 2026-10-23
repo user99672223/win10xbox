@@ -57,6 +57,7 @@ function(win10xbox_guest_test name program exit_code)
       -DHOST=$<TARGET_FILE:win10xbox>
       -DMACHINE=${_guest_machine}
       -DREQUIRE_BUILTIN_DLLS=${_require_builtin}
+      "-DNO_USER32=${_guest_no_user32}"
       -DPROGRAM=${program}
       "-DPROGRAM_ARGS=${_guest_args}"
       "-DDEBUG_SPEC=${_guest_debug}"
@@ -376,3 +377,42 @@ win10xbox_guest_tls_test(guest_view_violation_detected 42 "+dispatch,+modules"
 
 # The SQLite shell and the regression guests its bring-up needed (tests/guest/sqlite).
 include(${CMAKE_CURRENT_LIST_DIR}/sqlite_tests.cmake)
+
+# ---- Real program: curl's curl.exe (docs/TESTING.md, "Real programs") ---------------------------------------------
+# Built from the release tarball by tools/ci/build_curl.ps1 (CMake + MSVC, no TLS; a named step of ci.yml's windows
+# job, which leaves it at <machine>/guest/curl.exe before ctest runs). Registered like the Lua tests: MSVC builds, or
+# -DWIN10XBOX_REAL_PROGRAMS=ON after putting a curl.exe into the machine folder. No network: --version, and the
+# file:// handler reading and copying files under the machine folder's guest home (C:\Users\User).
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  # curl links ws2_32, which on the shared folder is the runner's native one (its advapi32/sechost/rpcrt4 chain dies
+  # on Wine's 0x80000100 import stub, docs/TESTING.md "GUI guests"): run on the builtin-only folder, where it is Wine's.
+  # curl never loads user32, which that folder's trace check otherwise demands.
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+  set(_guest_no_user32 ON)
+  set(_curl_home ${WIN10XBOX_BUILTIN_MACHINE_DIR}/Users/User)
+  file(MAKE_DIRECTORY ${_curl_home})
+  file(WRITE ${_curl_home}/curl_in.txt "hello from a guest file, read by curl\nsecond line\n")
+  string(REPEAT "0123456789abcdef" 20000 _curl_big)   # 320000 bytes
+  file(WRITE ${_curl_home}/curl_big.bin "${_curl_big}")
+  unset(_curl_big)
+  # (a) the banner and the protocol list (no TLS backend: https must not be listed).
+  set(_guest_args "--version")
+  win10xbox_guest_test(real_curl_version "C:\\guest\\curl.exe" 0
+    "curl 8\\.[0-9]+\\.[0-9]+ " "libcurl/8\\." "Protocols: [a-z0-9 ]*file" "Protocols: [a-z0-9 ]*http" "Features: ")
+  set_tests_properties(integration.real_curl_version PROPERTIES FAIL_REGULAR_EXPRESSION "Protocols: [a-z0-9 ]*https")
+  # (b) file:// of a guest file to stdout.
+  set(_guest_args "-sS;file:///C:/Users/User/curl_in.txt")
+  win10xbox_guest_test(real_curl_file "C:\\guest\\curl.exe" 0
+    "hello from a guest file, read by curl.second line")
+  # (c) file:// copied with -o (a new file under the guest home, which must exist afterwards); curl reports the size.
+  set(_guest_args "-sS;-o;C:\\Users\\User\\curl_out.bin;-w;size=%{size_download};file:///C:/Users/User/curl_big.bin")
+  set(_guest_file Users/User/curl_out.bin)
+  win10xbox_guest_test(real_curl_file_copy "C:\\guest\\curl.exe" 0 "size=320000")
+  unset(_guest_file)
+  # (d) a missing file: CURLE_FILE_COULDNT_READ_FILE, exit code 37.
+  set(_guest_args "-sS;file:///C:/Users/User/curl_missing.txt")
+  win10xbox_guest_test(real_curl_file_missing "C:\\guest\\curl.exe" 37 "")
+  unset(_guest_args)
+  unset(_guest_machine)
+  unset(_guest_no_user32)
+endif()
