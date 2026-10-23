@@ -25,6 +25,7 @@ gdi32
 
 # --- base services ---------------------------------------------------------
 advapi32
+cryptbase        # advapi32 forwards SystemFunction036 (RtlGenRandom, msvcrt's rand_s) here: git.exe
 sechost
 rpcrt4
 comctl32
