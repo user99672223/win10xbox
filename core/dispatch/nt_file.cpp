@@ -379,9 +379,14 @@ static NTSTATUS NTAPI Xl_NtCreateNamedPipeFile(PHANDLE handle, ACCESS_MASK acces
                                                ULONG max_instances, ULONG inbound_quota, ULONG outbound_quota,
                                                PLARGE_INTEGER timeout) {
     LARGE_INTEGER default_wait;
-    if (timeout && timeout->QuadPart == 0) {
-        default_wait.QuadPart = -50 * 10000;   // 50 ms, relative
-        timeout = &default_wait;
+    if (timeout) {
+        // Read once; a pointer that cannot be read is an access violation (the host would say the same).
+        LARGE_INTEGER requested;
+        if (NTSTATUS cs = probe::Load<LARGE_INTEGER>(timeout, &requested)) return cs;
+        if (requested.QuadPart == 0) {
+            default_wait.QuadPart = -50 * 10000;   // 50 ms, relative
+            timeout = &default_wait;
+        }
     }
     return Host().NtCreateNamedPipeFile(handle, access, attr, io, sharing, disposition, options, pipe_type, read_mode,
                                         completion_mode, max_instances, inbound_quota, outbound_quota, timeout);
@@ -452,15 +457,17 @@ static NTSTATUS NTAPI Xl_NtQueryObject(HANDLE h, ULONG klass, PVOID buffer, ULON
                     const std::wstring nt = L"\\??\\" + guest;
                     const ULONG bytes = static_cast<ULONG>(nt.size() * sizeof(wchar_t));
                     const ULONG need = static_cast<ULONG>(sizeof(UNICODE_STRING)) + bytes + sizeof(wchar_t);
-                    if (ret_len) *ret_len = need;
+                    if (NTSTATUS ps = probe::ProbeWrite(buffer, length)) return ps;
+                    if (ret_len)
+                        if (NTSTATUS ps = probe::Store<ULONG>(ret_len, need)) return ps;
                     if (length < need) return st::BufferOverflow;
-                    auto* out = static_cast<UNICODE_STRING*>(buffer);
-                    auto* text = reinterpret_cast<wchar_t*>(out + 1);
-                    std::memcpy(text, nt.c_str(), bytes + sizeof(wchar_t));
-                    out->Buffer = text;
+                    std::vector<std::uint8_t> image(need);
+                    auto* out = reinterpret_cast<UNICODE_STRING*>(image.data());
+                    std::memcpy(image.data() + sizeof(UNICODE_STRING), nt.c_str(), bytes + sizeof(wchar_t));
+                    out->Buffer = reinterpret_cast<wchar_t*>(static_cast<std::uint8_t*>(buffer) + sizeof(UNICODE_STRING));
                     out->Length = static_cast<USHORT>(bytes);
                     out->MaximumLength = static_cast<USHORT>(bytes + sizeof(wchar_t));
-                    return st::Success;
+                    return probe::CopyToUser(buffer, image.data(), image.size());
                 }
             }
         }

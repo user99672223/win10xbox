@@ -5,7 +5,7 @@ Windows 10 x64 / 22H2 NT syscall numbers) and the hand-maintained policy
 `core/dispatch/syscall_policy.inc`; win32u entries (ids 0x1000..) are Emulate when
 `core/user/user_syscalls.h` registers them. Do not edit by hand.
 
-1798 syscalls. passthrough 153, translate 37, emulate 329, todo 1279. Generated 2026-10-23.
+1798 syscalls. passthrough 152, translate 37, emulate 330, todo 1279. Generated 2026-10-23.
 
 Policy: **PassThrough** calls the host ntdll export by name; **Translate**
 rewrites arguments (paths, handles, timeouts) then passes through;
@@ -132,7 +132,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0073 | NtCompleteConnectPort | 1 | PassThrough |  |
 | 0x0074 | NtConnectPort | 8 | PassThrough |  |
 | 0x0075 | NtContinueEx | 2 | Translate | TEB switched back to the guest view before the host call (never returns) |
-| 0x0076 | NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | 4 | PassThrough |  |
+| 0x0076 | NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | 4 | Emulate | clock: no auxiliary counter, STATUS_NOT_SUPPORTED after probing |
 | 0x0077 | NtCreateDirectoryObject | 3 | PassThrough |  |
 | 0x0078 | NtCreateIoCompletion | 4 | PassThrough |  |
 | 0x0079 | NtCreateJobObject | 3 | PassThrough |  |

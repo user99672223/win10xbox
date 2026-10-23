@@ -54,7 +54,8 @@ Every Emulate/Translate implementation that reads or writes caller memory:
   NtQueryInformationProcess, NtQueryInformationThread, NtQuerySystemInformation, NtDuplicateObject, NtGetNextThread,
   NtRaiseHardError, NtContinue/NtContinueEx (the CONTEXT is probed, 16-byte aligned, before the TEB view changes),
   NtCreateUserProcess (parameter block, attribute list, strings, outputs), NtGetNlsSectionPtr, NtInitializeNlsFiles,
-  NtQueryDefaultLocale, NtQueryDefaultUILanguage.
+  NtQueryDefaultLocale, NtQueryDefaultUILanguage, NtQueryObject (ObjectNameInformation of a file handle),
+  NtCreateNamedPipeFile (the time-out).
 * No caller memory is touched (nothing to guard): the privileged refusals (nt_privileged.cpp), NtCreateProcessEx,
   NtCreateThread, NtCreateDebugObject, NtDebugActiveProcess, NtTerminate*, NtSetContextThread/NtRaiseException/
   NtCreateThreadEx (pointers go to the host kernel unread), NtClose, NtSet*Locale.
