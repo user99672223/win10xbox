@@ -168,6 +168,12 @@ do_run() {
         elif [[ -n "$summary" && "$summary" =~ $re ]]; then
             status=ok; ex=${BASH_REMATCH[1]}; todo=${BASH_REMATCH[2]}; fl=${BASH_REMATCH[3]}
             fails=${BASH_REMATCH[4]}; sk=${BASH_REMATCH[5]}
+            # Wine's harness exits with the failure count (capped at 255); a unit that re-runs itself as a
+            # child prints a summary under the same name, so a different exit code means the process
+            # that ran the unit did not reach its own summary.
+            if (( rc != (fails > 255 ? 255 : fails) )); then
+                status=crashed; ex=0; todo=0; fl=0; fails=0; sk=0
+            fi
         fi
         if [[ $status != ok ]]; then
             last="$(grep -aoE '[A-Za-z0-9_]+\.c:[0-9]+:[^\r]*' "$log" | tail -1 | cut -c1-160)"
@@ -180,17 +186,23 @@ do_run() {
         echo "WINETEST $DLL:$unit status=$status executed=$ex todo=$todo flaky=$fl failures=$fails skipped=$sk exit=$rc time=${secs}s"
         [[ -n "$last" ]] && echo "  last test line: $last"
         if (( fails > 0 )); then
-            echo "  first failure: $(grep -aoE '[A-Za-z0-9_]+\.c:[0-9]+: Test failed:[^\r]*' "$log" | head -1 | cut -c1-160)"
+            grep -aoE '[A-Za-z0-9_]+\.c:[0-9]+: Test failed: [^\r]*' "$log" | head -3 | cut -c1-200 | sed 's/^/  first failing: /'
         fi
         grep -a '^win10xbox: ' "$log" | head -3 | sed 's/^/  /'
-        if [[ $status != ok && $diag_done -eq 0 ]]; then
-            # First dead unit of the suite: run it once more with loader/exception traces (guest WINEDEBUG).
-            diag_done=1
-            echo "  diagnostics for $unit (WINEDEBUG=err+all,+loaddll,warn+module,+seh):"
+        if [[ $status != ok && $diag_done -lt 8 ]]; then
+            # The first dead units of the suite: run each once more with loader and exception traces (guest
+            # WINEDEBUG). The full trace is kept as <out>/<dll>_<unit>.diag (CI artifact); the log shows the
+            # exceptions raised with a fault status and the last lines that name a DLL or an error.
+            diag_done=$(( diag_done + 1 ))
+            local diag="$OUT/${DLL}_$unit.diag"
             WINEDEBUG="err+all,+loaddll,warn+module,+seh" WIN10XBOX_DEBUG="+process" \
                 timeout -k 5 "$TIMEOUT" $EMULATOR "$HOST" --machine "$wmachine" "C:\\guest-wine\\${DLL}_test.exe" "$unit" \
-                < /dev/null 2>&1 | grep -aE 'err:|warn:|Failed|failed|seh:|xception|c00000|win10xbox' \
-                | grep -av 'Loaded' | head -25 | cut -c1-220 | sed 's/^/    /'
+                < /dev/null > "$diag" 2>&1
+            echo "  diagnostics for $unit (full trace: $diag):"
+            grep -aE -A4 'dispatch_exception code=(c|80)[0-9a-f]{7} ' "$diag" | grep -aE 'code=|rip|ip=|rax' | head -6 \
+                | cut -c1-220 | sed 's/^/    /'
+            grep -aE 'err:|loaddll|Library|ailed|c0000|win10xbox' "$diag" | grep -avE 'LdrGetProcedureAddress|Unloaded|trace:seh' \
+                | tail -25 | cut -c1-220 | sed 's/^/    /'
         fi
         read -r expect max <<<"$(baseline_of "$unit")"
         if [[ $expect == run && $max -ge 999999 ]]; then
