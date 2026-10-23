@@ -79,22 +79,165 @@ LRESULT HitTest(WindowObj* w, POINT pt) {
     const RECT wr = WindowRectScreen(w), cr = ClientRectScreen(w);
     if (!PtInRectangle(wr, pt.x, pt.y)) return HTNOWHERE;
     if (PtInRectangle(cr, pt.x, pt.y)) return HTCLIENT;
-    if ((w->style & WS_CAPTION) == WS_CAPTION && pt.y < cr.top && pt.x >= cr.left && pt.x < cr.right) {
-        if ((w->style & WS_SYSMENU) && pt.x >= cr.right - SystemMetric(SM_CXSIZE)) return HTCLOSE;
-        return HTCAPTION;
-    }
-    if (w->style & WS_THICKFRAME) {
-        const bool l = pt.x < cr.left, r = pt.x >= cr.right, t = pt.y < cr.top, b = pt.y >= cr.bottom;
-        if (t && l) return HTTOPLEFT;
-        if (t && r) return HTTOPRIGHT;
-        if (b && l) return HTBOTTOMLEFT;
-        if (b && r) return HTBOTTOMRIGHT;
+    if (w->style & WS_MINIMIZE) return HTCAPTION;
+    const int border = FrameInset(w);
+    if ((w->style & WS_THICKFRAME) && !(w->style & WS_MAXIMIZE)) {
+        const int corner = border + 16;
+        const bool l = pt.x < wr.left + border, r = pt.x >= wr.right - border;
+        const bool t = pt.y < wr.top + border, b = pt.y >= wr.bottom - border;
+        const bool lc = pt.x < wr.left + corner, rc = pt.x >= wr.right - corner;
+        const bool tc = pt.y < wr.top + corner, bc = pt.y >= wr.bottom - corner;
+        if ((t && lc) || (l && tc)) return HTTOPLEFT;
+        if ((t && rc) || (r && tc)) return HTTOPRIGHT;
+        if ((b && lc) || (l && bc)) return HTBOTTOMLEFT;
+        if ((b && rc) || (r && bc)) return HTBOTTOMRIGHT;
         if (l) return HTLEFT;
         if (r) return HTRIGHT;
         if (t) return HTTOP;
         if (b) return HTBOTTOM;
     }
+    if ((w->style & WS_CAPTION) == WS_CAPTION) {
+        const int top = wr.top + border;
+        if (pt.y >= top && pt.y < top + CaptionHeightOf(w) && pt.x >= wr.left + border && pt.x < wr.right - border) {
+            const POINT rel{pt.x - wr.left, pt.y - wr.top};
+            for (int ht : {HTCLOSE, HTMAXBUTTON, HTMINBUTTON}) {
+                RECT b;
+                if (CaptionButtonRect(w, ht, &b) && PtInRectangle(b, rel.x, rel.y)) return ht;
+            }
+            return HTCAPTION;
+        }
+    }
+    if ((w->style & WS_VSCROLL) && pt.x >= cr.right && pt.y < cr.bottom) return HTVSCROLL;
+    if ((w->style & WS_HSCROLL) && pt.y >= cr.bottom && pt.x < cr.right) return HTHSCROLL;
     return HTBORDER;
+}
+
+// The nc button a left press started on (HTCLOSE/HTMINBUTTON/HTMAXBUTTON); the release must land on it too.
+HWND g_pressed_hwnd = nullptr;
+LRESULT g_pressed_ht = 0;
+
+POINT PointOf(LPARAM lp) { return POINT{static_cast<short>(LOWORD(lp)), static_cast<short>(HIWORD(lp))}; }
+
+// The real hit-test code for a nc mouse message. The input router posts every non-client mouse message with
+// wParam = HTCAPTION, so the code is asked from the window (an application may override WM_NCHITTEST).
+LRESULT NcHit(HWND hwnd, LPARAM lp) { return SendMessageInternal(hwnd, WM_NCHITTEST, 0, lp); }
+
+// SC_MOVE (edge == 0) and SC_SIZE (edge = WMSZ_LEFT..WMSZ_BOTTOMRIGHT) with the mouse: the modal loop. The mouse is
+// captured and every message of this thread is pumped (GetMessage / Dispatch) until the button is released (the
+// window follows the pointer), Escape (the window goes back) or WM_QUIT (re-posted). The rectangle is always the one at
+// entry plus the pointer delta (a move shifts it, a size drags the edges named by `edge`, within the minimum and
+// maximum tracking size of WM_GETMINMAXINFO).
+void ApplyDrag(HWND hwnd, const RECT& orig, int edge, POINT start, POINT now, const MINMAXINFO& mm) {
+    const int dx = now.x - start.x, dy = now.y - start.y;
+    if (!edge) {
+        SetWindowPosInternal(hwnd, nullptr, orig.left + dx, orig.top + dy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        return;
+    }
+    const bool left = edge == WMSZ_LEFT || edge == WMSZ_TOPLEFT || edge == WMSZ_BOTTOMLEFT;
+    const bool right = edge == WMSZ_RIGHT || edge == WMSZ_TOPRIGHT || edge == WMSZ_BOTTOMRIGHT;
+    const bool top = edge == WMSZ_TOP || edge == WMSZ_TOPLEFT || edge == WMSZ_TOPRIGHT;
+    const bool bottom = edge == WMSZ_BOTTOM || edge == WMSZ_BOTTOMLEFT || edge == WMSZ_BOTTOMRIGHT;
+    RECT r = orig;
+    if (left) r.left += dx;
+    if (right) r.right += dx;
+    if (top) r.top += dy;
+    if (bottom) r.bottom += dy;
+    const int w = std::max<int>(std::min<int>(r.right - r.left, mm.ptMaxTrackSize.x), mm.ptMinTrackSize.x);
+    const int h = std::max<int>(std::min<int>(r.bottom - r.top, mm.ptMaxTrackSize.y), mm.ptMinTrackSize.y);
+    if (left) r.left = r.right - w; else r.right = r.left + w;
+    if (top) r.top = r.bottom - h; else r.bottom = r.top + h;
+    SetWindowPosInternal(hwnd, nullptr, r.left, r.top, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+void ModalSizeMove(HWND hwnd, POINT start, int edge) {
+    WindowObj* w = Win(hwnd);
+    if (!w) return;
+    const RECT orig = w->window;
+    UserThread& t = CurrentUserThread();
+    HWND prev_capture = t.capture;
+    MINMAXINFO mm{};
+    mm.ptMinTrackSize = POINT{SystemMetric(SM_CXMINTRACK), SystemMetric(SM_CYMINTRACK)};
+    mm.ptMaxTrackSize = POINT{SystemMetric(SM_CXMAXTRACK), SystemMetric(SM_CYMAXTRACK)};
+    if (edge) SendMessageInternal(hwnd, WM_GETMINMAXINFO, 0, reinterpret_cast<LPARAM>(&mm));
+    SendMessageInternal(hwnd, WM_ENTERSIZEMOVE, 0, 0);
+    t.capture = hwnd;
+    if (winexbox::IWinexboxDriver* d = Driver()) d->WindowSetCapture(reinterpret_cast<winexbox::WindowId>(hwnd), 0);
+    bool cancel = false;
+    for (;;) {
+        MSG m{};
+        BOOL got;
+        {
+            UnlockScope unlock;
+            got = sys::NtUserGetMessage(&m, nullptr, 0, 0);
+        }
+        if (!Win(hwnd)) break;
+        if (got <= 0) {
+            if (got == 0) {   // WM_QUIT arrived: let the outer loop see it again
+                UserThread& self = CurrentUserThread();
+                self.quit = true;
+                self.quit_code = static_cast<int>(m.wParam);
+                WakeThread(&self, QS_POSTMESSAGE);
+            }
+            break;
+        }
+        if (m.message == WM_MOUSEMOVE || m.message == WM_NCMOUSEMOVE) {
+            ApplyDrag(hwnd, orig, edge, start, m.pt, mm);
+        } else if (m.message == WM_LBUTTONUP || m.message == WM_NCLBUTTONUP) {
+            ApplyDrag(hwnd, orig, edge, start, m.pt, mm);
+            break;
+        } else if (m.message == WM_KEYDOWN && m.wParam == VK_ESCAPE) {
+            cancel = true;
+            break;
+        } else if (m.message >= WM_MOUSEFIRST && m.message <= WM_MOUSELAST) {
+            // other buttons / wheel while dragging: swallowed
+        } else if (m.message >= WM_NCLBUTTONDOWN && m.message <= WM_NCXBUTTONDBLCLK) {
+            // likewise
+        } else {
+            UnlockScope unlock;
+            sys::NtUserTranslateMessage(&m, 0);
+            sys::NtUserDispatchMessage(&m);
+        }
+    }
+    UserThread& after = CurrentUserThread();
+    after.capture = Win(prev_capture) ? prev_capture : nullptr;
+    if (winexbox::IWinexboxDriver* d = Driver()) d->WindowSetCapture(reinterpret_cast<winexbox::WindowId>(after.capture), 0);
+    if (!Win(hwnd)) return;
+    if (cancel) ApplyDrag(hwnd, orig, edge, start, start, mm);
+    SendMessageInternal(hwnd, WM_CAPTURECHANGED, 0, 0);
+    if (Win(hwnd)) SendMessageInternal(hwnd, WM_EXITSIZEMOVE, 0, 0);
+}
+
+LRESULT SysCommand(HWND hwnd, WPARAM wp, LPARAM lp) {
+    WindowObj* w = Win(hwnd);
+    if (!w) return 0;
+    if (w->style & WS_DISABLED) return 0;
+    switch (wp & 0xFFF0) {
+    case SC_CLOSE:
+        SendMessageInternal(hwnd, WM_CLOSE, 0, 0);
+        return 0;
+    case SC_MINIMIZE:
+        ShowWindowInternal(hwnd, SW_MINIMIZE);
+        return 0;
+    case SC_MAXIMIZE:
+        ShowWindowInternal(hwnd, SW_MAXIMIZE);
+        return 0;
+    case SC_RESTORE:
+        ShowWindowInternal(hwnd, SW_RESTORE);
+        return 0;
+    case SC_MOVE:
+        if ((wp & 0x0F) == HTCAPTION && !(w->style & (WS_MAXIMIZE | WS_MINIMIZE))) ModalSizeMove(hwnd, PointOf(lp), 0);
+        else FIXME(user, "SC_MOVE %#llx (keyboard move, or a maximized / minimized window) is not implemented", static_cast<unsigned long long>(wp));
+        return 0;
+    case SC_SIZE:
+        if ((wp & 0x0F) >= WMSZ_LEFT && (wp & 0x0F) <= WMSZ_BOTTOMRIGHT && (w->style & WS_THICKFRAME) &&
+            !(w->style & (WS_MAXIMIZE | WS_MINIMIZE)))
+            ModalSizeMove(hwnd, PointOf(lp), static_cast<int>(wp & 0x0F));
+        else FIXME(user, "SC_SIZE %#llx (keyboard size, or a maximized / minimized window) is not implemented", static_cast<unsigned long long>(wp));
+        return 0;
+    default:
+        FIXME(user, "WM_SYSCOMMAND %#llx is not implemented", static_cast<unsigned long long>(wp));
+        return 0;
+    }
 }
 
 }  // namespace
@@ -242,12 +385,45 @@ LRESULT DefWindowProcInternal(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, bool an
     case WM_NCDESTROY:
         w->text.clear();
         return 0;
-    case WM_NCLBUTTONDOWN:
+    case WM_NCLBUTTONDOWN: {
         if (IsTopLevel(w) && FindUserThread() && FindUserThread()->active != hwnd) SetActiveWindowInternal(hwnd, true);
+        if (!(w = Win(hwnd))) return 0;
+        const LRESULT ht = NcHit(hwnd, lp);
+        if (!Win(hwnd)) return 0;
+        g_pressed_hwnd = nullptr;
+        switch (ht) {
+        case HTCAPTION:
+            SendMessageInternal(hwnd, WM_SYSCOMMAND, SC_MOVE | HTCAPTION, lp);
+            break;
+        case HTCLOSE: case HTMINBUTTON: case HTMAXBUTTON:
+            g_pressed_hwnd = hwnd;
+            g_pressed_ht = ht;
+            break;
+        case HTLEFT: case HTRIGHT: case HTTOP: case HTBOTTOM: case HTTOPLEFT: case HTTOPRIGHT: case HTBOTTOMLEFT: case HTBOTTOMRIGHT:
+            SendMessageInternal(hwnd, WM_SYSCOMMAND, SC_SIZE + (ht - HTLEFT + WMSZ_LEFT), lp);
+            break;
+        }
         return 0;
-    case WM_NCLBUTTONUP:
-        if (wp == HTCLOSE) PostMessageInternal(hwnd, WM_SYSCOMMAND, SC_CLOSE, lp);
+    }
+    case WM_NCLBUTTONUP: {
+        const LRESULT ht = NcHit(hwnd, lp);
+        if (!Win(hwnd)) return 0;
+        w = Win(hwnd);
+        const bool pressed = w && g_pressed_hwnd == hwnd && g_pressed_ht == ht;
+        g_pressed_hwnd = nullptr;
+        if (!pressed) return 0;
+        if (ht == HTCLOSE) PostMessageInternal(hwnd, WM_SYSCOMMAND, SC_CLOSE, lp);
+        else if (ht == HTMINBUTTON) PostMessageInternal(hwnd, WM_SYSCOMMAND, SC_MINIMIZE, lp);
+        else if (ht == HTMAXBUTTON)
+            PostMessageInternal(hwnd, WM_SYSCOMMAND, (w->style & WS_MAXIMIZE) ? SC_RESTORE : SC_MAXIMIZE, lp);
         return 0;
+    }
+    case WM_NCLBUTTONDBLCLK:
+        if (NcHit(hwnd, lp) == HTCAPTION && Win(hwnd) && (w = Win(hwnd)) && (w->style & WS_MAXIMIZEBOX))
+            SendMessageInternal(hwnd, WM_SYSCOMMAND, (w->style & WS_MAXIMIZE) ? SC_RESTORE : SC_MAXIMIZE, lp);
+        return 0;
+    case WM_SYSCOMMAND:
+        return SysCommand(hwnd, wp, lp);
     case WM_PRINTCLIENT:
     case WM_GETMINMAXINFO:
     case WM_DESTROY:
