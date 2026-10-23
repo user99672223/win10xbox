@@ -286,6 +286,13 @@ namespace
         CHECK(VerdictWord(ReportVerdict(true, 0, FindExpected(t, "chocolate-doom.exe"))) == "TIMEOUT" &&
               Contains(ReportVerdict(true, 0, FindExpected(t, "chocolate-doom.exe")), "expected: interactive"));
         CHECK(!Contains(ReportVerdict(true, 0, w), "expected"));
+        CHECK(ParseExpectedTable("s.exe 42=presented KNOWNFAIL=2:uwp-no-hwnd(-uwpswap) KNOWNFAIL=-2147483392:x\n", &t, &err));
+        const std::vector<ExpectedRow>* k = FindExpected(t, "s.exe");
+        CHECK(k && k->size() == 3 && (*k)[1].known_fail && (*k)[1].code == 2 && (*k)[2].code == -2147483392LL);
+        CHECK(ReportVerdict(false, 2, k) == "KNOWN-FAIL (exit code 2 = uwp-no-hwnd(-uwpswap))");
+        CHECK(VerdictWord(ReportVerdict(false, 2, k)) == "KNOWN-FAIL" && VerdictWord(ReportVerdict(false, 42, k)) == "PASS");
+        CHECK(VerdictWord(ReportVerdict(false, 3, k)) == "FAIL" && !Contains(ReportVerdict(false, 3, k), "or 2"));
+        CHECK(!ParseExpectedTable("a.exe KNOWNFAIL=2\n", &t, &err) && !ParseExpectedTable("a.exe KNOWNFAIL=x:y\n", &t, &err));
         CHECK(!ParseExpectedTable("a.exe\n", &t, &err) && Contains(err, "line 1"));
         CHECK(!ParseExpectedTable("a.exe 4x\n", &t, &err));
         CHECK(!ParseExpectedTable("a.exe 1\nA.exe 2\n", &t, &err) && Contains(err, "twice"));
@@ -473,6 +480,10 @@ void TestExpectedTable(const std::string& src, const std::string& staged)
     CHECK(d && d->size() == 1 && (*d)[0].code == -1 && (*d)[0].label == "timedemo");
     const std::vector<ExpectedRow>* c = FindExpected(t, "chocolate-doom.exe");
     CHECK(c && c->size() == 1 && (*c)[0].timeout);
+    const std::vector<ExpectedRow>* sw = FindExpected(t, "guest_d3d11_swap.exe");
+    CHECK(sw && sw->size() == 2 && (*sw)[1].known_fail && (*sw)[1].code == 2);
+    const std::vector<ExpectedRow>* ig = FindExpected(t, "guest_imgui_d3d11.exe");
+    CHECK(ig && ig->size() == 2 && (*ig)[1].known_fail && (*ig)[1].code == -2147483392LL);
     for (const char* n : {"window.exe", "hello_cui.exe", "guest_hello.exe", "guest_cpuid.exe", "guest_xinput.exe"}) CHECK(t.count(n) == 1);
     if (!staged.empty())
     {

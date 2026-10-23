@@ -783,7 +783,7 @@ jobs:
           Get-ChildItem -Path $ls -Filter *.bmp -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName uwp-evidence-all -Force }
           $p = Join-Path $ls 'report.txt'
           $text = if (Test-Path $p) { Get-Content -Path $p -Raw } else { '' }
-          if ($text) { Write-Host '--- report.txt (header and verdict lines) ---'; $text -split "`n" | Where-Object { $_ -match '^(# |os_build|package|date_utc|programs|pass|fail|exited|timeout|crash=|crash$|skipped|program=|verdict=)' } | ForEach-Object { Write-Host $_ } }
+          if ($text) { Write-Host '--- report.txt (header and verdict lines) ---'; $text -split "`n" | Where-Object { $_ -match '^(# |os_build|package|date_utc|programs|pass|fail|exited|timeout|knownfail|crash=|crash$|skipped|program=|verdict=)' } | ForEach-Object { Write-Host $_ } }
           $fail = @()
           $countLine = ''
           if (-not $text) { $fail += 'LocalState\report.txt was not written' }
@@ -799,25 +799,27 @@ jobs:
             else {
               foreach ($tl in Get-Content $tablePath) {
                 $w = @(($tl -replace '#.*$', '') -split '\s+' | Where-Object { $_ })
-                if ($w.Count -ge 2) { $table[$w[0].ToLower()] = [bool](@($w[1..($w.Count - 1)] | Where-Object { $_ -match '^TIMEOUT(=|$)' }).Count) }
+                if ($w.Count -ge 2) { $table[$w[0].ToLower()] = [pscustomobject]@{ Timeout = [bool](@($w[1..($w.Count - 1)] | Where-Object { $_ -match '^TIMEOUT(=|$)' }).Count); Known = [bool](@($w[1..($w.Count - 1)] | Where-Object { $_ -match '^KNOWNFAIL=' }).Count) } }
               }
             }
             Write-Host "expected-exit table: $($table.Count) programs"
             foreach ($n in $bundled) {
               if (-not $table.ContainsKey($n.ToLower())) { $fail += "$n is bundled but has no row in expected_exit.txt" }
             }
+            $knownList = @()
             foreach ($n in ($table.Keys | Sort-Object)) {
               if (-not ($bundled | Where-Object { $_.ToLower() -eq $n })) { Write-Host "table row $n is not bundled: skipped"; continue }
-              $m = [regex]::Match($text, '(?ms)^program=' + [regex]::Escape($n) + '\s*\r?\n(?:(?!^program=).)*?^verdict=(\w+)')
+              $m = [regex]::Match($text, '(?ms)^program=' + [regex]::Escape($n) + '\s*\r?\n(?:(?!^program=).)*?^verdict=([\w-]+)')
               if (-not $m.Success) { $fail += "no block for $n"; continue }
               $word = $m.Groups[1].Value
               if ($word -eq 'PASS') { continue }
-              if ($word -eq 'TIMEOUT' -and $table[$n]) { continue }
+              if ($word -eq 'TIMEOUT' -and $table[$n].Timeout) { continue }
+              if ($word -eq 'KNOWN-FAIL' -and $table[$n].Known) { $knownList += $n; continue }
               $fail += "$n is $word, not PASS"
             }
-            $counts = @{ PASS = 0; FAIL = 0; EXITED = 0; TIMEOUT = 0; CRASH = 0 }
-            foreach ($m in [regex]::Matches($text, '(?m)^verdict=(\w+)')) { $k = $m.Groups[1].Value; if ($counts.ContainsKey($k)) { $counts[$k]++ } }
-            $countLine = "pass=$($counts.PASS) fail=$($counts.FAIL) exited=$($counts.EXITED) timeout=$($counts.TIMEOUT) crash=$($counts.CRASH)"
+            $counts = @{ PASS = 0; 'KNOWN-FAIL' = 0; FAIL = 0; EXITED = 0; TIMEOUT = 0; CRASH = 0 }
+            foreach ($m in [regex]::Matches($text, '(?m)^verdict=([\w-]+)')) { $k = $m.Groups[1].Value; if ($counts.ContainsKey($k)) { $counts[$k]++ } }
+            $countLine = "pass=$($counts.PASS) knownfail=$($counts['KNOWN-FAIL']) fail=$($counts.FAIL) exited=$($counts.EXITED) timeout=$($counts.TIMEOUT) crash=$($counts.CRASH)"
             Write-Host $countLine
             # The Doom timedemo runs the whole demo (it exits through I_Error with -1, table label "timedemo"): its last frame is not black.
             $bmp = Join-Path $ls 'doom-timedemo.bmp'
@@ -832,6 +834,8 @@ jobs:
           }
           $lines = @('### host-uwp launcher: Run every program (autoselect all)')
           if ($countLine) { $lines += "- $countLine" }
+          if ($knownList.Count -gt 0) { $lines += "- KNOWN-FAIL (recorded, not PASS): $($knownList -join ', ')"; Write-Host "knownfail programs: $($knownList -join ', ')" }
+          else { $lines += '- KNOWN-FAIL: none' }
           if ($fail.Count -eq 0) { $lines += '- PASS: every bundled program has a row in expected_exit.txt and is PASS (TIMEOUT only where the table says so); doom-timedemo.bmp is not black' }
           else { $fail | ForEach-Object { $lines += "- FAIL: $_"; Write-Host "::error::$_" } }
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8

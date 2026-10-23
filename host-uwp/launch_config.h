@@ -174,9 +174,12 @@ namespace w10x_uwp
     //   <program> <code>[=<label>] [<code>=<label> ...]      "#" starts a comment
     // <code> is an integer or the word TIMEOUT (the program is interactive and is ended by the per-program timeout).
     // Every listed outcome is a PASS; the label names it ("PASS (exit code 3 = no-input)").
+    // KNOWN-FAIL: a third kind, `KNOWNFAIL=<code>:<label>` (several allowed): a recorded, not-yet-fixed failure; the verdict is
+    // "KNOWN-FAIL (exit code 2 = label)", never PASS. Any other code stays FAIL.
     struct ExpectedRow
     {
         bool timeout = false;
+        bool known_fail = false;
         int code = 0;
         std::string label;
     };

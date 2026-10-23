@@ -11,3 +11,6 @@ status: ready. code head 19ae2d9. ci https://github.com/user99672223/win10xbox/a
 8. Unproven: the stderr stats line (`timed N gametics ... fps`) was not read from stdout.txt; trace.log with +user,+gdi was not captured (not needed once the demo frame was seen).
 9. Labels for 42=driven/clicked/child-ran/endpoint/pad are the console-side expectations, unseen on the runner.
 10. Untouched: guest_d3d11_tri (`10=no-d3d11`, d3d11.dll error 126), separate slice.
+
+## Format addition (`-knownfail`)
+11. Third outcome kind `KNOWNFAIL=<code>:<label>` (several allowed), e.g. `guest_d3d11_swap.exe 42=presented KNOWNFAIL=2:uwp-no-hwnd(-uwpswap)`. Verdict `KNOWN-FAIL (exit code 2 = uwp-no-hwnd(-uwpswap))`, counted in the report header line `knownfail=` and the summary screen (own colour); any other code is FAIL. CI "Assert on report.txt" allows KNOWN-FAIL only where the table lists it and prints the knownfail count and program list in the step summary.
