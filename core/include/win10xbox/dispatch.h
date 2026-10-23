@@ -120,6 +120,7 @@ CpuPolicy GetCpuPolicy();
 void InstallRandomInstructionEmulation();                 // first-chance VEH, idempotent
 bool EmulateRandomInstruction(CONTEXT* context);
 void SetForceRandomTrap(bool on);   // WIN10XBOX_TEST_FORCE_RDRAND_TRAP: the scanner rewrites rdrand/rdseed sites to ud2
+void SetPresentLimit(unsigned n);   // WIN10XBOX_TEST_PRESENT_LIMIT: the N-th Present ends the guest with exit 42 (0 = off)
 bool ForceRandomTrap();          // the handler's core: decodes at Rip, advances it on success
 // Scanner handler (loader::SiteHandler) used for every guest image we map.
 bool CpuSiteHandler(loader::SiteKind kind, loader::ScanRegs* regs, void* ctx);
