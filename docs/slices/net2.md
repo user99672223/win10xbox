@@ -1,4 +1,4 @@
-status: wip
+status: blocked
 
 HANDOFF (implement agent, net2: UDP + TLS for guests). Head: see `git log -1`; first and only push so far; ci.yml not yet run.
 1. UDP: core/afd/afd.cpp - an overlapped IOCTL_AFD_WINE_RECVMSG (force_async) on a socket with nothing to read now returns
@@ -17,4 +17,10 @@ HANDOFF (implement agent, net2: UDP + TLS for guests). Head: see `git log -1`; f
 8. Syscalls: none changed (no policy change, SYSCALLS.md untouched).
 
 ## What fails
-(pending CI)
+BLOCKED on Windows: UDP passes (`net2: udp ok`); the TLS handshake fails on the runner.
+First error: `net2: InitializeSecurityContext 80090330 (call 3, 242 bytes in: 16 03 03 00 ba 04)` = SEC_E_DECRYPT_FAILURE on the
+third host ISC call (NewSessionTicket + CCS + Finished from the Python server, TLS 1.2), i.e. the server Finished does not verify.
+Runs: https://github.com/user99672223/win10xbox/actions/runs/39978739313 and /39982124415 (the latter replays a handshake step
+whose output did not fit the caller's buffer; no change in outcome). Untried ideas: SCH_CREDENTIALS instead of SCHANNEL_CRED, a
+server that does not send a session ticket (ctx.options |= ssl.OP_NO_TICKET), no ISC_REQ_EXTENDED_ERROR, check that the guest
+sends the whole call-2 token. Still unsupported: server credentials, client certificates, DTLS, channel bindings.
