@@ -1,3 +1,3 @@
 # <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/media.sh --dll propsys; numbers in docs/slices/wt-media.md)
-# measurement push: every unit -1 so every unit prints and fails the gate; replaced by measured values
-propsys run -1
+# measured on the CI linux-cross job (ci run 39939220417, head f413503); CLSIDs unregistered, see docs/slices/wt-media.md
+propsys crash 0
