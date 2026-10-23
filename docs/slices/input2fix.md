@@ -1,6 +1,6 @@
 # Slice: input2fix (integration.guest_window_input2 intermittent failure)
 
-Status: fixed in core/clock; CI result below.
+Status: fixed in core/clock; ci.yml green on all three jobs (a678e9d).
 
 ## Root cause
 
@@ -26,4 +26,4 @@ Status: fixed in core/clock; CI result below.
 
 ## CI
 
-Run: see the commit status of branch claude/youthful-cerf-l7xxsb-input2fix (URL filled in below).
+Run: https://github.com/user99672223/win10xbox/actions/runs/39881138998 (linux-cross, windows Debug, windows RelWithDebInfo: success).
