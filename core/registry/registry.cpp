@@ -42,7 +42,7 @@ namespace {
 using regf::Upcase;
 
 // ---- access rights / options (spelled out; headers disagree on availability)
-constexpr ACCESS_MASK kKeyQueryValue = 0x0001, kKeySetValue = 0x0002, kKeyCreateSubKey = 0x0004,
+constexpr ACCESS_MASK kKeyQueryValue = 0x0001, kKeySetValue = 0x0002,
                       kKeyEnumerateSubKeys = 0x0008, kKeyNotify = 0x0010,
                       kKeyRead = 0x20019, kKeyWrite = 0x20006, kKeyAll = 0xF003F,
                       kDelete = 0x00010000, kMaximumAllowed = 0x02000000,
@@ -485,15 +485,17 @@ struct ResolveOpts {
 
 // An absolute name that does not start at \Registry belongs to the object manager. NtOpenKey on Windows gets the
 // namespace's answer: the leaf is missing (NAME_NOT_FOUND), a directory on the way is (PATH_NOT_FOUND), or the object
-// is no key (TYPE_MISMATCH). NtOpenDirectoryObject asks exactly that of the host namespace the guest shares.
+// is no key (TYPE_MISMATCH, e.g. \Device\Null). NtOpenDirectoryObject asks the host namespace the guest shares; the one
+// thing it does differently is a device as the leaf (PATH_NOT_FOUND, its parse routine has no name to parse), which is
+// told from a missing directory by the parent opening.
 NTSTATUS NamespaceStatus(std::wstring_view path, std::size_t components) {
     using OpenDirectoryFn = NTSTATUS(NTAPI*)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES);
     using CloseFn = NTSTATUS(NTAPI*)(HANDLE);
     const HMODULE host = GetModuleHandleW(L"ntdll.dll");
     auto open = host ? reinterpret_cast<OpenDirectoryFn>(GetProcAddress(host, "NtOpenDirectoryObject")) : nullptr;
     auto close = host ? reinterpret_cast<CloseFn>(GetProcAddress(host, "NtClose")) : nullptr;
-    if (open && close && path.size() < 0x7FFF) {
-        std::wstring name(path);
+    if (!open || !close || path.size() >= 0x7FFF) return components > 1 ? kStatusObjectPathNotFound : nt::kObjectNameNotFound;
+    auto open_directory = [&](std::wstring name) {
         UNICODE_STRING us;
         us.Buffer = name.data();
         us.Length = us.MaximumLength = static_cast<USHORT>(name.size() * sizeof(wchar_t));
@@ -502,11 +504,20 @@ NTSTATUS NamespaceStatus(std::wstring_view path, std::size_t components) {
         oa.ObjectName = &us;
         oa.Attributes = 0x40;   // OBJ_CASE_INSENSITIVE
         HANDLE h = nullptr;
-        const NTSTATUS s = open(&h, 1 /*DIRECTORY_QUERY*/, &oa);
-        if (s >= 0) { close(h); return nt::kObjectTypeMismatch; }
-        return s;
+        const NTSTATUS r = open(&h, 1 /*DIRECTORY_QUERY*/, &oa);
+        if (r >= 0) close(h);
+        return r;
+    };
+    const NTSTATUS s = open_directory(std::wstring(path));
+    if (s >= 0) return nt::kObjectTypeMismatch;   // a directory is no key
+    if (s == kStatusObjectPathNotFound && components > 1) {
+        std::size_t end = path.size();
+        while (end > 1 && path[end - 1] == L'\\') --end;   // trailing separators
+        const std::size_t cut = path.rfind(L'\\', end - 1);
+        if (cut != std::wstring_view::npos && cut > 0 && open_directory(std::wstring(path.substr(0, cut))) >= 0)
+            return nt::kObjectTypeMismatch;   // the directory is there, so the leaf is: an object that is no directory
     }
-    return components > 1 ? kStatusObjectPathNotFound : nt::kObjectNameNotFound;
+    return s;
 }
 
 // Windows creates only the last component of a key name: a missing key on the way is NAME_NOT_FOUND, as for an open.
