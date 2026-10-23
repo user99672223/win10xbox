@@ -40,6 +40,12 @@ struct Session {
     bool have_ctx = false;
     std::wstring target;
     std::vector<unsigned char> alpn;   // SEC_APPLICATION_PROTOCOLS bytes, sent with the first token
+    // A handshake step whose output did not fit the caller's buffer: Wine's PE side grows the buffer and repeats the
+    // call with the same input, but SSPI has consumed that input already, so the result is kept and replayed.
+    bool pend = false;
+    SECURITY_STATUS pend_ss = SEC_E_OK;
+    ULONG pend_in = 0;
+    std::vector<unsigned char> pend_out;
 };
 
 // ---- the parameter blocks of secur32_priv.h (same layout, 64-bit pointers) ----------------------------------------
@@ -160,58 +166,72 @@ NTSTATUS WINAPI U_schan_handshake(void* args) {
     ULONG attr = 0;
     TimeStamp ts;
 
-    if (p->control_token) {
-        if (!s->have_ctx) return SEC_E_INVALID_HANDLE;
-        DWORD shutdown = SCHANNEL_SHUTDOWN;
-        SCHANNEL_ALERT_TOKEN alert{SCHANNEL_ALERT, p->alert_type, p->alert_number};
-        SecBuffer ctl;
-        if (p->control_token == kCtlShutdown) { ctl = {sizeof shutdown, SECBUFFER_TOKEN, &shutdown}; }
-        else { ctl = {sizeof alert, SECBUFFER_TOKEN, &alert}; }
-        SecBufferDesc ctl_desc{SECBUFFER_VERSION, 1, &ctl};
-        ss = ApplyControlToken(&s->ctx, &ctl_desc);
-        if (ss != SEC_E_OK) return ss;
-        ss = InitializeSecurityContextW(&s->cred->handle, &s->ctx, s->target.empty() ? nullptr : s->target.data(),
-                                        kIscFlags, 0, 0, nullptr, 0, &s->ctx, &out_desc, &attr, &ts);
+    if (s->pend) {
+        ss = s->pend_ss;
+        *p->input_offset = s->pend_in;
     } else {
-        SecBuffer in[3] = {};
-        SecBufferDesc in_desc{SECBUFFER_VERSION, 0, in};
-        std::vector<unsigned char> data;
-        ULONG used = 0;
-        if (p->input && p->input->cBuffers && p->input_size) {
-            const SecBuffer& src = p->input->pBuffers[0];
-            used = p->input_size < src.cbBuffer ? p->input_size : src.cbBuffer;
-            data.assign(static_cast<unsigned char*>(src.pvBuffer), static_cast<unsigned char*>(src.pvBuffer) + used);
-            in[0] = {used, SECBUFFER_TOKEN, data.data()};
-            in[1] = {0, SECBUFFER_EMPTY, nullptr};
-            in_desc.cBuffers = 2;
+        if (p->control_token) {
+            if (!s->have_ctx) return SEC_E_INVALID_HANDLE;
+            DWORD shutdown = SCHANNEL_SHUTDOWN;
+            SCHANNEL_ALERT_TOKEN alert{SCHANNEL_ALERT, p->alert_type, p->alert_number};
+            SecBuffer ctl;
+            if (p->control_token == kCtlShutdown) { ctl = {sizeof shutdown, SECBUFFER_TOKEN, &shutdown}; }
+            else { ctl = {sizeof alert, SECBUFFER_TOKEN, &alert}; }
+            SecBufferDesc ctl_desc{SECBUFFER_VERSION, 1, &ctl};
+            ss = ApplyControlToken(&s->ctx, &ctl_desc);
+            if (ss != SEC_E_OK) return ss;
+            ss = InitializeSecurityContextW(&s->cred->handle, &s->ctx, s->target.empty() ? nullptr : s->target.data(),
+                                            kIscFlags, 0, 0, nullptr, 0, &s->ctx, &out_desc, &attr, &ts);
+        } else {
+            SecBuffer in[3] = {};
+            SecBufferDesc in_desc{SECBUFFER_VERSION, 0, in};
+            std::vector<unsigned char> data;
+            ULONG used = 0;
+            if (p->input && p->input->cBuffers && p->input_size) {
+                const SecBuffer& src = p->input->pBuffers[0];
+                used = p->input_size < src.cbBuffer ? p->input_size : src.cbBuffer;
+                data.assign(static_cast<unsigned char*>(src.pvBuffer), static_cast<unsigned char*>(src.pvBuffer) + used);
+                in[0] = {used, SECBUFFER_TOKEN, data.data()};
+                in[1] = {0, SECBUFFER_EMPTY, nullptr};
+                in_desc.cBuffers = 2;
+            }
+            if (!s->have_ctx && !s->alpn.empty()) {
+                in[in_desc.cBuffers++] = {static_cast<ULONG>(s->alpn.size()), SECBUFFER_APPLICATION_PROTOCOLS,
+                                          s->alpn.data()};
+            }
+            ss = InitializeSecurityContextW(&s->cred->handle, s->have_ctx ? &s->ctx : nullptr,
+                                            s->target.empty() ? nullptr : s->target.data(), kIscFlags, 0, 0,
+                                            in_desc.cBuffers ? &in_desc : nullptr, 0, &s->ctx, &out_desc, &attr, &ts);
+            if (!FAILED(ss)) s->have_ctx = true;
+            if (ss != SEC_E_INCOMPLETE_MESSAGE && in_desc.cBuffers >= 2 && used) {
+                ULONG extra = (in[1].BufferType == SECBUFFER_EXTRA) ? in[1].cbBuffer : 0;
+                *p->input_offset = used - extra;
+            }
         }
-        if (!s->have_ctx && !s->alpn.empty()) {
-            in[in_desc.cBuffers++] = {static_cast<ULONG>(s->alpn.size()), SECBUFFER_APPLICATION_PROTOCOLS,
-                                      s->alpn.data()};
-        }
-        ss = InitializeSecurityContextW(&s->cred->handle, s->have_ctx ? &s->ctx : nullptr,
-                                        s->target.empty() ? nullptr : s->target.data(), kIscFlags, 0, 0,
-                                        in_desc.cBuffers ? &in_desc : nullptr, 0, &s->ctx, &out_desc, &attr, &ts);
-        if (!FAILED(ss)) s->have_ctx = true;
-        if (ss != SEC_E_INCOMPLETE_MESSAGE && in_desc.cBuffers >= 2 && used) {
-            ULONG extra = (in[1].BufferType == SECBUFFER_EXTRA) ? in[1].cbBuffer : 0;
-            *p->input_offset = used - extra;
+
+        s->pend_ss = ss;
+        s->pend_in = *p->input_offset;
+        s->pend_out.clear();
+        if (out_buf.pvBuffer) {
+            if (out_buf.cbBuffer)
+                s->pend_out.assign(static_cast<unsigned char*>(out_buf.pvBuffer),
+                                   static_cast<unsigned char*>(out_buf.pvBuffer) + out_buf.cbBuffer);
+            FreeContextBuffer(out_buf.pvBuffer);
         }
     }
 
-    if (out_buf.pvBuffer) {
-        if (out_buf.cbBuffer && p->output && p->output->cBuffers) {
-            SecBuffer& dst = p->output->pBuffers[0];
-            if (out_buf.cbBuffer > dst.cbBuffer) {
-                FreeContextBuffer(out_buf.pvBuffer);
-                return SEC_E_BUFFER_TOO_SMALL;
-            }
-            std::memcpy(dst.pvBuffer, out_buf.pvBuffer, out_buf.cbBuffer);
-            *p->output_buffer_idx = 0;
-            *p->output_offset = out_buf.cbBuffer;
+    if (!s->pend_out.empty() && p->output && p->output->cBuffers) {
+        SecBuffer& dst = p->output->pBuffers[0];
+        if (s->pend_out.size() > dst.cbBuffer) {
+            s->pend = true;
+            return SEC_E_BUFFER_TOO_SMALL;
         }
-        FreeContextBuffer(out_buf.pvBuffer);
+        std::memcpy(dst.pvBuffer, s->pend_out.data(), s->pend_out.size());
+        *p->output_buffer_idx = 0;
+        *p->output_offset = static_cast<ULONG>(s->pend_out.size());
     }
+    s->pend = false;
+    s->pend_out.clear();
     return ss;
 }
 
