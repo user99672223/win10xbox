@@ -3,6 +3,9 @@
 #include "internal.h"
 #include "nt_spawn.h"
 #include "win10xbox/config.h"
+#if WIN10XBOX_HAVE_AFD
+#include "win10xbox/afd.h"
+#endif
 #if WIN10XBOX_HAVE_REGISTRY
 #include "win10xbox/registry.h"
 #endif
@@ -82,6 +85,9 @@ NTSTATUS NTAPI Xl_NtClose(HANDLE h) {
 #endif
 #if WIN10XBOX_HAVE_TOKEN
     if (token::IsTokenHandle(h)) return token::Close(h);
+#endif
+#if WIN10XBOX_HAVE_AFD
+    if (afd::IsSocketHandle(h)) return afd::Close(h);
 #endif
     EmulatedObject o;
     if (LookupEmulatedObject(h, &o)) {

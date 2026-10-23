@@ -94,9 +94,8 @@ const UnixCallFn kNtdllFuncs[] = {
 // Wine's ws2_32 DllMain fails (and with it the load of every program that imports ws2_32, directly or through
 // iphlpapi) unless this library is registered; sockets themselves go through ntdll's \Device\Afd ioctls, not here.
 // The five functions are the host-resolver entry points. The return value is a WSA error code (0 = success).
-// Only the host name is answered (the layer's computer name, as GetComputerNameW gives it); name resolution has
-// no implementation behind it yet and says so.
-constexpr NTSTATUS kWsaEFault = 10014, kWsaEOpNotSupp = 10045;
+// The host name is the layer's computer name, as GetComputerNameW gives it; name resolution is unix_ws2_32.cpp.
+constexpr NTSTATUS kWsaEFault = 10014;
 struct WsGetHostnameParams { char* name; unsigned int size; };
 
 NTSTATUS WINAPI U_ws_gethostname(void* args) {
@@ -111,14 +110,13 @@ NTSTATUS WINAPI U_ws_gethostname(void* args) {
     p->name[computer.size()] = 0;
     return 0;
 }
-NTSTATUS WINAPI U_ws_not_implemented(void*) { return kWsaEOpNotSupp; }
 
 const UnixCallFn kWs2Funcs[] = {
-    &U_ws_not_implemented,   // getaddrinfo
-    &U_ws_not_implemented,   // gethostbyaddr
-    &U_ws_not_implemented,   // gethostbyname
+    &Ws2UnixGetAddrInfo,     // unix_ws2_32.cpp: host Winsock
+    &Ws2UnixGetHostByAddr,
+    &Ws2UnixGetHostByName,
     &U_ws_gethostname,
-    &U_ws_not_implemented,   // getnameinfo
+    &Ws2UnixGetNameInfo,
 };
 
 // ---- Wine debug channels ---------------------------------------------------------

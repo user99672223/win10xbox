@@ -42,9 +42,11 @@ target_sources(win10xbox_core PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/nt_nls.cpp
   ${CMAKE_CURRENT_LIST_DIR}/subsystems.cpp
   ${CMAKE_CURRENT_LIST_DIR}/unix_calls.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/unix_ws2_32.cpp
   ${CMAKE_CURRENT_LIST_DIR}/rtl_forward.cpp
   ${CMAKE_CURRENT_LIST_DIR}/cpu_sites.cpp
   ${CMAKE_CURRENT_LIST_DIR}/process.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/win32k_native.cpp
   ${CMAKE_CURRENT_LIST_DIR}/nt_privileged.cpp
 )
 

@@ -527,4 +527,12 @@ void ScreenRect(RECT* out);
 void WorkAreaRect(RECT* out);
 bool SysParamsInfo(UINT action, UINT val, void* ptr, UINT winini);
 
+// ---- Route B (config gui = Native): native_compose.cpp ---------------------------
+// True when the guest's windows are the host win32k's (ConfigureNativeGui succeeded). The host-facing API in
+// user.cpp then composes from the real windows instead of this module's.
+bool NativeGui();
+bool NativeComposeFrame(std::uint32_t* bgra, std::int32_t width, std::int32_t height, std::int32_t stride_bytes);
+void NativeScreenSize(std::int32_t* width, std::int32_t* height);
+std::uint64_t NativeFrameSerial();
+
 }  // namespace win10xbox::user::detail

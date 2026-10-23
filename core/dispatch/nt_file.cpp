@@ -8,6 +8,9 @@
 #if WIN10XBOX_HAVE_REGISTRY
 #include "win10xbox/registry.h"
 #endif
+#if WIN10XBOX_HAVE_AFD
+#include "win10xbox/afd.h"
+#endif
 #if WIN10XBOX_HAVE_VFS
 #include "win10xbox/vfs.h"
 #endif
@@ -340,6 +343,9 @@ NTSTATUS NTAPI Xl_NtCreateFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRI
 
 NTSTATUS NTAPI Xl_NtOpenFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr, PIO_STATUS_BLOCK io,
                              ULONG sharing, ULONG options) {
+#if WIN10XBOX_HAVE_AFD
+    if (afd::IsAfdDeviceName(attr)) return afd::Open(handle, io);   // sockets: core/afd
+#endif
     TranslatedOA t;
     if (NTSTATUS s = TranslateOA(attr, &t)) return s;
     // Wine's SetFileAttributesW (git hides ".git" with it) opens with SYNCHRONIZE alone and then sets

@@ -14,12 +14,16 @@ set(WIN10XBOX_BUILTIN_DIR ${CMAKE_SOURCE_DIR}/wine-pe/out/builtin CACHE PATH "Wi
 # The GUI tests run on a second folder with the console's DLL set (builtins + NLS, "*": "builtin,native"); see
 # prepare_machine.cmake (BUILTIN_ONLY_MACHINE) and docs/TESTING.md for why.
 set(WIN10XBOX_BUILTIN_MACHINE_DIR ${CMAKE_BINARY_DIR}/bin/machine-builtin)
+# Route B's folder: the same, plus the native GUI DLLs and "gui": "native" (prepare_machine.cmake NATIVE_GUI_MACHINE).
+set(WIN10XBOX_NATIVE_GUI_MACHINE_DIR ${CMAKE_BINARY_DIR}/bin/machine-native-gui)
 set(_default_json ${CMAKE_SOURCE_DIR}/machine/machine.default.json)
 set(_prepare_args
   -DMACHINE=${WIN10XBOX_MACHINE_DIR}
   -DBUILTIN_ONLY_MACHINE=${WIN10XBOX_BUILTIN_MACHINE_DIR}
+  -DNATIVE_GUI_MACHINE=${WIN10XBOX_NATIVE_GUI_MACHINE_DIR}
   -DBUILTIN_DIR=${WIN10XBOX_BUILTIN_DIR}
   -DGUEST_DIR=${CMAKE_BINARY_DIR}/bin/guest
+  -DMSCTF_STUB=${CMAKE_BINARY_DIR}/bin/native-gui-stubs/msctf.dll
   -DDEFAULT_JSON=${_default_json}
   -P ${CMAKE_CURRENT_SOURCE_DIR}/prepare_machine.cmake)
 
@@ -28,7 +32,7 @@ add_custom_target(prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args}
 if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_spawn guest_window guest_window2
                    guest_window_input guest_window_input2 guest_window_text guest_window_nc guest_dialog guest_comctl
-                   guest_seh guest_window_scroll guest_clipboard)
+                   guest_seh guest_window_scroll guest_clipboard guest_net msctf_stub)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -235,6 +239,52 @@ set_tests_properties(integration.guest_comctl PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_comctl.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=255,205,ffffffff|285,114,fff0f0f0|125,245,ff00a000|275,245,ffe6e6e6")
 unset(_guest_machine)
 
+# Route B (docs/GUI.md "Route B: native win32k"): the same window.c on the machine folder machine-native-gui
+# (machine.json "gui": "native"; Wine builtins + the six native GUI DLLs, see prepare_machine.cmake
+# NATIVE_GUI_MACHINE): the guest loads the NATIVE user32/gdi32/gdi32full/win32u from the machine folder, every
+# win32u syscall is passed through by name to the host's own win32u.dll, win32k's user-mode callbacks reach the
+# guest's user32 through the trampolines, and the screenshot is composed from the real window. Needs the native
+# DLLs, so it is registered only for a native Windows build (the Windows CI job stages them from the runner's
+# System32); a cross build run under Wine has no Windows DLLs and does not register it at all (the CI skip gate
+# fails on skipped tests). Without the DLLs in the machine folder it still SKIPs rather than failing obscurely.
+if(NOT CMAKE_CROSSCOMPILING)
+add_test(NAME integration.guest_window_native
+  COMMAND ${CMAKE_COMMAND}
+    -DHOST=$<TARGET_FILE:win10xbox>
+    -DMACHINE=${WIN10XBOX_NATIVE_GUI_MACHINE_DIR}
+    -DPROGRAM=C:\\guest\\guest_window.exe
+    -DEXPECT_EXIT=42
+    "-DEXPECT_REGEX=window: class registered;window: created hwnd=;window: painted;window: pixel\\(10,10\\)=00dc5000 pixel\\(30,30\\)=000000ff;window: done"
+    "-DEXPECT_TRACE_REGEX=gui native: [0-9]+ win32u syscalls pass through;gui native: the guest's win32u syscalls go to the host's win32k;host path [^)]*[Ss]ystem32.[Uu][Ss][Ee][Rr]32.dll;host path [^)]*[Ss]ystem32.[Ww][Ii][Nn]32[Uu].dll;win32u.dll: [0-9]+ of [0-9]+ syscall thunks renumbered;PEB.KernelCallbackTable: the guest's user32 installed;user-mode callback #[0-9]+;native compose: [1-9][0-9]* guest window"
+    "-DFORBID_TRACE_REGEX=host state reached under the guest TLS view"
+    -DDEBUG_SPEC=+dispatch,+modules,+process,+user
+    -DREQUIRE=Windows/System32/user32.dll
+    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
+set_tests_properties(integration.guest_window_native PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "guest_e2e"
+  TIMEOUT 180
+  # The screen pixels as 0xAARRGGBB from the BMP's B,G,R,A bytes: RGB(0,80,220) is ff0050dc, RGB(255,0,0) ffff0000.
+  # WIN10XBOX_WINEDEBUG: Wine's own loader warnings ("No implementation for ntdll.dll.X", failed DllMains).
+  ENVIRONMENT "WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_native.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=110,110,ff0050dc|130,130,ffff0000")
+endif()
+
+# ---- Networking: Wine's ws2_32 over core/afd (host Winsock) -----------------------------------------------------
+# tests/guest/net.c runs an echo server thread and a client over TCP loopback. Builtin-only machine folder: a native
+# ws2_32 would talk to the real AFD and bypass the code under test.
+set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+set(_guest_no_user32 ON)
+win10xbox_guest_test(guest_net "C:\\guest\\guest_net.exe" 42
+  "net: WSAStartup ok" "net: gethostname ok" "net: getaddrinfo localhost -> 127\\.0\\.0\\.1" "net: listening"
+  "net: connected" "net: FIONBIO ok" "net: sent 35 bytes" "net: received 35 bytes: hello from the guest over loopback"
+  "net: done")
+set_tests_properties(integration.guest_net PROPERTIES FAIL_REGULAR_EXPRESSION "net: FAILED")
+unset(_guest_no_user32)
+unset(_guest_machine)
+
 # ---- Real programs: the first guests that are not ours ----------------------------------------------------------
 # Lua 5.4.7, built from the upstream tarball with MSVC by tools/ci/build_lua.ps1 (a named step of ci.yml's windows
 # job, which leaves it at <machine>/guest/lua.exe before ctest runs). Registered only where that step exists: MSVC
@@ -270,7 +320,8 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   unset(_guest_forbid_trace)
 
   # Sysinternals Coreinfo64.exe (tools/ci/fetch_sysinternals.ps1, pinned by SHA-256), a system-information program:
-  # it reads the CPU topology through NtQuerySystemInformation. PsInfo64 is not gated here (docs/slices/sysinfo.md).
+  # it reads the CPU topology through NtQuerySystemInformation. PsInfo64 (also pinned) reports the system's name, uptime
+  # and kernel version; it needs Wine's ws2_32 (core/afd, docs/slices/net.md).
   # The anchors are lines every runner prints whatever its CPU vendor is (docs/slices/sysinfo.md).
   # It imports comdlg32/shell32, whose native copies cannot load on the shared
   # machine folder (docs/slices/sysinfo.md), so they run on the builtin-only one, like the GUI guests below.
@@ -279,6 +330,10 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   win10xbox_guest_test(coreinfo "C:\\guest\\Coreinfo64.exe" 0
     "Logical to Physical Processor Map:"
     "Logical Processor to Socket Map:")
+  win10xbox_guest_test(psinfo "C:\\guest\\PsInfo64.exe" 0
+    "System information for "
+    "Uptime:"
+    "Kernel version:")
   unset(_guest_args)
   unset(_guest_machine)
 endif()

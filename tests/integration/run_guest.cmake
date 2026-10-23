@@ -7,6 +7,8 @@
 # EXPECT_REGEX/FORBID_REGEX match the guest's stdout. The layer's own trace
 # output goes to stderr, so assertions about it use the TRACE variants:
 #   [-DEXPECT_TRACE_REGEX=<regex;regex...>] [-DFORBID_TRACE_REGEX=<regex>]
+#   [-DREQUIRE=<path relative to the machine folder>]: SKIP (77) when that file is absent, e.g. the native
+#   Windows DLLs a test needs (machine/import_windows_dlls.ps1 stages them on a Windows host only).
 # ('@SEMI@' in PROGRAM_ARGS stands for a ';' inside one argument.)
 # -DINPUT_FILE=<host file> is its stdin;
 # -DGUEST_FILE=<path under the machine folder, '/' separated> is deleted before the run and must exist after it.
@@ -29,6 +31,14 @@ endif()
 if(NOT EXISTS "${MACHINE}/Windows/System32/c_1252.nls")
   message("SKIP: ${MACHINE}/Windows/System32/c_1252.nls missing: the guest's ntdll needs the Windows NLS data "
           "(machine/import_windows_dlls.ps1 stages it from a Windows install; not available on Linux)")
+  if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.29)
+    cmake_language(EXIT 77)
+  endif()
+  return()
+endif()
+if(REQUIRE AND NOT EXISTS "${MACHINE}/${REQUIRE}")
+  message("SKIP: ${MACHINE}/${REQUIRE} missing: this test needs the native Windows DLLs in the machine folder "
+          "(machine/import_windows_dlls.ps1 stages them from a Windows install; not available on Linux)")
   if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.29)
     cmake_language(EXIT 77)
   endif()

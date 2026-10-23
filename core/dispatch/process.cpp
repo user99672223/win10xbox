@@ -12,11 +12,15 @@
 #if WIN10XBOX_HAVE_CLOCK
 #include "win10xbox/clock.h"
 #endif
+#if WIN10XBOX_HAVE_AFD
+#include "win10xbox/afd.h"
+#endif
 #if WIN10XBOX_HAVE_TOKEN
 #include "win10xbox/token.h"
 #endif
 #include <algorithm>
 #include <cstring>
+#include <cwchar>
 #include <cwctype>
 
 namespace win10xbox::process {
@@ -402,6 +406,8 @@ NTSTATUS MapGuestNtdll(const std::wstring& root) {
         ERR(process, "guest ntdll lacks LdrInitializeThunk/RtlUserThreadStart");
         return st::InvalidImageFormat;
     }
+    // Last: loader::FindExport (above) only accepts an export directory inside the image.
+    ExtendGuestNtdllExports(view->image);
     s = FinalizeView(view);
     if (!NtSuccess(s)) return s;
     TRACE(process, "guest ntdll at %p: %zu stubs, LdrInitializeThunk=%p", base, view->stubs,
@@ -643,6 +649,35 @@ int Launch(const LaunchOptions& opts) {
     }
 #else
     LoadCpuPolicy(root);
+#endif
+    {
+        // gui: machine.json "gui", overridden by WIN10XBOX_GUI (read here: after the take-over the environment
+        // block is the guest's). Route B must be configured before the PEB take-over and before the guest
+        // ntdll is mapped: it loads the host's user32/gdi32/win32u and decides how win32u thunks dispatch.
+#if WIN10XBOX_HAVE_VFS
+        if (mi.gui == L"native") cfg.gui = config::Gui::Native;
+        else if (mi.gui == L"emulated") cfg.gui = config::Gui::Emulated;
+#endif
+        wchar_t v[16];
+        const DWORD n = GetEnvironmentVariableW(L"WIN10XBOX_GUI", v, 16);
+        if (n && n < 16) {
+            if (!_wcsicmp(v, L"native")) cfg.gui = config::Gui::Native;
+            else if (!_wcsicmp(v, L"emulated")) cfg.gui = config::Gui::Emulated;
+            else WARN(process, "WIN10XBOX_GUI=%ls ignored: emulated or native", v);
+        }
+        if (cfg.gui == config::Gui::Native) {
+            TRACE(process, "gui native: the guest's win32u syscalls go to the host's win32k");
+#if WIN10XBOX_HAVE_VFS
+            vfs::SetNativeGuiStack(true);   // the native user32/gdi32/win32u/imm32 may load (dll_overrides)
+#endif
+            if ((s = ConfigureNativeGui())) {
+                ERR(process, "gui native could not be configured: %08lx", static_cast<unsigned long>(s));
+                return static_cast<int>(s);
+            }
+        }
+    }
+#if WIN10XBOX_HAVE_AFD
+    afd::PrimeHost();   // before the PEB take-over (see afd.h)
 #endif
     RegisterNtdllUnixLib();
 
