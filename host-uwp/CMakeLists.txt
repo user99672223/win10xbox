@@ -232,7 +232,7 @@ target_include_directories(drv_client PRIVATE "${WIN10XBOX_ROOT}/tests/drivers")
 
 # The remaining GUI guests of tests/guest (same output names as ci.yml's bin/guest), and the GUI
 # smoke variant, so the package carries every guest ci.yml builds (HANDOFF.md "Package contents").
-foreach(_g window2 window_input window_input2 window_text)
+foreach(_g window2 window_input window_input2 window_scroll window_text)
   add_executable(guest_${_g} "${WIN10XBOX_ROOT}/tests/guest/${_g}.c")
   target_link_libraries(guest_${_g} PRIVATE user32 gdi32)
 endforeach()
@@ -241,7 +241,7 @@ target_compile_definitions(smoke_guest PRIVATE SMOKE_GUI=1)
 set_target_properties(smoke_guest PROPERTIES OUTPUT_NAME "smoke")
 
 set(HOST_UWP_GUESTS window_guest hello_guest hello_guest_cui guest_hello guest_cpuid guest_sleep guest_dll
-    smoke_guest_cui drv_client guest_window2 guest_window_input guest_window_input2 guest_window_text smoke_guest
+    smoke_guest_cui drv_client guest_window2 guest_window_input guest_window_input2 guest_window_scroll guest_window_text smoke_guest
     guest_spawn)
 
 # ---------------------------------------------------------------------------
