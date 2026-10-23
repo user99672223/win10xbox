@@ -692,7 +692,9 @@ jobs:
           Set-Content -Path (Join-Path $ls 'launch.json') -Value $json -Encoding ascii
           & .\uwp_activate.exe "$($pkg.PackageFamilyName)!App" --package-full-name $pkg.PackageFullName --timeout 300
           $report = Join-Path $ls 'report.txt'
-          for ($i = 0; $i -lt 700; $i++) {
+          # Up to 40 min: Chocolate Doom (interactive, bundled by -doompkg) and any guest that waits for input run
+          # to the 60 s limit each, plus one restart per program.
+          for ($i = 0; $i -lt 1200; $i++) {
             if ((Test-Path $report) -and (Select-String -Path $report -Pattern '^programs=' -Quiet)) { break }
             Start-Sleep -Seconds 2
           }
