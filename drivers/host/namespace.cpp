@@ -2,6 +2,7 @@
 // symbolic links (\??\X -> \Device\X). Only what drivers create lives here;
 // every other path stays with the dispatcher / VFS.
 #include "../ntoskrnl/internal.h"
+#include "win10xbox/dispatch.h"
 #include <cwctype>
 #include <unordered_map>
 
@@ -122,6 +123,8 @@ NTSTATUS NsAddLink(std::wstring_view link, std::wstring_view target) {
         return STATUS_OBJECT_NAME_COLLISION;
     }
     Links()[key] = LinkRec{std::wstring(link), std::wstring(target)};
+    // The guest's object manager namespace lists the link too (core/dispatch/nt_object.cpp).
+    win10xbox::dispatch::RegisterNamespaceLink(std::wstring(link), std::wstring(target));
     ReleaseSRWLockExclusive(&g_lock);
     TRACE(driver, "symbolic link %ls -> %ls", std::wstring(link).c_str(), std::wstring(target).c_str());
     return STATUS_SUCCESS;
@@ -130,9 +133,14 @@ NTSTATUS NsAddLink(std::wstring_view link, std::wstring_view target) {
 NTSTATUS NsRemoveLink(std::wstring_view link) {
     std::wstring key = NsCanonical(link);
     AcquireSRWLockExclusive(&g_lock);
-    size_t n = Links().erase(key);
+    auto it = Links().find(key);
+    const bool found = it != Links().end();
+    if (found) {
+        win10xbox::dispatch::UnregisterNamespaceLink(it->second.link);
+        Links().erase(it);
+    }
     ReleaseSRWLockExclusive(&g_lock);
-    return n ? STATUS_SUCCESS : STATUS_OBJECT_NAME_NOT_FOUND;
+    return found ? STATUS_SUCCESS : STATUS_OBJECT_NAME_NOT_FOUND;
 }
 
 bool NsQueryLink(std::wstring_view link, std::wstring* target) {
@@ -149,8 +157,12 @@ void NsRemoveLinksTargeting(std::wstring_view device_name) {
     std::wstring want = NsCanonical(device_name);
     AcquireSRWLockExclusive(&g_lock);
     for (auto it = Links().begin(); it != Links().end();) {
-        if (NsCanonical(it->second.target) == want) it = Links().erase(it);
-        else ++it;
+        if (NsCanonical(it->second.target) == want) {
+            win10xbox::dispatch::UnregisterNamespaceLink(it->second.link);
+            it = Links().erase(it);
+        } else {
+            ++it;
+        }
     }
     ReleaseSRWLockExclusive(&g_lock);
 }
@@ -166,6 +178,7 @@ void NsClear() {
     AcquireSRWLockExclusive(&g_lock);
     Devices().clear();
     DevNames().clear();
+    for (auto& kv : Links()) win10xbox::dispatch::UnregisterNamespaceLink(kv.second.link);
     Links().clear();
     ReleaseSRWLockExclusive(&g_lock);
 }

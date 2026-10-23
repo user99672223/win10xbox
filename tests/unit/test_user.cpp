@@ -430,3 +430,42 @@ TEST(user_text_metrics_and_extents) {
     NtGdiDeleteObjectApp(big);
     NtGdiDeleteObjectApp(small);
 }
+
+TEST(user_query_display_config) {
+    namespace sys = win10xbox::user::sys;
+    UINT32 np = 0, nm = 0;
+    CHECK_EQ(sys::NtUserGetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &np, &nm), static_cast<LONG>(ERROR_SUCCESS));
+    DISPLAYCONFIG_PATH_INFO path{};
+    DISPLAYCONFIG_MODE_INFO modes[2]{};
+    np = 1;
+    nm = 1;   // too small for source + target
+    CHECK_EQ(sys::NtUserQueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &np, &path, &nm, modes, nullptr), static_cast<LONG>(ERROR_INSUFFICIENT_BUFFER));
+    nm = 2;
+    CHECK_EQ(sys::NtUserQueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &np, &path, &nm, modes, nullptr), static_cast<LONG>(ERROR_SUCCESS));
+    CHECK_EQ(np, 1u);
+    CHECK_EQ(nm, 2u);
+    CHECK(path.flags & DISPLAYCONFIG_PATH_ACTIVE);
+    CHECK_EQ(modes[0].infoType, DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE);
+    CHECK(modes[0].sourceMode.width > 0 && modes[0].sourceMode.height > 0);
+    CHECK_EQ(modes[1].infoType, DISPLAYCONFIG_MODE_INFO_TYPE_TARGET);
+    CHECK_EQ(modes[1].targetMode.targetVideoSignalInfo.activeSize.cx, modes[0].sourceMode.width);
+    // the names of the path's source and target
+    DISPLAYCONFIG_SOURCE_DEVICE_NAME src{};
+    src.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+    src.header.size = sizeof src;
+    src.header.adapterId = path.sourceInfo.adapterId;
+    src.header.id = path.sourceInfo.id;
+    CHECK_EQ(sys::NtUserDisplayConfigGetDeviceInfo(&src.header), static_cast<NTSTATUS>(0));
+    CHECK(wcscmp(src.viewGdiDeviceName, L"\\\\.\\DISPLAY1") == 0);
+    DISPLAYCONFIG_TARGET_DEVICE_NAME tgt{};
+    tgt.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+    tgt.header.size = sizeof tgt;
+    tgt.header.adapterId = path.targetInfo.adapterId;
+    tgt.header.id = path.targetInfo.id;
+    CHECK_EQ(sys::NtUserDisplayConfigGetDeviceInfo(&tgt.header), static_cast<NTSTATUS>(0));
+    CHECK(tgt.monitorFriendlyDeviceName[0] != 0);
+    // an unknown adapter is refused
+    src.header.adapterId.LowPart = 99;
+    CHECK(sys::NtUserDisplayConfigGetDeviceInfo(&src.header) != 0);
+}
+

@@ -5,7 +5,7 @@
 # file: 191 and 222 failures were both observed on identical code, so the larger one is the budget.
 actctx crash 0
 atom run 0
-change crash 0
+change run 0
 codepage run 0
 comm run 0
 console run 1
@@ -13,8 +13,8 @@ debugger timeout 0
 directory run 0
 drive run 2
 environ run 10
-fiber crash 0
-file run 222
+fiber run 7
+file run 162
 format_msg run 0
 generated run 0
 heap crash 0
@@ -35,4 +35,7 @@ timer crash 0
 toolhelp crash 0
 version run 8
 virtual crash 0
-volume run 35
+# volume: 35 -> 39 by the object manager namespace (docs/slices/om.md): volume.c:165 and :200 are todo_wine because Wine fails
+# them and Windows passes; \??\Y: made by DefineDosDevice is a real symbolic link now, so they pass and Wine's harness counts
+# "succeeded inside todo" as failures. The guest sees its own drives (C:) in \??, not the Wine prefix's, so the Z: cases are gone.
+volume run 39

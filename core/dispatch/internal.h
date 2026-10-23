@@ -347,6 +347,8 @@ const ImplDef* SubsystemImpls();
 const ImplDef* UserImpls();
 // nt_privileged.cpp: privileged syscalls, refused the way Windows refuses an unprivileged caller.
 const ImplDef* PrivilegedImpls();
+// nt_object.cpp: the object manager namespace (directory objects, symbolic links, named kernel objects).
+const ImplDef* ObjectImpls();
 // Subsystem groups compiled out: their Emulate entries pass through to the
 // host (registry/token/clock reads must work for Wine's loader_init) except
 // the names listed by NeverPassThrough().
@@ -450,6 +452,28 @@ std::wstring GuestWin32ToDevicePath(std::wstring_view guest_win32);
 std::wstring HostPathOfHandle(HANDLE file, DWORD* error = nullptr);
 void SetFallbackDrive(wchar_t letter, const std::wstring& host_root);   // no-vfs builds only
 
+// ---- Object manager namespace (nt_object.cpp) -----------------------------------------------------------------
+// Builds the guest-visible directory layout and finds the host's named-object directory. Host view, from Initialize.
+void InitializeObjectNamespace();
+// NtClose / NtDuplicateObject of an emulated directory or symbolic link handle (ObjectKind::Directory / SymbolicLink).
+void CloseEmulatedDirectory(const EmulatedObject& o);
+HANDLE DuplicateEmulatedDirectory(const EmulatedObject& o, ACCESS_MASK access, ULONG options);
+// A host handle that names an object in a guest directory: forgotten on NtClose, copied by NtDuplicateObject.
+void ForgetNamedHandle(HANDLE h);
+void NoteDuplicatedNamedHandle(HANDLE src, HANDLE dup);
+// Creates a named host object with the guest's name translated (sections). `call(oa, out)` is the host's create with
+// every other argument bound; `oa` is what to hand it (null for the unnamed probe).
+NTSTATUS CreateNamedHostObject(const wchar_t* type, PHANDLE handle, POBJECT_ATTRIBUTES oa,
+                               const std::function<NTSTATUS(POBJECT_ATTRIBUTES, PHANDLE)>& call);
+
+// NtQueryObject for objects that are not ours (nt_file.cpp): a file handle's name is the guest NT path, the rest the host's.
+NTSTATUS NTAPI QueryObjectHostFile(HANDLE h, ULONG klass, PVOID buffer, ULONG length, PULONG ret_len);
+// File names that go through the object manager tree: "\\BaseNamedObjects\\x", a name relative to one of our directory
+// handles, "\\DosDevices\\<link the guest created>\\NUL". 0: not ours, the file layer proceeds unchanged; 1: the open
+// fails with *status (a directory object or an unknown name is no file); 2: continue with *absolute (the name a link
+// led to, outside the tree).
+int ResolveFileNameThroughNamespace(const OBJECT_ATTRIBUTES* oa, NTSTATUS* status, std::wstring* absolute);
+
 // ---- Image sections and views (nt_section.cpp) ---------------------------------
 struct ImageSection {
     std::vector<std::uint8_t> bytes;
@@ -532,6 +556,16 @@ NTSTATUS NTAPI Xl_NtMapViewOfSection(HANDLE, HANDLE, PVOID*, ULONG_PTR, SIZE_T, 
 NTSTATUS NTAPI Xl_NtClose(HANDLE);
 
 // ---- Unix calls / Wine debug (unix_calls.cpp) ------------------------------------
+// Ordinals of the Wine-internal exports of the guest ntdll. wine-pe/patches/0006 exports every wine_* / __wine_*
+// function by ordinal only (no name in the export table) and writes the numbers into ntdll.spec, so they are fixed.
+namespace wine_ordinal {
+inline constexpr std::uint16_t kUnixCallDispatcher = 1455;   // __wine_unix_call_dispatcher (data: a pointer)
+inline constexpr std::uint16_t kUnixlibHandle = 1456;        // __wine_unixlib_handle (data: a uint64)
+inline constexpr std::uint16_t kDbgGetChannelFlags = 1458;   // __wine_dbg_get_channel_flags
+inline constexpr std::uint16_t kDbgHeader = 1459;            // __wine_dbg_header
+inline constexpr std::uint16_t kDbgOutput = 1460;            // __wine_dbg_output
+inline constexpr std::uint16_t kDbgStrdup = 1461;            // __wine_dbg_strdup
+}  // namespace wine_ordinal
 std::uint64_t NtdllUnixLibHandle();
 void RegisterNtdllUnixLib();
 // ws2_32's resolver unix calls on host Winsock (unix_ws2_32.cpp); the table is in unix_calls.cpp.
@@ -539,6 +573,10 @@ NTSTATUS WINAPI Ws2UnixGetAddrInfo(void* args);
 NTSTATUS WINAPI Ws2UnixGetHostByAddr(void* args);
 NTSTATUS WINAPI Ws2UnixGetHostByName(void* args);
 NTSTATUS WINAPI Ws2UnixGetNameInfo(void* args);
+// mmdevapi's driver on the host's WASAPI (unix_mmdevapi.cpp). PrimeAudio starts the host audio thread and loads the
+// host stack; call it before the PEB take-over. RegisterMmdevapiUnixLib registers the "winewasapi" unix library.
+void PrimeAudio(const std::wstring& machine_root);
+void RegisterMmdevapiUnixLib();
 std::uint64_t UnixLibHandleByName(std::wstring_view module_name);   // 0 if none
 // Replacements patched over the guest ntdll's __wine_dbg_* exports.
 struct WineDebugChannel { unsigned char flags; char name[15]; };

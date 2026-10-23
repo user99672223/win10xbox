@@ -654,6 +654,127 @@ static void ProbeCodegen(void)
 }
 
 /* ------------------------------------------------------------------------------------------------------------------ */
+/* Object manager namespace                                                                                            */
+/* ------------------------------------------------------------------------------------------------------------------ */
+
+/* What the layer's named-object mapping (core/dispatch/nt_object.cpp, docs/DISPATCHER.md "Object manager namespace")
+ * may do on this host: where does a "Local\" object land, may the process open that directory to look at it, to create
+ * directory objects and links in it, and may it open the machine-wide \BaseNamedObjects. */
+typedef LONG (NTAPI *PfnOpenObj)(PHANDLE, ACCESS_MASK, void *);
+typedef LONG (NTAPI *PfnQueryObj)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+typedef LONG (NTAPI *PfnQueryDir)(HANDLE, PVOID, ULONG, BOOLEAN, BOOLEAN, PULONG, PULONG);
+typedef LONG (NTAPI *PfnCreateLink)(PHANDLE, ACCESS_MASK, void *, PVOID);
+typedef struct { USHORT Length, MaximumLength; PWSTR Buffer; } NsString;
+typedef struct { ULONG Length; HANDLE Root; NsString *Name; ULONG Attributes; PVOID Sd, Qos; } NsAttr;
+
+static LONG NsOpen(PfnOpenObj fn, HANDLE root, const wchar_t *name, ACCESS_MASK access, HANDLE *out)
+{
+    NsString us;
+    NsAttr oa;
+
+    us.Buffer = (PWSTR)name;
+    us.Length = (USHORT)(wcslen(name) * sizeof(wchar_t));
+    us.MaximumLength = (USHORT)(us.Length + sizeof(wchar_t));
+    memset(&oa, 0, sizeof oa);
+    oa.Length = sizeof oa;
+    oa.Root = root;
+    oa.Name = &us;
+    oa.Attributes = 0x40; /* OBJ_CASE_INSENSITIVE */
+    *out = NULL;
+    return fn(out, access, &oa);
+}
+
+static void ProbeObjectNamespace(void)
+{
+    HMODULE nt = GetModuleHandleW(L"ntdll.dll");
+    PfnOpenObj open_dir = (PfnOpenObj)GetProcAddress(nt, "NtOpenDirectoryObject");
+    PfnOpenObj create_dir = (PfnOpenObj)GetProcAddress(nt, "NtCreateDirectoryObject");
+    PfnQueryObj query_obj = (PfnQueryObj)GetProcAddress(nt, "NtQueryObject");
+    PfnQueryDir query_dir = (PfnQueryDir)GetProcAddress(nt, "NtQueryDirectoryObject");
+    PfnCreateLink create_link = (PfnCreateLink)GetProcAddress(nt, "NtCreateSymbolicLinkObject");
+    static unsigned char buf[8192];
+    char shown[700];
+    wchar_t dir_path[600];
+    HANDLE ev, dir = NULL, h = NULL;
+    ULONG len = 0, ctx = 0;
+    LONG s;
+    wchar_t *slash;
+
+    ev = CreateEventW(NULL, TRUE, FALSE, L"Local\\w10x_probe_ns_event");
+    if (ev == NULL || open_dir == NULL || query_obj == NULL) {
+        Probe("ns.local_event", "FAIL", "CreateEventW(Local\\...) failed or ntdll exports missing, error %lu", GetLastError());
+        return;
+    }
+    s = query_obj(ev, 1 /* ObjectNameInformation */, buf, sizeof buf, &len);
+    if (s != 0) {
+        Probe("ns.local_event", "FAIL", "NtQueryObject(name) 0x%08lX", (unsigned long)s);
+        return;
+    }
+    {
+        NsString *u = (NsString *)buf;
+        size_t n = u->Length / sizeof(wchar_t);
+        if (n >= 599)
+            n = 599;
+        memcpy(dir_path, u->Buffer, n * sizeof(wchar_t));
+        dir_path[n] = 0;
+    }
+    Probe("ns.local_event", "OK", "Local\\w10x_probe_ns_event is %s", U8(dir_path, shown, sizeof shown));
+    slash = wcsrchr(dir_path, L'\\');
+    if (slash != NULL)
+        *slash = 0;
+    Probe("ns.local_dir", "INFO", "the directory of a Local\\ object: %s", U8(dir_path, shown, sizeof shown));
+
+    s = NsOpen(open_dir, NULL, dir_path, 0x1 /* DIRECTORY_QUERY */, &dir);
+    Probe("ns.open_dir_query", s == 0 ? "OK" : "FAIL", "NtOpenDirectoryObject(DIRECTORY_QUERY) 0x%08lX", (unsigned long)s);
+    if (s == 0 && query_dir != NULL) {
+        s = query_dir(dir, buf, sizeof buf, TRUE, TRUE, &ctx, &len);
+        Probe("ns.list_dir", s == 0 || s == 0x105 ? "OK" : "FAIL", "NtQueryDirectoryObject 0x%08lX, first entry %s", (unsigned long)s,
+              s == 0 && ((NsString *)buf)->Buffer ? U8(((NsString *)buf)->Buffer, shown, sizeof shown) : "(none)");
+        CloseHandle(dir);
+    }
+    s = NsOpen(open_dir, NULL, dir_path, 0x6 /* DIRECTORY_TRAVERSE | DIRECTORY_CREATE_OBJECT */, &dir);
+    Probe("ns.open_dir_create", s == 0 ? "OK" : "FAIL", "NtOpenDirectoryObject(TRAVERSE|CREATE_OBJECT) 0x%08lX", (unsigned long)s);
+    if (s == 0) {
+        if (create_dir != NULL) {
+            s = NsOpen(create_dir, dir, L"w10x_probe_ns_subdir", 0x1, &h);
+            Probe("ns.create_subdir", s == 0 ? "OK" : "FAIL", "NtCreateDirectoryObject in the Local directory 0x%08lX", (unsigned long)s);
+            if (h != NULL)
+                CloseHandle(h);
+        }
+        if (create_link != NULL) {
+            NsString target;
+            NsString us;
+            NsAttr oa;
+            wchar_t t[] = L"\\BaseNamedObjects";
+            wchar_t n[] = L"w10x_probe_ns_link";
+
+            target.Buffer = t;
+            target.Length = (USHORT)(wcslen(t) * sizeof(wchar_t));
+            target.MaximumLength = (USHORT)(target.Length + sizeof(wchar_t));
+            us.Buffer = n;
+            us.Length = (USHORT)(wcslen(n) * sizeof(wchar_t));
+            us.MaximumLength = (USHORT)(us.Length + sizeof(wchar_t));
+            memset(&oa, 0, sizeof oa);
+            oa.Length = sizeof oa;
+            oa.Root = dir;
+            oa.Name = &us;
+            oa.Attributes = 0x40;
+            h = NULL;
+            s = create_link(&h, 0x1 /* SYMBOLIC_LINK_QUERY */, &oa, &target);
+            Probe("ns.create_link", s == 0 ? "OK" : "FAIL", "NtCreateSymbolicLinkObject in the Local directory 0x%08lX", (unsigned long)s);
+            if (h != NULL)
+                CloseHandle(h);
+        }
+        CloseHandle(dir);
+    }
+    s = NsOpen(open_dir, NULL, L"\\BaseNamedObjects", 0x1, &h);
+    Probe("ns.open_global_bno", s == 0 ? "INFO" : "INFO", "NtOpenDirectoryObject(\\BaseNamedObjects, DIRECTORY_QUERY) 0x%08lX (0 = the machine-wide directory is visible)", (unsigned long)s);
+    if (h != NULL)
+        CloseHandle(h);
+    CloseHandle(ev);
+}
+
+/* ------------------------------------------------------------------------------------------------------------------ */
 
 int wmain(int argc, wchar_t **argv)
 {
@@ -671,6 +792,7 @@ int wmain(int argc, wchar_t **argv)
     ProbeGfpnbh(work, machine);
     ProbeDbghelp(work);
     ProbeCodegen();
+    ProbeObjectNamespace();
     Probe("summary", "INFO", "%d ok, %d fail (FAIL is a measurement, not an error; the negative controls ctl.* are expected to FAIL inside a container)",
           g_ok, g_fail);
     return 0;

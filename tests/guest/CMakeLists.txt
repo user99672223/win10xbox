@@ -36,9 +36,17 @@ win10xbox_add_guest(guest_identity)
 add_executable(guest_sleep sleep.c)
 win10xbox_add_guest(guest_sleep)
 
+# No trace of Wine in the system DLLs the layer loads (names, version resources, read-only data): integration.guest_nowine.
+add_executable(guest_nowine nowine.c)
+win10xbox_add_guest(guest_nowine)
+
 # CreateProcess through the layer (NtCreateUserProcess): runs guest_hello.exe and itself as children.
 add_executable(guest_spawn spawn.c)
 win10xbox_add_guest(guest_spawn)
+
+# Named kernel objects shared with a child, and the object manager namespace listing them (tests/guest/named_objects.c).
+add_executable(guest_named_objects named_objects.c)
+win10xbox_add_guest(guest_named_objects)
 
 # Registry writes outlive the process and reach a child (docs/DISPATCHER.md "Registry persistence"): run twice.
 add_executable(guest_regpersist regpersist.c)
@@ -178,6 +186,17 @@ win10xbox_add_guest(guest_comctl)
 add_executable(guest_net net.c)
 target_link_libraries(guest_net PRIVATE ws2_32)
 win10xbox_add_guest(guest_net)
+
+# Audio (docs/slices/audio.md): WASAPI and XAudio2 guests. Exit 42 = a device played the sound, 43 = the host has no
+# audio endpoint (the exact HRESULT is printed); tests/integration/audio_test.cmake requires the layer to agree with
+# the same program run directly on the host.
+add_executable(guest_wasapi wasapi.c)
+target_link_libraries(guest_wasapi PRIVATE ole32)
+win10xbox_add_guest(guest_wasapi)
+
+add_executable(guest_xaudio2 xaudio2.c)
+target_link_libraries(guest_xaudio2 PRIVATE ole32)
+win10xbox_add_guest(guest_xaudio2)
 
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
 add_test(NAME guest.seh COMMAND guest_seh)
