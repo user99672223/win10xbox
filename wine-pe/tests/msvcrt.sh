@@ -150,17 +150,21 @@ do_run() {
             < /dev/null > "$log" 2>&1
         rc=$?
         local secs=$(( $(date +%s) - t0 ))
-        # Units that spawn the test exe again (file, dir) print a summary per process; the
-        # parent's is the one whose process id prefixes the first line of the log.
-        local pid0; pid0="$(grep -aoE '^[0-9a-f]+:' "$log" | head -1)"
-        local summary; summary="$(grep -aE "^${pid0:-[0-9a-f]+:}$unit:.*$re" "$log" | tail -1)"
-        [[ -z "$summary" ]] && summary="$(grep -aE "^[0-9a-f]+:$unit:.*$re" "$log" | tail -1)"
-        [[ -z "$summary" ]] && summary="$(grep -aE "$re" "$log" | tail -1)"
+        # Units that spawn the test exe again (environ, file, dir) print one summary per process, a child's
+        # first (it ends first). The parent's is the last one; a parent that died without printing its own
+        # leaves a child's last, which its exit code gives away: Wine's harness exits with the number of
+        # failures, so a summary whose failure count differs from the exit code is not the parent's.
+        local nsum; nsum="$(grep -acE "$re" "$log")"
+        local summary; summary="$(grep -aE "$re" "$log" | tail -1)"
         if [[ $rc -eq 124 || $rc -eq 137 ]]; then
             status=timeout
         elif [[ -n "$summary" && "$summary" =~ $re ]]; then
             status=ok; ex=${BASH_REMATCH[1]}; todo=${BASH_REMATCH[2]}; fl=${BASH_REMATCH[3]}
             fails=${BASH_REMATCH[4]}; sk=${BASH_REMATCH[5]}
+            if (( rc != (fails > 255 ? 255 : fails) )); then
+                echo "  (the last summary, $ex executed / $fails failures, is a child's: exit code is $rc)"
+                status=crashed; ex=0; todo=0; fl=0; fails=0; sk=0
+            fi
         fi
         if [[ $status != ok ]]; then
             last="$(grep -aoE '[A-Za-z0-9_]+\.c:[0-9]+:[^\r]*' "$log" | tail -1 | cut -c1-160)"
@@ -171,8 +175,9 @@ do_run() {
         printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$unit" "$status" "$ex" "$todo" "$fl" "$fails" "$sk" \
             "$rc" "$secs" "$last" >> "$tsv"
         echo "WINETEST msvcrt:$unit status=$status executed=$ex todo=$todo flaky=$fl failures=$fails skipped=$sk exit=$rc time=${secs}s"
+        echo "  summaries in the log: $nsum, 'Test failed' lines: $(grep -ac 'Test failed' "$log")"
         [[ -n "$last" ]] && echo "  last test line: $last"
-        grep -a 'Test failed' "$log" | head -5 | cut -c1-200 | sed 's/^/  /'
+        grep -a 'Test failed' "$log" | head -6 | cut -c1-200 | sed 's/^/  /'
         if [[ $status != ok ]]; then   # how it ended: the last lines of the log
             tail -n 8 "$log" | tr -d '\r' | cut -c1-200 | sed 's/^/  | /'
         fi
