@@ -24,6 +24,15 @@ Wine 11.9's ws2_32 uses **both** surfaces:
 
 ## Fixes found on the way
 
+- The host Winsock fetches mswsock, the resolver providers and dnsapi lazily with LoadLibrary. After the PEB take-over
+  (PEB.Ldr and the activation context are the guest's) that fails, which showed as WSAHOST_NOT_FOUND for "localhost" on
+  the Windows host. `afd::PrimeHost()` loads them before the take-over (one socket of each kind, one lookup).
+- TEB.WinSockData (0x1738) is shared by host and guest: native ws2_32 keeps its per-thread block there and Wine's guest
+  ws2_32 its event cache there, and each misreads the other's value (access violation in the guest's get_sync_event on
+  the Windows host). `afd::HostWinsockScope` brackets every host Winsock call and swaps the value.
+- PsInfo64 reads HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment; the overlay SYSTEM hive
+  (core/registry) had no such key ("File not found"), now it has the standard system environment values.
+
 - wine-pe/patches/0003: the guest ntdll's `heap_thread_detach` dereferenced its NULL `process_heap` (the heap is the
   host's), so the first guest thread that returned killed the process (an echo server thread is the first guest to do so).
 
