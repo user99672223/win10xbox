@@ -6,11 +6,74 @@ One gated guest, `tests/guest/identity.c` (`integration.guest_identity`, on the 
 configs and linux-cross), proves the CPU and version identity is the same on every path a program can read it from. It
 prints every value as `path=value` and returns 42 only when all of them agree.
 
-Run: https://github.com/user99672223/win10xbox/actions/runs/39933954315 (linux-cross, windows Debug, windows RelWithDebInfo all green on 43e8ef5; the head run is linked from the branch)
+Run: https://github.com/user99672223/win10xbox/actions/runs/39937344377 (linux-cross, windows Debug, windows RelWithDebInfo all green on 96bbd7a)
 
 ## Values (Windows runner log)
 
-(filled in from the Windows Debug log)
+What `guest_identity` printed on the windows (Debug) runner of that run (`build/bin/guest_identity.log` in the `windows-Debug-logs` artifact; the runner's own CPU
+reports a different family, model, brand and build, so every line below is the layer's answer). Core and thread counts are the host's.
+
+```
+cpuid.vendor=AuthenticAMD
+cpuid.1.eax=00880f81
+cpuid.1.ecx=7efa3203
+cpuid.family=23
+cpuid.model=136
+cpuid.stepping=1
+cpuid.hypervisor_bit=0
+cpuid.rdrand_bit=1
+cpuid.brand=AMD 4700S 8-Core Processor
+cpuid.80000001.eax=00880f81
+cpuid.40000000=00000000 00000000 00000000 00000000
+rdrand.success=16/16
+registry.brand=AMD 4700S 8-Core Processor
+registry.identifier=AMD64 Family 23 Model 136 Stepping 1
+registry.family=23
+registry.model=136
+registry.stepping=1
+registry.vendor=AuthenticAMD
+registry.mhz=2596
+smbios.size=237
+smbios.version=3.3
+smbios.length=229
+smbios.types=bios:1 system:1 processor:1 end:1
+smbios.brand=AMD 4700S 8-Core Processor
+smbios.vendor=AuthenticAMD
+smbios.processor_id=178bfbff00880f81
+smbios.family=23
+smbios.model=136
+smbios.stepping=1
+smbios.cores=2
+smbios.threads=4
+smbios.family_code=107
+wmi.CoInitializeEx=00000000
+wmi.CoInitializeSecurity=00000000
+wmi.CoCreateInstance=00000000
+wmi.ConnectServer=00000000
+wmi.ExecQuery=00000000
+wmi.Next=00000000 count=1
+wmi.status=available
+wmi.name=AMD 4700S 8-Core Processor
+wmi.manufacturer=AuthenticAMD
+wmi.cores=2
+version.RtlGetVersion=10.0.19045
+version.RtlGetVersion.platform=2
+version.RtlGetVersion.product_type=1
+version.GetVersionExW=10.0.19045
+version.RtlGetNtVersionNumbers=10.0.19045
+version.VerifyVersionInfoW.equal=1
+version.VerifyVersionInfoW.build_plus_one_ge=0
+version.registry.CurrentBuild=19045
+version.registry.CurrentMajorVersionNumber=10
+version.registry.CurrentMinorVersionNumber=0
+version.registry.UBR=3803
+version.registry.DisplayVersion=22H2
+version.KUSER_SHARED_DATA=10.0.19045
+version.expected=10.0.19045.3803
+sysinfo.level=23
+sysinfo.revision=8801
+identity=consistent
+```
 
 ## Fixes
 
