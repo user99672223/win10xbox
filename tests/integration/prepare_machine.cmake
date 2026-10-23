@@ -42,7 +42,7 @@ endif()
 
 set(_guests 0)
 if(GUEST_DIR AND IS_DIRECTORY "${GUEST_DIR}")
-  file(GLOB _files "${GUEST_DIR}/*.exe" "${GUEST_DIR}/*.dll" "${GUEST_DIR}/*.lua" "${GUEST_DIR}/*.ninja"
+  file(GLOB _files "${GUEST_DIR}/*.exe" "${GUEST_DIR}/*.dll" "${GUEST_DIR}/*.lua" "${GUEST_DIR}/*.c" "${GUEST_DIR}/*.ninja"
        "${GUEST_DIR}/*.py" "${GUEST_DIR}/*.json")
   foreach(f ${_files})
     get_filename_component(n "${f}" NAME)
@@ -94,6 +94,10 @@ if(BUILTIN_ONLY_MACHINE)
       math(EXPR _copied "${_copied} + 1")
     endif()
   endforeach()
+  # Real programs that come as a directory (tools/ci/fetch_tcc.ps1: guest/tcc with its include/ and lib/).
+  if(IS_DIRECTORY "${MACHINE}/guest/tcc")
+    file(COPY "${MACHINE}/guest/tcc" DESTINATION "${BUILTIN_ONLY_MACHINE}/guest")
+  endif()
   # Programs with a directory of their own under guest/ (MinGit: guest/mingit, a git.exe with its DLLs beside it).
   file(GLOB_RECURSE _files "${MACHINE}/guest/*/*")
   foreach(f ${_files})

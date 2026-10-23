@@ -290,6 +290,17 @@ jobs:
       - name: Fetch fastfetch 2.70.0 (real guest program)
         shell: pwsh
         run: ./tools/ci/fetch_fastfetch.ps1 -Out build/bin/machine/guest
+      # Tiny C Compiler 0.9.27, the official prebuilt win64 zip (tools/ci/fetch_tcc.ps1: pinned SHA-256, verified on
+      # every run, restored from the cache or downloaded), left in build/bin/machine/guest/tcc for integration.tcc_*
+      # (docs/slices/realtcc.md): the compiler runs through the layer, and so does the exe it produces.
+      - name: Cache the Tiny C Compiler zip
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/tcc-src
+          key: tcc-0.9.27-win64-34a721949a2583fdff725312da092fa0f5f1f284b702e6f811c6954714faabb2
+      - name: Fetch Tiny C Compiler 0.9.27 (real guest program)
+        shell: pwsh
+        run: ./tools/ci/fetch_tcc.ps1 -Out build/bin/machine/guest/tcc
       # The third prebuilt program: ninja 1.12.1, the project's official ninja-win.zip (tools/ci/fetch_ninja.ps1: pinned
       # SHA-256, verified on every run), left at build/bin/machine/guest/ninja.exe for integration.ninja_*
       # (docs/slices/realninja.md). Its build rules run the lua.exe built above.
