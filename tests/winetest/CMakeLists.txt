@@ -82,3 +82,21 @@ set_tests_properties(integration.winetest_kernel32 PROPERTIES
   SKIP_REGULAR_EXPRESSION "SKIP:"
   LABELS "wine_conformance"
   TIMEOUT 1500)
+
+# Wine's msvcrt units (dlls/msvcrt/tests) through the layer, the same way: one
+# guest msvcrt_test.exe linked against Wine's builtin msvcrt.dll, gated on
+# wine-pe/tests/msvcrt.baseline. Per-unit cap 45 s (13 units fit the 600 s limit).
+set(_out ${CMAKE_BINARY_DIR}/winetest/msvcrt)
+add_test(NAME integration.winetest_msvcrt
+  COMMAND ${WIN10XBOX_BASH} ${CMAKE_SOURCE_DIR}/wine-pe/tests/msvcrt.sh all
+    --out ${_out}
+    --host $<TARGET_FILE:win10xbox>
+    --machine ${WIN10XBOX_MACHINE_DIR}
+    --emulator "${_emu}"
+    --timeout 45)
+set_tests_properties(integration.winetest_msvcrt PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "wine_conformance"
+  TIMEOUT 600)

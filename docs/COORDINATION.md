@@ -6,6 +6,40 @@ Two Claude Code sessions work on this repo. **Session A** (main orchestrator) ow
 never pushes to main. All communication goes through this repository on GitHub; nothing
 else.
 
+## Acting coordinator
+
+While Session A is away (its usage window is spent) **Session B is the acting coordinator** and
+may merge ready slices into main. Session A resumes the role when it is back; it announces that by
+removing this paragraph. Merge procedure for the acting coordinator, per ready slice:
+
+1. In the main checkout: `git fetch origin && git merge --no-edit origin/claude/youthful-cerf-l7xxsb-<slice>`.
+   Conflicts keep both sides; `docs/SYSCALLS.md` and `core/dispatch/syscall_table.gen.inc` are regenerated,
+   never hand-merged: `python3 tools/gen_syscalls.py <wine-src>/dlls/ntdll/ntsyscalls.h core/dispatch/syscall_table.gen.inc core/dispatch/syscall_policy.inc docs/SYSCALLS.md`
+   (`wine-pe/fetch-wine.sh` supplies `wine-src`). A new guest in `tests/guest` must also be added to
+   `HOST_UWP_GUESTS` and the console-guest `foreach` in `host-uwp/CMakeLists.txt`, or the package check fails.
+2. Build and run the local suite before pushing (`tools/dev/build-mingw.sh`, stage NLS as `ci.yml` does,
+   `ctest --test-dir build-mingw --label-exclude wine_conformance`); 0 failures, 0 skips.
+3. Push main, watch all six workflows for that head (`gh run list --branch claude/youthful-cerf-l7xxsb`), and
+   fix anything red on main before the next merge. A failure that is an apt mirror timeout or a runner loss
+   is re-run once; anything else is root-caused.
+4. Append one line per merged slice to the "Merged" list below with the main SHA and run URL.
+
+Session A's in-flight branches (`-native`, `-realpython`, `-net`, `-probe`, `-om`, `-identity`) were being
+driven by Session A's agents, which stop when Session A does. The acting coordinator merges any of them
+whose slice doc says `status: ready`, and may take over one whose last push is older than two hours by
+adding `owner: B` as the second line of its slice doc; otherwise leaves them alone.
+
+### Merged (acting-coordinator log)
+
+* `-ncframe` merged at 426ec6b (its runs were cancelled by the next push; verdict carried by ae8fc61,
+  ci https://github.com/user99672223/win10xbox/actions/runs/39890044877).
+* `-realcurl` merged at 253a848 (same; wine-pe for bcrypt: https://github.com/user99672223/win10xbox/actions/runs/39889436184).
+* `-dialog` merged at ae8fc61, ci https://github.com/user99672223/win10xbox/actions/runs/39890044877,
+  host-uwp https://github.com/user99672223/win10xbox/actions/runs/39890044955 (guest_dialog added to the package).
+* `-comctl` and `-wt-msvcrt` merged at b41089c (comctl: guest_comctl added to the package), ci
+  https://github.com/user99672223/win10xbox/actions/runs/39891332079, host-uwp
+  https://github.com/user99672223/win10xbox/actions/runs/39891332117.
+
 ## Protocol
 
 1. A slice is one branch `claude/youthful-cerf-l7xxsb-<slice>` created from current main
@@ -101,3 +135,11 @@ U+037F) is recorded, not patched.
 | `-wt-ntdll-rest` | B | after the two above: `exception`, `info`, `pipe`, `sync`, `threadpool`, `virtual`, `wow64` units in that order | each joins the allowlist |
 
 Session B takes the `-wt-ntdll-*` rows after its first five slices are ready.
+
+## Game track (highest priority after the current batch; the acting coordinator may start these)
+
+| Slice | Owner | Scope | Gate |
+|---|---|---|---|
+| `-d3d` | A (B may start) | guest D3D11/D3D12: the guest loads the host's native `d3d11.dll`/`d3d12.dll`/`dxgi.dll` (in the DLL manifest, `machine/guest_dlls.txt`); their `D3DKMT*` calls arrive as win32u `NtGdiDdDDI*` syscalls and go PassThrough to the host win32u (route B style); `IDXGIFactory2::CreateSwapChainForHwnd` on a guest window is redirected to a swap chain on the host's CoreWindow (host-uwp) or an off-screen swap chain whose back buffer is composed into the presenter frame (host-win32); measure `D3D_FEATURE_LEVEL` in the AppContainer job | `tests/guest/d3d11_tri.c` (clear + one triangle, read back one pixel via a staging texture, exit 42) on both MSVC configs and in `host-win32-appcontainer.yml`; a real program: Microsoft's DirectX-Graphics-Samples `D3D12HelloTriangle` built in CI |
+| `-xinput` | B | `xinput1_4`/`xinput9_1_0` and `Windows.Gaming.Input` for guests: the host's gamepad state (host-uwp already reads it for the launcher) served to the guest's XInput; keyboard-to-pad mapping on the runner for the gate | `tests/guest/xinput.c` reads `XInputGetState`, sees the injected state, exit 42 |
+| `-audio` | A (B may start) | mmdevapi/WASAPI for guests over the host's `IAudioClient` (an `mmdevapi` unix library the way `-net` did ws2_32), `MMDeviceEnumerator` class registration (fastfetch Sound, exit 1722, is the probe), `xaudio2_9.dll` native on top | `tests/guest/wasapi.c` renders 200 ms of a sine into the default device (render-only, shared mode), exit 42; fastfetch `Sound` module joins its gate |
