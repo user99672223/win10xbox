@@ -39,6 +39,10 @@ adding `owner: B` as the second line of its slice doc; otherwise leaves them alo
 * `-comctl` and `-wt-msvcrt` merged at b41089c (comctl: guest_comctl added to the package), ci
   https://github.com/user99672223/win10xbox/actions/runs/39891332079, host-uwp
   https://github.com/user99672223/win10xbox/actions/runs/39891332117.
+* `-seh` merged at 198c357 (guest_seh + guest_seh_dll added to the package; the branch head carried unresolved
+  markers in tests/guest/CMakeLists.txt, resolved in the merge), ci
+  https://github.com/user99672223/win10xbox/actions/runs/39892636777, host-uwp
+  https://github.com/user99672223/win10xbox/actions/runs/39892636936.
 
 ## Protocol
 
