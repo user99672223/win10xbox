@@ -284,11 +284,23 @@ DWORD WaitForQueue(UserThread& t, DWORD count, const HANDLE* handles, DWORD time
     HANDLE driver_wake = d ? static_cast<HANDLE>(d->WakeHandle()) : nullptr;
     if (driver_wake) hs.push_back(driver_wake);
     const DWORD timer = NextTimerDelay(t);
-    if (timer < timeout) timeout = timer;
+    // The host's sleeps end on its clock tick (up to 15.6 ms late), which would put every WM_TIMER a tick behind and
+    // make the next one come too soon after it. A deadline further off than kSpinMs is waited for in a sleep that
+    // ends before it (the caller comes back with the rest); the last kSpinMs are spent polling.
+    constexpr DWORD kSpinMs = 16;
+    const bool spin = !(wait_all && count) && timer <= kSpinMs && timer < timeout;
+    const ULONGLONG spin_end = TimerNow() + timer;
+    if (timer < timeout) timeout = timer > kSpinMs ? timer - kSpinMs : timer;
     DWORD r;
     {
         UnlockScope unlock;
-        if (wait_all && count) {
+        if (spin) {
+            for (;;) {
+                r = WaitForMultipleObjectsEx(static_cast<DWORD>(hs.size()), hs.data(), FALSE, 0, alertable);
+                if (r != WAIT_TIMEOUT || TimerNow() >= spin_end) break;
+                SwitchToThread();
+            }
+        } else if (wait_all && count) {
             // MWMO_WAITALL: the handles all together, or the queue
             r = WaitForMultipleObjectsEx(count, handles, TRUE, 0, alertable);
             if (r == WAIT_TIMEOUT)
