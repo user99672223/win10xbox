@@ -272,6 +272,12 @@ jobs:
             Write-Host "::error::the package is missing Chocolate Doom file(s): $($missingDoom -join ', ')"
             exit 1
           }
+          # The directory install (docs/slices/dirlaunch.md): payload/guest/dirtree/ is one picker entry (dirtree.launch), not a flat guest.
+          $dirtree = @('dirtree.launch', 'bin/guest_dirtree.exe', 'data/file.pak') | Where-Object { -not (Test-Path "$stage/payload/guest/dirtree/$_") }
+          if ($dirtree) {
+            Write-Host "::error::the package is missing payload/guest/dirtree file(s): $($dirtree -join ', ')"
+            exit 1
+          }
           # The second machine folder (route B + Direct3D 11, LocalState\machine-native-d3d): its machine.json and msctf stand-in.
           $d3dMachine = @('machine.json', 'msctf.dll') | Where-Object { -not (Test-Path "$stage/payload/machine-native-d3d/$_") }
           if ($d3dMachine) {
@@ -308,6 +314,7 @@ jobs:
           $want = @(Get-Content build-uwp/AppX/payload/guests.txt | Where-Object { $_ })
           foreach ($c in Get-ChildItem tests/guest -Filter *.c) {
             if ($c.BaseName -eq 'msctf_stub') { continue }   # a msctf.dll stand-in for the native-GUI machine folder, not a guest
+            if ($c.BaseName -eq 'dirtree') { continue }      # a directory install (payload/guest/dirtree/), checked below
             $n = if ($c.BaseName -eq 'dll') { 'guest_dll.dll' } elseif ($c.BaseName -eq 'window') { 'window.exe' } else { "guest_$($c.BaseName).exe" }
             if ($want -notcontains $n) { $want += $n }
           }
@@ -319,6 +326,8 @@ jobs:
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           $doomMissing = @('chocolate-doom.exe', 'doom1.wad', 'SDL2.dll', 'chocolate-doom.args', 'chocolate-doom.env',
                            'chocolate-doom.title', 'doom-timedemo.launch') | Where-Object { $entries -notcontains "payload/guest/$_" }
+          $dirMissing = @('payload/guest/dirtree/dirtree.launch', 'payload/guest/dirtree/bin/guest_dirtree.exe', 'payload/guest/dirtree/data/file.pak') | Where-Object { $entries -notcontains $_ }
+          if ($dirMissing) { Write-Host "::error::directory install file(s) missing from the .msix: $($dirMissing -join ', ')"; exit 1 }
           if ($entries -notcontains 'payload/guests.txt') { Write-Host '::error::payload/guests.txt manifest missing from package'; exit 1 }
           if ($entries -notcontains 'payload/expected_exit.txt') { Write-Host '::error::payload/expected_exit.txt missing from package'; exit 1 }
           foreach ($f in 'l_intl.nls','c_10000.nls','c_1252.nls','locale.nls','sortdefault.nls') {
@@ -791,6 +800,8 @@ jobs:
             if ($text -notmatch '(?m)^os_build=\d+\.\d+\.\d+') { $fail += 'the report header has no os_build' }
             $dir = Join-Path $pkg.InstallLocation 'payload\guest'
             $bundled = @(Get-ChildItem -Path $dir -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '\.(exe|launch)$' } | ForEach-Object { $_.Name })
+            # A subdirectory <dir>\<dir>.launch is one entry named <dir> (docs/slices/dirlaunch.md).
+            $bundled += @(Get-ChildItem -Path $dir -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.FullName ($_.Name + '.launch')) } | ForEach-Object { $_.Name })
             Write-Host "bundled programs: $($bundled.Count)"
             # The expected-exit table (tests/guest/expected_exit.txt, staged next to guests.txt): <program> <code>[=<label>] ...
             $tablePath = Join-Path $pkg.InstallLocation 'payload\expected_exit.txt'
@@ -821,6 +832,11 @@ jobs:
             foreach ($m in [regex]::Matches($text, '(?m)^verdict=([\w-]+)')) { $k = $m.Groups[1].Value; if ($counts.ContainsKey($k)) { $counts[$k]++ } }
             $countLine = "pass=$($counts.PASS) knownfail=$($counts['KNOWN-FAIL']) fail=$($counts.FAIL) exited=$($counts.EXITED) timeout=$($counts.TIMEOUT) crash=$($counts.CRASH)"
             Write-Host $countLine
+            # The directory install ran as C:\guest\dirtree\bin\guest_dirtree.exe with cwd C:\guest\dirtree\data: its own checks all passed.
+            $dm = [regex]::Match($text, '(?ms)^program=dirtree\s*\r?\n(?:(?!^program=).)*')
+            if (-not $dm.Success) { $fail += 'no report block for the directory install dirtree' }
+            elseif ($dm.Value -notmatch 'dirtree: all checks passed') { $fail += 'the dirtree block lacks "dirtree: all checks passed"' }
+            elseif ($dm.Value -match 'dirtree: FAIL') { $fail += 'the dirtree block holds a "dirtree: FAIL" line' }
             # The Doom timedemo runs the whole demo (it exits through I_Error with -1, table label "timedemo"): its last frame is not black.
             $bmp = Join-Path $ls 'doom-timedemo.bmp'
             if (-not (Test-Path $bmp)) { $fail += 'doom-timedemo.bmp was not written' }

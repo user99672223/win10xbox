@@ -17,6 +17,7 @@ smoke_cui.exe 42
 guest_hello.exe 42
 guest_cpuid.exe 0
 guest_sleep.exe 7
+dirtree 42=directory-install
 drv_client.exe 2
 guest_clipboard.exe 42
 guest_comctl.exe 42

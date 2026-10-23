@@ -39,7 +39,7 @@ if(TARGET guest_hello)
                    guest_window guest_window2 guest_window_input guest_window_input2 guest_window_text guest_window_nc
                    guest_dialog guest_comctl guest_seh guest_window_scroll guest_clipboard guest_net msctf_stub
                    guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput xinput1_4 guest_identity
-                   guest_cursor guest_regpersist guest_wasapi guest_xaudio2 guest_tebframe guest_rdrand)
+                   guest_cursor guest_regpersist guest_wasapi guest_xaudio2 guest_tebframe guest_rdrand stage_guest_dirtree)
   if(TARGET guest_d3d11_tri)
     add_dependencies(prepare_machine guest_d3d11_tri)
   endif()
@@ -88,6 +88,7 @@ function(win10xbox_guest_test name program exit_code)
       "-DFORBID_TRACE_REGEX=${_guest_forbid_trace}"
       "-DEXPECT_TRACE_REGEX=${_guest_expect_trace}"
       "-DSAVE_STDOUT=${_guest_save_stdout}"
+      "-DCWD=${_guest_cwd}"
       "-DKEEP_REGISTRY_OVERLAY=${_guest_keep_overlay}"
       -DEXPECT_EXIT=${exit_code}
       "-DEXPECT_REGEX=${ARGN}"
@@ -166,6 +167,19 @@ win10xbox_guest_test(guest_spawn "C:\\guest\\guest_spawn.exe" 42
   "spawn-child: argc=5" "spawn-child: argv\\[1\\]=\\[child\\]" "spawn-child: argv\\[2\\]=\\[a b\\]"
   "spawn-child: argv\\[3\\]=\\[c.d\\]" "spawn-child: argv\\[4\\]=\\[e\\]"
   "spawn-child: cwd=C:\\\\Windows" "spawn-child: mark=mark42" "spawn: child2 exit 7" "spawn: done")
+
+# A program installed as a directory tree (docs/slices/dirlaunch.md): C:\guest\dirtree\bin\guest_dirtree.exe with
+# its data beside it, the working directory C:\guest\dirtree\data (the host's --cwd; host-uwp's cwd= in dirtree.launch).
+# Proves what a game installed in a folder needs: the module path, the cwd, relative / absolute opens, letter case and
+# paths over MAX_PATH. The VFS already does the case and long-path work (docs/slices/dirlaunch.md "What was already there").
+set(_guest_cwd "C:\\guest\\dirtree\\data")
+set(_guest_console ON)
+win10xbox_guest_test(guest_dirtree "C:\\guest\\dirtree\\bin\\guest_dirtree.exe" 42
+  "dirtree: all checks passed" "dirtree: ok: GetModuleFileNameW" "dirtree: ok: GetCurrentDirectoryW"
+  "dirtree: ok: case: absolute upper case" "dirtree: ok: long path: file read back")
+set_tests_properties(integration.guest_dirtree PROPERTIES FAIL_REGULAR_EXPRESSION "dirtree: FAIL")
+unset(_guest_cwd)
+unset(_guest_console)
 
 # Named objects across CreateProcess (docs/DISPATCHER.md "Object manager namespace"): the parent creates a named event,
 # a named section holding a string and a global event; lists both BaseNamedObjects directories; starts itself as the

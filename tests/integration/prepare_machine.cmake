@@ -60,6 +60,10 @@ if(GUEST_DIR AND IS_DIRECTORY "${GUEST_DIR}")
     file(COPY_FILE "${f}" "${MACHINE}/guest/${n}" ONLY_IF_DIFFERENT)
     math(EXPR _guests "${_guests} + 1")
   endforeach()
+  # A program installed as a directory tree (tests/guest/dirtree.c): guest/dirtree/bin/..., data/..., dirtree.launch.
+  if(IS_DIRECTORY "${GUEST_DIR}/dirtree")
+    file(COPY "${GUEST_DIR}/dirtree" DESTINATION "${MACHINE}/guest")
+  endif()
 endif()
 
 if(NOT EXISTS "${MACHINE}/Windows/builtin/ntdll.dll")

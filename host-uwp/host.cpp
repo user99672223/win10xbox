@@ -671,6 +671,7 @@ void Host::Impl::RunImpl()
                     return;
                 }
                 e.exe = gl.exe;
+                e.cwd = gl.cwd;
                 e.title = gl.title;
                 e.args = gl.args;
                 e.env = gl.env;
@@ -703,16 +704,52 @@ void Host::Impl::RunImpl()
                 if (_stricmp(o.name.c_str(), e.name.c_str()) == 0) return;   // the bundled one wins
             entries.push_back(std::move(e));
         };
+        // A subdirectory holding <dirname>.launch is ONE entry (a directory install): mapped as C:\guest\<dirname>,
+        // exe= and cwd= relative to it. The entry is not offered when the program is not in the directory.
+        auto add_dir_entry = [&](const std::wstring& parent, const std::wstring& d, bool from_ls) {
+            const std::wstring dir = parent + L"\\" + d;
+            std::string text, why;
+            DWORD err = 0;
+            if (!IsLeafName(d) || !ReadSmallFile(dir + L"\\" + d + L".launch", 64 * 1024, &text, &err)) return;
+            GuestLaunch gl;
+            if (!ParseLaunchFile(text, &gl, &why))
+            {
+                diag::Line("launcher: ignoring %s\\%s.launch (%s)", Narrow(d).c_str(), Narrow(d).c_str(), why.c_str());
+                return;
+            }
+            if (GetFileAttributesW((dir + L"\\" + Widen(gl.exe)).c_str()) == INVALID_FILE_ATTRIBUTES)
+            {
+                diag::Line("launcher: %s needs %s, which is not in the directory", Narrow(d).c_str(), gl.exe.c_str());
+                return;
+            }
+            LauncherEntry e;
+            e.name = Narrow(d);
+            e.path = dir + L"\\" + d + L".launch";
+            e.from_localstate = from_ls;
+            e.is_dir = true;
+            e.dir_path = dir;
+            e.exe = gl.exe;
+            e.cwd = gl.cwd;
+            e.title = gl.title;
+            e.args = gl.args;
+            e.env = gl.env;
+            e.machine = gl.machine;
+            for (LauncherEntry& o : entries)
+                if (_stricmp(o.name.c_str(), e.name.c_str()) == 0) return;   // the bundled one wins
+            entries.push_back(std::move(e));
+        };
         for (const std::wstring& f : ListFiles(payload + L"\\guest"))
             if (has_ext(f, L".exe") || has_ext(f, L".launch")) add_entry(payload + L"\\guest", f, false);
+        for (const std::wstring& d : ListDirs(payload + L"\\guest")) add_dir_entry(payload + L"\\guest", d, false);
         for (const std::wstring& f : ListFiles(ls + L"\\guests"))
             if (has_ext(f, L".exe") || has_ext(f, L".launch")) add_entry(ls + L"\\guests", f, true);
+        for (const std::wstring& d : ListDirs(ls + L"\\guests")) add_dir_entry(ls + L"\\guests", d, true);
         // A .launch entry whose program is not in the package (or in LocalState\guests) is not offered.
         {
             std::vector<LauncherEntry> kept;
             for (const LauncherEntry& e : entries)
             {
-                bool ok = e.exe == e.name;
+                bool ok = e.is_dir || e.exe == e.name;
                 for (const LauncherEntry& o : entries)
                     if (!ok && _stricmp(o.name.c_str(), e.exe.c_str()) == 0) ok = true;
                 if (ok) kept.push_back(e);
@@ -825,7 +862,13 @@ void Host::Impl::RunImpl()
             lc.machine.clear();
         }
         if (!chosen.machine.empty()) lc.machine = chosen.machine;   // the entry's .machine / machine= wins
-        lc.guest = "C:\\guest\\" + chosen.exe;
+        {
+            // A directory entry lives in C:\guest\<dir>\; cwd= is relative to the entry's directory.
+            const std::string base = chosen.is_dir ? "C:\\guest\\" + chosen.name : std::string("C:\\guest");
+            lc.guest = base + "\\" + chosen.exe;
+            if (!chosen.cwd.empty()) lc.cwd = chosen.cwd == "." ? base : base + "\\" + chosen.cwd;
+            else if (chosen.is_dir) lc.cwd = base;
+        }
         if (!chosen.args.empty())
         {
             lc.args = chosen.args;   // the sidecar's arguments replace launch.json's for this launch
@@ -968,7 +1011,13 @@ void Host::Impl::RunImpl()
         diag::Line("warning: required NLS data could not be staged from the console's System32 (%s): Wine's locale "
                    "initialisation is likely to fail",
                    st.nls.BadList().c_str());
-    if (picked && chosen.from_localstate)
+    if (picked && chosen.is_dir)
+    {
+        // A directory install (bundled or from LocalState\guests) is copied whole into C:\guest\<dir>.
+        if (!CopyTree(chosen.dir_path, c_root + L"\\guest\\" + Widen(chosen.name)))
+            diag::Line("launcher: copying %s into C:\\guest failed (error %lu)", chosen.name.c_str(), GetLastError());
+    }
+    else if (picked && chosen.from_localstate)
     {
         // A guest from LocalState\guests runs from C:\guest: copy it (and the DLLs next to it) there.
         const std::wstring src_dir = ls + L"\\guests";

@@ -304,6 +304,9 @@ target_link_libraries(guest_net PRIVATE ws2_32)
 foreach(_g wasapi xaudio2 nowine)
   add_executable(guest_${_g} "${WIN10XBOX_ROOT}/tests/guest/${_g}.c")
 endforeach()
+# guest_dirtree is a directory install (docs/slices/dirlaunch.md), not a flat guest: it is not in HOST_UWP_GUESTS; stage.cmake
+# (-DDIRTREE_EXE) puts it into payload\guest\dirtree\bin with tests/guest/dirtree/ (data\file.pak, dirtree.launch).
+add_executable(guest_dirtree "${WIN10XBOX_ROOT}/tests/guest/dirtree.c")
 target_link_libraries(guest_wasapi PRIVATE ole32)
 target_link_libraries(guest_xaudio2 PRIVATE ole32)
 add_executable(smoke_guest WIN32 "${WIN10XBOX_ROOT}/host-uwp-lite/smoke_guest.c")
@@ -405,6 +408,7 @@ endif()
 #   payload\launch.json             host-uwp/payload: the packaged default launch configuration
 #   payload\launch.example.json     host-uwp/payload: every key documented (published to LocalState)
 #   payload\guest\*                 every guest of HOST_UWP_GUESTS (window.exe is the default)
+#   payload\guest\dirtree\          a directory install: dirtree.launch, bin\guest_dirtree.exe, data\file.pak (docs/slices/dirlaunch.md)
 #   payload\builtin\*.dll           Wine PE builtins (optional, see HOST_UWP_BUILTIN_DIR) + our own (guest-dlls/)
 # resources.pri is made by package.cmd (makepri).
 # ---------------------------------------------------------------------------
@@ -433,6 +437,8 @@ add_custom_target(stage_appx ALL
           "-DPAYLOAD_DIR=${CMAKE_CURRENT_SOURCE_DIR}/payload"
           "-DBUILTIN_DIR=${HOST_UWP_BUILTIN_DIR}"
           "-DEXTRA_GUEST_DIR=${HOST_UWP_EXTRA_GUEST_DIR}"
+          "-DDIRTREE_EXE=$<TARGET_FILE:guest_dirtree>"
+          "-DDIRTREE_SRC=${WIN10XBOX_ROOT}/tests/guest/dirtree"
           "-DNLS_DIR=${HOST_UWP_NLS_DIR}"
           "-DGUEST_DLL_DIR=${WIN10XBOX_GUEST_DLL_DIR}"
           "-DMACHINE_JSON=${WIN10XBOX_ROOT}/machine/machine.default.json"
@@ -440,7 +446,7 @@ add_custom_target(stage_appx ALL
           -P "${CMAKE_CURRENT_SOURCE_DIR}/stage.cmake"
   COMMENT "Staging the AppX layout in ${HOST_UWP_STAGE_DIR}"
   VERBATIM)
-add_dependencies(stage_appx host_uwp xinput1_4 msctf_stub ${HOST_UWP_GUESTS})
+add_dependencies(stage_appx host_uwp xinput1_4 msctf_stub guest_dirtree ${HOST_UWP_GUESTS})
 if(HOST_UWP_WINMD_TARGET)
   add_dependencies(stage_appx ${HOST_UWP_WINMD_TARGET})
 endif()

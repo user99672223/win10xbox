@@ -410,7 +410,20 @@ namespace
         CHECK(g.args.size() == 4 && g.args[0] == "-iwad" && g.args[2] == "-window" && g.args[3] == "-nosound");
         CHECK(g.env.size() == 2 && g.env[0].first == "SDL_RENDER_DRIVER" && g.env[1].second == "a=b");
         CHECK(!ParseLaunchFile("title=x\n", &g, &err) && Contains(err, "exe="));
-        CHECK(!ParseLaunchFile("exe=sub\\\\x.exe\n", &g, &err));
+        // relative exe= with subdirectories, cwd= (directory installs)
+        CHECK(ParseLaunchFile("exe=Binaries/Win64\\App.exe\ncwd=Binaries\\Win64\n", &g, &err));
+        CHECK(g.exe == "Binaries\\Win64\\App.exe" && g.cwd == "Binaries\\Win64");
+        CHECK(ParseLaunchFile("exe=App.exe\ncwd=.\n", &g, &err) && g.cwd == ".");
+        CHECK(ParseLaunchFile("exe=App.exe\n", &g, &err) && g.cwd.empty());
+        CHECK(!ParseLaunchFile("exe=sub\\\\x.exe\n", &g, &err));          // empty component
+        CHECK(!ParseLaunchFile("exe=..\\x.exe\n", &g, &err));              // no way out of the directory
+        CHECK(!ParseLaunchFile("exe=a\\..\\x.exe\n", &g, &err));
+        CHECK(!ParseLaunchFile("exe=C:\\x.exe\n", &g, &err));              // absolute
+        CHECK(!ParseLaunchFile("exe=\\x.exe\n", &g, &err));
+        CHECK(!ParseLaunchFile("exe=sub\\\n", &g, &err));
+        CHECK(!ParseLaunchFile("exe=a.exe\ncwd=..\n", &g, &err) && Contains(err, "cwd="));
+        CHECK(!ParseLaunchFile("exe=a.exe\ncwd=C:\\x\n", &g, &err) && Contains(err, "cwd="));
+        CHECK(!ParseLaunchFile("exe=a.exe\ncwd=\n", &g, &err) && Contains(err, "cwd="));
         CHECK(!ParseLaunchFile("exe=a.exe\nbogus=1\n", &g, &err) && Contains(err, "bogus"));
         CHECK(!ParseLaunchFile("exe=a.exe\nenv=NOEQ\n", &g, &err));
         CHECK(!ParseLaunchFile("exe a.exe\n", &g, &err));
