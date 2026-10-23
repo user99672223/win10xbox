@@ -92,6 +92,42 @@ do_build() {
         echo "    { 0, 0 }"
         echo "};"
     } > "$tl"
+    # propsys/windowscodecs: register the DLLs' COM classes (DllRegisterServer, what regsvr32 does on an
+    # installed Windows; Wine's __wine_register_resources loads atl100.dll for it) in the test process itself,
+    # before main: the registry overlay lives in the host process (core/registry; SaveOverlay/LoadOverlay are
+    # not wired), so a separate regsvr32-style process would leave nothing behind for the unit.
+    local regs=""
+    case "$DLL" in propsys) regs='"propsys.dll", "{B8967F85-58AE-4F46-9FB2-5D7904798F4B}"' ;;
+        windowscodecs) regs='"propsys.dll", "{B8967F85-58AE-4F46-9FB2-5D7904798F4B}", "windowscodecs.dll", "{CACAF262-9370-4615-A13B-9F5539DA4C0A}"' ;; esac
+    if [[ -n "$regs" ]]; then
+        cat >> "$tl" <<REGEOF
+/* COM registration before main */
+static const char *const media_regs[] = { $regs };
+__attribute__((constructor)) static void media_register(void)
+{
+    unsigned i;
+    for (i = 0; i + 1 < sizeof(media_regs) / sizeof(media_regs[0]); i += 2)
+    {
+        HRESULT hr = 0x80070002;
+        LONG key;
+        HKEY hk = NULL;
+        char buf[256], path[128];
+        DWORD n;
+        HMODULE m = LoadLibraryA(media_regs[i]);
+        if (m)
+        {
+            HRESULT (WINAPI *reg)(void) = (void *)GetProcAddress(m, "DllRegisterServer");
+            hr = reg ? reg() : 0x8007007f;
+        }
+        wsprintfA(path, "CLSID\\\\%s\\\\InprocServer32", media_regs[i + 1]);
+        key = RegOpenKeyExA(HKEY_CLASSES_ROOT, path, 0, KEY_READ, &hk);
+        if (hk) RegCloseKey(hk);
+        n = wsprintfA(buf, "media-reg: %s DllRegisterServer=0x%08x HKCR\\\\%s open=%ld\\r\\n", media_regs[i], (unsigned)hr, path, key);
+        WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), buf, n, &n, NULL);
+    }
+}
+REGEOF
+    fi
     local flags=(-std=gnu17 -O1 -g0 -w -nostdinc -isystem "$res/include"
         -I"$SRC/include" -I"$GEN" -I"$SRC/include/msvcrt"
         -D__WINESRC__ -D_NTSYSTEM_ -DWINE_NO_LONG_TYPES -D_UCRT)
@@ -137,28 +173,6 @@ do_build() {
         -Wl,--error-limit=0 "${libs[@]}" \
         || { echo "media.sh: build failed" >&2; exit 1; }
     echo "media.sh: built $EXE"
-    # regdll.exe <module>: LoadLibrary + DllRegisterServer, what regsvr32 does, so the COM classes of
-    # propsys/windowscodecs are in the registry as on an installed Windows (the tests CoCreateInstance them).
-    local rc_="$OUT/regdll.c"
-    cat > "$rc_" <<'REGEOF'
-#include <windows.h>
-#include <stdio.h>
-int main(int argc, char **argv)
-{
-    HRESULT hr = 0x80070002;
-    HMODULE m = argc > 1 ? LoadLibraryA(argv[1]) : NULL;
-    if (m)
-    {
-        HRESULT (WINAPI *reg)(void) = (void *)GetProcAddress(m, "DllRegisterServer");
-        hr = reg ? reg() : 0x8007007f;
-    }
-    printf("regdll: %s DllRegisterServer=0x%08x\n", argc > 1 ? argv[1] : "(none)", (unsigned)hr);
-    fflush(stdout);
-    return hr != 0;
-}
-REGEOF
-    "$cc" -O1 -w "$rc_" -o "$OUT/regdll.exe" -lkernel32 \
-        || echo "media.sh: note: regdll build failed; COM classes stay unregistered"
 }
 
 baseline_of() {   # <unit> -> "<expect> <max>"
@@ -182,17 +196,7 @@ do_run() {
     if [[ -n "$EMULATOR" && "$wmachine" == /* ]]; then wmachine="Z:$wmachine"; fi
     wmachine="${wmachine//\//\\}"
     export WIN10XBOX_DEBUG="${WIN10XBOX_DEBUG_SPEC:--all}"
-    local tsv="$OUT/${DLL}.tsv" total=0 bad=0
-    local regs=""
-    case "$DLL" in propsys) regs="propsys.dll" ;; windowscodecs) regs="propsys.dll windowscodecs.dll" ;; esac
-    if [[ -n "$regs" && -f "$OUT/regdll.exe" ]]; then
-        cp -f "$OUT/regdll.exe" "$MACHINE/guest-wine/regdll.exe"
-        local r
-        for r in $regs; do
-            timeout -k 5 "$TIMEOUT" $EMULATOR "$HOST" --machine "$wmachine" "C:\\guest-wine\\regdll.exe" "$r" \
-                < /dev/null 2>&1 | tr -d '\r' | sed 's/^/  /' | head -4
-        done
-    fi
+    local tsv="$OUT/${DLL}.tsv" total=0 bad=0 regshown=
     : > "$tsv"
     local re='([0-9]+) tests executed \(([0-9]+) marked as todo, ([0-9]+) as flaky, ([0-9]+) failures?\), ([0-9]+) skipped'
     local unit
@@ -223,6 +227,10 @@ do_run() {
         [[ -n "$last" ]] && echo "  last test line: $last"
         grep -aE 'Test (failed|marked todo)|Unhandled exception|Test failed' "$log" | head -3 | cut -c1-200 | sed 's/^/  first: /'
         grep -a '^win10xbox: ' "$log" | head -3 | sed 's/^/  /'
+        # What the COM registration (do_build's constructor) returned, once per suite.
+        if [[ -z $regshown ]] && grep -aq '^media-reg: ' "$log"; then
+            grep -a '^media-reg: ' "$log" | tr -d '\r' | head -2 | sed 's/^/  /'; regshown=1
+        fi
         read -r expect max <<<"$(baseline_of "$unit")"
         if [[ $expect == run ]]; then
             if [[ $status != ok ]]; then

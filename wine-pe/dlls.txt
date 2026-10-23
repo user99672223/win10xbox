@@ -80,6 +80,7 @@ windowscodecs
 mlang
 gdiplus
 dwrite
+atl100        # __wine_register_resources (winecrt0) loads it for DllRegisterServer of propsys/windowscodecs (docs/slices/wt-media-atl.md)
 
 # --- console programs (wine-pe/programs/*.sh, ctest integration.wineprog_*) --
 programs/xcopy
