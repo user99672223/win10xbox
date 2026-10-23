@@ -440,8 +440,10 @@ int main(void) {
     moveto(200, 510);
     expect("caption: WM_NCMOUSEMOVE with HTCAPTION and screen coordinates", "4:NCMM(2;200,510)");
     click();
+    /* WM_NCLBUTTONDOWN on the caption starts DefWindowProc's modal move loop (SC_MOVE), which takes the button-up
+     * itself (so no WM_NCLBUTTONUP reaches the window) and ends by releasing the capture: WM_CAPTURECHANGED. */
     expect("caption click: DefWindowProc answers MA_NOACTIVATE for HTCAPTION, WM_NCLBUTTONDOWN activates",
-           "4:MACT(2,201) 4:NCLD(2;200,510) 1:NCACT(0) 1:ACT(0) 4:NCACT(1) 4:ACT(2) 1:KF 4:SF 4:NCLU(2;200,510)");
+           "4:MACT(2,201) 4:NCLD(2;200,510) 1:NCACT(0) 1:ACT(0) 4:NCACT(1) 4:ACT(2) 1:KF 4:SF 4:CAPCH");
 
     /* a window of another thread gets its input on that thread */
     {
