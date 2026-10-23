@@ -35,4 +35,7 @@ timer crash 0
 toolhelp crash 0
 version run 8
 virtual crash 0
-volume run 35
+# volume: 35 -> 39 by the object manager namespace (docs/slices/om.md): volume.c:165 and :200 are todo_wine because Wine fails
+# them and Windows passes; \??\Y: made by DefineDosDevice is a real symbolic link now, so they pass and Wine's harness counts
+# "succeeded inside todo" as failures. The guest sees its own drives (C:) in \??, not the Wine prefix's, so the Z: cases are gone.
+volume run 39

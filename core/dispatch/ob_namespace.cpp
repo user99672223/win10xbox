@@ -444,6 +444,14 @@ std::vector<DirEntry> Tree::List(const NodeRef& dir) {
     std::vector<DirEntry> out;
     if (!dir) return out;
     for (const NodeRef& c : dir->children) out.push_back({c->name, c->type_name});
+    // \?? shows the machine-wide devices too: the caller's DosDevices continue in \GLOBAL?? (QueryDosDevice, GetLogicalDrives).
+    if (dir->fallback) {
+        for (const NodeRef& c : dir->fallback->children) {
+            bool shadowed = false;
+            for (const NodeRef& own : dir->children) shadowed = shadowed || NameEquals(own->name, c->name, true);
+            if (!shadowed) out.push_back({c->name, c->type_name});
+        }
+    }
     return out;
 }
 
