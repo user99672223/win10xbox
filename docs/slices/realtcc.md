@@ -20,7 +20,11 @@ all with `tcc: error: memory full (malloc)` on the first allocation. tcc.exe and
 msvcrt.dll, whose DllMain does `heap = HeapCreate(0, 0, 0)` (the only Wine C runtime with a private heap; ucrtbase uses
 the process heap). RtlCreateHeap is forwarded to the host ntdll, and Wine's RtlCreateHeap adds HEAP_GROWABLE when no
 maximum size is given where the host's does not (kernelbase does it on Windows), so the heap msvcrt got could not serve
-malloc. `w10x_RtlCreateHeap` (core/dispatch/unix_calls.cpp, WINE_OVERRIDE in rtl_forward.inc) adds the flag and traces
-the call (`RtlCreateHeap flags=... -> ...`).
+malloc. `w10x_RtlCreateHeap` (core/dispatch/rtl_forward.cpp, WINE_OVERRIDE in rtl_forward.inc) adds the flag. Run 39889944784
+(first fix): tcc_version, tcc_compile, tcc_run passed on both Windows jobs and the produced exe printed `hello from tcc 42`
+and exited 42, but tcc_hello_runs failed the generic `no builtin user32.dll in the modules trace` check (the exe imports
+only kernel32 and msvcrt): the test now sets NO_USER32. That version also logged from inside the override in host mode,
+and linux-cross (Wine host) then failed ten tests with `msvcrt.dll failed to initialize`; the override is now a plain
+wrapper with no logging.
 
 Results: to be filled in from the CI run.

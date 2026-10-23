@@ -258,8 +258,10 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   win10xbox_guest_test(tcc_compile "C:\\guest\\tcc\\tcc.exe" 0)
   unset(_guest_file)
   unset(_guest_args)
+  set(_guest_no_user32 ON)   # tcc's exe imports only kernel32 and msvcrt
   win10xbox_guest_test(tcc_hello_runs "C:\\Users\\User\\tcc_hello.exe" 42
     "hello from tcc 42" "argc=1 sizeof\\(void\\*\\)=8")
+  unset(_guest_no_user32)
   set_tests_properties(integration.tcc_hello_runs PROPERTIES DEPENDS integration.tcc_compile)
   set(_guest_args "-run;C:\\guest\\tcc_hello.c")
   win10xbox_guest_test(tcc_run "C:\\guest\\tcc\\tcc.exe" 42

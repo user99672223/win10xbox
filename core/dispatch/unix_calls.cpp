@@ -252,24 +252,6 @@ extern "C" const char* __cdecl w10x_wine_dbg_strdup(const char* str) {
     return out;
 }
 
-// Wine's RtlCreateHeap makes a heap growable when no maximum size is given
-// (`if (!total_size) flags |= HEAP_GROWABLE`); Windows' ntdll leaves that to
-// kernelbase's HeapCreate, which Wine's kernelbase does not do. HeapCreate(0, 0, 0)
-// (msvcrt.dll's private heap) therefore needs the flag added before the call
-// goes to the host ntdll, or the host creates a fixed-size heap.
-extern "C" PVOID NTAPI w10x_RtlCreateHeap(ULONG flags, PVOID base, SIZE_T reserve, SIZE_T commit, PVOID lock,
-                                          PVOID params) {
-    HostModeScope host;
-    using Fn = PVOID(NTAPI*)(ULONG, PVOID, SIZE_T, SIZE_T, PVOID, PVOID);
-    auto fn = reinterpret_cast<Fn>(HostExport("RtlCreateHeap"));
-    if (!fn) return nullptr;
-    if (!reserve) flags |= HEAP_GROWABLE;
-    PVOID heap = fn(flags, base, reserve, commit, lock, params);
-    TRACE(dispatch, "RtlCreateHeap flags=%08lx reserve=%zu commit=%zu -> %p", flags, static_cast<size_t>(reserve),
-          static_cast<size_t>(commit), heap);
-    return heap;
-}
-
 }  // namespace detail
 
 using namespace detail;
