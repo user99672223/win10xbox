@@ -264,6 +264,11 @@ endif()
 
 # Guests from the SQLite shell bring-up (tests/guest/sqlite).
 add_subdirectory(sqlite)
+
+add_executable(guest_net2 net2.c)
+target_link_libraries(guest_net2 PRIVATE ws2_32 secur32 crypt32)
+win10xbox_add_guest(guest_net2)
+
 # Direct3D 11 off-screen (tests/guest/d3d11_tri.c, docs/slices/d3d.md): the guest loads the NATIVE d3d11/dxgi/d3dcompiler_47
 # at run time (LoadLibrary), renders a triangle into a render-target texture and reads the pixels back. MSVC only (the
 # Windows SDK's d3d11.h/dxguid.lib); run on the route-B + D3D machine folder (integration.guest_d3d11).

@@ -192,6 +192,36 @@ void RestorePebFields() {
     TRACE(process, "host PEB fields restored");
 }
 
+// Exchanges the PEB fields the take-over replaced with the saved host ones (calling it twice puts everything back).
+// For host code that must see its own process: the host's SChannel loads providers lazily (LoadLibrary reads
+// PEB.Ldr / LoaderLock / ActivationContextData / ProcessParameters, all the guest's during a run). The caller holds
+// the only runnable guest thread in a wait; kernel_callbacks and gdi_shared are left alone (no host code reads them).
+template <class T> void SwapPebField(std::uint32_t off, void*& saved) {
+    void* cur = PebField<void*>(off);
+    PebField<void*>(off) = saved;
+    saved = cur;
+}
+void SwapHostPebFieldsImpl() {
+    SavedPeb& s = G().peb;
+    if (!s.saved) return;
+    SwapPebField<void*>(peb::ImageBaseAddress, s.image_base);
+    SwapPebField<void*>(peb::Ldr, s.ldr);
+    SwapPebField<void*>(peb::ProcessParameters, s.params);
+    SwapPebField<void*>(peb::FastPebLock, s.fast_peb_lock);
+    SwapPebField<void*>(peb::TlsBitmap, s.tls_bitmap);
+    SwapPebField<void*>(peb::TlsExpansionBitmap, s.tls_exp_bitmap);
+    SwapPebField<void*>(peb::LoaderLock, s.loader_lock);
+    SwapPebField<void*>(peb::AnsiCodePageData, s.ansi);
+    SwapPebField<void*>(peb::OemCodePageData, s.oem);
+    SwapPebField<void*>(peb::UnicodeCaseTableData, s.ucase);
+    SwapPebField<void*>(peb::ActivationContextData, s.actctx);
+    ULONG cur_major = PebField<ULONG>(peb::OSMajorVersion), cur_minor = PebField<ULONG>(peb::OSMinorVersion);
+    USHORT cur_build = PebField<USHORT>(peb::OSBuildNumber);
+    PebField<ULONG>(peb::OSMajorVersion) = s.os_major; s.os_major = cur_major;
+    PebField<ULONG>(peb::OSMinorVersion) = s.os_minor; s.os_minor = cur_minor;
+    PebField<USHORT>(peb::OSBuildNumber) = s.build; s.build = cur_build;
+}
+
 // ---- Guest environment -----------------------------------------------------------
 
 std::vector<std::wstring> DefaultEnvironment() {
@@ -740,6 +770,7 @@ int Launch(const LaunchOptions& opts) {
 #if WIN10XBOX_HAVE_AFD
     afd::PrimeHost();   // before the PEB take-over (see afd.h)
 #endif
+    dispatch::detail::PrimeSchannelHost();   // likewise: the host's SChannel loads its providers lazily
     PrimeAudio(root);   // the host audio thread and stack, likewise before the take-over (unix_mmdevapi.cpp)
     RegisterNtdllUnixLib();
 
@@ -941,5 +972,8 @@ void TerminateOtherGuestThreads(NTSTATUS code) {
         ForgetGuestThread(t->tid);
     }
 }
+
+
+void SwapHostPebFields() { win10xbox::process::SwapHostPebFieldsImpl(); }
 
 }  // namespace win10xbox::dispatch::detail

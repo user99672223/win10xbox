@@ -238,6 +238,82 @@ NTSTATUS_ DoSendMsg(Sock& s, const void* in, ULONG in_len, ULONG_PTR* info) {
     return kSuccess;
 }
 
+// Completion of an operation: what the I/O manager does for a request that finished (status block, event, APC).
+using SetEventFn = NTSTATUS(NTAPI*)(HANDLE, PLONG);
+using QueueApcFn = NTSTATUS(NTAPI*)(HANDLE, PVOID, PVOID, PVOID, PVOID);
+SetEventFn g_set_event = nullptr;   // resolved on first use; not function-local statics (guest-reachable paths)
+QueueApcFn g_queue_apc = nullptr;
+
+void CompleteIo(HANDLE event, PIO_APC_ROUTINE apc, PVOID apc_context, PIO_STATUS_BLOCK io, NTSTATUS_ st,
+                ULONG_PTR info, HANDLE apc_thread) {
+    if (io) { io->Information = info; MemoryBarrier(); io->Status = st; }
+    if (event) {
+        if (!g_set_event) g_set_event = reinterpret_cast<SetEventFn>(dispatch::HostExport("NtSetEvent"));
+        if (g_set_event) g_set_event(event, nullptr);
+    }
+    if (apc) {
+        if (!g_queue_apc) g_queue_apc = reinterpret_cast<QueueApcFn>(dispatch::HostExport("NtQueueApcThread"));
+        if (g_queue_apc) g_queue_apc(apc_thread, reinterpret_cast<PVOID>(apc), apc_context, io, nullptr);
+    }
+}
+
+// An overlapped receive with nothing to read: STATUS_PENDING now, the datagram/bytes are taken by a host thread
+// once the socket is readable (closesocket also wakes it, and the receive then reports the error). The guest's
+// buffers, address and flags stay where they are (the overlapped contract); the WSABUF array is copied.
+struct PendingRecv {
+    std::shared_ptr<Sock> sock;
+    RecvMsgParams params;
+    std::vector<WSABUF> bufs;
+    HANDLE event;
+    PIO_APC_ROUTINE apc;
+    PVOID apc_context;
+    PIO_STATUS_BLOCK io;
+    HANDLE apc_thread;
+};
+
+DWORD WINAPI PendingRecvThread(LPVOID arg) {
+    std::unique_ptr<PendingRecv> r(static_cast<PendingRecv*>(arg));
+    HostWinsockScope scope;
+    fd_set rd;
+    FD_ZERO(&rd);
+    FD_SET(r->sock->s, &rd);
+    ::select(0, &rd, nullptr, nullptr, nullptr);
+    r->params.buffers_ptr = reinterpret_cast<std::uint64_t>(r->bufs.data());
+    ULONG_PTR info = 0;
+    NTSTATUS_ st = DoRecvMsg(*r->sock, &r->params, sizeof r->params, &info);
+    CompleteIo(r->event, r->apc, r->apc_context, r->io, st, info, r->apc_thread);
+    if (r->apc_thread) CloseHandle(r->apc_thread);
+    return 0;
+}
+
+// Returns true when the request was queued (the caller answers STATUS_PENDING).
+bool TryPendRecv(const std::shared_ptr<Sock>& sock, const void* in, ULONG in_len, HANDLE event,
+                 PIO_APC_ROUTINE apc, PVOID apc_context, PIO_STATUS_BLOCK io) {
+    if (!in || in_len < sizeof(RecvMsgParams) || !io) return false;
+    const auto* p = static_cast<const RecvMsgParams*>(in);
+    if (!p->force_async || p->control_ptr) return false;
+    fd_set rd;
+    FD_ZERO(&rd);
+    FD_SET(sock->s, &rd);
+    timeval zero{0, 0};
+    if (::select(0, &rd, nullptr, nullptr, &zero) != 0) return false;   // readable (or an error): complete now
+    auto r = std::make_unique<PendingRecv>();
+    r->sock = sock;
+    r->params = *p;
+    const auto* src = reinterpret_cast<const WSABUF*>(p->buffers_ptr);
+    r->bufs.assign(src, src + p->count);
+    r->event = event; r->apc = apc; r->apc_context = apc_context; r->io = io;
+    r->apc_thread = nullptr;
+    if (apc) r->apc_thread = OpenThread(THREAD_SET_CONTEXT, FALSE, GetCurrentThreadId());
+    io->Status = kPending;
+    io->Information = 0;
+    HANDLE th = CreateThread(nullptr, 0, PendingRecvThread, r.get(), 0, nullptr);
+    if (!th) { if (r->apc_thread) CloseHandle(r->apc_thread); io->Status = 0; return false; }
+    r.release();
+    CloseHandle(th);
+    return true;
+}
+
 // AFD_POLL: select() over the requested sockets, then work out which of the requested AFD events really hold.
 NTSTATUS_ DoPoll(PollParams* p, ULONG in_len, ULONG out_len, ULONG_PTR* info) {
     if (!p || in_len < offsetof(PollParams, sockets) || in_len < offsetof(PollParams, sockets[p->count])
@@ -497,24 +573,17 @@ NTSTATUS NTAPI Afd_NtDeviceIoControlFile(HANDLE file, HANDLE event, PIO_APC_ROUT
     else if (code == kAfdEventSelect || code == kAfdGetEvents || code == WineIoc(kWineMessageSelect)) {
         FIXME(dispatch, "WSAEventSelect/WSAEnumNetworkEvents/WSAAsyncSelect are not supported yet (ioctl %#x)", code);
         st = kNotSupported;
+    } else if (code == WineIoc(kWineRecvMsg) && TryPendRecv(sock, in, in_len, event, apc, apc_context, io)) {
+        TRACE(dispatch, "socket %p recvmsg pending", file);
+        return kPending;
     } else {
         st = DoIoctl(*sock, code, in, in_len, out, out_len, &info);
     }
     TRACE(dispatch, "socket %p ioctl %#x -> %#lx (%llu bytes)", file, code, static_cast<unsigned long>(st),
           static_cast<unsigned long long>(info));
     if (st == kPending) return st;
-    if (io) { io->Status = st; io->Information = info; }
     // The operation is complete: do what the I/O manager does for a request that finished immediately.
-    if (event) {
-        using SetEventFn = NTSTATUS(NTAPI*)(HANDLE, PLONG);
-        static SetEventFn set_event = reinterpret_cast<SetEventFn>(dispatch::HostExport("NtSetEvent"));
-        if (set_event) set_event(event, nullptr);
-    }
-    if (apc) {
-        using QueueApcFn = NTSTATUS(NTAPI*)(HANDLE, PVOID, PVOID, PVOID, PVOID);
-        static QueueApcFn queue = reinterpret_cast<QueueApcFn>(dispatch::HostExport("NtQueueApcThread"));
-        if (queue) queue(reinterpret_cast<HANDLE>(-2), reinterpret_cast<PVOID>(apc), apc_context, io, nullptr);
-    }
+    CompleteIo(event, apc, apc_context, io, st, info, reinterpret_cast<HANDLE>(-2));
     return st;
 }
 
