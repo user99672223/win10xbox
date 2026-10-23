@@ -1,5 +1,15 @@
 status: ready
 
+## Handoff (read this first)
+1. Done and green: ci.yml run 39965132603 (all three jobs, code head c936a53), wine-pe.yml run 39961466147. Nothing left to fix; no CI loop needed.
+2. Changed: wine-pe patches 0030 (Wine-only exports) and 0031 (version resources); core/dispatch/nt_file.cpp (guest-owned \DosDevices); tests/guest/notells.c = `integration.guest_notells`.
+3. Untested on Windows / real hardware: the Xbox AppContainer (needs NtCreateDirectoryObject + NtCreateSymbolicLinkObject allowed; otherwise the old pass-through stays).
+4. Local suite was NOT re-run here (llvm-mingw is present, Wine is not on this box at slice time); the linux-cross job is the same suite and passed.
+5. Merging main into this branch conflicts (main moved after the last merge; no push was left): nt_file.cpp (keep BOTH blocks, my `\DosDevices` block, then `}` and a blank line, then main's "Reparse points" block; verified with -fsyntax-only), docs/SYSCALLS.md (run `python3 tools/gen_syscalls.py wine-pe/wine-src/dlls/ntdll/ntsyscalls.h core/dispatch/syscall_table.gen.inc core/dispatch/syscall_policy.inc docs/SYSCALLS.md`), host-uwp/CMakeLists.txt, host-uwp.yml, tests/guest/README.md, tests/integration/CMakeLists.txt (union of the guest lists: add guest_notells next to guest_regpersist/guest_cursor/guest_net).
+6. host-uwp.yml is red on main too (guest_msctf_stub.exe, guest_net.exe missing from the .msix); guest_notells.exe is packaged.
+7. Commands: `wine-pe/build.sh --only ntdll,kernelbase,kernel32,user32,shell32` (patches apply on a fresh wine-src); `ctest -R guest_notells` on a build with the builtin-only machine folder.
+8. The doc-only head (ad9f006) re-ran ci.yml: run 39970808334 (windows RelWithDebInfo green when last looked).
+
 # Slice: an ordinary program that looks for Wine does not find it
 
 Goal: the checks a Windows program makes to find out whether it runs on Wine come back empty, measured by one gated
