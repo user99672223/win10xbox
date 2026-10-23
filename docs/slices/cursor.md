@@ -11,7 +11,10 @@ CI run (ci.yml, all three jobs green: linux-cross, windows Debug, windows RelWit
 passed) for code commit 2376feb: https://github.com/user99672223/win10xbox/actions/runs/39948192106
 (the commit after it only edits this file; its own ci.yml run is the head's).
 host-uwp.yml (`workflow_dispatch` on the branch, since it runs on main only; `guest_cursor` is in HOST_UWP_GUESTS, the
-GUI foreach and the package check list): HOST_UWP_RUN
+GUI foreach and the package check list): https://github.com/user99672223/win10xbox/actions/runs/39951740095. The package builds
+with `guest_cursor` in it (it is not among the missing guests). The job's "Verify package contents" step fails
+for a reason that is on main and not in this change: it lists every `tests/guest/*.c`, and `guest_msctf_stub.exe` and
+`guest_net.exe` are not built by host-uwp/CMakeLists.txt.
 
 ## What runs through the layer
 
