@@ -1016,8 +1016,8 @@ NTSTATUS Tok_NtSetInformationToken(HANDLE TokenHandle, TOKEN_INFORMATION_CLASS T
     NTSTATUS st = Resolve(TokenHandle, need, &t);
     if (st != kSuccess) return st;
     // The caller's buffer is copied once; SIDs and ACLs it points at are copied where they are used.
+    if (!TokenInformation) return kAccessViolation;
     if (NTSTATUS ps = probe::ProbeRead(TokenInformation, Length)) return ps;
-    if (!Length) return kAccessViolation;
     std::vector<std::uint8_t> info_copy(Length);
     if (NTSTATUS ps = probe::CopyFromUser(info_copy.data(), TokenInformation, Length)) return ps;
     TokenInformation = info_copy.data();
