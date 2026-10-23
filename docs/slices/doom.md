@@ -1,4 +1,4 @@
-status: wip
+status: blocked (only by inherited red: integration.winetest_ntdll fails on both Windows jobs, same as main, see COORDINATION.md "Main is RED"; integration.doom_timedemo PASSES on both Windows jobs)
 
 Handoff (wip, not yet run on CI):
 * Merged origin/claude/youthful-cerf-l7xxsb. Its win_cursor.cpp and gdi_bitmap/StretchDIBits work replaced this slice's own
@@ -16,7 +16,8 @@ Goal: Chocolate Doom 3.1.1 (official win64 zip, pinned SHA-256) with the sharewa
 `-timedemo demo1` on the Wine PE builtins over the dispatcher and core/user, SDL2 on its software renderer (blits
 through GDI onto the window), and the composed frame is verified (`integration.doom_timedemo`, MSVC / real-program builds only).
 
-Run: (not run on CI yet)
+Run: https://github.com/user99672223/win10xbox/actions/runs/39972749603 (head c7aeb4b): doom_timedemo Passed on windows Debug and RelWithDebInfo, linux-cross green.
+Windows stats: `timed 5026 gametics in 225 realtics (781.822205 fps)` (RelWithDebInfo). Two CI fixes needed: fetch-wine.sh resets a cache-restored tree with a stale patch revision; the two LsaGetUserName patches are one patch now.
 Screenshot artifact: `windows-<config>-logs` -> `build/bin/doom_timedemo.bmp`
 Gate pixels: see below (taken from a real frame).
 
