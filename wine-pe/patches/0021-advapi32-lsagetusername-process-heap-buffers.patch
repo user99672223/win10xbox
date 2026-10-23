@@ -1,0 +1,61 @@
+win10xbox: LsaGetUserName Buffers come from the process heap (on top of 0020)
+
+0020 gave the user and domain strings their own Buffer allocations, but with advapi32's malloc(), which is
+msvcrt's private heap. Callers (fastfetch) free the Buffer with RtlFreeUnicodeString(), that is RtlFreeHeap() on
+the process heap, so with a Windows heap behind the layer the free is reported as STATUS_HEAP_CORRUPTION (under Wine
+with the host heap's validation on: "unsafe_block_from_ptr ... mismatching heap"). The Buffers are RtlAllocateHeap()
+blocks of the process heap now; the strings themselves stay on malloc() for LsaFreeMemory(). A separate patch, not an
+edit of 0020: the CI caches the patched Wine tree, which already has 0020 applied.
+
+diff --git a/dlls/advapi32/lsa.c b/dlls/advapi32/lsa.c
+index 460202a..def3b02 100644
+--- a/dlls/advapi32/lsa.c
++++ b/dlls/advapi32/lsa.c
+@@ -143,13 +143,13 @@ NTSTATUS WINAPI LsaGetUserName(PUNICODE_STRING *user_name, PUNICODE_STRING *doma
+     if (GetUserNameW(NULL, &user_size) || GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+        return STATUS_UNSUCCESSFUL;
+ 
+-    /* Windows allocates the string and its Buffer separately: callers (fastfetch) free the Buffer with
+-     * RtlFreeUnicodeString() and the string with LsaFreeMemory(), and a block with the Buffer inside it
+-     * makes the first of the two free an interior pointer. */
++    /* Windows allocates the string and its Buffer separately and callers (fastfetch) free the Buffer with
++     * RtlFreeUnicodeString(), which is RtlFreeHeap() on the process heap, and the string with LsaFreeMemory().
++     * This module's malloc() is msvcrt's private heap, so the Buffers come from the process heap. */
+     user = malloc(sizeof(*user));
+     if (!user) return STATUS_NO_MEMORY;
+ 
+-    user->Buffer = malloc(user_size * sizeof(WCHAR));
++    user->Buffer = RtlAllocateHeap(GetProcessHeap(), 0, user_size * sizeof(WCHAR));
+     if (!user->Buffer)
+     {
+         free(user);
+@@ -159,7 +159,7 @@ NTSTATUS WINAPI LsaGetUserName(PUNICODE_STRING *user_name, PUNICODE_STRING *doma
+     user->Length = user->MaximumLength - sizeof(WCHAR);
+     if (!GetUserNameW(user->Buffer, &user_size))
+     {
+-        free(user->Buffer);
++        RtlFreeHeap(GetProcessHeap(), 0, user->Buffer);
+         free(user);
+         return STATUS_UNSUCCESSFUL;
+     }
+@@ -173,17 +173,17 @@ NTSTATUS WINAPI LsaGetUserName(PUNICODE_STRING *user_name, PUNICODE_STRING *doma
+         domain_size = ARRAY_SIZE(computer);
+         if (!GetComputerNameW(computer, &domain_size))
+         {
+-            free(user->Buffer);
++            RtlFreeHeap(GetProcessHeap(), 0, user->Buffer);
+             free(user);
+             return STATUS_UNSUCCESSFUL;
+         }
+ 
+         domain = malloc(sizeof(*domain));
+-        if (domain) domain->Buffer = malloc((domain_size + 1) * sizeof(WCHAR));
++        if (domain) domain->Buffer = RtlAllocateHeap(GetProcessHeap(), 0, (domain_size + 1) * sizeof(WCHAR));
+         if (!domain || !domain->Buffer)
+         {
+             free(domain);
+-            free(user->Buffer);
++            RtlFreeHeap(GetProcessHeap(), 0, user->Buffer);
+             free(user);
+             return STATUS_NO_MEMORY;
+         }
