@@ -358,7 +358,9 @@ DWORD WINAPI GuestThreadProc(void* p) {
     std::uint32_t flags = gs->flags;
     const bool wait_for_peb = gs->wait_for_peb, clear_skip = gs->clear_skip_attach;
     delete gs;
-    if (!AttachThreadState(kThreadGuest | flags))
+    if (ThreadState* ts = AttachThreadState(kThreadGuest | flags))
+        ts->win32_start = start;
+    else
         WARN(process, "no thread state: guest/host TEB view switching disabled on this thread");
     if (clear_skip) {
         auto* tf = reinterpret_cast<USHORT*>(static_cast<std::uintptr_t>(__readgsqword(0x30)) + kTebSameTebFlags);

@@ -7,3 +7,13 @@
 # assertion in two layer runs that the native run on the same runner passes. Add a unit here only with the failing
 # lines of its native run recorded in its slice doc.
 file 1300
+# docs/slices/wt-ntdll-rest.md. threadpool is a gate. The others are run the same way and compared, and only measured
+# ("measure": not a gate) until they are within parity: the lines they still fail are in the slice doc.
+# (exception is not here: the unit ends with an unhandled STATUS_DATATYPE_MISALIGNMENT natively on the runner too.)
+threadpool 2300
+info 1 measure
+pipe 1 measure
+sync 1 measure
+virtual 1 measure
+wow64 1 measure
+reg 1 measure
