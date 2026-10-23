@@ -1,4 +1,6 @@
-status: wip
+status: blocked
+blocked (run https://github.com/user99672223/win10xbox/actions/runs/39990827035 @ 7b97ead; linux-cross green, both Windows jobs red): integration.guest_d3d11 and integration.guest_tebframe pass. Measured on the Windows runner: d3d11: adapter=Microsoft Basic Render Driver feature_level=0xb100 driver=hardware (build/bin/guest_d3d11.log in the logs artifact).
+the only failure is integration.guest_imgui_d3d11: the MSCTF.dll stand-in now loads, the guest presents 60 frames and exits 0, and the composed screenshot is uniform: "screenshot region (110,140)-(1010,760) has 1 colour(s), expected at least 3" (core/user/native_compose.cpp: BitBlt of the window DC reads nothing from a D3D swap chain; the PrintWindow(PW_RENDERFULLCONTENT) fallback added in 7b97ead did not change it). Next: read the swap chain's back buffer (IDXGISwapChain buffer 0 copied to a staging texture) or capture the host screen rect, instead of the window DC.
 root cause (run 39974430791 @ 3b3f1b9): not specific to the device-notify thread. Wine's PE builtins are built without compiler SEH, so
 their __TRY/__EXCEPT are frames chained through TEB.NtTib.ExceptionList (wine/exception.h); Wine's own ntdll walks that chain
 (call_seh_handlers "hack: call wine handlers registered in the tib list", RtlUnwindEx), a Windows x64 host dispatcher does not
