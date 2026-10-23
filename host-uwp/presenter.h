@@ -87,8 +87,9 @@ namespace w10x_uwp
         // One line for status.txt: the current state.
         std::string Describe() const;
 
-    private:
         struct Impl;
+
+    private:
         std::unique_ptr<Impl> impl_;
     };
 }  // namespace w10x_uwp
