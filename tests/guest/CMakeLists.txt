@@ -59,9 +59,15 @@ add_executable(guest_window_text window_text.c)
 target_link_libraries(guest_window_text PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window_text)
 
-# GDI bitmap operations (tests/guest/gdi_bitmap.c): memory DCs only, pixel-exact checks.
-add_executable(guest_gdi_bitmap gdi_bitmap.c)
-target_link_libraries(guest_gdi_bitmap PRIVATE user32 gdi32)
+# GDI bitmap operations (tests/guest/gdi_bitmap.c): DIB sections, BitBlt/StretchBlt between memory and window DCs,
+# AlphaBlend/TransparentBlt through msimg32, LoadImage of the BITMAP resources of gdi_bitmap.rc (a generated copy of
+# gdi_bitmap.rc.in whose .bmp paths are absolute: windres and rc.exe resolve relative names differently).
+set(W10X_BMP_DIR ${CMAKE_CURRENT_SOURCE_DIR}/gdi_bitmap_res)
+configure_file(gdi_bitmap.rc.in ${CMAKE_CURRENT_BINARY_DIR}/gdi_bitmap.rc @ONLY)
+add_executable(guest_gdi_bitmap gdi_bitmap.c ${CMAKE_CURRENT_BINARY_DIR}/gdi_bitmap.rc)
+set_source_files_properties(${CMAKE_CURRENT_BINARY_DIR}/gdi_bitmap.rc PROPERTIES
+  OBJECT_DEPENDS "${W10X_BMP_DIR}/rgb24.bmp;${W10X_BMP_DIR}/pal8.bmp")
+target_link_libraries(guest_gdi_bitmap PRIVATE user32 gdi32 msimg32)
 win10xbox_add_guest(guest_gdi_bitmap)
 
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).

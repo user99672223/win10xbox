@@ -22,6 +22,7 @@ apisetschema
 win32u
 user32
 gdi32
+msimg32      # AlphaBlend / TransparentBlt / GradientFill forward to gdi32 (docs/slices/gdibmp.md)
 
 # --- base services ---------------------------------------------------------
 advapi32

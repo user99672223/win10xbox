@@ -1,0 +1,5 @@
+/* Bitmap resources of guest_gdi_bitmap (configured by tests/guest/CMakeLists.txt so the .bmp paths are absolute).
+ * 101: 24 bpp 6x4, pixel(x,y) = RGB(10+x*40, 20+y*60, 250-x*30-y).
+ * 102: 8 bpp 4x4 with a 4-entry palette (red, green, blue, yellow), index(x,y) = (x+y)%4. */
+101 BITMAP "@W10X_BMP_DIR@/rgb24.bmp"
+102 BITMAP "@W10X_BMP_DIR@/pal8.bmp"

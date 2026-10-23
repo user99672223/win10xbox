@@ -162,9 +162,22 @@ win10xbox_guest_test(guest_window_text "C:\\guest\\guest_window_text.exe" 42
   "text: done")
 set_tests_properties(integration.guest_window_text PROPERTIES
   ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_window_text.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=121,123,ff000000|123,123,ffffffff|131,123,ff000000")
+# GDI bitmaps (tests/guest/gdi_bitmap.c, docs/slices/gdibmp.md): the guest checks every pixel itself and exits 42
+# only if all checks passed; the screenshot is the window part (400x300 at screen (100,100), client origin = screen
+# origin + (100,100)): a 32 bpp DIB section blitted at (10,10) (pixel (3,2) = RGB(96,64,128)), a 24 bpp one at
+# (30,10) (pixel (4,2) = RGB(120,130,162), top-left (0,0) = RGB(200,30,0)), an 8 bpp palettized one at (50,10),
+# NOTSRCCOPY at (70,10), SRCINVERT at (90,10) and (110,10), a 2x StretchBlt at (10,40), AlphaBlend (130,10), TransparentBlt
+# (150,10), LoadImage of a 24 bpp resource at (10,70) and an 8 bpp one at (40,70).
 win10xbox_guest_test(guest_gdi_bitmap "C:\\guest\\guest_gdi_bitmap.exe" 42
   "bmp: setup ok" "bmp: srccopy ok" "bmp: alpha-128 ok" "bmp: transparent-px ok" "bmp: getdibits-topleft ok"
-  "bmp: stretchdibits-2 ok" "bmp: dib1-top0 ok" "bmp: failures=0" "bmp: done")
+  "bmp: stretchdibits-2 ok" "bmp: dib1-top0 ok" "bmp: dib24-gdi-bits-seen ok" "bmp: dib8-setcolortable ok"
+  "bmp: window created" "bmp: win-dib32-srccopy ok" "bmp: win-srcinvert ok" "bmp: win-stretch2x-all ok"
+  "bmp: win-readback-bits ok" "bmp: win-alphablend-128 ok" "bmp: win-transparent-px ok"
+  "bmp: loadimage24-getobject ok" "bmp: loadimage24-pixels ok" "bmp: loadimage8-pixels ok" "bmp: window drawn"
+  "bmp: failures=0" "bmp: done")
+set_tests_properties(integration.guest_gdi_bitmap PROPERTIES
+  ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_gdi_bitmap.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=113,112,ff604080|134,112,ff7882a2|130,110,ffc81e00|151,110,ff00ff00|153,111,ffff0000|173,112,ff9fbf7f|193,112,ff9f4f80|213,112,ffff0f00|117,145,ff604080|118,144,ff804080|234,112,ff96644b|250,110,ff070809|252,112,ff010203|110,170,ff0a14fa|115,173,ffd2c861|141,170,ff00ff00|143,173,ff0000ff"
+  FAIL_REGULAR_EXPRESSION "FAIL ")
 unset(_guest_machine)
 
 # ---- Real programs: the first guests that are not ours ----------------------------------------------------------
