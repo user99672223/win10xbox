@@ -30,6 +30,7 @@ constexpr NTSTATUS kNoMoreEntries       = static_cast<NTSTATUS>(0x8000001A);
 constexpr NTSTATUS kUnsuccessful        = static_cast<NTSTATUS>(0xC0000001);
 constexpr NTSTATUS kNotImplemented      = static_cast<NTSTATUS>(0xC0000002);
 constexpr NTSTATUS kInvalidInfoClass    = static_cast<NTSTATUS>(0xC0000003);
+constexpr NTSTATUS kInfoLengthMismatch  = static_cast<NTSTATUS>(0xC0000004);
 constexpr NTSTATUS kInvalidHandle       = static_cast<NTSTATUS>(0xC0000008);
 constexpr NTSTATUS kInvalidParameter    = static_cast<NTSTATUS>(0xC000000D);
 constexpr NTSTATUS kAccessDenied        = static_cast<NTSTATUS>(0xC0000022);
@@ -48,9 +49,9 @@ constexpr NTSTATUS kCannotDelete        = static_cast<NTSTATUS>(0xC0000121);
 // winternl.h does not declare the enums and phnt's would clash), so invalid
 // classes are rejected with STATUS_INVALID_INFO_CLASS like the kernel does.
 enum KeyClass : ULONG { kKeyBasic = 0, kKeyNode = 1, kKeyFull = 2, kKeyName = 3, kKeyCached = 4,
-                        kKeyFlags = 5, kKeyVirtualization = 6 };
-enum KeyValueClass : ULONG { kValueBasic = 0, kValueFull = 1, kValuePartial = 2, kValuePartialAlign64 = 3,
-                             kValueLayer = 4, kValueFullAlign64 = 5 };
+                        kKeyFlags = 5, kKeyVirtualization = 6, kKeyHandleTags = 7 };
+enum KeyValueClass : ULONG { kValueBasic = 0, kValueFull = 1, kValuePartial = 2, kValueFullAlign64 = 3,
+                             kValuePartialAlign64 = 4, kValueLayer = 5 };
 
 // Same layout as KEY_VALUE_ENTRY (NtQueryMultipleValueKey); redeclared because
 // MSVC's winternl.h lacks it.
@@ -110,6 +111,9 @@ NTSTATUS Reg_NtSaveKey(HANDLE KeyHandle, HANDLE FileHandle);
 NTSTATUS Reg_NtRestoreKey(HANDLE KeyHandle, HANDLE FileHandle, ULONG Flags);
 NTSTATUS Reg_NtReplaceKey(POBJECT_ATTRIBUTES, HANDLE, POBJECT_ATTRIBUTES);
 NTSTATUS Reg_NtQueryOpenSubKeys(POBJECT_ATTRIBUTES, PULONG);
+// NtQueryObject for a key handle (the dispatcher routes it here when IsKeyHandle()): ObjectBasicInformation and
+// ObjectNameInformation (STATUS_KEY_DELETED for a deleted key); other classes are STATUS_NOT_IMPLEMENTED.
+NTSTATUS Reg_NtQueryObject(HANDLE Handle, ULONG ObjectInformationClass, PVOID ObjectInformation, ULONG Length, PULONG ReturnLength);
 NTSTATUS Close(HANDLE KeyHandle);
 
 // Convenience for other core modules and tests (no NT marshalling):
@@ -129,6 +133,14 @@ void CloseKey(KeyId key);
 // The dispatcher should install the VFS translator here.
 using HostPathResolver = std::function<bool(const std::wstring& nt_path, std::wstring* host_path)>;
 void SetHostPathResolver(HostPathResolver resolver);
+
+// The host's NtOpenDirectoryObject and NtClose. A name outside \Registry is answered the way Windows answers an
+// NtOpenKey on it (OBJECT_NAME_NOT_FOUND, OBJECT_PATH_NOT_FOUND, OBJECT_TYPE_MISMATCH) by asking the host's object
+// namespace, and once a guest runs the process's "ntdll.dll" is Wine's, so the dispatcher hands the host's in. Without
+// them (the unit tests) the process's own ntdll is used.
+using OpenDirectoryFn = NTSTATUS(NTAPI*)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES);
+using CloseObjectFn = NTSTATUS(NTAPI*)(HANDLE);
+void SetHostNamespace(OpenDirectoryFn open_directory, CloseObjectFn close);
 
 // Overlay persistence (machine folder\registry-overlay.bin): optional.
 NTSTATUS SaveOverlay();

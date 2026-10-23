@@ -133,6 +133,16 @@ NTSTATUS Create(const std::wstring& path, HANDLE* h, ULONG* disp = nullptr, ACCE
     return reg::Reg_NtCreateKey(h, access, &oa.a, 0, nullptr, 0, disp);
 }
 
+// NtCreateKey makes only the last component of a name (a missing key on the way is STATUS_OBJECT_NAME_NOT_FOUND), so
+// a deep key is made one level at a time, the way RegCreateKeyEx does it.
+NTSTATUS CreateDeep(const std::wstring& path, HANDLE* h, ULONG* disp = nullptr) {
+    for (std::size_t p = path.find(L'\\', 1); p != std::wstring::npos; p = path.find(L'\\', p + 1)) {
+        HANDLE t = nullptr;
+        if (Create(path.substr(0, p), &t) >= 0) reg::Close(t);
+    }
+    return Create(path, h, disp);
+}
+
 template <typename T>
 T Get(const std::vector<std::uint8_t>& b, std::size_t off) { T v; std::memcpy(&v, b.data() + off, sizeof v); return v; }
 
@@ -405,12 +415,28 @@ TEST(registry_nt_enumerate) {
     CHECK_EQ(Get<ULONG>(b, 12), 0xFFFFFFFFu);   // no class: ClassOffset = -1
     CHECK_EQ(Get<ULONG>(b, 16), 0u);
 
-    // KeyNameInformation on enumerate: NameLength, Name[]
+    // KeyNameInformation on enumerate: the subkey's full name (NameLength, Name[])
     CHECK_EQ(reg::Reg_NtEnumerateKey(h, 1, reg::kKeyName, b.data(), 512, &rl), nt::kSuccess);
-    CHECK(WideAt(b, 4, Get<ULONG>(b, 0)) == L"Bravo");
-    // KeyFullInformation is not valid for NtEnumerateKey
-    CHECK_EQ(reg::Reg_NtEnumerateKey(h, 0, reg::kKeyFull, b.data(), 512, &rl), nt::kInvalidParameter);
+    CHECK(WideAt(b, 4, Get<ULONG>(b, 0)) == L"\\REGISTRY\\MACHINE\\SOFTWARE\\Fixture\\Bravo");
+    CHECK_EQ(rl, 4u + Get<ULONG>(b, 0));
+    // KeyFullInformation and KeyCachedInformation describe the enumerated subkey (Bravo has no subkeys, class or values)
+    CHECK_EQ(reg::Reg_NtEnumerateKey(h, 1, reg::kKeyFull, b.data(), 512, &rl), nt::kSuccess);
+    CHECK_EQ(rl, 44u);
+    CHECK_EQ(Get<ULONG>(b, 20), 0u);   // SubKeys
+    CHECK_EQ(Get<ULONG>(b, 32), 0u);   // Values
+    CHECK_EQ(reg::Reg_NtEnumerateKey(h, 1, reg::kKeyCached, b.data(), 512, &rl), nt::kSuccess);
+    CHECK_EQ(rl, 40u);
+    CHECK_EQ(Get<ULONG>(b, 32), 10u);  // NameLength: "Bravo"
+    // too small for the fixed part is TOO_SMALL with the size needed; the name does not fit is OVERFLOW
+    CHECK_EQ(reg::Reg_NtEnumerateKey(h, 1, reg::kKeyBasic, b.data(), 15, &rl), nt::kBufferTooSmall);
+    CHECK_EQ(rl, 16u + 10u);
+    CHECK_EQ(reg::Reg_NtEnumerateKey(h, 1, reg::kKeyBasic, b.data(), 16, &rl), nt::kBufferOverflow);
+    CHECK_EQ(rl, 16u + 10u);
+    // classes NtEnumerateKey does not answer, and unknown ones
+    CHECK_EQ(reg::Reg_NtEnumerateKey(h, 0, reg::kKeyFlags, b.data(), 512, &rl), nt::kInvalidInfoClass);
     CHECK_EQ(reg::Reg_NtEnumerateKey(h, 0, 99, b.data(), 512, &rl), nt::kInvalidInfoClass);
+    // past the end, and the index that means "this key" inside Wine's ntdll
+    CHECK_EQ(reg::Reg_NtEnumerateKey(h, 0xFFFFFFFFu, reg::kKeyBasic, b.data(), 512, &rl), nt::kNoMoreEntries);
 
     // values, in stored order; the unnamed value has an empty name
     auto vals = ValueNames(h);
@@ -489,9 +515,15 @@ TEST(registry_open_semantics) {
     {
         Oa oa(std::wstring(kSoftware) + L"\\Fixture\\Link");
         HANDLE h = nullptr;
+        // REG_OPTION_OPEN_LINK does not matter to NtOpenKeyEx: the link is followed
         CHECK_EQ(reg::Reg_NtOpenKeyEx(&h, kRead, &oa.a, 8), nt::kSuccess);
         std::vector<std::uint8_t> b;
         ULONG need = 0;
+        CHECK_EQ(QueryValue(h, L"SymbolicLinkValue", reg::kValuePartial, 512, &b, &need), nt::kObjectNameNotFound);
+        reg::Close(h);
+        // OBJ_OPENLINK opens the link key itself
+        Oa link_oa(std::wstring(kSoftware) + L"\\Fixture\\Link", nullptr, 0x40 | 0x100);
+        CHECK_EQ(reg::Reg_NtOpenKey(&h, kRead, &link_oa.a), nt::kSuccess);
         CHECK_EQ(QueryValue(h, L"SymbolicLinkValue", reg::kValuePartial, 512, &b, &need), nt::kSuccess);
         CHECK_EQ(Get<ULONG>(b, 4), 6u);   // REG_LINK
         reg::Close(h);
@@ -577,12 +609,12 @@ TEST(registry_overlay_semantics_and_hive_untouched) {
         CHECK(str == L"12345");
         reg::Close(k);
 
-        // create keys (intermediates too), dispositions, enumeration
+        // create keys, dispositions, enumeration
         HANDLE fx = Open(std::wstring(kSoftware) + L"\\Fixture", kAll);
         auto before_subs = SubkeyNames(fx);
         HANDLE c = nullptr;
         ULONG disp = 0;
-        CHECK_EQ(Create(std::wstring(kSoftware) + L"\\Fixture\\Created\\Deep", &c, &disp), nt::kSuccess);
+        CHECK_EQ(CreateDeep(std::wstring(kSoftware) + L"\\Fixture\\Created\\Deep", &c, &disp), nt::kSuccess);
         CHECK_EQ(disp, 1ul);
         CHECK(c != nullptr);
         CHECK_EQ(SetDword(c, L"Leaf", 5), nt::kSuccess);
@@ -613,12 +645,13 @@ TEST(registry_overlay_semantics_and_hive_untouched) {
             CHECK(WideAt(kb, 44, 14) == L"MyClass");
             reg::Close(h);
         }
-        // creating under a read-only parent handle is denied; under containers too
+        // the access of the parent handle does not decide a create (the parent's ACL does); containers are denied
         {
             HANDLE ro = Open(std::wstring(kSoftware) + L"\\Fixture", kRead);
-            Oa oa(L"NoRight", ro);
+            Oa oa(L"ReadOnlyParent", ro);
             HANDLE h = nullptr;
-            CHECK_EQ(reg::Reg_NtCreateKey(&h, kAll, &oa.a, 0, nullptr, 0, nullptr), nt::kAccessDenied);
+            CHECK_EQ(reg::Reg_NtCreateKey(&h, kAll, &oa.a, 0, nullptr, 0, nullptr), nt::kSuccess);
+            reg::Close(h);
             reg::Close(ro);
             CHECK_EQ(Create(L"\\Registry\\Machine\\NotAHive", &h), nt::kAccessDenied);
         }
@@ -695,7 +728,7 @@ TEST(registry_overlay_persistence) {
         CHECK_EQ(reg::Reg_NtDeleteValueKey(k, &gone.u), nt::kSuccess);
         reg::Close(k);
         HANDLE c = nullptr;
-        CHECK_EQ(Create(std::wstring(kSoftware) + L"\\Fixture\\NewKey\\Sub", &c), nt::kSuccess);
+        CHECK_EQ(CreateDeep(std::wstring(kSoftware) + L"\\Fixture\\NewKey\\Sub", &c), nt::kSuccess);
         CHECK_EQ(SetDword(c, L"D", 77), nt::kSuccess);
         reg::Close(c);
         HANDLE b = Open(std::wstring(kSoftware) + L"\\Fixture\\Charlie", kAll);
@@ -770,7 +803,7 @@ TEST(registry_missing_hives_use_machine_json) {
         CHECK_EQ(dw, 1u);
         // the identity's SID names the user hive; empty hive is writable
         HANDLE c = nullptr;
-        CHECK_EQ(Create(L"\\Registry\\User\\S-1-5-21-1-2-3-1000\\Software\\Test", &c), nt::kSuccess);
+        CHECK_EQ(CreateDeep(L"\\Registry\\User\\S-1-5-21-1-2-3-1000\\Software\\Test", &c), nt::kSuccess);
         reg::Close(c);
         CHECK_EQ(OpenStatus(L"\\Registry\\User\\.DEFAULT"), nt::kSuccess);
         CHECK_EQ(OpenStatus(L"\\Registry\\User\\S-1-5-21-1-2-3-1000_Classes"), nt::kSuccess);
@@ -781,6 +814,234 @@ TEST(registry_missing_hives_use_machine_json) {
 
 // HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0 (what fastfetch's CPU module reads): the identity's brand and
 // family/model/stepping (D18), the host's own base clock, never a constant.
+// The status codes ntdll's reg test pins for names, creation, links and deleted keys (Wine dlls/ntdll/tests/reg.c).
+TEST(registry_nt_name_create_link_statuses) {
+    const std::wstring dir = TempDir(L"statuses");
+    {
+        Session s(dir);
+        CHECK_EQ(s.init, nt::kSuccess);
+        const std::wstring hkcu = std::wstring(L"\\Registry\\User\\") + kUserSid;
+        HANDLE h = nullptr;
+
+        // names
+        CHECK_EQ(OpenStatus(L""), nt::kObjectPathSyntaxBad);
+        CHECK_EQ(OpenStatus(L"Machine"), nt::kObjectPathSyntaxBad);
+        CHECK_EQ(OpenStatus(L"\\"), nt::kObjectTypeMismatch);
+        CHECK_EQ(OpenStatus(L"\\\\\\"), nt::kObjectNameInvalid);
+        CHECK_EQ(OpenStatus(L"\\Registry"), nt::kSuccess);
+        CHECK_EQ(OpenStatus(L"\\Registry\\"), nt::kSuccess);
+        CHECK_EQ(OpenStatus(L"\\Registry\\\\"), nt::kSuccess);
+        CHECK_EQ(OpenStatus(L"\\Foobar"), nt::kObjectNameNotFound);
+        CHECK_EQ(OpenStatus(L"\\Foobar\\Machine"), static_cast<NTSTATUS>(0xC000003A));   // OBJECT_PATH_NOT_FOUND
+        CHECK_EQ(OpenStatus(L"\\Machine\\Software\\Classes"), static_cast<NTSTATUS>(0xC000003A));
+        CHECK_EQ(OpenStatus(L"\\Device\\Null"), nt::kObjectTypeMismatch);   // exists in the namespace, is no key
+        {
+            Oa bad(hkcu);
+            bad.a.Length *= 2;
+            CHECK_EQ(reg::Reg_NtOpenKey(&h, kRead, &bad.a), nt::kInvalidParameter);
+            CHECK_EQ(reg::Reg_NtCreateKey(&h, kAll, &bad.a, 0, nullptr, 0, nullptr), nt::kInvalidParameter);
+        }
+
+        // only the last component of a name is created; a missing key on the way is NAME_NOT_FOUND
+        HANDLE user = Open(hkcu, kAll);
+        CHECK(user != nullptr);
+        {
+            Oa deep(L"a\\b\\c", user);
+            CHECK_EQ(reg::Reg_NtCreateKey(&h, kAll, &deep.a, 0, nullptr, 0, nullptr), nt::kObjectNameNotFound);
+            Oa two(L"a\\b", user);
+            CHECK_EQ(reg::Reg_NtCreateKey(&h, kAll, &two.a, 0, nullptr, 0, nullptr), nt::kObjectNameNotFound);
+            CHECK_EQ(OpenStatus(hkcu + L"\\a"), nt::kObjectNameNotFound);
+            Oa trailing(L"made\\", user);
+            ULONG disp = 0;
+            CHECK_EQ(reg::Reg_NtCreateKey(&h, kAll, &trailing.a, 0, nullptr, 0, &disp), nt::kSuccess);
+            CHECK_EQ(disp, 1ul);
+            reg::Close(h);
+            Oa nested(L"made\\\\child\\\\", user);
+            CHECK_EQ(reg::Reg_NtCreateKey(&h, kAll, &nested.a, 0, nullptr, 0, &disp), nt::kSuccess);
+            reg::Close(h);
+            HANDLE made = Open(hkcu + L"\\made", kAll);
+            CHECK_EQ(reg::Reg_NtDeleteKey(made), nt::kCannotDelete);   // it has a subkey
+            reg::Close(made);
+        }
+        // the access of the parent handle does not gate a create
+        {
+            HANDLE ro = Open(hkcu, kRead);
+            Oa oa(L"viaread", ro);
+            CHECK_EQ(reg::Reg_NtCreateKey(&h, kAll, &oa.a, 0, nullptr, 0, nullptr), nt::kSuccess);
+            reg::Close(h);
+            reg::Close(ro);
+        }
+        // a key of a volatile tree cannot be stable
+        CHECK_EQ(Create(L"\\Registry\\Machine\\HARDWARE\\stable", &h), static_cast<NTSTATUS>(0xC0000181));
+        {
+            Oa oa(L"\\Registry\\Machine\\HARDWARE\\volatile");
+            CHECK_EQ(reg::Reg_NtCreateKey(&h, kAll, &oa.a, 0, nullptr, 1 /*volatile*/, nullptr), nt::kSuccess);
+            reg::Close(h);
+        }
+
+        // symbolic links
+        HANDLE link = nullptr;
+        {
+            Oa oa(L"link", user);
+            CHECK_EQ(reg::Reg_NtCreateKey(&link, kAll, &oa.a, 0, nullptr, 2 /*REG_OPTION_CREATE_LINK*/, nullptr), nt::kSuccess);
+            Oa again(L"link", user);
+            CHECK_EQ(reg::Reg_NtCreateKey(&h, kAll, &again.a, 0, nullptr, 2, nullptr), nt::kObjectNameCollision);
+        }
+        const std::wstring target = hkcu + L"\\target";
+        const ULONG tbytes = static_cast<ULONG>(target.size() * 2);
+        Us linkval(L"SymbolicLinkValue"), other(L"other");
+        CHECK_EQ(reg::Reg_NtSetValueKey(link, &linkval.u, 0, kRegSz, const_cast<wchar_t*>(target.c_str()), tbytes + 2), nt::kAccessDenied);
+        CHECK_EQ(reg::Reg_NtSetValueKey(link, &other.u, 0, 6, const_cast<wchar_t*>(target.c_str()), tbytes), nt::kAccessDenied);
+        CHECK_EQ(reg::Reg_NtSetValueKey(link, &linkval.u, 0, 6, const_cast<wchar_t*>(target.c_str()), tbytes), nt::kSuccess);
+        CHECK_EQ(OpenStatus(hkcu + L"\\link"), nt::kObjectNameNotFound);   // no target yet
+        // creating through a link whose target is missing creates the target
+        {
+            Oa oa(L"link", user);
+            ULONG disp = 0;
+            HANDLE t = nullptr;
+            CHECK_EQ(reg::Reg_NtCreateKey(&t, kAll, &oa.a, 0, nullptr, 0, &disp), nt::kSuccess);
+            CHECK_EQ(disp, 1ul);
+            CHECK_EQ(SetDword(t, L"V", 7), nt::kSuccess);
+            reg::Close(t);
+            std::uint32_t dw = 0;
+            CHECK_EQ(reg::QueryDword(hkcu + L"\\target", L"V", &dw), nt::kSuccess);
+            CHECK_EQ(OpenStatus(hkcu + L"\\link"), nt::kSuccess);
+        }
+        // a target with a terminator, a relative target and a loop do not resolve
+        {
+            std::wstring with_nul = target;
+            with_nul.push_back(L'\0');
+            CHECK_EQ(reg::Reg_NtSetValueKey(link, &linkval.u, 0, 6, const_cast<wchar_t*>(with_nul.c_str()), tbytes + 2), nt::kSuccess);
+            CHECK_EQ(OpenStatus(hkcu + L"\\link"), nt::kObjectNameNotFound);
+            std::wstring rel = L"target";
+            CHECK_EQ(reg::Reg_NtSetValueKey(link, &linkval.u, 0, 6, const_cast<wchar_t*>(rel.c_str()), 12), nt::kSuccess);
+            CHECK_EQ(OpenStatus(hkcu + L"\\link"), nt::kObjectNameInvalid);
+            std::wstring loop = hkcu + L"\\link\\x";
+            CHECK_EQ(reg::Reg_NtSetValueKey(link, &linkval.u, 0, 6, const_cast<wchar_t*>(loop.c_str()), static_cast<ULONG>(loop.size() * 2)), nt::kSuccess);
+            CHECK_EQ(OpenStatus(hkcu + L"\\link\\x"), nt::kInvalidParameter);
+        }
+        CHECK_EQ(reg::Reg_NtDeleteKey(link), nt::kSuccess);
+        reg::Close(link);
+
+        // a deleted key: every use says KEY_DELETED, a second delete is a success, the object still answers
+        HANDLE gone = nullptr;
+        CHECK_EQ(Create(hkcu + L"\\gone", &gone), nt::kSuccess);
+        CHECK_EQ(reg::Reg_NtDeleteKey(gone), nt::kSuccess);
+        CHECK_EQ(reg::Reg_NtDeleteKey(gone), nt::kSuccess);
+        std::vector<std::uint8_t> b(512);
+        ULONG rl = 0;
+        CHECK_EQ(reg::Reg_NtQueryKey(gone, reg::kKeyName, b.data(), 512, &rl), nt::kKeyDeleted);
+        CHECK_EQ(reg::Reg_NtEnumerateKey(gone, 0, reg::kKeyFull, b.data(), 512, &rl), nt::kKeyDeleted);
+        CHECK_EQ(reg::Reg_NtQueryObject(gone, 1 /*ObjectNameInformation*/, b.data(), 512, &rl), nt::kKeyDeleted);
+        CHECK_EQ(reg::Reg_NtQueryObject(gone, 0 /*ObjectBasicInformation*/, b.data(), 56, &rl), nt::kSuccess);
+        CHECK_EQ(rl, 56u);
+        CHECK_EQ(Get<ULONG>(b, 4), static_cast<ULONG>(kAll & ~0u));   // GrantedAccess
+        {
+            Oa sub(L"sub", gone);
+            CHECK_EQ(reg::Reg_NtOpenKey(&h, kRead, &sub.a), nt::kKeyDeleted);
+            CHECK_EQ(reg::Reg_NtCreateKey(&h, kAll, &sub.a, 0, nullptr, 0, nullptr), nt::kKeyDeleted);
+        }
+        reg::Close(gone);
+
+        // NtQueryObject on a live key: the name and the sizes
+        CHECK_EQ(reg::Reg_NtQueryObject(user, 1, b.data(), 512, &rl), nt::kSuccess);
+        const auto* us = reinterpret_cast<const UNICODE_STRING*>(b.data());
+        CHECK(std::wstring(us->Buffer, us->Length / 2) == std::wstring(L"\\REGISTRY\\USER\\") + kUserSid);
+        CHECK_EQ(rl, static_cast<ULONG>(sizeof(UNICODE_STRING)) + us->MaximumLength);
+        CHECK_EQ(reg::Reg_NtQueryObject(user, 1, b.data(), 8, &rl), nt::kInfoLengthMismatch);
+        CHECK_EQ(reg::Reg_NtQueryObject(user, 2 /*ObjectTypeInformation*/, b.data(), 512, &rl), nt::kNotImplemented);
+
+        // rename: the name is checked before the handle, the name must be free
+        Us empty(L"");
+        CHECK_EQ(reg::Reg_NtRenameKey(nullptr, &empty.u), nt::kInvalidParameter);
+        Us anyname(L"renamed");
+        CHECK_EQ(reg::Reg_NtRenameKey(nullptr, &anyname.u), nt::kInvalidHandle);
+        HANDLE r1 = nullptr, r2 = nullptr;
+        CHECK_EQ(Create(hkcu + L"\\r1", &r1), nt::kSuccess);
+        CHECK_EQ(Create(hkcu + L"\\r2", &r2), nt::kSuccess);
+        Us r2name(L"R2"), same(L"r1");
+        CHECK_EQ(reg::Reg_NtRenameKey(r1, &r2name.u), nt::kCannotDelete);   // a sibling has the name
+        CHECK_EQ(reg::Reg_NtRenameKey(r1, &same.u), nt::kCannotDelete);     // so does the key itself
+        reg::Close(r1);
+        reg::Close(r2);
+        HANDLE readonly = Open(hkcu + L"\\r1", kRead);
+        CHECK_EQ(reg::Reg_NtRenameKey(readonly, &anyname.u), nt::kAccessDenied);
+        reg::Close(readonly);
+        reg::Close(user);
+
+        // the value information classes keep Windows' numbering: FullAlign64 = 3, PartialAlign64 = 4
+        HANDLE cv = Open(std::wstring(kSoftware) + L"\\Microsoft\\Windows NT\\CurrentVersion");
+        CHECK(cv != nullptr);
+        CHECK_EQ(QueryValue(cv, L"UBR", 4, 64, &b, &rl), nt::kSuccess);
+        CHECK_EQ(rl, 12u);   // Type, DataLength, Data[4]
+        CHECK_EQ(Get<ULONG>(b, 0), kRegDword);
+        CHECK_EQ(QueryValue(cv, L"UBR", 3, 64, &b, &rl), nt::kSuccess);
+        CHECK_EQ(Get<ULONG>(b, 0), kRegDword);
+        CHECK_EQ(Get<ULONG>(b, 4), 4u);       // DataLength
+        CHECK_EQ(Get<ULONG>(b, 8), 6u);       // NameLength: "UBR"
+        CHECK_EQ(QueryValue(cv, L"UBR", 5, 64, &b, &rl), nt::kInvalidParameter);   // KeyValueLayerInformation
+        reg::Close(cv);
+
+        // KeyCachedInformation has no name: 40 bytes, SubKeys at 12, NameLength (the leaf's) at 32
+        HANDLE sw = Open(std::wstring(kSoftware) + L"\\Classes");
+        CHECK(sw != nullptr);
+        CHECK_EQ(reg::Reg_NtQueryKey(sw, reg::kKeyCached, b.data(), 40, &rl), nt::kSuccess);
+        CHECK_EQ(rl, 40u);
+        CHECK_EQ(Get<ULONG>(b, 32), 14u);   // "Classes"
+        CHECK(Get<ULONG>(b, 12) >= 4u);     // CLSID, Interface, TypeLib, Wow6432Node ...
+
+        // a SOFTWARE hive that is not supplied still has the tree every Windows has: Classes with its registration
+        // keys, the Wow6432Node view and the link from Wow6432Node\Classes to Classes\Wow6432Node
+        reg::Close(sw);
+        CHECK_EQ(OpenStatus(std::wstring(kSoftware) + L"\\Classes\\Interface\\{00000000-0000-0000-C000-000000000046}"), nt::kSuccess);
+        CHECK_EQ(OpenStatus(std::wstring(kSoftware) + L"\\Classes\\Wow6432Node\\CLSID"), nt::kSuccess);
+        Oa viewlink(std::wstring(kSoftware) + L"\\Wow6432Node\\Classes", nullptr, 0x40 | 0x100);
+        CHECK_EQ(reg::Reg_NtOpenKey(&h, kRead, &viewlink.a), nt::kSuccess);
+        CHECK_EQ(QueryValue(h, L"SymbolicLinkValue", reg::kValuePartial, 512, &b, &rl), nt::kSuccess);
+        reg::Close(h);
+        CHECK_EQ(OpenStatus(std::wstring(kSoftware) + L"\\Wow6432Node\\Classes\\Interface"), nt::kSuccess);   // through the link
+        {
+            HANDLE ifc = Open(std::wstring(kSoftware) + L"\\Classes\\Interface", kAll);
+            CHECK_EQ(reg::Reg_NtDeleteKey(ifc), nt::kCannotDelete);   // never an empty key
+            reg::Close(ifc);
+        }
+    }
+    RemoveTree(dir);
+}
+
+// A handle's notification keeps the filter and the tree flag of its first request; a later request only adds its
+// event, and an outstanding request resets its event.
+TEST(registry_notify_requests_accumulate_per_handle) {
+    Session s(FixtureRoot());
+    HANDLE k1 = Open(std::wstring(kSoftware) + L"\\Fixture", kAll);
+    HANDLE k2 = Open(std::wstring(kSoftware) + L"\\Fixture", kAll);
+    HANDLE ev[4];
+    for (auto& e : ev) e = CreateEventW(nullptr, TRUE, TRUE, nullptr);   // signalled: a request must reset them
+    IO_STATUS_BLOCK iosb{};
+    CHECK_EQ(reg::Reg_NtNotifyChangeKey(k1, ev[0], nullptr, nullptr, &iosb, 1 /*NAME*/, FALSE, nullptr, 0, TRUE), nt::kPending);
+    CHECK_EQ(reg::Reg_NtNotifyChangeKey(k1, ev[1], nullptr, nullptr, &iosb, 0, FALSE, nullptr, 0, TRUE), nt::kPending);
+    CHECK_EQ(reg::Reg_NtNotifyChangeKey(k2, ev[2], nullptr, nullptr, &iosb, 0, FALSE, nullptr, 0, TRUE), nt::kPending);
+    CHECK_EQ(reg::Reg_NtNotifyChangeKey(k2, ev[3], nullptr, nullptr, &iosb, 1, FALSE, nullptr, 0, TRUE), nt::kPending);
+    CHECK(WaitForMultipleObjects(4, ev, FALSE, 0) == WAIT_TIMEOUT);
+    // a name change fires k1's two requests (filter NAME, from the first); k2's filter is 0 and never matches
+    HANDLE c = nullptr;
+    Oa oa(L"NotifyChild", k1);
+    CHECK_EQ(reg::Reg_NtCreateKey(&c, kAll, &oa.a, 0, nullptr, 0, nullptr), nt::kSuccess);
+    CHECK(WaitForSingleObject(ev[0], 0) == WAIT_OBJECT_0);
+    CHECK(WaitForSingleObject(ev[1], 0) == WAIT_OBJECT_0);
+    CHECK(WaitForSingleObject(ev[2], 0) == WAIT_TIMEOUT);
+    CHECK(WaitForSingleObject(ev[3], 0) == WAIT_TIMEOUT);
+    // the handle keeps its filter: a new request with another filter is still a NAME request
+    CHECK_EQ(reg::Reg_NtNotifyChangeKey(k1, ev[0], nullptr, nullptr, &iosb, 0, FALSE, nullptr, 0, TRUE), nt::kPending);
+    CHECK(WaitForSingleObject(ev[0], 0) == WAIT_TIMEOUT);
+    CHECK_EQ(reg::Reg_NtDeleteKey(c), nt::kSuccess);
+    CHECK(WaitForSingleObject(ev[0], 0) == WAIT_OBJECT_0);
+    reg::Close(c);
+    reg::Close(k1);
+    reg::Close(k2);
+    for (auto e : ev) CloseHandle(e);
+}
+
 TEST(registry_hardware_cpu_identity) {
     Session s(FixtureRoot());
     CHECK_EQ(s.init, nt::kSuccess);
@@ -886,12 +1147,16 @@ TEST(registry_notify_change) {
     CHECK(WaitForSingleObject(ev, 0) == WAIT_OBJECT_0);
     CHECK_EQ(iosb.Status, nt::kSuccess);
     ResetEvent(ev);
-    // watch tree: a change two levels down fires
-    CHECK_EQ(reg::Reg_NtNotifyChangeKey(k, ev, nullptr, nullptr, &iosb, 4, TRUE, nullptr, 0, TRUE), nt::kPending);
+    // watch tree: a change two levels down fires. The filter and the tree flag of a handle are those of its first
+    // request, so this one is made on a handle of its own.
+    HANDLE kt = Open(std::wstring(kSoftware) + L"\\Fixture", kAll);
+    CHECK_EQ(reg::Reg_NtNotifyChangeKey(kt, ev, nullptr, nullptr, &iosb, 4, TRUE, nullptr, 0, TRUE), nt::kPending);
+    CHECK(WaitForSingleObject(ev, 0) == WAIT_TIMEOUT);   // outstanding requests reset their event
     HANDLE deep = Open(std::wstring(kSoftware) + L"\\Fixture\\Many\\K0001", kAll);
     CHECK_EQ(SetDword(deep, L"Index", 5), nt::kSuccess);
     CHECK(WaitForSingleObject(ev, 0) == WAIT_OBJECT_0);
     reg::Close(deep);
+    reg::Close(kt);
     // closing the handle cancels a pending watch
     ResetEvent(ev);
     CHECK_EQ(reg::Reg_NtNotifyChangeKey(k, ev, nullptr, nullptr, &iosb, 4, FALSE, nullptr, 0, TRUE), nt::kPending);

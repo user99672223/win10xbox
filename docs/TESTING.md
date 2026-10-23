@@ -163,7 +163,7 @@ code (Wine's tests exit with `min(failures, 255)`, so 255 means "255 or more").
 | ntdll/directory | ok | 6336 | 5 | 556 | 1 | 255 | |
 | ntdll/file | crashed | - | - | - | - | 0 | file.c:413 (`C:\windows\SYSTEM32\cmd.exe` not found, STATUS_OBJECT_NAME_NOT_FOUND) |
 | ntdll/om | crashed | - | - | - | - | 5 | om.c:2942 (`\Sessions\1\BaseNamedObjects` missing) |
-| ntdll/reg | timeout | - | - | - | - | 124 | reg.c:1987 loops forever on `NtEnumerateKey` = STATUS_INVALID_PARAMETER (millions of failures) |
+| ntdll/reg | ok | 1186 | 13 | 1 | 0 | 1 | the one failure is `reg.c:2548`, `win_skip` of `test_NtRegLoadKeyEx` (the guest's token holds no SeBackup/SeRestore privilege; Wine's tests count a `win_skip` as a failure, docs/slices/wt-ntdll-reg.md) |
 | ntdll/info | crashed | - | - | - | - | 5 | info.c:2372 (system handle information) |
 | ntdll/time | ok | 10657 | 2 | **0** | 0 | 0 | |
 | kernel32/atom | ok | 1049715 | 0 | **0** | 0 | 0 | |
