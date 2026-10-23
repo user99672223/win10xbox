@@ -64,6 +64,12 @@ add_executable(guest_window_text window_text.c)
 target_link_libraries(guest_window_text PRIVATE user32 gdi32)
 win10xbox_add_guest(guest_window_text)
 
+# The dialog guest: DialogBoxParamW with a DIALOG resource (dialog.rc); the host clicks OK (tests/guest/dialog.c).
+enable_language(RC)
+add_executable(guest_dialog dialog.c dialog.rc)
+target_link_libraries(guest_dialog PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_dialog)
+
 # Smoke-run the guests natively (under Wine for the llvm-mingw cross build).
 add_test(NAME guest.hello COMMAND guest_hello)
 set_tests_properties(guest.hello PROPERTIES PASS_REGULAR_EXPRESSION "hello from guest")
