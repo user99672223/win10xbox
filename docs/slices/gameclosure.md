@@ -47,3 +47,8 @@ InternetDeInitializeAutoProxyDll), msvcp140, msvcp140_1, vcruntime140, vcruntime
 `wine-pe/build.sh --only <dll>`. closure_lists now also dumps the imports of winhttp, wininet, msvcp140(_1), vcruntime140(_1),
 dhcpcsvc from WIN10XBOX_BUILTIN_DIR (those present at configure time). Local guest_closure_builtin: 12 modules, 27 dlls,
 826 symbols, 0 missing dlls, 0 missing symbols (before jsproxy: 1 missing dll, 3 missing symbols, all jsproxy).
+
+### Push 2 (ci-loop)
+Push 1 on CI: both closure tests failed with `closure: no *_imports.txt in C:\guest`: ci.yml runs `cmake --build` (ALL) then ctest, and
+closure_lists was not part of ALL (only of the prepare_machine target, which the integration.prepare_machine test does not build).
+closure_lists is now `ALL`.

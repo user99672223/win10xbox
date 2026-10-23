@@ -68,7 +68,7 @@ if(TARGET guest_closure AND WIN10XBOX_PYTHON)
       list(APPEND _closure_files ${WIN10XBOX_BUILTIN_DIR}/${_b}.dll)
     endif()
   endforeach()
-  add_custom_target(closure_lists
+  add_custom_target(closure_lists ALL
     COMMAND ${WIN10XBOX_PYTHON} ${CMAKE_SOURCE_DIR}/tools/game/dump_imports.py ${_closure_files} ${CMAKE_BINARY_DIR}/bin/guest
     COMMENT "Import lists of the guests for guest_closure" VERBATIM)
   add_dependencies(closure_lists ${_closure_guests} guest_closure)
