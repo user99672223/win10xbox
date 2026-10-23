@@ -1,8 +1,8 @@
 status: ready
 
-Run: https://github.com/user99672223/win10xbox/actions/runs/39891347427 (head daa276c; linux-cross, windows (Debug) and
+Run: https://github.com/user99672223/win10xbox/actions/runs/39894516253 (head 2517711, before the last merge of main, which was clean; linux-cross, windows (Debug) and
 windows (RelWithDebInfo) all green; "Gate - nothing skipped" 55 of 55 ran and passed on both windows jobs, 65 of 65 on
-linux-cross; wine-pe.yml and uwp-lite / host-win32-appcontainer green for the same head).
+linux-cross; wine-pe.yml green for the earlier head daa276c).
 
 What runs through the layer: `C:\guest\sdl_rects.exe` (builtin-only machine folder), the real SDL2.dll 2.30.9 from the
 official release zip loaded from `C:\guest`. Output (ctest-junit.xml of windows-RelWithDebInfo-logs):
