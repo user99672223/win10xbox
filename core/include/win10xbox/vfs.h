@@ -67,6 +67,7 @@ struct MachineInfo {
     struct { bool hide_hypervisor = true; std::wstring vendor = L"AuthenticAMD"; } cpu;
     std::vector<std::pair<std::wstring, std::wstring>> syscall_overrides;   // name -> policy, source order
     std::wstring gui;   // "gui": "emulated" | "native" as written (lower-cased); empty when absent
+    std::wstring d3dkmt;   // "d3dkmt": "host" = with the emulated GUI, NtGdiDdDDI* go to the host's dxgkrnl (docs/slices/swapchain.md)
 };
 
 // Initialise from the machine folder: reads <machine_root>\machine.json

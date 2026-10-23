@@ -423,6 +423,12 @@ void ApplyConfig(const json::Value& root, State* st) {
         if (v == L"emulated" || v == L"native") st->info.gui = v;
         else WARN(vfs, "machine.json: \"gui\" must be \"emulated\" or \"native\", using the default");
     }
+    if (const json::Value* g = root.Find("d3dkmt"); g && g->IsString()) {
+        std::wstring v = Widen(g->str);
+        for (auto& ch : v) ch = static_cast<wchar_t>(std::towlower(ch));
+        if (v == L"host") st->info.d3dkmt = v;
+        else WARN(vfs, "machine.json: \"d3dkmt\" must be \"host\", ignored");
+    }
     if (const json::Value* s = root.Find("syscall_overrides"); s && s->IsObject()) {
         for (const auto& m : s->members) {
             if (!m.second.IsString()) { WARN(vfs, "machine.json: syscall_overrides.%s is not a string", m.first.c_str()); continue; }

@@ -87,6 +87,7 @@ struct State {
     // Route B (config gui = native): win32u entries pass through to this module (the HOST's win32u.dll).
     HMODULE host_win32u = nullptr;
     bool gui_native = false;
+    bool d3dkmt_host = false;                          // emulated GUI + "d3dkmt": "host" (UseHostD3dkmt)
     std::vector<std::unique_ptr<Entry>> extra;         // native-only win32u syscalls (ids kExtraFirstId..)
     std::uint32_t next_extra_id = kExtraFirstId;
     const Entry* end_paint = nullptr;                  // NtUserEndPaint: presentation snapshot point
@@ -392,6 +393,37 @@ NTSTATUS UseHostWin32u(HMODULE win32u) {
 }
 
 bool NativeGuiActive() { return g_state.gui_native; }
+bool HostD3dkmtActive() { return g_state.d3dkmt_host; }
+
+// Emulated GUI + Direct3D (docs/slices/swapchain.md): the D3DKMT calls of the native dxgi/d3d11 (Wine's gdi32 ->
+// NtGdiDdDDI* thunks of Wine's win32u, ids Wine's) go to the host's win32u, i.e. its dxgkrnl, by name. Every other
+// win32u syscall stays emulated by core/user. The calls that carry an emulated window or DC are translated
+// (swapchain.cpp DdiOverride) so the host sees a window it knows.
+NTSTATUS UseHostD3dkmt(HMODULE win32u) {
+    State& s = S();
+    if (!s.initialized || !win32u) return st::Unsuccessful;
+    AcquireSRWLockExclusive(&s.lock);
+    std::size_t fwd = 0, over = 0;
+    for (Entry& e : s.entries) {
+        if (e.id < kWin32uFirstId || std::strncmp(e.name, "NtGdiDdDDI", 10)) continue;
+        void* fn = reinterpret_cast<void*>(GetProcAddress(win32u, e.name));
+        if (!fn) continue;
+        SetDdiHostFn(e.name, fn);
+        e.host_fn = fn;
+        e.impl = DdiOverride(e.name);
+        e.policy = Policy::Translate;
+        e.nargs = kMaxArgs;   // Wine's counts follow its own prototypes: copy the most the stub can
+        e.note = e.impl ? "win32u dxgkrnl (host), window/DC translated" : "win32u dxgkrnl (host)";
+        ++fwd;
+        if (e.impl) ++over;
+    }
+    s.host_win32u = win32u;
+    s.d3dkmt_host = true;
+    ReleaseSRWLockExclusive(&s.lock);
+    TRACE(dispatch, "d3dkmt host: %zu NtGdiDdDDI* forwarded to the host's win32u %p, %zu with window/DC translation",
+          fwd, win32u, over);
+    return st::Success;
+}
 
 std::uint32_t NargsOverride(const char* name) {
     static const struct { const char* name; std::uint32_t nargs; } kFix[] = {
@@ -1014,8 +1046,13 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
             status = static_cast<NTSTATUS>(result64);
         }
         else if (e->impl) status = CallWithArgs(e->impl, f->args, e->nargs);
+        else if (e->host_fn && win32u) {
+            result64 = CallWithArgs64(e->host_fn, f->args, e->nargs);   // UseHostD3dkmt: a NtGdiDdDDI* as the host returns it
+            status = static_cast<NTSTATUS>(result64);
+        }
         else if (e->host_fn) status = CallWithArgs(e->host_fn, f->args, e->nargs);
         else status = st::NotImplemented;
+        if (win32u && s.d3dkmt_host && e->host_fn) NoteHostD3dkmtCall(e->name, static_cast<std::uint32_t>(status));
         break;
     case Policy::Todo:
     default:

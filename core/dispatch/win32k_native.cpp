@@ -227,4 +227,34 @@ NTSTATUS ConfigureNativeGui() {
     return UseHostWin32u(win32u);
 }
 
+// Emulated GUI + "d3dkmt": "host" (docs/slices/swapchain.md). The guest's windows stay core/user's; only the D3DKMT
+// calls of the native dxgi reach the host's win32k, so the process must be connected to it exactly as in route B
+// (the host's user32 loaded and used before the PEB take-over), the host's user-mode callbacks must keep reaching
+// the host's user32 (the trampolines, installed by NoteNativeWin32uCall once the guest's user32 has its own table
+// in), and the host windows the swap chains present into live on a thread started here, before the take-over
+// (a host thread created afterwards would initialise against the guest's loader lists).
+NTSTATUS ConfigureHostD3dkmt() {
+    HMODULE user32 = LoadLibraryW(L"user32.dll");
+    HMODULE gdi32 = LoadLibraryW(L"gdi32.dll");
+    HMODULE win32u = LoadLibraryW(L"win32u.dll");
+    if (!user32 || !gdi32 || !win32u) {
+        ERR(dispatch, "d3dkmt host: the host's user32/gdi32/win32u did not load (%p %p %p, error %lu)",
+            static_cast<void*>(user32), static_cast<void*>(gdi32), static_cast<void*>(win32u), GetLastError());
+        return st::DllNotFound;
+    }
+    auto get_desktop = reinterpret_cast<HWND(WINAPI*)()>(GetProcAddress(user32, "GetDesktopWindow"));
+    if (!get_desktop) return st::NotImplemented;
+    const HWND desktop = get_desktop();   // connects this process to win32k
+    g_host_callbacks = PebField<KernelCallbackFn*>(peb::KernelCallbackTable);
+    TRACE(dispatch, "d3dkmt host: host user32 %p gdi32 %p win32u %p, desktop %p, KernelCallbackTable %p",
+          static_cast<void*>(user32), static_cast<void*>(gdi32), static_cast<void*>(win32u),
+          static_cast<void*>(desktop), static_cast<void*>(g_host_callbacks));
+    if (!g_host_callbacks) {
+        ERR(dispatch, "d3dkmt host: the host's user32 left PEB.KernelCallbackTable empty");
+        return st::Unsuccessful;
+    }
+    if (NTSTATUS s = StartHostWindowThread(user32, gdi32)) return s;
+    return UseHostD3dkmt(win32u);
+}
+
 }  // namespace win10xbox::dispatch::detail

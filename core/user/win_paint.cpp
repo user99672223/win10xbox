@@ -82,6 +82,10 @@ void InvalidateChildrenCoveredBy(WindowObj* w, const RECT& area) {
 
 namespace {
 
+// Per-window client-area frame sources (user::SetClientFrameSource), under the module lock.
+struct FrameSource { HWND hwnd; user::ClientFrameFn fn; void* ctx; };
+std::vector<FrameSource> g_frame_sources;
+
 void RetainFrame() {
     State& s = S();
     s.retained.clear();
@@ -90,7 +94,7 @@ void RetainFrame() {
     for (auto it = desk->children.rbegin(); it != desk->children.rend(); ++it) {
         WindowObj* w = Win(*it);
         if (!w || !(w->style & WS_VISIBLE) || !w->surface) continue;
-        s.retained.push_back(RetainedLayer{w->surface, WindowRectScreen(w)});
+        s.retained.push_back(RetainedLayer{w->surface, WindowRectScreen(w), w->handle, ClientRectScreen(w)});
     }
     s.retained_valid = true;
 }
@@ -112,6 +116,15 @@ void Compose(const std::vector<RetainedLayer>& layers, std::uint32_t* bgra, std:
             auto* dst = reinterpret_cast<std::uint32_t*>(reinterpret_cast<std::uint8_t*>(bgra) + static_cast<std::ptrdiff_t>(y) * stride);
             for (int x = r.left; x < r.right; ++x) dst[x] = src[x - l.screen.left] | 0xff000000u;
         }
+        // A window whose client area is fed by a host swap chain: its last presented frame over the client rectangle.
+        for (const FrameSource& fs : g_frame_sources) {
+            if (fs.hwnd != l.hwnd || !fs.fn) continue;
+            const RECT c = RectIntersect(l.client_screen, RECT{0, 0, width, height});
+            if (RectEmpty(c)) break;
+            fs.fn(fs.ctx, reinterpret_cast<std::uint32_t*>(reinterpret_cast<std::uint8_t*>(bgra) + static_cast<std::ptrdiff_t>(c.top) * stride) + c.left,
+                  c.right - c.left, c.bottom - c.top, stride, c.left - l.client_screen.left, c.top - l.client_screen.top);
+            break;
+        }
     }
 }
 
@@ -124,7 +137,7 @@ std::vector<RetainedLayer> LiveLayers() {
     for (auto it = desk->children.rbegin(); it != desk->children.rend(); ++it) {
         WindowObj* w = Win(*it);
         if (!w || !(w->style & WS_VISIBLE) || !w->surface) continue;
-        layers.push_back(RetainedLayer{w->surface, WindowRectScreen(w)});
+        layers.push_back(RetainedLayer{w->surface, WindowRectScreen(w), w->handle, ClientRectScreen(w)});
     }
     return layers;
 }
@@ -432,6 +445,35 @@ int ReleaseDCInternal(HWND hwnd, HDC hdc) {
 }  // namespace detail
 
 // ---- Host-facing ----------------------------------------------------------------------------------
+
+bool GetWindowGeometry(void* hwnd, WindowGeometry* out) {
+    detail::LockGuard lock;
+    detail::WindowObj* w = detail::Win(static_cast<HWND>(hwnd));
+    if (!w || !out || (w->flags & (detail::kWinIsDesktop | detail::kWinIsMsgParent))) return false;
+    const RECT a = detail::WindowRectScreen(w), c = detail::ClientRectScreen(w);
+    *out = WindowGeometry{{a.left, a.top, a.right, a.bottom}, {c.left, c.top, c.right, c.bottom},
+                          (w->style & WS_VISIBLE) != 0, detail::IsTopLevel(w)};
+    return true;
+}
+
+void* WindowOfDc(void* hdc) {
+    detail::LockGuard lock;
+    const detail::DcObj* dc = detail::DcGet(static_cast<HDC>(hdc));
+    return dc ? dc->hwnd : nullptr;
+}
+
+bool SetClientFrameSource(void* hwnd, ClientFrameFn fn, void* ctx) {
+    detail::LockGuard lock;
+    auto& v = detail::g_frame_sources;
+    for (auto it = v.begin(); it != v.end(); ++it)
+        if (it->hwnd == hwnd) { if (fn) { it->fn = fn; it->ctx = ctx; } else v.erase(it); return true; }
+    if (!fn) return true;
+    if (!detail::Win(static_cast<HWND>(hwnd))) return false;
+    v.push_back({static_cast<HWND>(hwnd), fn, ctx});
+    return true;
+}
+
+void NotifyClientFrame() { detail::NoteScreenChanged(); }
 
 bool ComposeFrame(std::uint32_t* bgra, std::int32_t width, std::int32_t height, std::int32_t stride_bytes) {
     if (detail::NativeGui()) return detail::NativeComposeFrame(bgra, width, height, stride_bytes);   // route B

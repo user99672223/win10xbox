@@ -560,5 +560,24 @@ void NoteNativeGuestImage(const loader::MappedImage& img, const std::wstring& ho
 void NativeWin32uBefore(const char* name);
 void NativeWin32uAfter(const char* name, std::uint64_t result);
 std::uint64_t NativeD3dkmtCalls();
+// native_d3d.cpp. Emulated GUI + "d3dkmt": "host": the first-call / first-error evidence for a NtGdiDdDDI* the
+// dispatcher forwarded to the host (no composing: the swap chain path does that, swapchain.cpp).
+void NoteHostD3dkmtCall(const char* name, std::uint64_t result);
+// swapchain.cpp (docs/slices/swapchain.md). Emulated GUI + Direct3D: dxgi's present path needs a window the HOST
+// win32k knows. One hidden host window per emulated window that reaches a NtGdiDdDDI* (created on a dedicated
+// host thread, started BEFORE the PEB take-over); the hWindow / hDc arguments are translated to it and, after a
+// present, the host window's pixels are captured and composed into the emulated window's client area.
+// StartHostWindowThread: resolves the host user32/gdi32 entry points the code needs and starts the thread
+// (host view, before the take-over). DdiOverride: the translating implementation of a NtGdiDdDDI* name, or null
+// when the call passes through unchanged. SetDdiHostFn: the host win32u export the overrides forward to.
+NTSTATUS StartHostWindowThread(HMODULE user32, HMODULE gdi32);
+void* DdiOverride(const char* name);
+void SetDdiHostFn(const char* name, void* fn);
+// win32k_native.cpp. Emulated GUI + d3dkmt host: loads the host user32/gdi32/win32u (before the take-over),
+// connects the process to win32k, starts the host window thread and forwards the NtGdiDdDDI* entries
+// (dispatcher.cpp UseHostD3dkmt). Called by process::Launch.
+NTSTATUS ConfigureHostD3dkmt();
+NTSTATUS UseHostD3dkmt(HMODULE win32u);
+bool HostD3dkmtActive();
 
 }  // namespace win10xbox::dispatch::detail

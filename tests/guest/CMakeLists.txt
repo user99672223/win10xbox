@@ -185,6 +185,14 @@ if(MSVC)
   endif()
 endif()
 
+# A swap chain on a window of the layer's emulated user32 (tests/guest/d3d11_swap.c, docs/slices/swapchain.md); runs on
+# the emulated-GUI + native-D3D folder (integration.guest_d3d11_swap). MSVC only, like guest_d3d11_tri.
+if(MSVC)
+  add_executable(guest_d3d11_swap d3d11_swap.c)
+  target_link_libraries(guest_d3d11_swap PRIVATE dxguid user32)
+  win10xbox_add_guest(guest_d3d11_swap)
+endif()
+
 # Dear ImGui's example_win32_directx11, unmodified, as a guest of route B + Direct3D 11 (tests/guest/imgui_d3d11.cpp
 # wraps it; docs/DECISIONS.md G1). The Dear ImGui release source is not vendored: CI fetches it on the Windows runner
 # (ci.yml, "Fetch Dear ImGui") and passes its root as WIN10XBOX_IMGUI_DIR (environment or cache). MSVC only, like

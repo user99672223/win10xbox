@@ -74,6 +74,11 @@ void NativeWin32uAfter(const char* name, std::uint64_t result) {
     NativeGuestPainted();
 }
 
+void NoteHostD3dkmtCall(const char* name, std::uint64_t result) {
+    InterlockedIncrement64(&g_ddi_calls);
+    NoteFirst(name, result);
+}
+
 std::uint64_t NativeD3dkmtCalls() { return static_cast<std::uint64_t>(g_ddi_calls); }
 
 }  // namespace win10xbox::dispatch::detail

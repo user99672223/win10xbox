@@ -65,6 +65,22 @@ void ScreenSize(std::int32_t* width, std::int32_t* height);
 // <path>, written when the guest has exited) and by host-uwp (LocalState\screen.bmp).
 bool WriteScreenshot(const std::wstring& path);
 
+// Host swap chains on emulated windows (core/dispatch/swapchain.cpp, docs/slices/swapchain.md). HWND/HDC are
+// passed as void*. GetWindowGeometry: screen rectangles of an emulated window (false: not one of ours, or the
+// desktop). WindowOfDc: the emulated window a GetDC/BeginPaint DC belongs to (null for memory DCs and unknown
+// handles). SetClientFrameSource: ComposeFrame calls fn under the module lock (fn must not call back into this
+// module) after drawing that window, to overlay its client area: dst is the top-left of the visible part, w x h
+// its size, (src_x, src_y) its offset inside the client area. fn null clears. NotifyClientFrame: a new frame
+// exists (FrameSerial++).
+struct HostRect { std::int32_t left, top, right, bottom; };
+struct WindowGeometry { HostRect window, client; bool visible, top_level; };
+using ClientFrameFn = bool (*)(void* ctx, std::uint32_t* dst, std::int32_t w, std::int32_t h, std::int32_t stride_bytes,
+                               std::int32_t src_x, std::int32_t src_y);
+bool GetWindowGeometry(void* hwnd, WindowGeometry* out);
+void* WindowOfDc(void* hdc);
+bool SetClientFrameSource(void* hwnd, ClientFrameFn fn, void* ctx);
+void NotifyClientFrame();
+
 // Counters for tests and status files.
 struct Stats {
     std::uint64_t windows_created = 0, windows_destroyed = 0;

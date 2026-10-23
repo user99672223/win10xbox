@@ -663,6 +663,20 @@ int Launch(const LaunchOptions& opts) {
             else if (!_wcsicmp(v, L"emulated")) cfg.gui = config::Gui::Emulated;
             else WARN(process, "WIN10XBOX_GUI=%ls ignored: emulated or native", v);
         }
+        bool d3dkmt_host = false;
+#if WIN10XBOX_HAVE_VFS
+        d3dkmt_host = mi.d3dkmt == L"host";
+#endif
+        wchar_t dk[8];
+        const DWORD dkn = GetEnvironmentVariableW(L"WIN10XBOX_D3DKMT", dk, 8);
+        if (dkn && dkn < 8) d3dkmt_host = !_wcsicmp(dk, L"host");
+        if (cfg.gui == config::Gui::Emulated && d3dkmt_host) {
+            TRACE(process, "gui emulated + d3dkmt host: NtGdiDdDDI* go to the host's dxgkrnl, swap chains get host windows");
+            if ((s = ConfigureHostD3dkmt())) {
+                ERR(process, "d3dkmt host could not be configured: %08lx", static_cast<unsigned long>(s));
+                return static_cast<int>(s);
+            }
+        }
         if (cfg.gui == config::Gui::Native) {
             TRACE(process, "gui native: the guest's win32u syscalls go to the host's win32k");
 #if WIN10XBOX_HAVE_VFS

@@ -322,7 +322,7 @@ UserThread* FindUserThreadById(DWORD tid);   // lock held
 abi::ThreadInfo* CurrentThreadInfo();
 
 // ---- Module state (allocated under the lock on first use) ---------------------------
-struct RetainedLayer { std::shared_ptr<winexbox::ISurface> surface; RECT screen; };
+struct RetainedLayer { std::shared_ptr<winexbox::ISurface> surface; RECT screen; HWND hwnd = nullptr; RECT client_screen{}; };
 struct State {
     // GDI
     abi::GdiHandleEntry* gdi_entries = nullptr;

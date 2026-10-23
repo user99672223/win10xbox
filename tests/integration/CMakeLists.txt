@@ -18,12 +18,15 @@ set(WIN10XBOX_BUILTIN_MACHINE_DIR ${CMAKE_BINARY_DIR}/bin/machine-builtin)
 set(WIN10XBOX_NATIVE_GUI_MACHINE_DIR ${CMAKE_BINARY_DIR}/bin/machine-native-gui)
 # Route B + Direct3D 11: the native-GUI set plus the native D3D runtime (prepare_machine.cmake D3D_MACHINE).
 set(WIN10XBOX_D3D_MACHINE_DIR ${CMAKE_BINARY_DIR}/bin/machine-native-d3d)
+# Emulated GUI + native Direct3D 11 (prepare_machine.cmake D3D_EMU_MACHINE; swap chains on core/user windows).
+set(WIN10XBOX_D3D_EMU_MACHINE_DIR ${CMAKE_BINARY_DIR}/bin/machine-emu-d3d)
 set(_default_json ${CMAKE_SOURCE_DIR}/machine/machine.default.json)
 set(_prepare_args
   -DMACHINE=${WIN10XBOX_MACHINE_DIR}
   -DBUILTIN_ONLY_MACHINE=${WIN10XBOX_BUILTIN_MACHINE_DIR}
   -DNATIVE_GUI_MACHINE=${WIN10XBOX_NATIVE_GUI_MACHINE_DIR}
   -DD3D_MACHINE=${WIN10XBOX_D3D_MACHINE_DIR}
+  -DD3D_EMU_MACHINE=${WIN10XBOX_D3D_EMU_MACHINE_DIR}
   -DD3D_EXTRA_DIR=${CMAKE_BINARY_DIR}/bin/machine-d3d-extra
   -DBUILTIN_DIR=${WIN10XBOX_BUILTIN_DIR}
   -DGUEST_DIR=${CMAKE_BINARY_DIR}/bin/guest
@@ -39,6 +42,9 @@ if(TARGET guest_hello)
                    guest_seh guest_tebframe guest_window_scroll guest_clipboard msctf_stub)
   if(TARGET guest_d3d11_tri)
     add_dependencies(prepare_machine guest_d3d11_tri)
+  endif()
+  if(TARGET guest_d3d11_swap)
+    add_dependencies(prepare_machine guest_d3d11_swap)
   endif()
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
@@ -524,6 +530,33 @@ set_tests_properties(integration.guest_d3d11 PROPERTIES
   LABELS "guest_e2e"
   TIMEOUT 240
   ENVIRONMENT "WIN10XBOX_WINEDEBUG=+loaddll,warn+module,+seh,+rpc,+service")
+endif()
+
+# A swap chain on a window of the emulated user32 (docs/slices/swapchain.md): tests/guest/d3d11_swap.c on
+# machine-emu-d3d ("gui": "emulated", "d3dkmt": "host"). 60 frames of a moving triangle with Present(1,0); the guest reads one
+# frame back (exit 42), and the screenshot must show the triangle at the window's rectangle (window at 100,100, 256x256).
+# Native Windows builds only, same condition as integration.guest_d3d11.
+if(NOT CMAKE_CROSSCOMPILING AND TARGET guest_d3d11_swap)
+add_test(NAME integration.guest_d3d11_swap
+  COMMAND ${CMAKE_COMMAND}
+    -DHOST=$<TARGET_FILE:win10xbox>
+    -DMACHINE=${WIN10XBOX_D3D_EMU_MACHINE_DIR}
+    -DPROGRAM=C:\\guest\\guest_d3d11_swap.exe
+    -DEXPECT_EXIT=42
+    "-DEXPECT_REGEX=swap: window hwnd=.* client=256x256;swap: CreateSwapChain -> 00000000;swap: readback centre=ffff0000 corner=ff0000ff;swap: presented 60 frames;swap: done"
+    "-DEXPECT_TRACE_REGEX=d3dkmt host: [0-9]+ NtGdiDdDDI\\* forwarded;swapchain: emulated window .* -> host window;swapchain: frame [0-9]+ of .* captured"
+    "-DFORBID_TRACE_REGEX=host state reached under the guest TLS view"
+    -DDEBUG_SPEC=+dispatch,+modules,+process,+user
+    -DREQUIRE=Windows/System32/d3d11.dll
+    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
+set_tests_properties(integration.guest_d3d11_swap PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "guest_e2e"
+  TIMEOUT 240
+  ENVIRONMENT "WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_d3d11_swap.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=228,228,ffff0000|101,101,ff0000ff")
 endif()
 
 # Route B + Direct3D 11 (docs/DECISIONS.md G1): Dear ImGui's example_win32_directx11 (tests/guest/imgui_d3d11.cpp,
