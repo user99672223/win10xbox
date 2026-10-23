@@ -429,6 +429,9 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
     "sdl: init video=windows" "sdl: surface 320x240" "sdl: pixels 00dc5000 000000ff 0000ff00" "sdl: done")
   set_tests_properties(integration.real_sdl2 PROPERTIES
     ENVIRONMENT "WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/real_sdl2.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=105,105,ff0050dc|130,130,ffff0000|230,150,ff00ff00")
+  unset(_guest_machine)
+endif()
+
 # ---- Tiny C Compiler 0.9.27: a compiler that runs through the layer, and the program it writes ---------------------
 # tools/ci/fetch_tcc.ps1 (the official prebuilt win64 zip, pinned SHA-256) leaves tcc.exe, libtcc.dll, include/ and lib/
 # in <machine>/guest/tcc before ctest runs (docs/slices/realtcc.md). tcc_compile writes C:\Users\User\tcc_hello.exe
