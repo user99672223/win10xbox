@@ -5,9 +5,7 @@ Windows 10 x64 / 22H2 NT syscall numbers) and the hand-maintained policy
 `core/dispatch/syscall_policy.inc`; win32u entries (ids 0x1000..) are Emulate when
 `core/user/user_syscalls.h` registers them. Do not edit by hand.
 
-1798 syscalls. passthrough 155, translate 35, emulate 311, todo 1297. Generated 2026-10-23.
-1798 syscalls. passthrough 155, translate 35, emulate 324, todo 1284. Generated 2026-10-23.
-1798 syscalls. passthrough 154, translate 36, emulate 303, todo 1305. Generated 2026-10-23.
+1798 syscalls. passthrough 154, translate 36, emulate 329, todo 1279. Generated 2026-10-23.
 
 Policy: **PassThrough** calls the host ntdll export by name; **Translate**
 rewrites arguments (paths, handles, timeouts) then passes through;
