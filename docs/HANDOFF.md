@@ -121,6 +121,26 @@ if no pad is ever seen) and keyboard (arrows, Enter/Space, Esc/Backspace).
   guest (and the `.dll` files beside it) is copied into `C:\guest` (`LocalState\machine\guest`) right
   before launch. The cursor starts on the `"guest"` of `launch.json`. Arguments and `expect_exit_code`
   written for another guest are dropped.
+* **Sidecar files** next to a guest (package `payload\guest\` or `LocalState\guests\`; parsed by
+  `host-uwp/guest_sidecar.{h,cpp}`, covered by `host_uwp.selftest`). Blank lines and lines starting with `#` are
+  skipped everywhere; CRLF is fine.
+  * `<name>.args`: one argument per line, verbatim (no splitting, no quote handling). When present it replaces
+    `launch.json` `args` for that launch.
+  * `<name>.env`: `KEY=VALUE` per line. Set in the host's environment (the guest inherits it) for that launch
+    only, then the previous values are restored. A malformed file is ignored (logged).
+  * `<name>.title`: first non-blank line is shown in the list instead of `<name>.exe`.
+  * `<name>.launch`: an extra list entry that runs another guest with its own settings, no copy of the exe.
+    Keys, one per line: `exe=<leaf name>` (required, must be in the list), `title=<text>`, `args=<words>`
+    (whitespace separated, `"double quotes"` group a word; repeatable, appended), `env=KEY=VALUE` (repeatable).
+    An entry whose `exe` is not present is not offered. `autoselect` matches the entry name (`doom-timedemo.launch`).
+* **Doom.** The `msix` job runs `tools/ci/fetch_doom.ps1` (pinned) into `payload\guest\` (flat: `chocolate-doom.exe`,
+  the SDL2 DLLs, `doom1.wad`, about 10 MB; `stage.cmake` `EXTRA_GUEST_DIR` / CMake `HOST_UWP_EXTRA_GUEST_DIR`).
+  Shipped sidecars (`host-uwp/payload/guest/`): `chocolate-doom.args` = `-iwad doom1.wad -fullscreen -nomouse`,
+  `chocolate-doom.env` = `SDL_RENDER_DRIVER=software` (the hardware path is a later slice), `chocolate-doom.title`
+  = `Doom`, and `doom-timedemo.launch` (`-timedemo demo1 -nosound -nomouse -nogui -window`, listed as
+  "Doom (timedemo)"; the engine ends it through `I_Error`, exit code -1, so the result screen says EXITED, not PASS).
+  The picker therefore shows "Doom" and "Doom (timedemo)"; play uses the pad through XInput (SDL2). Not proven on
+  hardware: any of it. The iwad is found next to the exe (`C:\guest`).
 * **After the guest exits** the result screen shows its exit code, the verdict and the last 20 lines of
   `stdout.txt`; B/Esc/Enter returns to the list. The same data is written to
   `LocalState\launcher_result.txt` (`guest=`, `ran=`, `exit_code=`, `verdict=`, `  | <line>`).

@@ -20,6 +20,7 @@
 #include "host_diag.h"
 #include "host_shell.h"
 #include "host_stage.h"
+#include "guest_sidecar.h"
 #include "host_util.h"
 #include "launch_config.h"
 #include "launcher.h"
@@ -73,6 +74,45 @@ namespace
     // the sink over, the host's own sink drains the queue (so it cannot grow
     // without bound) and counts what arrived, which makes the CoreWindow ->
     // backend path observable in status.txt on a console.
+    // Sets environment variables for one launch and puts the previous values back when the run ends, so a
+    // sidecar's env applies to that launch only (the guest inherits the host's environment).
+    class EnvScope
+    {
+    public:
+        explicit EnvScope(const std::vector<std::pair<std::string, std::string>>& vars)
+        {
+            for (const auto& kv : vars)
+            {
+                Saved s;
+                s.name = Widen(kv.first);
+                const DWORD n = GetEnvironmentVariableW(s.name.c_str(), nullptr, 0);
+                s.had = n != 0;
+                if (s.had)
+                {
+                    s.value.resize(n);
+                    s.value.resize(GetEnvironmentVariableW(s.name.c_str(), &s.value[0], n));
+                }
+                SetEnvironmentVariableW(s.name.c_str(), Widen(kv.second).c_str());
+                saved_.push_back(std::move(s));
+            }
+        }
+        ~EnvScope()
+        {
+            for (auto it = saved_.rbegin(); it != saved_.rend(); ++it)
+                SetEnvironmentVariableW(it->name.c_str(), it->had ? it->value.c_str() : nullptr);
+        }
+        EnvScope(const EnvScope&) = delete;
+        EnvScope& operator=(const EnvScope&) = delete;
+
+    private:
+        struct Saved
+        {
+            std::wstring name, value;
+            bool had = false;
+        };
+        std::vector<Saved> saved_;
+    };
+
     class CountingSink final : public winexbox::IEventSink
     {
     public:
@@ -377,6 +417,8 @@ void Host::Impl::RunImpl()
     if (lc.has_expect_exit_code) report.Set("launch.expect_exit_code", Fmt("%d", lc.expect_exit_code));
     report.Flush();
 
+    // The picked entry's .env/env= pairs: in the host's environment (the guest inherits it) for this launch only.
+    EnvScope launch_env_scope(launch_env);
     // Tracing knobs reach the core through the environment it reads at Initialize.
     if (!lc.trace.empty()) SetEnvironmentVariableW(L"WIN10XBOX_DEBUG", Widen(lc.trace).c_str());
     if (!lc.winedebug.empty()) SetEnvironmentVariableW(L"WIN10XBOX_WINEDEBUG", Widen(lc.winedebug).c_str());
@@ -396,6 +438,7 @@ void Host::Impl::RunImpl()
     // On when launch.json says "picker": true or names an "autoselect" entry, and by default when there is no
     // launch.json at all. The list is the guests bundled in the package plus any .exe in LocalState\guests.
     LauncherEntry chosen;
+    std::vector<std::pair<std::string, std::string>> launch_env;   // chosen entry's env, applied by EnvScope below
     autoselected = false;
     const bool no_config = source.rfind("built-in defaults", 0) == 0;
     if (launcher != nullptr && (lc.has_picker ? lc.picker : (no_config || !lc.autoselect.empty())))
@@ -403,21 +446,69 @@ void Host::Impl::RunImpl()
         report.Set("phase", "launcher");
         report.Flush();
         std::vector<LauncherEntry> entries;
-        auto is_exe = [](const std::wstring& n) {
-            return n.size() > 4 && _wcsicmp(n.c_str() + n.size() - 4, L".exe") == 0;
+        auto has_ext = [](const std::wstring& n, const wchar_t* ext) {
+            const std::size_t l = wcslen(ext);
+            return n.size() > l && _wcsicmp(n.c_str() + n.size() - l, ext) == 0;
+        };
+        // Builds one entry from `f` (an .exe, or a .launch text file naming one) and its sidecars next to it.
+        auto add_entry = [&](const std::wstring& dir, const std::wstring& f, bool from_ls) {
+            LauncherEntry e;
+            e.name = Narrow(f);
+            e.path = dir + L"\\" + f;
+            e.from_localstate = from_ls;
+            const std::wstring stem = f.substr(0, f.find_last_of(L'.'));
+            auto read = [&](const std::wstring& file, std::string* text) {
+                DWORD err = 0;
+                return ReadSmallFile(dir + L"\\" + file, 64 * 1024, text, &err);
+            };
+            std::string text, why;
+            if (has_ext(f, L".launch"))
+            {
+                GuestLaunch gl;
+                if (!read(f, &text) || !ParseLaunchFile(text, &gl, &why))
+                {
+                    diag::Line("launcher: ignoring %s (%s)", e.name.c_str(), why.empty() ? "cannot read" : why.c_str());
+                    return;
+                }
+                e.exe = gl.exe;
+                e.title = gl.title;
+                e.args = gl.args;
+                e.env = gl.env;
+            }
+            else
+            {
+                e.exe = e.name;
+                if (read(stem + L".args", &text)) ParseArgsFile(text, &e.args);
+                if (read(stem + L".env", &text) && !ParseEnvFile(text, &e.env, &why))
+                {
+                    diag::Line("launcher: %s.env ignored (%s)", Narrow(stem).c_str(), why.c_str());
+                    e.env.clear();
+                }
+                if (read(stem + L".title", &text)) e.title = ParseTitleFile(text);
+            }
+            for (LauncherEntry& o : entries)
+                if (_stricmp(o.name.c_str(), e.name.c_str()) == 0) return;   // the bundled one wins
+            entries.push_back(std::move(e));
         };
         for (const std::wstring& f : ListFiles(payload + L"\\guest"))
-            if (is_exe(f)) entries.push_back({Narrow(f), payload + L"\\guest\\" + f, false});
+            if (has_ext(f, L".exe") || has_ext(f, L".launch")) add_entry(payload + L"\\guest", f, false);
         for (const std::wstring& f : ListFiles(ls + L"\\guests"))
-            if (is_exe(f))
+            if (has_ext(f, L".exe") || has_ext(f, L".launch")) add_entry(ls + L"\\guests", f, true);
+        // A .launch entry whose program is not in the package (or in LocalState\guests) is not offered.
+        {
+            std::vector<LauncherEntry> kept;
+            for (const LauncherEntry& e : entries)
             {
-                bool dup = false;
-                for (LauncherEntry& e : entries)
-                    if (_wcsicmp(Widen(e.name).c_str(), f.c_str()) == 0) dup = true;   // the bundled one wins
-                if (!dup) entries.push_back({Narrow(f), ls + L"\\guests\\" + f, true});
+                bool ok = e.exe == e.name;
+                for (const LauncherEntry& o : entries)
+                    if (!ok && _stricmp(o.name.c_str(), e.exe.c_str()) == 0) ok = true;
+                if (ok) kept.push_back(e);
+                else diag::Line("launcher: %s needs %s, which is not there", e.name.c_str(), e.exe.c_str());
             }
+            entries.swap(kept);
+        }
         std::sort(entries.begin(), entries.end(), [](const LauncherEntry& a, const LauncherEntry& b) {
-            return _stricmp(a.name.c_str(), b.name.c_str()) < 0;
+            return _stricmp((a.title.empty() ? a.name : a.title).c_str(), (b.title.empty() ? b.name : b.title).c_str()) < 0;
         });
         diag::Line("launcher: %u entr%s", static_cast<unsigned>(entries.size()), entries.size() == 1 ? "y" : "ies");
         int idx = -1;
@@ -455,7 +546,13 @@ void Host::Impl::RunImpl()
             lc.args_raw.clear();
             lc.has_expect_exit_code = false;
         }
-        lc.guest = "C:\\guest\\" + chosen.name;
+        lc.guest = "C:\\guest\\" + chosen.exe;
+        if (!chosen.args.empty())
+        {
+            lc.args = chosen.args;   // the sidecar's arguments replace launch.json's for this launch
+            lc.args_raw.clear();
+        }
+        launch_env = chosen.env;
         report.Set("launch.guest", lc.guest);
         report.Set("launcher.picked", chosen.name + (chosen.from_localstate ? " (LocalState\\guests)" : " (bundled)") +
                                           (autoselected ? " by autoselect" : ""));
@@ -582,7 +679,7 @@ void Host::Impl::RunImpl()
         for (const std::wstring& f : ListFiles(src_dir))
         {
             const bool dll = f.size() > 4 && _wcsicmp(f.c_str() + f.size() - 4, L".dll") == 0;
-            if (dll || _wcsicmp(f.c_str(), Widen(chosen.name).c_str()) == 0)
+            if (dll || _wcsicmp(f.c_str(), Widen(chosen.exe).c_str()) == 0)
                 if (!CopyFileW((src_dir + L"\\" + f).c_str(), (c_root + L"\\guest\\" + f).c_str(), FALSE))
                     diag::Line("launcher: cannot copy %s into C:\\guest (error %lu)", Narrow(f).c_str(), GetLastError());
         }

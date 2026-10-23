@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace w10x_uwp
@@ -33,6 +34,11 @@ namespace w10x_uwp
         std::string name;        // file name, "hello.exe"
         std::wstring path;       // host path of the file (package payload\guest or LocalState\guests)
         bool from_localstate = false;
+        // Sidecars (guest_sidecar.h), read from the directory of `path` when the list is built.
+        std::string exe;         // the guest program to run (name, or the exe= of a .launch entry)
+        std::string title;       // shown instead of the file name when not empty
+        std::vector<std::string> args;                            // replaces launch.json "args" for this launch
+        std::vector<std::pair<std::string, std::string>> env;     // set for this launch only
     };
 
     struct LauncherResult
