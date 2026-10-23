@@ -2,9 +2,10 @@ status: ready
 
 # Slice: comctl32 (Wine builtin) controls through the layer
 
-ci.yml run: https://github.com/user99672223/win10xbox/actions/runs/39882077562 (windows Debug, windows RelWithDebInfo and
-linux-cross green, "Gate - nothing skipped" passed, `integration.guest_comctl` Passed in 3.39 s). It ran on commit 6110904;
-the head after it only changes this document.
+ci.yml run: https://github.com/user99672223/win10xbox/actions/runs/39887797660 (head 9a22f00: windows Debug, windows
+RelWithDebInfo and linux-cross green, "Gate - nothing skipped" passed, `integration.guest_comctl` Passed). The same code
+was green before the last merge of main in https://github.com/user99672223/win10xbox/actions/runs/39882077562. The head
+after 9a22f00 only changes this document.
 
 Gate: `integration.guest_comctl` (tests/guest/comctl.c) on the builtin-only machine folder. InitCommonControlsEx, then a
 report-view ListView (2 columns, 3 items) with its header, a TreeView and a smooth progress bar (position 50 of 100) as
