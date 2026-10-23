@@ -1,4 +1,4 @@
-status: wip
+status: ready
 <!-- handoff
 1. Entries implemented: all of dlls/mmdevapi/unixlib.h in core/dispatch/unix_mmdevapi.cpp (list under Mechanism); MIDI answers no devices.
 2. Local (Wine host, PulseAudio null sink, build-mingw): integration.guest_wasapi PASS (host exit 42, layer exit 42, RESULT played,
@@ -11,7 +11,7 @@ status: wip
 
 # Slice: audio (Wine's mmdevapi over the host's WASAPI; xaudio2_9 on top)
 
-Runs: (pending, first push)
+Runs: ci https://github.com/user99672223/win10xbox/actions/runs/39975401397 (green, head aba63df; Linux under Wine with PulseAudio null sink, Windows Debug and RelWithDebInfo with no endpoint).
 
 ## Mechanism
 
@@ -68,12 +68,19 @@ database) and put host objects into the guest. Its idea of comparing the layer w
 
 ## What the runner's audio device reported
 
-(pending)
+The Windows runners (Hyper-V VMs) have no audio endpoint. The probe step runs `guest_wasapi` and `guest_xaudio2` directly on the host:
+both end `RESULT no-endpoint hr=0x80070490` (`E_NOTFOUND` from `GetDefaultAudioEndpoint`), `guest_wasapi` exits 43. Through the layer the
+same guests give the same verdict and `integration.guest_wasapi` / `integration.guest_xaudio2` pass (they assert layer == host, here the
+no-endpoint path; nothing is faked). The fastfetch gate then asserts exit 0 and no `Sound` line. The playing path (exit 42) is proven
+on the Linux job only (Wine host, PulseAudio null sink).
 
 ## xaudio2: native or builtin
 
-(pending)
+Builtin Wine xaudio2_9 on top of the layer's mmdevapi. On Windows the guest takes 1 to 7 s (no device, nothing rendered); on Linux 7 s in CI
+(143 s locally on a slow box), well under the 240 s test timeout.
 
 ## What still fails
 
-(pending)
+* host-uwp (msix) packaging check: `guest(s) missing from the .msix: guest_msctf_stub.exe, guest_net.exe, guest_wasapi.exe, guest_xaudio2.exe`;
+  add guest_wasapi and guest_xaudio2 (and the net/msctf ones from the other slices) to the guest list in host-uwp/CMakeLists.txt near line 270.
+* Untested on any real device: the playing path on Windows, capture streams, volume/session calls.
