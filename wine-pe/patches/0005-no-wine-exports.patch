@@ -1,0 +1,100 @@
+win10xbox: no Wine-only exports that nothing in the builtin set imports
+
+A program that looks for Wine calls GetProcAddress(ntdll, "wine_get_version") (or the other wine_get_*
+names). ntdll's wine_get_version, wine_get_build_id and wine_get_host_version and kernel32's
+wine_get_unix_file_name and wine_get_dos_file_name are Wine-only exports; of the modules in dlls.txt only
+shell32 imported them (the unix trash folder of the recycle bin and the \\?\unix\ display names, both of
+which need a unix host that does not exist here). shell32 now answers "no unix counterpart" itself, the five
+lines leave the .spec files. user32 and shell32's About box look wine_get_version / wine_get_build_id up
+with GetProcAddress and test for NULL, so they need no change.
+
+Not touched: wine_server_call / wine_server_fd_to_handle / wine_server_handle_to_fd (imported by
+programs/conhost) and the __wine_* family (imported by kernel32, kernelbase, msvcrt, ucrtbase, or looked up
+by name by the layer).
+
+diff --git a/dlls/kernel32/kernel32.spec b/dlls/kernel32/kernel32.spec
+index 87eb83a..36c0851 100644
+--- a/dlls/kernel32/kernel32.spec
++++ b/dlls/kernel32/kernel32.spec
+@@ -1731,5 +1731,3 @@
+ # or 'wine_' (for user-visible functions) to avoid namespace conflicts.
+ 
+ # Unix files
+-@ cdecl wine_get_unix_file_name(wstr)
+-@ cdecl wine_get_dos_file_name(str)
+diff --git a/dlls/ntdll/ntdll.spec b/dlls/ntdll/ntdll.spec
+index f396c33..931e659 100644
+--- a/dlls/ntdll/ntdll.spec
++++ b/dlls/ntdll/ntdll.spec
+@@ -1765,6 +1765,3 @@
+ @ cdecl -norelay __wine_dbg_strdup(str)
+ 
+ # Version
+-@ cdecl wine_get_version()
+-@ cdecl wine_get_build_id()
+-@ cdecl wine_get_host_version(ptr ptr)
+diff --git a/dlls/shell32/recyclebin.c b/dlls/shell32/recyclebin.c
+index 346339b..9c979d2 100644
+--- a/dlls/shell32/recyclebin.c
++++ b/dlls/shell32/recyclebin.c
+@@ -78,14 +78,9 @@ static WCHAR *trash_dir;
+ static WCHAR *trash_info_dir;
+ static ULONG random_seed;
+ 
+-extern void CDECL wine_get_host_version( const char **sysname, const char **release );
+-
+ static BOOL is_macos(void)
+ {
+-    const char *sysname;
+-
+-    wine_get_host_version( &sysname, NULL );
+-    return !strcmp( sysname, "Darwin" );
++    return FALSE;  /* no unix host behind this build */
+ }
+ 
+ static BOOL WINAPI init_trash_dirs( INIT_ONCE *once, void *param, void **context )
+@@ -198,7 +193,7 @@ static BOOL write_trashinfo_file( HANDLE handle, const WCHAR *orig_path )
+     char *path, *buffer;
+     SYSTEMTIME now;
+ 
+-    if (!(path = wine_get_unix_file_name( orig_path ))) return FALSE;
++    if (!(path = dos_to_unix_name( orig_path ))) return FALSE;
+     GetLocalTime( &now );
+ 
+     buffer = malloc( strlen(path) * 3 + 128 );
+@@ -237,7 +232,7 @@ static void read_trashinfo_file( HANDLE handle, WIN32_FIND_DATAW *data )
+         if (header && !strncmp( p, "Path=", 5 ))
+         {
+             p += 5;
+-            if ((path = wine_get_dos_file_name( decode( p ))))
++            if ((path = unix_to_dos_name( decode( p ))))
+             {
+                 lstrcpynW( data->cFileName, path, MAX_PATH );
+                 HeapFree( GetProcessHeap(), 0, path );
+diff --git a/dlls/shell32/shell32_main.h b/dlls/shell32/shell32_main.h
+index 299fc19..1293f23 100644
+--- a/dlls/shell32/shell32_main.h
++++ b/dlls/shell32/shell32_main.h
+@@ -273,4 +273,9 @@ typedef struct
+ 
+ WCHAR *shell_get_resource_string(UINT id);
+ 
++/* There is no unix file system behind a DOS path in this build, so neither direction has a name to give
++ * (kernel32 does not export a converter any more). */
++static inline char *dos_to_unix_name( const WCHAR *dos_name ) { return NULL; }
++static inline WCHAR *unix_to_dos_name( const char *unix_name ) { return NULL; }
++
+ #endif
+diff --git a/dlls/shell32/shfldr_fs.c b/dlls/shell32/shfldr_fs.c
+index fabd27e..3729b06 100644
+--- a/dlls/shell32/shfldr_fs.c
++++ b/dlls/shell32/shfldr_fs.c
+@@ -810,7 +810,7 @@ static void get_display_name( WCHAR dest[MAX_PATH], const WCHAR *path, LPCITEMID
+             buffer = malloc( len );
+             len = WideCharToMultiByte( CP_UNIXCP, 0, path + 8, -1, buffer, len, NULL, NULL );
+             for (i = 0; i < len; i++) if (buffer[i] == '\\') buffer[i] = '/';
+-            if ((res = wine_get_dos_file_name( buffer )))
++            if ((res = unix_to_dos_name( buffer )))
+             {
+                 lstrcpynW( dest, res, MAX_PATH );
+                 HeapFree( GetProcessHeap(), 0, res );

@@ -33,6 +33,18 @@ endif()
 target_link_libraries(guest_identity PRIVATE ole32 oleaut32 advapi32)
 win10xbox_add_guest(guest_identity)
 
+# What a program that looks for Wine finds (docs/slices/notells.md): exports, version resources, registry keys, environment,
+# drives, OS version. Reads System32\*.dll through version.dll and needs the same Windows 10 manifest as guest_identity
+# (GetVersionExW); the manifest/resource files are identity's.
+if(MSVC)
+  add_executable(guest_notells notells.c identity.manifest)
+else()
+  enable_language(RC)
+  add_executable(guest_notells notells.c identity.rc)
+endif()
+target_link_libraries(guest_notells PRIVATE version)
+win10xbox_add_guest(guest_notells)
+
 add_executable(guest_sleep sleep.c)
 win10xbox_add_guest(guest_sleep)
 

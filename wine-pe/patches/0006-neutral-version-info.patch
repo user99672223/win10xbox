@@ -1,0 +1,229 @@
+win10xbox: the builtins' version resources do not say Wine
+
+GetFileVersionInfoW on ntdll.dll / kernel32.dll / user32.dll returned ProductName "Wine 11.9", FileDescription
+"Wine ntdll", LegalCopyright "... the Wine project authors ..." and, for ntdll and user32, the file versions
+6.1.7601.24059 and 5.1.2600.2180 (kernel32 carried 10.0.19045.5796, the default of ntverp.h).
+CompanyName already was "Microsoft Corporation" (the comment in ntverp.h.in: GameGuard depends on it).
+
+* ProductName: the string Windows reports. LegalCopyright: the license the binaries are under, without a
+  Microsoft or Wine copyright claim (the LGPL text and source ship next to the DLLs).
+* FileDescription: ntdll "NT Layer DLL", kernel32 "Windows NT BASE API Client DLL", user32
+  "Multi-User Windows USER API Client DLL" (what Windows 10 reports); every other module of dlls.txt loses
+  its "Wine " prefix, and the generated default is the module name instead of "Wine <name>".
+* The default product/file version of ntverp.h becomes 10.0.19045.3803: Windows 10 22H2 with the update
+  revision machine/machine.default.json gives the guest (windows.ubr), instead of Wine's own 5796. ntdll and
+  user32 lose their Windows 7 / XP numbers and take it.
+
+diff --git a/dlls/bcrypt/Makefile.in b/dlls/bcrypt/Makefile.in
+index 6b4a95d..72c5a58 100644
+--- a/dlls/bcrypt/Makefile.in
++++ b/dlls/bcrypt/Makefile.in
+@@ -5,7 +5,7 @@ EXTRAINCL = $(TOMCRYPT_PE_CFLAGS)
+ UNIXLIB   = bcrypt.so
+ UNIX_CFLAGS = $(GNUTLS_CFLAGS)
+ 
+-VER_FILEDESCRIPTION_STR = "Wine Crypto Library"
++VER_FILEDESCRIPTION_STR = "Crypto Library"
+ VER_PRODUCTVERSION      = 6,0,6000,16386
+ 
+ SOURCES = \
+diff --git a/dlls/comctl32/Makefile.in b/dlls/comctl32/Makefile.in
+index b3566bc..9afaf9d 100644
+--- a/dlls/comctl32/Makefile.in
++++ b/dlls/comctl32/Makefile.in
+@@ -4,7 +4,7 @@ IMPORTLIB = comctl32
+ IMPORTS   = uuid user32 gdi32 advapi32 imm32 kernelbase oleaut32
+ DELAYIMPORTS = oleacc winmm
+ 
+-VER_FILEDESCRIPTION_STR = "Wine Common Controls"
++VER_FILEDESCRIPTION_STR = "Common Controls"
+ VER_PRODUCTVERSION      = 5,81,4704,1100
+ 
+ SOURCES = \
+diff --git a/dlls/gdi32/Makefile.in b/dlls/gdi32/Makefile.in
+index 61a23f1..3eb936a 100644
+--- a/dlls/gdi32/Makefile.in
++++ b/dlls/gdi32/Makefile.in
+@@ -4,7 +4,7 @@ IMPORTLIB = gdi32
+ IMPORTS   = user32 advapi32 win32u
+ DELAYIMPORTS = winspool
+ 
+-VER_FILEDESCRIPTION_STR = "Wine graphics library"
++VER_FILEDESCRIPTION_STR = "graphics library"
+ 
+ SOURCES = \
+ 	dc.c \
+diff --git a/dlls/hid/Makefile.in b/dlls/hid/Makefile.in
+index d40e7f2..ed501ad 100644
+--- a/dlls/hid/Makefile.in
++++ b/dlls/hid/Makefile.in
+@@ -3,7 +3,7 @@ IMPORTLIB = hid
+ 
+ EXTRADLLFLAGS = -Wb,--prefer-native
+ 
+-VER_FILEDESCRIPTION_STR = "Wine HID"
++VER_FILEDESCRIPTION_STR = "HID"
+ 
+ SOURCES = \
+ 	hidd.c \
+diff --git a/dlls/kernel32/version.rc b/dlls/kernel32/version.rc
+index e6bcea8..675ead4 100644
+--- a/dlls/kernel32/version.rc
++++ b/dlls/kernel32/version.rc
+@@ -22,7 +22,7 @@
+ 
+ LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+ 
+-#define VER_FILEDESCRIPTION_STR "Wine kernel DLL"
++#define VER_FILEDESCRIPTION_STR "Windows NT BASE API Client DLL"
+ #define VER_INTERNALNAME_STR "kernel32.dll"
+ 
+ #include "common.ver"
+diff --git a/dlls/mpr/Makefile.in b/dlls/mpr/Makefile.in
+index 4c4c411..c329198 100644
+--- a/dlls/mpr/Makefile.in
++++ b/dlls/mpr/Makefile.in
+@@ -2,7 +2,7 @@ MODULE    = mpr.dll
+ IMPORTLIB = mpr
+ IMPORTS   = user32 advapi32
+ 
+-VER_FILEDESCRIPTION_STR = "Wine Multiprotocol Router Library"
++VER_FILEDESCRIPTION_STR = "Multiprotocol Router Library"
+ VER_PRODUCTVERSION      = 5,0,2195,6611
+ 
+ SOURCES = \
+diff --git a/dlls/msvcrt/Makefile.in b/dlls/msvcrt/Makefile.in
+index 2cae604..18d5896 100644
+--- a/dlls/msvcrt/Makefile.in
++++ b/dlls/msvcrt/Makefile.in
+@@ -4,7 +4,7 @@ IMPORTLIB = msvcrt
+ IMPORTS   = $(MUSL_PE_LIBS) ntdll
+ DELAYIMPORTS = advapi32 user32
+ 
+-VER_FILEDESCRIPTION_STR = "Wine CRT library"
++VER_FILEDESCRIPTION_STR = "CRT library"
+ VER_PRODUCTVERSION      = 7,0,2600,2180
+ 
+ SOURCES = \
+diff --git a/dlls/ntdll/Makefile.in b/dlls/ntdll/Makefile.in
+index 022583a..267aa12 100644
+--- a/dlls/ntdll/Makefile.in
++++ b/dlls/ntdll/Makefile.in
+@@ -11,7 +11,7 @@ EXTRADLLFLAGS = -nodefaultlibs
+ i386_EXTRADLLFLAGS = -Wl,--image-base,0x7bc00000
+ x86_64_EXTRADLLFLAGS = -Wl,--image-base,0x170000000
+ 
+-VER_PRODUCTVERSION = 6,1,7601,24059
++VER_FILEDESCRIPTION_STR = "NT Layer DLL"
+ 
+ SOURCES = \
+ 	actctx.c \
+diff --git a/dlls/oleaut32/Makefile.in b/dlls/oleaut32/Makefile.in
+index 0f6faa4..fa4a8d9 100644
+--- a/dlls/oleaut32/Makefile.in
++++ b/dlls/oleaut32/Makefile.in
+@@ -4,7 +4,7 @@ IMPORTLIB = oleaut32
+ IMPORTS   = uuid ole32 rpcrt4 user32 gdi32 advapi32
+ DELAYIMPORTS = comctl32 urlmon windowscodecs
+ 
+-VER_FILEDESCRIPTION_STR = "Wine OLE dll"
++VER_FILEDESCRIPTION_STR = "OLE dll"
+ VER_PRODUCTVERSION      = 10,0,19043,1466
+ VER_OLESELFREGISTER     = 1
+ 
+diff --git a/dlls/ucrtbase/Makefile.in b/dlls/ucrtbase/Makefile.in
+index 768844f..f4c7eca 100644
+--- a/dlls/ucrtbase/Makefile.in
++++ b/dlls/ucrtbase/Makefile.in
+@@ -5,7 +5,7 @@ IMPORTS   = $(MUSL_PE_LIBS) ntdll
+ DELAYIMPORTS = advapi32 user32
+ PARENTSRC = ../msvcrt
+ 
+-VER_FILEDESCRIPTION_STR = "Wine runtime library"
++VER_FILEDESCRIPTION_STR = "runtime library"
+ VER_PRODUCTVERSION      = 10,0,14393,2247
+ 
+ SOURCES = \
+diff --git a/dlls/user32/Makefile.in b/dlls/user32/Makefile.in
+index 0d8a18f..ba838c3 100644
+--- a/dlls/user32/Makefile.in
++++ b/dlls/user32/Makefile.in
+@@ -5,7 +5,7 @@ IMPORTS   = $(PNG_PE_LIBS) gdi32 sechost advapi32 kernelbase win32u uuid
+ EXTRAINCL = $(PNG_PE_CFLAGS)
+ DELAYIMPORTS = imm32 combase
+ 
+-VER_PRODUCTVERSION = 5,1,2600,2180
++VER_FILEDESCRIPTION_STR = "Multi-User Windows USER API Client DLL"
+ 
+ SOURCES = \
+ 	button.c \
+diff --git a/dlls/winspool.drv/Makefile.in b/dlls/winspool.drv/Makefile.in
+index cbc3178..ba66589 100644
+--- a/dlls/winspool.drv/Makefile.in
++++ b/dlls/winspool.drv/Makefile.in
+@@ -5,7 +5,7 @@ IMPORTS   = user32 gdi32 advapi32 compstui
+ UNIX_CFLAGS  = $(CUPS_CFLAGS)
+ UNIX_LIBS    = $(APPLICATIONSERVICES_LIBS)
+ 
+-VER_FILEDESCRIPTION_STR = "Wine core printer driver"
++VER_FILEDESCRIPTION_STR = "core printer driver"
+ VER_FILESUBTYPE         = VFT2_DRV_PRINTER
+ VER_PRODUCTVERSION      = 5,1,2600,2180
+ 
+diff --git a/include/common.ver b/include/common.ver
+index a20c638..92aa92c 100644
+--- a/include/common.ver
++++ b/include/common.ver
+@@ -22,7 +22,7 @@
+ #include "ntverp.h"
+ 
+ #ifndef VER_LEGALCOPYRIGHT_STR
+-#define VER_LEGALCOPYRIGHT_STR "Copyright (c) 1993-2026 the Wine project authors (see the file AUTHORS for a complete list)"
++#define VER_LEGALCOPYRIGHT_STR "Licensed under the GNU Lesser General Public License, version 2.1 or later"
+ #endif
+ 
+ #ifndef VER_FILEVERSION
+diff --git a/include/ntverp.h.in b/include/ntverp.h.in
+index 184685a..6e3c663 100644
+--- a/include/ntverp.h.in
++++ b/include/ntverp.h.in
+@@ -43,11 +43,11 @@
+ #endif
+ 
+ #ifndef VER_PRODUCTNAME_STR
+-#define VER_PRODUCTNAME_STR "@PACKAGE_STRING@"
++#define VER_PRODUCTNAME_STR "Microsoft® Windows® Operating System"
+ #endif
+ 
+ #ifndef VER_PRODUCTVERSION
+-#define VER_PRODUCTVERSION 10,0,19045,5796 /* Windows 10 version 22H2 */
++#define VER_PRODUCTVERSION 10,0,19045,3803 /* Windows 10 version 22H2, the update revision machine.default.json reports */
+ #endif
+ 
+ #ifndef VER_PRODUCTVERSION_STR
+diff --git a/programs/explorer/Makefile.in b/programs/explorer/Makefile.in
+index c4df696..38bbdf4 100644
+--- a/programs/explorer/Makefile.in
++++ b/programs/explorer/Makefile.in
+@@ -4,7 +4,7 @@ DELAYIMPORTS = comctl32 shell32 oleaut32 ole32 shlwapi
+ 
+ EXTRADLLFLAGS = -mwindows -municode
+ 
+-VER_FILEDESCRIPTION_STR = "Wine Explorer"
++VER_FILEDESCRIPTION_STR = "Explorer"
+ VER_PRODUCTVERSION      = 6,1,7601,17567
+ 
+ SOURCES = \
+diff --git a/tools/makedep.c b/tools/makedep.c
+index 90a5226..0c4f4c0 100644
+--- a/tools/makedep.c
++++ b/tools/makedep.c
+@@ -2717,7 +2717,7 @@ static struct strarray get_version_defines( struct makefile *make )
+     else if (make->is_exe) strarray_set_value( &vars, "VER_FILETYPE", "VFT_APP" );
+     strarray_set_value( &vars, "VER_INTERNALNAME_STR", strmake( "\"%s\"", name ));
+     strarray_set_value( &vars, "VER_FILEDESCRIPTION_STR",
+-                        strmake( "\"Wine %s\"", get_basename_noext( name )));
++                        strmake( "\"%s\"", get_basename_noext( name )));
+ 
+     for (i = 0; i < ARRAY_SIZE(version_vars); i++)
+     {
