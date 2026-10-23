@@ -94,12 +94,13 @@ bool EndsWithI(const std::wstring& s, const wchar_t* tail) {
 //      gdi32full stand-in), when it has one; else
 //   2. the host module's function (a forwarder resolved with GetProcAddress, D3DKMT* names only; other forwarders are
 //      skipped).
-// `only_ddi`: only the host's D3DKMT* exports (Wine's gdi32 lacks some the native dxgi/d3d11 import).
-std::size_t ExtendExports(const loader::MappedImage& img, const wchar_t* host_module, const void* wine, bool only_ddi) {
+// `only_ddi`: only the host's D3DKMT* exports; `resolve_forwarders`: host forwarders are added too (GetProcAddress).
+std::size_t ExtendExports(const loader::MappedImage& img, const wchar_t* label, HMODULE host_kb, const void* wine,
+                          bool only_ddi, bool resolve_forwarders) {
     Exports guest, host, k32;
-    const HMODULE host_kb = GetModuleHandleW(host_module);
     if (!guest.Open(img.base) || !host.Open(host_kb)) {
-        WARN(dispatch, "gui native: guest %ls exports not extended (no export directory)", host_module);
+        WARN(dispatch, "gui native: guest %ls exports not extended (%s)", label,
+             host_kb ? "the guest image has no export directory" : "the host module is not loaded");
         return 0;
     }
     const bool have_k32 = k32.Open(wine);
@@ -116,7 +117,7 @@ std::size_t ExtendExports(const loader::MappedImage& img, const wchar_t* host_mo
             ++from_wine;
         } else if (host.IsCode(rva)) {
             add.push_back({name, host.base + rva, false});
-        } else if (ddi) {   // a forwarder: the function the host's loader resolves it to
+        } else if (ddi || resolve_forwarders) {   // a forwarder: the function the host's loader resolves it to
             if (const void* target = reinterpret_cast<const void*>(GetProcAddress(host_kb, name)))
                 add.push_back({name, target, false});
         }
@@ -251,7 +252,7 @@ void NoteNativeGuestImage(const loader::MappedImage& img, const std::wstring& ho
     // machine-emu-d3d: the gdi32full.dll stand-in (tests/guest/gdi32full_stub.c) gets the host's gdi32full exports.
     if (HostD3dkmtActive() && EndsWithI(id, L"gdi32full.dll") &&
         (id.size() == 13 || id[id.size() - 14] == L'\\' || id[id.size() - 14] == L'/')) {
-        const std::size_t n = ExtendExports(img, L"gdi32full.dll", g_guest_gdi32, false);
+        const std::size_t n = ExtendExports(img, L"gdi32full.dll", HostD3dMods().gdi32full, g_guest_gdi32, false, true);
         TRACE(dispatch, "d3d native: gdi32full stand-in: %zu export(s) added from the host's gdi32full (Wine gdi32 %s)", n,
               g_guest_gdi32 ? "mapped" : "NOT mapped yet");
         return;
@@ -263,11 +264,27 @@ void NoteNativeGuestImage(const loader::MappedImage& img, const std::wstring& ho
         g_guest_kernel32 = img.base;
     else if (EndsWithI(id, L"kernelbase.dll") &&
              (id.size() == 14 || id[id.size() - 15] == L'\\' || id[id.size() - 15] == L'/'))
-        ExtendExports(img, L"kernelbase.dll", g_guest_kernel32, false);
-    else if (HostD3dkmtActive() && EndsWithI(id, L"gdi32.dll") &&
-             (id.size() == 9 || id[id.size() - 10] == L'\\' || id[id.size() - 10] == L'/')) {
-        g_guest_gdi32 = img.base;
-        ExtendExports(img, L"gdi32.dll", nullptr, true);   // native dxgi/d3d11 import D3DKMT* Wine's gdi32 does not export
+        ExtendExports(img, L"kernelbase.dll", GetModuleHandleW(L"kernelbase.dll"), g_guest_kernel32, false, false);
+    else if (HostD3dkmtActive()) {
+        // machine-emu-d3d: Wine's user32/gdi32/win32u next to the native dxgi/d3d11/d3d10warp, which import functions of
+        // the host's builds that Wine's lack (user32!GetProcessUIContextInformation, D3DKMT* ...): every export of the
+        // host's module the Wine one lacks is added, as a jump to the host's function.
+        const HostD3dModules& m = HostD3dMods();
+        auto leaf = [&](const wchar_t* n) {
+            const std::size_t k = std::wcslen(n);
+            return EndsWithI(id, n) && (id.size() == k || id[id.size() - k - 1] == L'\\' || id[id.size() - k - 1] == L'/');
+        };
+        if (leaf(L"gdi32.dll")) {
+            g_guest_gdi32 = img.base;
+            const std::size_t n = ExtendExports(img, L"gdi32.dll", m.gdi32, nullptr, false, true);
+            TRACE(dispatch, "d3d native: guest gdi32: %zu export(s) added from the host's gdi32", n);
+        } else if (leaf(L"user32.dll")) {
+            const std::size_t n = ExtendExports(img, L"user32.dll", m.user32, nullptr, false, true);
+            TRACE(dispatch, "d3d native: guest user32: %zu export(s) added from the host's user32", n);
+        } else if (leaf(L"win32u.dll")) {
+            const std::size_t n = ExtendExports(img, L"win32u.dll", m.win32u, nullptr, false, true);
+            TRACE(dispatch, "d3d native: guest win32u: %zu export(s) added from the host's win32u", n);
+        }
     }
 }
 

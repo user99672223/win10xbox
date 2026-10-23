@@ -397,7 +397,12 @@ NTSTATUS UseHostWin32u(HMODULE win32u) {
 // "native", docs/slices/uwpswap.md): the native dxgi/d3d11/d3d10warp reach the kernel through gdi32!D3DKMT* -> win32u
 // NtGdiDdDDI*. Those (and only those) win32u syscalls pass through to the host's win32u by name; every window call
 // stays with core/user.
-NTSTATUS UseHostD3dkmt(HMODULE win32u) {
+HostD3dModules g_d3d_mods;   // trivially initialised; set once before the guest starts
+
+const HostD3dModules& HostD3dMods() { return g_d3d_mods; }
+
+NTSTATUS UseHostD3dkmt(HMODULE win32u, HMODULE user32, HMODULE gdi32, HMODULE gdi32full) {
+    g_d3d_mods = HostD3dModules{win32u, user32, gdi32, gdi32full};
     State& s = S();
     if (!s.initialized || !win32u) return st::Unsuccessful;
     AcquireSRWLockExclusive(&s.lock);
