@@ -157,10 +157,17 @@ NTSTATUS GetSection(std::uint64_t key, const std::wstring& name, const wchar_t* 
     return s;
 }
 
-NTSTATUS MapReadOnly(const NlsSection& sec, void** base) {
-    void* view = MapViewOfFile(sec.mapping, FILE_MAP_READ, 0, 0, 0);
-    if (!view) return StatusFromLastError(GetLastError());
-    *base = view;
+// Maps the section read-only and hands the caller its address. `user_base` is the caller's pointer (probed here);
+// `*view` receives the address too, for the trace. A caller pointer that goes bad unmaps the view again.
+NTSTATUS MapReadOnly(const NlsSection& sec, PVOID* user_base, void** view) {
+    if (NTSTATUS ps = probe::ProbeWrite(user_base, sizeof(PVOID))) return ps;
+    *view = MapViewOfFile(sec.mapping, FILE_MAP_READ, 0, 0, 0);
+    if (!*view) return StatusFromLastError(GetLastError());
+    if (NTSTATUS ws = probe::Store<PVOID>(user_base, *view)) {
+        UnmapViewOfFile(*view);
+        *view = nullptr;
+        return ws;
+    }
     return st::Success;
 }
 
@@ -179,29 +186,34 @@ NTSTATUS NTAPI Xl_NtGetNlsSectionPtr(ULONG type, ULONG id, PVOID unknown, PVOID*
     NlsSection sec;
     s = GetSection((static_cast<std::uint64_t>(type) << 32) | id, name,
                    type == kNlsSortkeys ? kSortingDirs : kSystemDir, &sec);
-    if (NtSuccess(s)) s = MapReadOnly(sec, ptr);
+    void* view = nullptr;
+    if (NtSuccess(s)) s = MapReadOnly(sec, ptr, &view);
     if (!NtSuccess(s)) {
         WARN(nls, "type=%lu id=%lu (%ls.nls): %#lx", type, id, name.c_str(), static_cast<unsigned long>(s));
         return s;
     }
-    if (size) *size = sec.size;
-    TRACE(nls, "type=%lu id=%lu (%ls.nls) -> %p, %zu bytes", type, id, name.c_str(), *ptr, sec.size);
+    if (size)
+        if (NTSTATUS ws = probe::Store<SIZE_T>(size, sec.size)) return ws;
+    TRACE(nls, "type=%lu id=%lu (%ls.nls) -> %p, %zu bytes", type, id, name.c_str(), view, sec.size);
     return st::Success;
 }
 
 NTSTATUS NTAPI Xl_NtInitializeNlsFiles(PVOID* ptr, PULONG lcid, PLARGE_INTEGER size) {
     // Wine sets the LCID whatever happens to the mapping.
-    if (lcid) *lcid = kSystemLcid;
+    if (lcid)
+        if (NTSTATUS ws = probe::Store<ULONG>(lcid, kSystemLcid)) return ws;
     if (!ptr) return st::InvalidParameter;
     NlsSection sec;
     NTSTATUS s = GetSection(~0ull, L"locale", kSystemDir, &sec);
-    if (NtSuccess(s)) s = MapReadOnly(sec, ptr);
+    void* view = nullptr;
+    if (NtSuccess(s)) s = MapReadOnly(sec, ptr, &view);
     if (!NtSuccess(s)) {
         WARN(nls, "locale.nls: %#lx", static_cast<unsigned long>(s));
         return s;
     }
-    if (size) size->QuadPart = static_cast<LONGLONG>(sec.size);
-    TRACE(nls, "locale.nls -> %p, %zu bytes, lcid %#lx", *ptr, sec.size, static_cast<unsigned long>(kSystemLcid));
+    if (size)
+        if (NTSTATUS ws = probe::Store<LONGLONG>(&size->QuadPart, static_cast<LONGLONG>(sec.size))) return ws;
+    TRACE(nls, "locale.nls -> %p, %zu bytes, lcid %#lx", view, sec.size, static_cast<unsigned long>(kSystemLcid));
     return st::Success;
 }
 
@@ -225,7 +237,7 @@ NTSTATUS NTAPI Xl_NtQueryDefaultLocale(BOOLEAN user_profile, PLCID lcid) {
     AcquireSRWLockShared(&g_locale_lock);
     const LCID value = user_profile ? g_locale.user_lcid : g_locale.system_lcid;
     ReleaseSRWLockShared(&g_locale_lock);
-    *lcid = value;
+    if (NTSTATUS ws = probe::Store<LCID>(lcid, value)) return ws;
     TRACE(nls, "NtQueryDefaultLocale(user=%d) -> %#lx", user_profile ? 1 : 0, static_cast<unsigned long>(value));
     return st::Success;
 }
@@ -243,9 +255,9 @@ NTSTATUS NTAPI Xl_NtSetDefaultLocale(BOOLEAN user_profile, LCID lcid) {
 NTSTATUS NTAPI Xl_NtQueryDefaultUILanguage(LANGID* lang) {
     if (!lang) return st::InvalidParameter;
     AcquireSRWLockShared(&g_locale_lock);
-    *lang = g_locale.ui_language;
+    const LANGID value = g_locale.ui_language;
     ReleaseSRWLockShared(&g_locale_lock);
-    return st::Success;
+    return probe::Store<LANGID>(lang, value);
 }
 
 NTSTATUS NTAPI Xl_NtSetDefaultUILanguage(LANGID lang) {

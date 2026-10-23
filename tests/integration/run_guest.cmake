@@ -6,7 +6,10 @@
 #   [-DFORBID_REGEX=<regex>] [-DDEBUG_SPEC=<WIN10XBOX_DEBUG spec>]
 # EXPECT_REGEX/FORBID_REGEX match the guest's stdout. The layer's own trace
 # output goes to stderr, so assertions about it use the TRACE variants:
+#   [-DSAVE_STDOUT=<file>]   write the guest's stdout there (build/bin/*.log is uploaded by CI)
 #   [-DEXPECT_TRACE_REGEX=<regex;regex...>] [-DFORBID_TRACE_REGEX=<regex>]
+#   [-DKEEP_REGISTRY_OVERLAY=ON]  keep <machine>\registry-overlay.bin (the registry a previous run left, docs/DISPATCHER.md
+#   "Registry persistence"); without it the file is deleted first, so no test sees another's registry writes.
 # ('@SEMI@' in PROGRAM_ARGS stands for a ';' inside one argument.)
 # -DINPUT_FILE=<host file> is its stdin;
 # -DGUEST_FILE=<path under the machine folder, '/' separated> is deleted before the run and must exist after it.
@@ -54,6 +57,9 @@ string(REPLACE "/" "\\" _machine "${_machine}")
 string(REPLACE "@SEMI@" "\\;" _args "${PROGRAM_ARGS}")   # '@SEMI@' stands for a ';' inside one argument
 if(GUEST_FILE)
   file(REMOVE "${MACHINE}/${GUEST_FILE}")
+endif()
+if(NOT KEEP_REGISTRY_OVERLAY)
+  file(REMOVE "${MACHINE}/registry-overlay.bin")
 endif()
 set(_stdin "")
 if(INPUT_FILE)
@@ -108,6 +114,9 @@ if(REQUIRE_BUILTIN_DLLS)
 endif()
 string(REPLACE "\r\n" "\n" out "${out}")   # text-mode stdout of a Windows console program
 message("${out}")
+if(SAVE_STDOUT)   # -DSAVE_STDOUT=<file>: the guest's stdout, kept for CI to upload (ctest shows a passing test's output nowhere)
+  file(WRITE "${SAVE_STDOUT}" "${out}")
+endif()
 if(err)
   message("--- stderr ---\n${err}")
 endif()
@@ -147,9 +156,12 @@ if(FORBID_TRACE_REGEX AND err MATCHES "${FORBID_TRACE_REGEX}")
   string(APPEND _fail "trace output matches forbidden '${FORBID_TRACE_REGEX}'\n")
 endif()
 # WIN10XBOX_EXPECT_SCREENSHOT_PIXELS="x,y,aarrggbb|x,y,aarrggbb": the host wrote WIN10XBOX_SCREENSHOT (a 32-bit
-# top-down BMP of the virtual screen, see core/user); check pixels of it.
-if(DEFINED ENV{WIN10XBOX_SCREENSHOT} AND DEFINED ENV{WIN10XBOX_EXPECT_SCREENSHOT_PIXELS})
-  set(_bmp "$ENV{WIN10XBOX_SCREENSHOT}")
+# top-down BMP of the virtual screen, see core/user); check pixels of it. WIN10XBOX_SCREENSHOT_2 .. _4 with
+# WIN10XBOX_EXPECT_SCREENSHOT_PIXELS_2 .. _4 do the same for further files, which the inject script wrote in the middle of
+# the run with `shot FILE` (the host does not know these variables; the script names the files).
+foreach(_sfx "" "_2" "_3" "_4")
+if(DEFINED ENV{WIN10XBOX_SCREENSHOT${_sfx}} AND DEFINED ENV{WIN10XBOX_EXPECT_SCREENSHOT_PIXELS${_sfx}})
+  set(_bmp "$ENV{WIN10XBOX_SCREENSHOT${_sfx}}")
   if(NOT EXISTS "${_bmp}")
     string(APPEND _fail "screenshot ${_bmp} was not written\n")
   else()
@@ -158,8 +170,8 @@ if(DEFINED ENV{WIN10XBOX_SCREENSHOT} AND DEFINED ENV{WIN10XBOX_EXPECT_SCREENSHOT
     string(SUBSTRING "${_hex}" 36 8 _w_le)
     string(REGEX REPLACE "(..)(..)(..)(..)" "\\4\\3\\2\\1" _w_be "${_w_le}")
     math(EXPR _w "0x${_w_be}")
-    string(REPLACE "|" ";" _pixels "$ENV{WIN10XBOX_EXPECT_SCREENSHOT_PIXELS}")
-  foreach(_px ${_pixels})
+    string(REPLACE "|" ";" _pixels "$ENV{WIN10XBOX_EXPECT_SCREENSHOT_PIXELS${_sfx}}")
+    foreach(_px ${_pixels})
       string(REPLACE "," ";" _p "${_px}")
       list(GET _p 0 _x)
       list(GET _p 1 _y)
@@ -173,6 +185,7 @@ if(DEFINED ENV{WIN10XBOX_SCREENSHOT} AND DEFINED ENV{WIN10XBOX_EXPECT_SCREENSHOT
     endforeach()
   endif()
 endif()
+endforeach()
 # WIN10XBOX_EXPECT_SCREENSHOT_VARIED="x0,y0,x1,y1,step,min_colours[,aarrggbb]": the screenshot's pixels on a grid
 # (x0..x1 by step, y0..y1 by step, clipped to the image) must hold at least min_colours distinct values, and the
 # optional colour among them: the region is not uniform (e.g. a 3D-rendered window, not a black or blank one).

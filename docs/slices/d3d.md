@@ -1,4 +1,4 @@
-status: pending-ci
+status: wip
 root cause (run 39974430791 @ 3b3f1b9): not specific to the device-notify thread. Wine's PE builtins are built without compiler SEH, so
 their __TRY/__EXCEPT are frames chained through TEB.NtTib.ExceptionList (wine/exception.h); Wine's own ntdll walks that chain
 (call_seh_handlers "hack: call wine handlers registered in the tib list", RtlUnwindEx), a Windows x64 host dispatcher does not

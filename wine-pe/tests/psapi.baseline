@@ -1,0 +1,3 @@
+# <unit> <run|crash|timeout> <max_failures>  (wine-pe/tests/misc.sh --dll psapi; measured on the linux-cross CI job, numbers in docs/slices/wt-misc.md)
+# 2125 and 2129 failures were both observed on identical code (the count depends on the processes enumerated); the larger is the budget.
+psapi_main run 2129

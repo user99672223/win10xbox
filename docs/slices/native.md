@@ -1,4 +1,4 @@
-status: wip
+status: ready
 
 # Slice: native GUI (`gui: native`, route B)
 
@@ -6,8 +6,8 @@ Gate: `integration.guest_window_native` (tests/guest/window.c on `machine-native
 loads the host's own user32/gdi32/gdi32full/win32u/msvcp_win/imm32, every NtUser*/NtGdi* syscall is forwarded by name to
 the host's win32u.dll, and `user::ComposeFrame` composes the guest HWNDs with PrintWindow. Registered on Windows builds only.
 
-Last green ci.yml run on the pre-merge head (11dec4f): https://github.com/user99672223/win10xbox/actions/runs/39881185269
-(windows Debug, windows RelWithDebInfo, linux-cross all green, pixel line and screenshot check passed).
+Green ci.yml run on the head merged with main (b2f4356): https://github.com/user99672223/win10xbox/actions/runs/39931462411
+(windows Debug, windows RelWithDebInfo, linux-cross all green; also green pre-merge on 11dec4f, run 39881185269).
 
 Root causes found on the way to green (each was the first failure in the Windows job log):
 1. The genuine user32 calls `KERNELBASE!WTSGetServiceSessionId`; the guest shares the host PEB, so the API-set map is

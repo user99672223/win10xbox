@@ -4,6 +4,7 @@
 #include "internal.h"
 #include "nt_spawn.h"
 #include "win10xbox/config.h"
+#include "win10xbox/probe.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -701,6 +702,7 @@ void* HostExport(const char* name) {
 // ---- Table ----------------------------------------------------------------------
 
 NTSTATUS Initialize() {
+    probe::Install();   // before any guest syscall can hand an implementation a bad pointer
     State& s = S();
     AcquireSRWLockExclusive(&s.lock);
     if (s.initialized) { ReleaseSRWLockExclusive(&s.lock); return st::Success; }

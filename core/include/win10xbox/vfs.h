@@ -156,7 +156,10 @@ struct TranslatedAttributes {
 // disabled DLL, NAME_INVALID), STATUS_NAME_TOO_LONG if the result does not fit
 // a UNICODE_STRING, STATUS_INVALID_PARAMETER if in->Length is too small.
 // A null `in` yields a zeroed attr and STATUS_SUCCESS.
-NTSTATUS TranslateObjectAttributes(const OBJECT_ATTRIBUTES* in, TranslatedAttributes* out);
+// `create_options` are the NtCreateFile/NtOpenFile options: a name with a trailing separator that names an existing
+// regular file answers STATUS_NOT_A_DIRECTORY when FILE_DIRECTORY_FILE (0x1) is among them (NTFS), and
+// STATUS_OBJECT_NAME_INVALID otherwise.
+NTSTATUS TranslateObjectAttributes(const OBJECT_ATTRIBUTES* in, TranslatedAttributes* out, unsigned long create_options = 0);
 
 // Resolve a Win32 path against a guest current directory into an absolute
 // guest Win32 path (what GetFullPathNameW does, without touching the host):
