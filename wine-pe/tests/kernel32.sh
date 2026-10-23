@@ -121,10 +121,23 @@ do_run() {
     for unit in $UNITS; do
         local log="$OUT/kernel32_$unit.log" t0 rc status=crashed ex=0 todo=0 fl=0 fails=0 sk=0 last=""
         t0=$(date +%s)
-        rm -f "$MACHINE/registry-overlay.bin"   # each unit starts from the registry of the hives (persistence)
-        timeout -k 5 "$TIMEOUT" $EMULATOR "$HOST" --machine "$wmachine" 'C:\guest-wine\kernel32_test.exe' "$unit" \
-            < /dev/null > "$log" 2>&1
-        rc=$?
+        local attempt
+        for attempt in 1 2 3; do
+            rm -f "$MACHINE/registry-overlay.bin"   # each unit starts from the registry of the hives (persistence)
+            timeout -k 5 "$TIMEOUT" $EMULATOR "$HOST" --machine "$wmachine" 'C:\guest-wine\kernel32_test.exe' "$unit" \
+                < /dev/null > "$log" 2>&1
+            rc=$?
+            # Wine's own client lost its wineserver before the guest started (the server of the previous unit
+            # shutting down as this one connects: runs 39971364492, console and drive, exit 1 after 0 s and nothing
+            # but this line in the log). Nothing of the unit ran, so it is started again; any other output is
+            # the unit's own and is never retried.
+            if [[ $rc -ne 0 && -n "$EMULATOR" ]] && ! grep -qav 'wine client error' "$log"; then
+                echo "kernel32.sh: $unit: wine lost its server before the guest started (attempt $attempt)" >&2
+                wineserver -w 2>/dev/null; sleep 2
+                continue
+            fi
+            break
+        done
         local secs=$(( $(date +%s) - t0 ))
         local summary; summary="$(grep -aE "^[0-9a-f]+:$unit:.*$re" "$log" | tail -1)"
         # Only the unit's own summary counts: the child processes some units start print summaries too
