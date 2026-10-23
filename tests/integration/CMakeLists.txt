@@ -346,10 +346,36 @@ win10xbox_guest_test(guest_xinput "C:\\guest\\guest_xinput.exe" 42
   "xinput: screen=[0-9]+x[0-9]+" "xinput: caps ok type=1 subtype=1" "xinput: idle packet=[0-9]+ buttons=0x0000"
   "xinput: packet changed [0-9]+ -> [0-9]+" "xinput: buttons=0x1000 lx=1000 ly=-2000 rx=3000 ry=-4000 lt=128 rt=255"
   "xinput: users 1\\.\\.3 not connected \\(1167 1167 1167\\)" "xinput: set state ok, battery type=1 level=3, bad index=160"
+  "xinput: ex ordinal 100 buttons=0x1000, users 1\\.\\.3 setstate/battery/keystroke/ex all 1167, enable ok"
   "xinput: done")
 set_tests_properties(integration.guest_xinput PROPERTIES
-  ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=pad 0 0 0 0 0 0 0\\;padwait 30000\\;sleep 300\\;pad 1000 1000 -2000 3000 -4000 128 255"
+  ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=pad 0 0 0 0 0 0 0\\;padwait 10000\\;sleep 300\\;pad 1000 1000 -2000 3000 -4000 128 255"
   FAIL_REGULAR_EXPRESSION "xinput: FAIL")
+# The same guest on machine-native-d3d (route B + D3D: native System32 present next to the builtins). xinput1_4 must still be
+# OUR builtin (Windows\\builtin\\xinput1_4.dll, IsAlwaysBuiltin), never a host System32 copy. Native Windows builds only,
+# like integration.guest_d3d11.
+if(NOT CMAKE_CROSSCOMPILING AND TARGET guest_d3d11_tri)
+add_test(NAME integration.guest_xinput_native_d3d
+  COMMAND ${CMAKE_COMMAND}
+    -DHOST=$<TARGET_FILE:win10xbox>
+    -DMACHINE=${WIN10XBOX_D3D_MACHINE_DIR}
+    -DPROGRAM=C:\\guest\\guest_xinput.exe
+    -DEXPECT_EXIT=42
+    "-DEXPECT_REGEX=xinput: caps ok type=1 subtype=1;xinput: buttons=0x1000 lx=1000 ly=-2000 rx=3000 ry=-4000 lt=128 rt=255;xinput: users 1\\.\\.3 not connected \\(1167 1167 1167\\);xinput: ex ordinal 100 buttons=0x1000, users 1\\.\\.3 setstate/battery/keystroke/ex all 1167, enable ok;xinput: done"
+    "-DEXPECT_TRACE_REGEX=System32.xinput1_4.dll \\([0-9]+ bytes, host path [^)]*Windows.builtin.xinput1_4.dll\\)"
+    "-DFORBID_TRACE_REGEX=host path [^)]*[Ss]ystem32.xinput1_[34].dll"
+    -DDEBUG_SPEC=+modules
+    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
+set_tests_properties(integration.guest_xinput_native_d3d PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "guest_e2e"
+  TIMEOUT 180
+  ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=pad 0 0 0 0 0 0 0\\;padwait 10000\\;sleep 300\\;pad 1000 1000 -2000 3000 -4000 128 255"
+  FAIL_REGULAR_EXPRESSION "xinput: FAIL")
+endif()
 # Scroll bars (tests/guest/window_scroll.c, core/user/win_scroll.cpp): range/position round trip, HTVSCROLL hit test,
 # ScrollWindowEx / ScrollDC pixels, and a host-injected click on the vertical bar's down arrow that must arrive as
 # WM_VSCROLL SB_LINEDOWN + SB_ENDSCROLL. The screenshot shows the bar's track colour (COLOR_SCROLLBAR, ffc8c8c8) at

@@ -49,7 +49,7 @@ guest_named_objects.exe 42=child-ran 1=no-child-processes
 guest_wasapi.exe 42=endpoint 43=no-endpoint
 guest_xaudio2.exe 42=endpoint 43=no-endpoint
 
-# Gamepad: 42 with a pad, 1 after the 30 s wait without one
+# Gamepad: 42 with a pad, 1 after the 10 s wait without one
 guest_xinput.exe 42=pad 1=no-pad
 
 # Off-screen D3D11 on machine-native-d3d (guest_d3d11_tri.machine); 10 = d3d11.dll did not load (no D3D machine)
