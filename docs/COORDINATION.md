@@ -82,3 +82,22 @@ no function-local statics on guest-reachable paths):
 
 Order for Session B: `-realgit`, `-real7z`, `-wt-kernel32`, `-ncframe`, `-dialog`, then the
 rest in any order, several in parallel.
+
+## Fidelity track
+
+The goal is the most faithful Windows a user-mode program can observe. Wine's conformance
+suites are the yardstick: every unit that fails points at a kernel behaviour we do not reproduce.
+Each slice below grows an allowlist (`wine-pe/tests/<dll>.allowlist`) by the units it fixes and
+never fakes a result to pass; a Wine-table-vs-Windows-table data difference (e.g. `rtlstr`
+U+037F) is recorded, not patched.
+
+| Slice | Owner | Scope | Yardstick |
+|---|---|---|---|
+| `-probe` | A | user-pointer probing in the dispatcher: a bad guest pointer gives `STATUS_ACCESS_VIOLATION` (or the status Windows gives) instead of crashing the guest; SEH-guarded parameter access in every Emulate/Translate path that reads or writes caller memory | ntdll `time` (`time.c:129`), `reg.c:390`; the units join the ntdll allowlist |
+| `-om` | A | object manager namespace: `\BaseNamedObjects`, `\Sessions\N\BaseNamedObjects`, `\KernelObjects`, directory objects (`NtCreateDirectoryObject`/`NtOpenDirectoryObject`/`NtQueryDirectoryObject`), symbolic links, and named events/mutexes/semaphores/sections shared between a guest and the children it spawns (`NtCreateUserProcess` children are host processes: guest names map onto real host objects under one per-layer prefix inside the AppContainer namespace) | ntdll `om` unit; a guest + child sharing a named event and a named section (new `tests/guest/named_objects.c`) |
+| `-identity` | A | one guest asserts the four identity paths agree: CPUID brand/family/model/stepping, registry `CentralProcessor\0`, SMBIOS type-4 via `GetSystemFirmwareTable`, WMI `Win32_Processor`; hypervisor leaf zero; RDRAND usable; `GetVersionEx`/`RtlGetVersion`/`NtQuerySystemInformation(SystemCodeIntegrity..)` consistent with 19045.3803 | new gated `integration.guest_identity` on both Windows configs |
+| `-wt-ntdll-reg` | B | registry fidelity: `NtEnumerateKey` loops forever at `reg.c:1987`; status codes for bad parameters (`reg.c:390`); then the rest of the `reg` unit | ntdll `reg` unit joins the allowlist |
+| `-wt-ntdll-file` | B | file fidelity: the `file` unit (281 failures) incl. `\??\C:\windows\SYSTEM32\cmd.exe` existing (ship Wine's `programs/cmd` builtin into the machine folder), `NtQueryInformationFile` classes, `NtQueryDirectoryFile` semantics, reparse/attributes statuses | ntdll `file` unit joins the allowlist |
+| `-wt-ntdll-rest` | B | after the two above: `exception`, `info`, `pipe`, `sync`, `threadpool`, `virtual`, `wow64` units in that order | each joins the allowlist |
+
+Session B takes the `-wt-ntdll-*` rows after its first five slices are ready.
