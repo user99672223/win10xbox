@@ -399,6 +399,20 @@ NTSTATUS_ DoIoctl(Sock& s, std::uint32_t code, void* in, ULONG in_len, void* out
 
 }  // namespace
 
+namespace {
+constexpr std::uintptr_t kTebWinSockData = 0x1738;
+thread_local void* t_host_winsock_data = nullptr;   // constant-initialised: no guard, safe in the host view
+void*& TebWinSockData() {
+    return *reinterpret_cast<void**>(static_cast<std::uintptr_t>(__readgsqword(0x30)) + kTebWinSockData);
+}
+}  // namespace
+
+HostWinsockScope::HostWinsockScope() : guest_value_(TebWinSockData()) { TebWinSockData() = t_host_winsock_data; }
+HostWinsockScope::~HostWinsockScope() {
+    t_host_winsock_data = TebWinSockData();
+    TebWinSockData() = guest_value_;
+}
+
 void EnsureWinsock() {
     static volatile LONG state = 0;   // 0 none, 1 starting, 2 ready
     if (state == 2) return;
@@ -412,6 +426,7 @@ void EnsureWinsock() {
 }
 
 void PrimeHost() {
+    HostWinsockScope scope;
     EnsureWinsock();
     const struct { int family, type, protocol; } kinds[] = {
         {AF_INET, SOCK_STREAM, IPPROTO_TCP}, {AF_INET, SOCK_DGRAM, IPPROTO_UDP}, {AF_INET6, SOCK_STREAM, IPPROTO_TCP}};
@@ -459,6 +474,7 @@ NTSTATUS Close(HANDLE h) {
     if (it != Socks().end()) { s = std::move(it->second); Socks().erase(it); }
     ReleaseSRWLockExclusive(&g_lock);
     if (!s) return kInvalidHandle;
+    HostWinsockScope scope;
     if (s->s != INVALID_SOCKET) ::closesocket(s->s);
     dispatch::UnregisterEmulatedObject(h);
     return kSuccess;
@@ -474,6 +490,7 @@ NTSTATUS NTAPI Afd_NtDeviceIoControlFile(HANDLE file, HANDLE event, PIO_APC_ROUT
         static Fn host = reinterpret_cast<Fn>(dispatch::HostExport("NtDeviceIoControlFile"));
         return host ? host(file, event, apc, apc_context, io, code, in, in_len, out, out_len) : kNotImplemented;
     }
+    HostWinsockScope scope;
     ULONG_PTR info = 0;
     NTSTATUS_ st;
     if (code == kAfdPoll) st = DoPoll(static_cast<PollParams*>(in), in_len, out_len, &info);

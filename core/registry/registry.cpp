@@ -577,7 +577,11 @@ NTSTATUS OpenCommon(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIB
     ro.open_link = (options & kRegOptionOpenLink) || (oa->Attributes & kObjOpenLink);
     Node* n = nullptr;
     s = Resolve(st, start, path, ro, &n, nullptr);
-    if (s < 0) return s;
+    if (s < 0) {
+        TRACE(registry, "open %ls (under %ls) failed: %08lx", std::wstring(path).c_str(),
+              start ? PathOf(start).c_str() : L"\\", static_cast<unsigned long>(s));
+        return s;
+    }
     *KeyHandle = EncodeHandle(NewHandle(st, n, MapAccess(DesiredAccess)));
     TRACE(registry, "open %ls -> %p", PathOf(n).c_str(), *KeyHandle);
     return nt::kSuccess;
@@ -1221,7 +1225,10 @@ NTSTATUS Reg_NtQueryValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG 
     if (s < 0) return s;
     if (!ValueName) return nt::kInvalidParameter;
     Val v;
-    if (!FindValue(n, View(ValueName), &v)) return nt::kObjectNameNotFound;
+    if (!FindValue(n, View(ValueName), &v)) {
+        TRACE(registry, "query %ls\\%ls: value not found", PathOf(n).c_str(), std::wstring(View(ValueName)).c_str());
+        return nt::kObjectNameNotFound;
+    }
     std::vector<std::uint8_t> full;
     std::size_t fixed = 0;
     s = BuildValueInfo(KeyValueInformationClass, v, &full, &fixed);

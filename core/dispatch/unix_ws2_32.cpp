@@ -66,6 +66,7 @@ NTSTATUS CopyHostent(const hostent* src, hostent* dst, unsigned int* size) {
 }
 
 NTSTATUS WINAPI U_getaddrinfo(void* args) {
+    afd::HostWinsockScope host_winsock;
     auto* p = static_cast<GetAddrInfoParams*>(args);
     afd::EnsureWinsock();
     addrinfo hints{};
@@ -122,6 +123,7 @@ NTSTATUS WINAPI U_getaddrinfo(void* args) {
 
 // The host's gethostbyname/gethostbyaddr return a per-thread buffer; it is copied out before returning.
 NTSTATUS WINAPI U_gethostbyaddr(void* args) {
+    afd::HostWinsockScope host_winsock;
     auto* p = static_cast<GetHostByAddrParams*>(args);
     afd::EnsureWinsock();
     const hostent* h = ::gethostbyaddr(static_cast<const char*>(p->addr), p->len, p->family);
@@ -130,6 +132,7 @@ NTSTATUS WINAPI U_gethostbyaddr(void* args) {
 }
 
 NTSTATUS WINAPI U_gethostbyname(void* args) {
+    afd::HostWinsockScope host_winsock;
     auto* p = static_cast<GetHostByNameParams*>(args);
     afd::EnsureWinsock();
     const hostent* h = ::gethostbyname(p->name);
@@ -138,6 +141,7 @@ NTSTATUS WINAPI U_gethostbyname(void* args) {
 }
 
 NTSTATUS WINAPI U_getnameinfo(void* args) {
+    afd::HostWinsockScope host_winsock;
     auto* p = static_cast<GetNameInfoParams*>(args);
     afd::EnsureWinsock();
     return ::getnameinfo(p->addr, p->addr_len, p->host, p->host_len, p->serv, p->serv_len, p->flags);

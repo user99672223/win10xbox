@@ -22,6 +22,20 @@ void EnsureWinsock();
 // shows up as WSAHOST_NOT_FOUND for "localhost". Failures are ignored here (no network capability is not an error).
 void PrimeHost();
 
+// The TEB is shared by host and guest and TEB.WinSockData (0x1738) belongs to whichever ws2_32 is running: the host's
+// native ws2_32 keeps its per-thread block there, Wine's guest ws2_32 keeps its event cache there, and each reads the
+// other's value as its own (an access violation in the guest's get_sync_event). Every call into the host Winsock
+// is therefore bracketed by this scope, which installs the host's value for this thread and puts the guest's back.
+class HostWinsockScope {
+public:
+    HostWinsockScope();
+    ~HostWinsockScope();
+    HostWinsockScope(const HostWinsockScope&) = delete;
+    HostWinsockScope& operator=(const HostWinsockScope&) = delete;
+private:
+    void* guest_value_;
+};
+
 bool IsSocketHandle(HANDLE h);
 NTSTATUS Close(HANDLE h);   // closes the host socket and the emulated handle
 
