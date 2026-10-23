@@ -106,6 +106,14 @@ set_target_properties(msctf_stub PROPERTIES OUTPUT_NAME msctf PREFIX ""
   LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/native-gui-stubs
   ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib/guest)
 
+# gdi32full.dll stand-in for machine-emu-d3d (tests/guest/gdi32full_stub.c): its export table is completed at load by
+# core/dispatch/native_imports.cpp; staged by prepare_machine.cmake into that folder's Windows/System32 only.
+add_library(gdi32full_stub SHARED gdi32full_stub.c)
+set_target_properties(gdi32full_stub PROPERTIES OUTPUT_NAME gdi32full PREFIX ""
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/native-gui-stubs
+  LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/native-gui-stubs
+  ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib/guest)
+
 # GDI bitmap operations (tests/guest/gdi_bitmap.c): DIB sections, BitBlt/StretchBlt between memory and window DCs,
 # AlphaBlend/TransparentBlt through msimg32, LoadImage of the BITMAP resources of gdi_bitmap.rc (a generated copy of
 # gdi_bitmap.rc.in whose .bmp paths are absolute: windres and rc.exe resolve relative names differently).

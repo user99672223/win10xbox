@@ -1,2 +1,2 @@
-# Dear ImGui example_win32_directx11 needs the native D3D11 runtime (docs/slices/uwpd3d.md).
-machine-native-d3d
+# Dear ImGui example_win32_directx11: emulated window + virtual swap chain on the native D3D11 runtime (docs/slices/uwpswap.md).
+machine-emu-d3d

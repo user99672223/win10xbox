@@ -718,6 +718,20 @@ int Launch(const LaunchOptions& opts) {
                 return static_cast<int>(s);
             }
         }
+#if WIN10XBOX_HAVE_VFS
+        if (cfg.gui != config::Gui::Native && mi.d3d == L"native") {
+            // The emulated GUI with the native Direct3D runtime (machine-emu-d3d): D3DKMT goes to the host's dxgkrnl.
+            HMODULE hw32u = LoadLibraryW(L"win32u.dll");
+            HMODULE hgdi32 = LoadLibraryW(L"gdi32.dll");   // its D3DKMT* exports fill what Wine's gdi32 lacks
+            LoadLibraryW(L"gdi32full.dll");                // and the gdi32full stand-in is completed from this one
+            if (!hw32u || !hgdi32 || (s = UseHostD3dkmt(hw32u))) {
+                ERR(process, "d3d native could not be configured (host win32u %p gdi32 %p)", static_cast<void*>(hw32u),
+                    static_cast<void*>(hgdi32));
+                return static_cast<int>(s ? s : st::DllNotFound);
+            }
+            TRACE(process, "d3d native: D3DKMT of the emulated GUI's guest goes to the host's win32u");
+        }
+#endif
         std::string vendor;
         const CpuPolicy cp = GetCpuPolicy();
         vendor = cp.vendor.empty() ? std::string("AuthenticAMD") : cp.vendor;

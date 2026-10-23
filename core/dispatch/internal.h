@@ -368,6 +368,8 @@ std::size_t RenumberSyscallThunks(const std::vector<loader::StubPatch>& patched,
 // without one, and NtCallbackReturn passes through to the host kernel (dispatcher.cpp).
 NTSTATUS UseHostWin32u(HMODULE win32u);
 bool NativeGuiActive();
+NTSTATUS UseHostD3dkmt(HMODULE host_win32u);   // emulated GUI + native Direct3D (dispatcher.cpp)
+bool HostD3dkmtActive();
 // win32k_native.cpp. Loads the host's user32/gdi32/win32u (before the PEB take-over: LoadLibrary walks
 // PEB->Ldr), connects the process to win32k, switches the win32u table over (UseHostWin32u) and resolves the
 // host GUI functions core/user's native composer uses. Called by process::Launch when config gui is Native.

@@ -108,6 +108,17 @@ namespace w10x_uwp
         return k;
     }
 
+    const std::vector<std::string>& EmuD3dMachineNativeDlls()
+    {
+        // prepare_machine.cmake EMU_D3D_MACHINE: the D3dMachineNativeDlls set without the native GUI (user32, win32u,
+        // gdi32, gdi32full, imm32 stay Wine's builtins).
+        static const std::vector<std::string> k = {
+            "msvcp_win.dll", "d3d11.dll", "dxgi.dll", "d3dcompiler_47.dll", "d3d10warp.dll", "dxcore.dll", "dwmapi.dll",
+            "d3d12.dll", "D3D12Core.dll", "D3DSCache.dll", "powrprof.dll", "umpdc.dll",
+            "directxdatabasehelper.dll", "kernel.appcore.dll"};
+        return k;
+    }
+
     std::vector<std::string> SplitArgLine(std::string_view line)
     {
         std::vector<std::string> words;

@@ -452,7 +452,8 @@ namespace
         // The D3D11 guests run on the route-B + Direct3D 11 machine folder.
         bool mok = false;
         CHECK(ParseMachineFile(ReadAll(dir + "/guest/guest_d3d11_tri.machine", &ok), &mok) == kD3dMachineName && ok && mok);
-        CHECK(ParseMachineFile(ReadAll(dir + "/guest/guest_imgui_d3d11.machine", &ok), &mok) == kD3dMachineName && ok && mok);
+        CHECK(ParseMachineFile(ReadAll(dir + "/guest/guest_imgui_d3d11.machine", &ok), &mok) == kEmuD3dMachineName && ok && mok);
+        CHECK(ParseMachineFile(ReadAll(dir + "/guest/guest_d3d11_swap.machine", &ok), &mok) == kEmuD3dMachineName && ok && mok);
         // The packaged default launch.json keeps the default machine folder.
         LaunchConfig pl;
         CHECK(ParseLaunchConfig(ReadAll(dir + "/launch.json", &ok), &pl, &err) && ok && pl.machine.empty());

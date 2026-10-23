@@ -81,32 +81,44 @@ struct Exports {
 // Namespace scope, trivially initialised; written by MapImageView (one mapping at a time per image, and the guest's
 // loader maps kernel32 before kernelbase on the same thread).
 const void* g_guest_kernel32 = nullptr;
+const void* g_guest_gdi32 = nullptr;   // Wine's gdi32 (machine-emu-d3d)
 
 bool EndsWithI(const std::wstring& s, const wchar_t* tail) {
     const std::size_t n = std::wcslen(tail);
     return s.size() >= n && !_wcsicmp(s.c_str() + s.size() - n, tail);
 }
 
-std::size_t ExtendKernelbase(const loader::MappedImage& img) {
+// Completes the export table of `img` from the host module `host_module`: every export of the host module the image
+// lacks is added as a jump to
+//   1. the same-named CODE export of `wine` (a guest image already mapped: kernel32 for kernelbase, Wine's gdi32 for the
+//      gdi32full stand-in), when it has one; else
+//   2. the host module's function (a forwarder resolved with GetProcAddress, D3DKMT* names only; other forwarders are
+//      skipped).
+// `only_ddi`: only the host's D3DKMT* exports (Wine's gdi32 lacks some the native dxgi/d3d11 import).
+std::size_t ExtendExports(const loader::MappedImage& img, const wchar_t* host_module, const void* wine, bool only_ddi) {
     Exports guest, host, k32;
-    const HMODULE host_kb = GetModuleHandleW(L"kernelbase.dll");
+    const HMODULE host_kb = GetModuleHandleW(host_module);
     if (!guest.Open(img.base) || !host.Open(host_kb)) {
-        WARN(dispatch, "gui native: guest kernelbase exports not extended (no export directory)");
+        WARN(dispatch, "gui native: guest %ls exports not extended (no export directory)", host_module);
         return 0;
     }
-    const bool have_k32 = k32.Open(g_guest_kernel32);
+    const bool have_k32 = k32.Open(wine);
     struct Add { const char* name; const void* target; bool wine; };
     std::vector<Add> add;
     std::size_t from_wine = 0;
     for (std::uint32_t i = 0; i < host.dir->NumberOfNames; ++i) {
         const char* name = host.Name(i);
         const std::uint32_t rva = host.functions[host.ordinals[i]];
-        if (!host.IsCode(rva) || guest.Find(name) >= 0) continue;
+        const bool ddi = std::strncmp(name, "D3DKMT", 6) == 0;
+        if ((only_ddi && !ddi) || guest.Find(name) >= 0) continue;
         if (const void* w = have_k32 ? k32.Code(name) : nullptr) {
             add.push_back({name, w, true});
             ++from_wine;
-        } else {
+        } else if (host.IsCode(rva)) {
             add.push_back({name, host.base + rva, false});
+        } else if (ddi) {   // a forwarder: the function the host's loader resolves it to
+            if (const void* target = reinterpret_cast<const void*>(GetProcAddress(host_kb, name)))
+                add.push_back({name, target, false});
         }
     }
     if (add.empty()) return 0;
@@ -224,7 +236,7 @@ std::size_t ExtendKernelbase(const loader::MappedImage& img) {
 
 void NoteNativeGuestImage(const loader::MappedImage& img, const std::wstring& host_path,
                           const std::wstring& export_name) {
-    if (!NativeGuiActive()) return;
+    if (!NativeGuiActive() && !HostD3dkmtActive()) return;
     // ntdll, kernelbase and kernel32 are always Wine's builtins (docs/DECISIONS.md E1), so the name identifies them.
     // The host path is the better source where it exists; in an AppContainer GetFinalPathNameByHandleW is refused
     // (the host path is empty) and the image's own export-directory name is all there is.
@@ -236,6 +248,14 @@ void NoteNativeGuestImage(const loader::MappedImage& img, const std::wstring& ho
         InterposeDxgiImage(img, id);
         return;
     }
+    // machine-emu-d3d: the gdi32full.dll stand-in (tests/guest/gdi32full_stub.c) gets the host's gdi32full exports.
+    if (HostD3dkmtActive() && EndsWithI(id, L"gdi32full.dll") &&
+        (id.size() == 13 || id[id.size() - 14] == L'\\' || id[id.size() - 14] == L'/')) {
+        const std::size_t n = ExtendExports(img, L"gdi32full.dll", g_guest_gdi32, false);
+        TRACE(dispatch, "d3d native: gdi32full stand-in: %zu export(s) added from the host's gdi32full (Wine gdi32 %s)", n,
+              g_guest_gdi32 ? "mapped" : "NOT mapped yet");
+        return;
+    }
     if (!host_path.empty() && host_path.find(L"\\builtin\\") == std::wstring::npos &&
         host_path.find(L"/builtin/") == std::wstring::npos)
         return;
@@ -243,7 +263,12 @@ void NoteNativeGuestImage(const loader::MappedImage& img, const std::wstring& ho
         g_guest_kernel32 = img.base;
     else if (EndsWithI(id, L"kernelbase.dll") &&
              (id.size() == 14 || id[id.size() - 15] == L'\\' || id[id.size() - 15] == L'/'))
-        ExtendKernelbase(img);
+        ExtendExports(img, L"kernelbase.dll", g_guest_kernel32, false);
+    else if (HostD3dkmtActive() && EndsWithI(id, L"gdi32.dll") &&
+             (id.size() == 9 || id[id.size() - 10] == L'\\' || id[id.size() - 10] == L'/')) {
+        g_guest_gdi32 = img.base;
+        ExtendExports(img, L"gdi32.dll", nullptr, true);   // native dxgi/d3d11 import D3DKMT* Wine's gdi32 does not export
+    }
 }
 
 }  // namespace win10xbox::dispatch::detail

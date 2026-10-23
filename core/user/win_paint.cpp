@@ -95,8 +95,32 @@ void RetainFrame() {
     s.retained_valid = true;
 }
 
+// Swap chain frames over their windows' client rectangles (after the window surfaces, before the cursor). `live`:
+// frames of windows that are gone are dropped; otherwise (the retained last frame) they stay where they were.
+void ComposeClientFrames(bool live, std::uint32_t* bgra, std::int32_t width, std::int32_t height, std::int32_t stride) {
+    State* st = StateIfAny();
+    if (!st) return;
+    for (EmuClientFrame& f : st->client_frames) {
+        if (WindowObj* w = Win(f.hwnd)) {
+            if (live && !IsWindowReallyVisible(w)) continue;
+            const RECT c = ClientRectScreen(w);
+            f.x = c.left;
+            f.y = c.top;
+        } else if (live) {
+            continue;
+        }
+        const RECT r = RectIntersect(RECT{f.x, f.y, f.x + f.w, f.y + f.h}, RECT{0, 0, width, height});
+        if (RectEmpty(r)) continue;
+        for (int y = r.top; y < r.bottom; ++y) {
+            const std::uint32_t* src = f.px.data() + static_cast<std::size_t>(y - f.y) * f.w;
+            auto* dst = reinterpret_cast<std::uint32_t*>(reinterpret_cast<std::uint8_t*>(bgra) + static_cast<std::ptrdiff_t>(y) * stride);
+            for (int x = r.left; x < r.right; ++x) dst[x] = src[x - f.x] | 0xff000000u;
+        }
+    }
+}
+
 void Compose(const std::vector<RetainedLayer>& layers, std::uint32_t* bgra, std::int32_t width, std::int32_t height,
-             std::int32_t stride) {
+             std::int32_t stride, bool live) {
     const std::uint32_t desktop = ColorToPixel(SysColor(COLOR_BACKGROUND));
     for (std::int32_t y = 0; y < height; ++y) {
         auto* row = reinterpret_cast<std::uint32_t*>(reinterpret_cast<std::uint8_t*>(bgra) + static_cast<std::ptrdiff_t>(y) * stride);
@@ -113,6 +137,7 @@ void Compose(const std::vector<RetainedLayer>& layers, std::uint32_t* bgra, std:
             for (int x = r.left; x < r.right; ++x) dst[x] = src[x - l.screen.left] | 0xff000000u;
         }
     }
+    ComposeClientFrames(live, bgra, width, height, stride);
     ComposeCursor(bgra, width, height, stride);
 }
 
@@ -431,7 +456,49 @@ int ReleaseDCInternal(HWND hwnd, HDC hdc) {
     return 1;
 }
 
+bool NotifyEmuClientFrame(void* hwnd, const std::uint32_t* bgra, std::int32_t width, std::int32_t height,
+                          std::int32_t stride_bytes) {
+    if (!hwnd || !bgra || width <= 0 || height <= 0 || width > 16384 || height > 16384 || stride_bytes < width * 4)
+        return false;
+    LockGuard lock;
+    State* s = StateIfAny();
+    if (!s || !Win(static_cast<HWND>(hwnd))) return false;
+    EmuClientFrame* slot = nullptr;
+    for (EmuClientFrame& f : s->client_frames)
+        if (f.hwnd == static_cast<HWND>(hwnd)) slot = &f;
+    if (!slot) {
+        s->client_frames.push_back(EmuClientFrame{static_cast<HWND>(hwnd), 0, 0, 0, 0, {}});
+        slot = &s->client_frames.back();
+    }
+    slot->w = width;
+    slot->h = height;
+    slot->px.resize(static_cast<std::size_t>(width) * height);
+    for (std::int32_t y = 0; y < height; ++y)
+        std::memcpy(slot->px.data() + static_cast<std::size_t>(y) * width,
+                    reinterpret_cast<const std::uint8_t*>(bgra) + static_cast<std::size_t>(y) * stride_bytes,
+                    static_cast<std::size_t>(width) * 4);
+    NoteScreenChanged();
+    return true;
+}
+
 }  // namespace detail
+
+bool IsEmulatedWindow(void* hwnd) {
+    if (!hwnd || detail::NativeGui()) return false;
+    detail::LockGuard lock;
+    return detail::StateIfAny() && detail::Win(static_cast<HWND>(hwnd)) != nullptr;
+}
+
+bool GetEmulatedClientSize(void* hwnd, std::int32_t* width, std::int32_t* height) {
+    if (!hwnd || detail::NativeGui()) return false;
+    detail::LockGuard lock;
+    if (!detail::StateIfAny()) return false;
+    const detail::WindowObj* w = detail::Win(static_cast<HWND>(hwnd));
+    if (!w) return false;
+    if (width) *width = w->client.right - w->client.left;
+    if (height) *height = w->client.bottom - w->client.top;
+    return true;
+}
 
 // ---- Host-facing ----------------------------------------------------------------------------------
 
@@ -440,7 +507,7 @@ bool ComposeFrame(std::uint32_t* bgra, std::int32_t width, std::int32_t height, 
     if (!bgra || width <= 0 || height <= 0) return false;
     detail::LockGuard lock;
     if (!detail::StateIfAny()) return false;
-    detail::Compose(detail::LiveLayers(), bgra, width, height, stride_bytes);
+    detail::Compose(detail::LiveLayers(), bgra, width, height, stride_bytes, true);
     return true;
 }
 
@@ -451,7 +518,8 @@ bool ComposeLastPaintedFrame(std::uint32_t* bgra, std::int32_t width, std::int32
     detail::LockGuard lock;
     detail::State* s = detail::StateIfAny();
     if (!s) return false;
-    detail::Compose(s->retained_valid ? s->retained : detail::LiveLayers(), bgra, width, height, stride_bytes);
+    detail::Compose(s->retained_valid ? s->retained : detail::LiveLayers(), bgra, width, height, stride_bytes,
+                    !s->retained_valid);
     return true;
 }
 

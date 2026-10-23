@@ -72,6 +72,12 @@ bool WriteScreenshot(const std::wstring& path);
 bool NotifyClientFrame(void* hwnd, const std::uint32_t* bgra, std::int32_t width, std::int32_t height,
                        std::int32_t stride_bytes);
 
+// True when `hwnd` is a window of this module's own window manager (the emulated GUI: a swap chain for it is virtual,
+// NotifyClientFrame composes its frames at the window's client rectangle). False in route B and for any other value.
+bool IsEmulatedWindow(void* hwnd);
+// The client size of an emulated window (what a swap chain with a 0x0 description takes); false when it is not one.
+bool GetEmulatedClientSize(void* hwnd, std::int32_t* width, std::int32_t* height);
+
 // host-uwp: creates the real swap chain for the guest on the presenter's CoreWindow instead of on the guest's
 // window. `factory` is the real IDXGIFactory2*, `device` the guest's IUnknown* device, `desc1` a
 // const DXGI_SWAP_CHAIN_DESC1*; *swap_chain receives an IDXGISwapChain1* (one reference). Returns an HRESULT.

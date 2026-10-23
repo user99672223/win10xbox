@@ -88,6 +88,7 @@ struct State {
     // Route B (config gui = native): win32u entries pass through to this module (the HOST's win32u.dll).
     HMODULE host_win32u = nullptr;
     bool gui_native = false;
+    bool d3dkmt_host = false;   // emulated GUI + native Direct3D (machine.json "d3d": "native"): NtGdiDdDDI* go to the host
     std::vector<std::unique_ptr<Entry>> extra;         // native-only win32u syscalls (ids kExtraFirstId..)
     std::uint32_t next_extra_id = kExtraFirstId;
     const Entry* end_paint = nullptr;                  // NtUserEndPaint: presentation snapshot point
@@ -391,6 +392,32 @@ NTSTATUS UseHostWin32u(HMODULE win32u) {
                     "export (Todo); NtCallbackReturn passes through", pass, win32u, todo);
     return st::Success;
 }
+
+// Emulated GUI (Wine's user32/gdi32/win32u over core/user) with the NATIVE Direct3D runtime (machine.json "d3d":
+// "native", docs/slices/uwpswap.md): the native dxgi/d3d11/d3d10warp reach the kernel through gdi32!D3DKMT* -> win32u
+// NtGdiDdDDI*. Those (and only those) win32u syscalls pass through to the host's win32u by name; every window call
+// stays with core/user.
+NTSTATUS UseHostD3dkmt(HMODULE win32u) {
+    State& s = S();
+    if (!s.initialized || !win32u) return st::Unsuccessful;
+    AcquireSRWLockExclusive(&s.lock);
+    std::size_t pass = 0, todo = 0;
+    for (Entry& e : s.entries) {
+        if (e.id < kWin32uFirstId || std::strncmp(e.name, "NtGdiDdDDI", 10) != 0) continue;
+        e.host_fn = reinterpret_cast<void*>(GetProcAddress(win32u, e.name));
+        e.policy = e.host_fn ? Policy::PassThrough : Policy::Todo;
+        e.note = e.host_fn ? "win32u (host dxgkrnl)" : "win32u (no host export)";
+        e.nargs = kMaxArgs;
+        ++(e.host_fn ? pass : todo);
+    }
+    s.d3dkmt_host = true;
+    ReleaseSRWLockExclusive(&s.lock);
+    TRACE(dispatch, "d3d native: %zu NtGdiDdDDI* (D3DKMT) syscalls pass through to the host's win32u.dll %p, %zu have no "
+                    "host export (Todo)", pass, win32u, todo);
+    return st::Success;
+}
+
+bool HostD3dkmtActive() { return g_state.d3dkmt_host; }
 
 bool NativeGuiActive() { return g_state.gui_native; }
 
@@ -1007,7 +1034,12 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
     } else
     switch (e->policy) {
     case Policy::PassThrough:
-        status = e->host_fn ? CallWithArgs(e->host_fn, f->args, e->nargs) : st::NotImplemented;
+        if (win32u && e->host_fn) {   // d3dkmt_host: the NtGdiDdDDI* of the host's win32u
+            result64 = CallWithArgs64(e->host_fn, f->args, e->nargs);
+            status = static_cast<NTSTATUS>(result64);
+        } else {
+            status = e->host_fn ? CallWithArgs(e->host_fn, f->args, e->nargs) : st::NotImplemented;
+        }
         if (!e->host_fn) FIXME(dispatch, "%s: no host export", e->name);
         break;
     case Policy::Translate:
