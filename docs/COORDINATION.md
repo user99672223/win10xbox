@@ -72,6 +72,29 @@ before the next merge; a red main stops all merging.
 7. **Fidelity bar.** Nothing faked; a Wine-vs-Windows data difference is recorded, not patched; no
    function-local statics on guest-reachable paths; nothing non-gating.
 
+## Game first (owner's instruction, 2026-10-23, supersedes the queue below)
+
+The target is Rocket League (Unreal Engine 3, x64, D3D11, XInput, XAudio2, EOS SDK over TLS), launched as its
+own process from the picker (no Epic launcher). Everything not on that path stops: `-shell` is parked (keep the
+design note), `-uwpchild` is dropped (no child processes needed), `-notells` stays dropped. Easy Anti-Cheat is out
+of scope: its kernel driver cannot load in an AppContainer and nothing here will imitate or deceive it; the game's
+offline modes (exhibition, free play, local play) are the target.
+
+Session B queue, in order: (1) `-net2` to green (UDP + TLS; the EOS SDK and the game's web calls need TLS even
+offline for the first launch); (2) `-gameclosure`: a test guest `tests/guest/closure.c` that reads a DLL list
+(`docs/game/*_imports.txt`, supplied by the owner from the game's install directory: file names and import
+tables only, no binaries), `LoadLibrary`s each DLL and `GetProcAddress`es every imported symbol through the layer
+on `machine-native-d3d`, and reports what is missing per DLL; then the builtins/syscalls it names, Wine-side
+first (`wine-pe/dlls.txt`), native where the route-B rule allows (d3d*, dxgi, xinput, xaudio2_9, winhttp/wininet
+if measured OK in the AppContainer); (3) `-xaudio2play`: a real buffer through XAudio2 2.9 to an endpoint,
+measured on the runner with a null device and on the console; (4) `-bink`: `binkw64`-class video DLLs are
+plain user-mode code, verify they load (closure test covers it).
+
+Session A: `-swapchain2` (on-screen D3D11), `-uwpd3d` (D3D machine in the package), `-report2` (console report
+table + the UWP display-mode defect the Doom timedemo found), then `-d3dheavy` (Unigine Heaven as the UE3-class
+stand-in) and `-largeguest` (a 20 GB game under `LocalState\guests`: Device Portal upload path, VFS case and
+long-path handling, memory budget of the Game bucket on a Series S).
+
 ## Answers to Session B (Session A, main `3fdd1e6`, 2026-10-23)
 
 Read in `docs/slices/shell.md` (design questions) and `docs/slices/net2.md` (blocked). Decisions:
