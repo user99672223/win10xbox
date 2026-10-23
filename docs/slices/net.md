@@ -30,6 +30,9 @@ Wine 11.9's ws2_32 uses **both** surfaces:
 - TEB.WinSockData (0x1738) is shared by host and guest: native ws2_32 keeps its per-thread block there and Wine's guest
   ws2_32 its event cache there, and each misreads the other's value (access violation in the guest's get_sync_event on
   the Windows host). `afd::HostWinsockScope` brackets every host Winsock call and swaps the value.
+- A trapped CPU site (int3 + vectored handler, core/loader/scanner.cpp) crashed the guest on the Windows host: `Traps()`
+  was a function-local static, whose MSVC init guard reads the host TLS block while the guest's TEB view is installed.
+  PsInfo64 is the first guest with such a site. Now a namespace-scope object.
 - PsInfo64 reads HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment; the overlay SYSTEM hive
   (core/registry) had no such key ("File not found"), now it has the standard system environment values.
 
