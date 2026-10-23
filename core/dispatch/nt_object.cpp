@@ -15,6 +15,7 @@
 #include "internal.h"
 #include "ob_namespace.h"
 #include "win10xbox/config.h"
+#include "win10xbox/probe.h"
 #if WIN10XBOX_HAVE_VFS
 #include "win10xbox/vfs.h"
 #endif
@@ -86,24 +87,11 @@ template <class Fn> Fn HostProc(const char* name) { return reinterpret_cast<Fn>(
 
 // ---- guest memory --------------------------------------------------------------------------------------------------------
 
-std::size_t AccessibleBytes(const void* p, std::size_t want, bool writable) {
-    const auto a = reinterpret_cast<std::uintptr_t>(p);
-    if (!p) return 0;
-    constexpr DWORD kRead = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ |
-                            PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
-    constexpr DWORD kWrite = PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
-    std::size_t got = 0;
-    while (got < want) {
-        MEMORY_BASIC_INFORMATION mbi;
-        if (!VirtualQuery(reinterpret_cast<void*>(a + got), &mbi, sizeof mbi)) break;
-        if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) break;
-        if (!(mbi.Protect & (writable ? kWrite : kRead))) break;
-        got = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) + mbi.RegionSize - a;
-    }
-    return std::min(got, want);
-}
-bool GuestReadable(const void* p, std::size_t n) { return AccessibleBytes(p, n, false) == n; }
-bool GuestWritable(const void* p, std::size_t n) { return AccessibleBytes(p, n, true) == n; }
+// Caller memory goes through win10xbox/probe.h: a bad pointer is STATUS_ACCESS_VIOLATION, never a fault in the layer.
+bool GuestReadable(const void* p, std::size_t n) { return probe::ProbeRead(p, n) == 0; }
+bool GuestWritable(void* p, std::size_t n) { return probe::ProbeWrite(p, n) == 0; }
+void PutHandle(PHANDLE h, HANDLE v) { probe::Store<HANDLE>(h, v); }
+void PutUlong(PULONG p, ULONG v) { if (p) probe::Store<ULONG>(p, v); }
 
 // ---- handles ------------------------------------------------------------------------------------------------------------
 
@@ -148,7 +136,7 @@ bool OurHandle(HANDLE h, HandleRec* out, ObjectKind* kind = nullptr) {
 struct ParsedOA {
     NTSTATUS status = 0;        // non-zero: the call returns it
     bool null_oa = false, null_name = false, empty_name = false;
-    std::wstring_view name;
+    std::wstring name;          // captured copy of the caller's name
     HANDLE root_handle = nullptr;
     bool root_ours = false;
     HandleRec root;
@@ -160,23 +148,17 @@ struct ParsedOA {
 ParsedOA ParseOA(const OBJECT_ATTRIBUTES* oa) {
     ParsedOA p;
     if (!oa) { p.null_oa = true; return p; }
-    if (!GuestReadable(oa, sizeof(ULONG))) { p.status = st::AccessViolation; return p; }
-    if (oa->Length != sizeof(OBJECT_ATTRIBUTES)) { p.status = st::InvalidParameter; return p; }
-    if (!GuestReadable(oa, sizeof(OBJECT_ATTRIBUTES))) { p.status = st::AccessViolation; return p; }
-    p.attributes = oa->Attributes;
-    p.root_handle = oa->RootDirectory;
+    // The attributes and the name are read once; everything below works on the copy.
+    probe::ObjectAttributes cap;
+    if (NTSTATUS cs = probe::CaptureObjectAttributes(oa, &cap)) { p.status = cs; return p; }
+    p.attributes = cap.oa.Attributes;
+    p.root_handle = cap.oa.RootDirectory;
     if (p.root_handle) p.root_ours = OurHandle(p.root_handle, &p.root);
-    const UNICODE_STRING* us = oa->ObjectName;
-    if (!us) { p.null_name = true; return p; }
-    if (!GuestReadable(us, sizeof(UNICODE_STRING))) { p.status = st::AccessViolation; return p; }
-    const UNICODE_STRING u = *us;
-    if (u.Length) {
-        if (reinterpret_cast<std::uintptr_t>(u.Buffer) & 1) { p.status = nts::DatatypeMisalignment; return p; }
-        if (!u.Buffer || !GuestReadable(u.Buffer, u.Length)) { p.status = st::AccessViolation; return p; }
-    }
-    if ((u.Length & 1) || u.Length > 65532) { p.status = nts::NameInvalid; return p; }
-    p.name = std::wstring_view(u.Buffer, u.Length / sizeof(wchar_t));
-    p.empty_name = u.Length == 0;
+    if (!cap.oa.ObjectName) { p.null_name = true; return p; }
+    const USHORT length = cap.name.us.Length;
+    if ((length & 1) || length > 65532) { p.status = nts::NameInvalid; return p; }
+    p.name = cap.name.text;
+    p.empty_name = length == 0;
     return p;
 }
 
@@ -301,22 +283,23 @@ NTSTATUS SyncCall(const wchar_t* type, bool create, PHANDLE handle, POBJECT_ATTR
         if (create) {
             // The other arguments are checked before the name (om.c: an invalid event type is
             // STATUS_INVALID_PARAMETER whatever the name): let the host judge them on an unnamed object.
-            HANDLE probe = nullptr;
-            NTSTATUS ps = call(nullptr, &probe);
+            HANDLE scratch = nullptr;
+            NTSTATUS ps = call(nullptr, &scratch);
             if (NtSuccess(ps)) {
-                Host().NtClose(probe);
+                Host().NtClose(scratch);
             } else {
-                *handle = nullptr;
+                PutHandle(handle, nullptr);
                 return ps;
             }
         }
-        *handle = nullptr;
+        PutHandle(handle, nullptr);
         return plan.status;
     }
     case SyncPlan::Route::Redirect: {
         NTSTATUS s = call(&plan.oa, handle);
         if (NtSuccess(s)) {
-            if (!plan.anonymous) RecordSync(*handle, plan, type);
+            HANDLE made = nullptr;
+            if (!plan.anonymous && probe::Load<HANDLE>(handle, &made) == 0) RecordSync(made, plan, type);
         }
         return s;
     }
@@ -565,11 +548,11 @@ using PFN_OpenOrCreateDir = NTSTATUS(NTAPI*)(PHANDLE, ACCESS_MASK, POBJECT_ATTRI
 NTSTATUS NTAPI Xl_NtCreateDirectoryObject(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES oa) {
     if (!handle || !GuestWritable(handle, sizeof(HANDLE))) return st::AccessViolation;
     DirPlan d = PlanDir(oa, true, true);
-    auto fail = [&](NTSTATUS s) { *handle = nullptr; return s; };
+    auto fail = [&](NTSTATUS s) { PutHandle(handle, nullptr); return s; };
     auto handle_for = [&](const NodeRef& node, NTSTATUS ok) -> NTSTATUS {
         HANDLE h = NewHandle(node, access, d.p.attributes);
         if (!h) return fail(st::NoMemory);
-        *handle = h;
+        PutHandle(handle, h);
         return ok;
     };
     switch (d.route) {
@@ -604,7 +587,7 @@ NTSTATUS NTAPI Xl_NtCreateDirectoryObject(PHANDLE handle, ACCESS_MASK access, PO
 NTSTATUS NTAPI Xl_NtOpenDirectoryObject(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES oa) {
     if (!handle || !GuestWritable(handle, sizeof(HANDLE))) return st::AccessViolation;
     DirPlan d = PlanDir(oa, false, true);
-    auto fail = [&](NTSTATUS s) { *handle = nullptr; return s; };
+    auto fail = [&](NTSTATUS s) { PutHandle(handle, nullptr); return s; };
     switch (d.route) {
     case DirPlan::Route::Done:
         return fail(d.status);
@@ -618,7 +601,7 @@ NTSTATUS NTAPI Xl_NtOpenDirectoryObject(PHANDLE handle, ACCESS_MASK access, POBJ
         if (!MapAccess(access, Kind::Directory)) return fail(st::AccessDenied);
         HANDLE h = NewHandle(d.node, access, d.p.attributes);
         if (!h) return fail(st::NoMemory);
-        *handle = h;
+        PutHandle(handle, h);
         return st::Success;
     }
     case DirPlan::Route::Leaf:
@@ -630,7 +613,7 @@ NTSTATUS NTAPI Xl_NtOpenDirectoryObject(PHANDLE handle, ACCESS_MASK access, POBJ
 
 NTSTATUS NTAPI Xl_NtCreateSymbolicLinkObject(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES oa, PUNICODE_STRING target) {
     if (!handle || !GuestWritable(handle, sizeof(HANDLE))) return st::AccessViolation;
-    auto fail = [&](NTSTATUS s) { *handle = nullptr; return s; };
+    auto fail = [&](NTSTATUS s) { PutHandle(handle, nullptr); return s; };
     if (!target || !GuestReadable(target, sizeof(UNICODE_STRING))) return fail(st::AccessViolation);
     const UNICODE_STRING t = *target;
     if (!t.MaximumLength) return fail(st::InvalidParameter);
@@ -643,7 +626,7 @@ NTSTATUS NTAPI Xl_NtCreateSymbolicLinkObject(PHANDLE handle, ACCESS_MASK access,
     auto handle_for = [&](const NodeRef& node, NTSTATUS ok) -> NTSTATUS {
         HANDLE h = NewHandle(node, access, d.p.attributes);
         if (!h) return fail(st::NoMemory);
-        *handle = h;
+        PutHandle(handle, h);
         return ok;
     };
     switch (d.route) {
@@ -679,7 +662,7 @@ NTSTATUS NTAPI Xl_NtCreateSymbolicLinkObject(PHANDLE handle, ACCESS_MASK access,
 NTSTATUS NTAPI Xl_NtOpenSymbolicLinkObject(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES oa) {
     if (!handle || !GuestWritable(handle, sizeof(HANDLE))) return st::AccessViolation;
     DirPlan d = PlanDir(oa, false, false);
-    auto fail = [&](NTSTATUS s) { *handle = nullptr; return s; };
+    auto fail = [&](NTSTATUS s) { PutHandle(handle, nullptr); return s; };
     switch (d.route) {
     case DirPlan::Route::Done:
         return fail(d.status);
@@ -691,7 +674,7 @@ NTSTATUS NTAPI Xl_NtOpenSymbolicLinkObject(PHANDLE handle, ACCESS_MASK access, P
         if (!MapAccess(access, Kind::SymbolicLink)) return fail(st::AccessDenied);
         HANDLE h = NewHandle(d.node, access, d.p.attributes);
         if (!h) return fail(st::NoMemory);
-        *handle = h;
+        PutHandle(handle, h);
         return st::Success;
     }
     case DirPlan::Route::Leaf:
@@ -713,14 +696,15 @@ NTSTATUS NTAPI Xl_NtQuerySymbolicLinkObject(HANDLE h, PUNICODE_STRING out, PULON
     if (!(rec.access & ob::kSymlinkQuery)) return st::AccessDenied;
     if (!out || !GuestWritable(out, sizeof(UNICODE_STRING))) return st::AccessViolation;
     if (ret_len && !GuestWritable(ret_len, sizeof(ULONG))) return st::AccessViolation;
+    UNICODE_STRING header;
+    if (NTSTATUS ls = probe::Load<UNICODE_STRING>(out, &header)) return ls;
     const std::wstring target = g_tree.Target(rec.node);
     const ULONG need = static_cast<ULONG>(target.size() * sizeof(wchar_t) + sizeof(wchar_t));
-    if (ret_len) *ret_len = need;
-    if (out->MaximumLength < need) return st::BufferTooSmall;
-    if (!GuestWritable(out->Buffer, need)) return st::AccessViolation;
-    std::memcpy(out->Buffer, target.c_str(), need);
-    out->Length = static_cast<USHORT>(need - sizeof(wchar_t));
-    return st::Success;
+    PutUlong(ret_len, need);
+    if (header.MaximumLength < need) return st::BufferTooSmall;
+    if (NTSTATUS cs = probe::CopyToUser(header.Buffer, target.c_str(), need)) return cs;
+    header.Length = static_cast<USHORT>(need - sizeof(wchar_t));
+    return probe::Store<UNICODE_STRING>(out, header);
 }
 
 NTSTATUS NTAPI Xl_NtQueryDirectoryObject(HANDLE h, PVOID buffer, ULONG size, BOOLEAN single, BOOLEAN restart, PULONG context,
@@ -737,34 +721,41 @@ NTSTATUS NTAPI Xl_NtQueryDirectoryObject(HANDLE h, PVOID buffer, ULONG size, BOO
     if (!context || !GuestWritable(context, sizeof(ULONG))) return st::AccessViolation;
     if (size && !GuestWritable(buffer, size)) return st::AccessViolation;
     if (ret_len && !GuestWritable(ret_len, sizeof(ULONG))) return st::AccessViolation;
+    ULONG index = 0;
+    if (!restart)
+        if (NTSTATUS ls = probe::Load<ULONG>(context, &index)) return ls;
     if (g_tree.PathOf(rec.node) == L"\\GLOBAL??" || g_tree.PathOf(rec.node) == L"\\??") RefreshDriveLinks();
     std::vector<ob::DirEntry> entries = ListDirectory(rec.node);
-    return ob::PackDirectoryEntries(entries, buffer, size, single != 0, restart != 0, context, ret_len);
+    // Built in a private buffer (pointers as they will be in the caller's), then copied out.
+    std::vector<char> tmp(size ? size : 1);
+    ULONG written = 0, ret = 0;
+    const NTSTATUS s = ob::PackDirectoryEntries(entries, tmp.data(), size, single != 0, restart != 0, &index, &ret, buffer, &written);
+    if (written)
+        if (NTSTATUS cs = probe::CopyToUser(buffer, tmp.data(), written)) return cs;
+    PutUlong(ret_len, ret);
+    if (s == st::Success || s == nts::MoreEntries) PutUlong(context, index);
+    return s;
 }
 
 // ---- NtQueryObject ---------------------------------------------------------------------------------------------------------
 
+// Writes `bytes` (built with pointers relative to offset 0 of the block) into the caller's buffer, fixing the one
+// UNICODE_STRING pointer at the start: `text_offset` is where the characters are.
 NTSTATUS WriteNameInfo(const std::wstring& name, PVOID buf, ULONG len, PULONG ret) {
     const ULONG n = static_cast<ULONG>(name.size() * sizeof(wchar_t));
     const ULONG need = name.empty() ? sizeof(UNICODE_STRING) : static_cast<ULONG>(sizeof(UNICODE_STRING)) + n + sizeof(wchar_t);
-    if (ret) {
-        if (!GuestWritable(ret, sizeof(ULONG))) return st::AccessViolation;
-        *ret = need;
-    }
+    if (ret && !GuestWritable(ret, sizeof(ULONG))) return st::AccessViolation;
+    PutUlong(ret, need);
     if (len < need) return st::InfoLengthMismatch;
-    if (!GuestWritable(buf, need)) return st::AccessViolation;
-    auto* us = static_cast<UNICODE_STRING*>(buf);
-    if (name.empty()) {
-        us->Length = us->MaximumLength = 0;
-        us->Buffer = nullptr;
-        return st::Success;
+    std::vector<std::uint8_t> out(need, 0);
+    auto* us = reinterpret_cast<UNICODE_STRING*>(out.data());
+    if (!name.empty()) {
+        std::memcpy(out.data() + sizeof(UNICODE_STRING), name.c_str(), n + sizeof(wchar_t));
+        us->Buffer = reinterpret_cast<wchar_t*>(static_cast<std::uint8_t*>(buf) + sizeof(UNICODE_STRING));
+        us->Length = static_cast<USHORT>(n);
+        us->MaximumLength = static_cast<USHORT>(n + sizeof(wchar_t));
     }
-    auto* text = reinterpret_cast<wchar_t*>(us + 1);
-    std::memcpy(text, name.c_str(), n + sizeof(wchar_t));
-    us->Buffer = text;
-    us->Length = static_cast<USHORT>(n);
-    us->MaximumLength = static_cast<USHORT>(n + sizeof(wchar_t));
-    return st::Success;
+    return probe::CopyToUser(buf, out.data(), need);
 }
 
 // OBJECT_TYPE_INFORMATION of the host's "Directory" / "SymbolicLink" type (real mappings, indices, masks), counts ours.
@@ -822,7 +813,7 @@ NTSTATUS QueryDescribed(const Described& d, ULONG cls, PVOID buf, ULONG len, PUL
     auto set_ret = [&](ULONG v) -> bool {
         if (!ret) return true;
         if (!GuestWritable(ret, sizeof(ULONG))) return false;
-        *ret = v;
+        PutUlong(ret, v);
         return true;
     };
     switch (cls) {
@@ -830,16 +821,15 @@ NTSTATUS QueryDescribed(const Described& d, ULONG cls, PVOID buf, ULONG len, PUL
         constexpr ULONG kSize = 0x38;
         if (!set_ret(kSize)) return st::AccessViolation;
         if (len < kSize) return st::InfoLengthMismatch;
-        if (!GuestWritable(buf, kSize)) return st::AccessViolation;
-        std::memset(buf, 0, kSize);
-        auto* u = static_cast<ULONG*>(buf);
+        std::uint8_t block[kSize] = {};
+        auto* u = reinterpret_cast<ULONG*>(block);
         u[0] = (d.attributes & kObjInherit) | (d.permanent ? kObjPermanent : 0);
         u[1] = d.access;
         u[2] = d.handles;
         u[3] = d.handles + 1;
         u[9] = d.name.empty() ? 0 : static_cast<ULONG>(sizeof(UNICODE_STRING) + d.name.size() * sizeof(wchar_t) + sizeof(wchar_t));
         u[10] = kTypeInfoSize + static_cast<ULONG>(d.type.size() * sizeof(wchar_t) + sizeof(wchar_t));
-        return st::Success;
+        return probe::CopyToUser(buf, block, kSize);
     }
     case kObjectNameInformation:
         return WriteNameInfo(d.name, buf, len, ret);
@@ -847,17 +837,16 @@ NTSTATUS QueryDescribed(const Described& d, ULONG cls, PVOID buf, ULONG len, PUL
         const ULONG need = kTypeInfoSize + static_cast<ULONG>(d.type.size() * sizeof(wchar_t) + sizeof(wchar_t));
         if (!set_ret(need)) return st::AccessViolation;
         if (len < need) return st::InfoLengthMismatch;
-        if (!GuestWritable(buf, need)) return st::AccessViolation;
         TypeRow row = HostTypeRow(d.type.c_str());
-        std::memcpy(buf, row.bytes, kTypeInfoSize);
-        auto* us = static_cast<UNICODE_STRING*>(buf);
-        auto* text = reinterpret_cast<wchar_t*>(static_cast<std::uint8_t*>(buf) + kTypeInfoSize);
-        std::memcpy(text, d.type.c_str(), d.type.size() * sizeof(wchar_t) + sizeof(wchar_t));
-        us->Buffer = text;
+        std::vector<std::uint8_t> block(need, 0);
+        std::memcpy(block.data(), row.bytes, kTypeInfoSize);
+        auto* us = reinterpret_cast<UNICODE_STRING*>(block.data());
+        std::memcpy(block.data() + kTypeInfoSize, d.type.c_str(), d.type.size() * sizeof(wchar_t) + sizeof(wchar_t));
+        us->Buffer = reinterpret_cast<wchar_t*>(static_cast<std::uint8_t*>(buf) + kTypeInfoSize);
         us->Length = static_cast<USHORT>(d.type.size() * sizeof(wchar_t));
         us->MaximumLength = static_cast<USHORT>(us->Length + sizeof(wchar_t));
         if (d.count_kind >= 0) {
-            auto* u = static_cast<ULONG*>(buf);
+            auto* u = reinterpret_cast<ULONG*>(block.data());
             const ULONG objects = static_cast<ULONG>(g_tree.Count(d.count_kind == 0 ? Kind::Directory : Kind::SymbolicLink));
             const ULONG handles = static_cast<ULONG>(g_handle_count[d.count_kind]);
             u[0x10 / 4] = objects;
@@ -865,7 +854,7 @@ NTSTATUS QueryDescribed(const Described& d, ULONG cls, PVOID buf, ULONG len, PUL
             u[0x28 / 4] = std::max<ULONG>(u[0x28 / 4], objects);
             u[0x2C / 4] = std::max<ULONG>(u[0x2C / 4], handles);
         }
-        return st::Success;
+        return probe::CopyToUser(buf, block.data(), need);
     }
     default:
         return nts::NotImplemented;
@@ -1062,13 +1051,14 @@ int ResolveFileNameThroughNamespace(const OBJECT_ATTRIBUTES* oa, NTSTATUS* statu
         const wchar_t c = static_cast<wchar_t>(std::towupper(n->Buffer[1]));
         if (c != L'B' && c != L'S' && c != L'K' && c != L'O' && c != L'?' && c != L'D' && c != L'G') return 0;
     }
-    if (!GuestReadable(oa, sizeof(OBJECT_ATTRIBUTES)) || oa->Length != sizeof(OBJECT_ATTRIBUTES)) return 0;
+    if (oa->Length != sizeof(OBJECT_ATTRIBUTES)) return 0;   // `oa` is the caller's capture (TranslateOA)
     ParsedOA p = ParseOA(oa);
     if (p.status || p.null_oa || p.null_name || p.empty_name) return 0;
     bool ours = p.root_ours;
     if (!ours) {
         if (p.root_handle || p.name[0] != L'\\') return 0;
-        std::wstring_view rest = p.name.substr(1);
+        std::wstring_view full(p.name);
+        std::wstring_view rest = full.substr(1);
         const std::size_t e = rest.find(L'\\');
         std::wstring_view first = rest.substr(0, e);
         auto is = [&](std::wstring_view n) { return ob::NameEquals(first, n, true); };

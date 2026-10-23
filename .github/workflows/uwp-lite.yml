@@ -13,9 +13,12 @@ name: uwp-lite
 
 # Every push to every branch, no path filter: the whole project is tested
 # continuously (docs/HANDOFF.md, standing testing rule).
+# Main only: slice branches run ci.yml (the gate) and wine-pe.yml; the other workflows run on the merge.
+# Ten slice branches pushing all six workflows saturated the account's concurrent runners (Windows jobs
+# waited up to 36 minutes for a runner; docs/COORDINATION.md).
 on:
   push:
-    branches: ["**"]
+    branches: ["claude/youthful-cerf-l7xxsb"]
   pull_request:
   workflow_dispatch:
 

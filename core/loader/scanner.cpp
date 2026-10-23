@@ -34,7 +34,6 @@ using u8  = std::uint8_t;
 using u32 = std::uint32_t;
 using u64 = std::uint64_t;
 
-constexpr u64 kKuserLo = 0x7FFE0000ull, kKuserHi = 0x7FFE1000ull;
 constexpr u64 kReach = 0x7FF00000ull;       // max distance between a site and its thunk
 constexpr std::size_t kChunk = 0x10000;     // arena allocation unit (64 KiB)
 constexpr std::size_t kMinJmp = 5;          // bytes needed for `jmp rel32`
@@ -134,16 +133,27 @@ const ZydisDecodedOperand* FindRipMem(const Decoded& d) {
     return nullptr;
 }
 
-bool IsKuserRead(const Decoded& d) {
+bool InKuser(const ScanOptions& o, u64 v) { return v >= o.kuser_lo && v < o.kuser_hi; }
+
+// An instruction that reads an absolute address in the shared-data window (mov eax, [7FFE0260h]), or, with
+// ScanOptions::kuser_addresses, one that forms such an address (mov rax, 7FFE0260h; lea rax, [7FFE0260h]) so the
+// loads through the register that follows are served from the virtual page as well.
+bool IsKuserRead(const Decoded& d, const ScanOptions& opts) {
     if (d.ins.mnemonic == ZYDIS_MNEMONIC_NOP || d.ins.meta.category == ZYDIS_CATEGORY_PREFETCH) return false;
     for (unsigned i = 0; i < d.ins.operand_count_visible; ++i) {
         const auto& o = d.ops[i];
-        if (o.type != ZYDIS_OPERAND_TYPE_MEMORY || o.mem.type != ZYDIS_MEMOP_TYPE_MEM) continue;
+        if (opts.kuser_addresses && i == 1 && o.type == ZYDIS_OPERAND_TYPE_IMMEDIATE && !o.imm.is_relative &&
+            d.ins.mnemonic == ZYDIS_MNEMONIC_MOV && d.ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
+            InKuser(opts, o.imm.value.u))
+            return true;
+        if (o.type != ZYDIS_OPERAND_TYPE_MEMORY) continue;
+        if (o.mem.type != ZYDIS_MEMOP_TYPE_MEM && !(opts.kuser_addresses && o.mem.type == ZYDIS_MEMOP_TYPE_AGEN &&
+                                                     d.ins.mnemonic == ZYDIS_MNEMONIC_LEA))
+            continue;
         if (o.mem.base != ZYDIS_REGISTER_NONE || o.mem.index != ZYDIS_REGISTER_NONE) continue;
         if (o.mem.segment == ZYDIS_REGISTER_FS || o.mem.segment == ZYDIS_REGISTER_GS) continue;
         if (!o.mem.disp.size) continue;
-        u64 v = static_cast<u64>(o.mem.disp.value);
-        if (v >= kKuserLo && v < kKuserHi) return true;
+        if (InKuser(opts, static_cast<u64>(o.mem.disp.value))) return true;
     }
     return false;
 }
@@ -176,10 +186,19 @@ struct TrapSite {
     void*       ctx;
     u64         stub;        // original instruction + jmp back (used when handler returns false)
 };
+// Original bytes of every KuserRead site: a handler cannot decode the instruction at the site, an inline patch has
+// overwritten it with a jump.
+struct KuserRec { u64 addr; u8 len; u8 bytes[15]; };
 struct ArenaRec { u64 base; std::size_t size; u64 owner_lo, owner_hi; };
 
 SRWLOCK                g_lock = SRWLOCK_INIT;
-std::vector<TrapSite>& Traps() { static std::vector<TrapSite> v; return v; }
+// Namespace scope, not function-local statics: TrapVeh runs on the guest's TEB view, where the MSVC thread-safe-init
+// guard of a function-local static reads the host image's TLS block, which is not installed (docs/DISPATCHER.md,
+// "The guest-view window"). The first guest to execute a trapped site faulted there on the Windows host.
+std::vector<TrapSite> g_traps;
+std::vector<TrapSite>& Traps() { return g_traps; }
+std::vector<KuserRec> g_kuser_sites;
+std::vector<KuserRec>& KuserSites() { return g_kuser_sites; }
 std::vector<ArenaRec>& Arenas() { static std::vector<ArenaRec> v; return v; }
 PVOID                  g_veh = nullptr;
 
@@ -569,7 +588,7 @@ NTSTATUS ScanCore(const Job& job, const ScanOptions& opts, ScanResult* result) {
             SiteKind k;
             if (Classify(d, &k)) {
                 if (WantKind(opts, k)) sites.push_back({const_cast<u8*>(p), static_cast<u8>(d.ins.length), k});
-            } else if (opts.patch_kuser_reads && IsKuserRead(d)) {
+            } else if (opts.patch_kuser_reads && IsKuserRead(d, opts)) {
                 if (IsControlTransfer(d)) {
                     TRACE(scan, "kuser access in a control-transfer instruction at %p ignored", p);
                     if (result) ++result->skipped;
@@ -701,6 +720,16 @@ NTSTATUS ScanCore(const Job& job, const ScanOptions& opts, ScanResult* result) {
             continue;
         }
         const u64 sa = reinterpret_cast<u64>(s.addr);
+        if (s.kind == SiteKind::KuserRead && s.len <= sizeof(KuserRec::bytes)) {   // before the site is overwritten
+            KuserRec kr{};
+            kr.addr = sa;
+            kr.len = s.len;
+            std::memcpy(kr.bytes, s.addr, s.len);
+            LockEx lk;
+            auto& v = KuserSites();
+            auto it = std::lower_bound(v.begin(), v.end(), sa, [](const KuserRec& r, u64 x) { return r.addr < x; });
+            if (it != v.end() && it->addr == sa) *it = kr; else v.insert(it, kr);
+        }
         if (pl.mode == Plan::Trap) {
             {   // register before the 0xCC becomes visible
                 LockEx lk;
@@ -751,6 +780,16 @@ NTSTATUS ScanCore(const Job& job, const ScanOptions& opts, ScanResult* result) {
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+bool KuserSiteBytes(std::uint64_t addr, std::uint8_t* out, std::uint8_t* len) {
+    LockSh lk;
+    auto& v = KuserSites();
+    auto it = std::lower_bound(v.begin(), v.end(), addr, [](const KuserRec& r, u64 x) { return r.addr < x; });
+    if (it == v.end() || it->addr != addr) return false;
+    std::memcpy(out, it->bytes, it->len);
+    *len = it->len;
+    return true;
+}
+
 void EnsureTrapHandlerInstalled() {
     LockEx lk;
     if (g_veh) return;
@@ -916,6 +955,8 @@ void ReleaseScanSites(const void* start, std::size_t size) {
         LockEx lk;
         auto& t = Traps();
         t.erase(std::remove_if(t.begin(), t.end(), [&](const TrapSite& s) { return s.addr >= lo && s.addr < hi; }), t.end());
+        auto& k = KuserSites();
+        k.erase(std::remove_if(k.begin(), k.end(), [&](const KuserRec& r) { return r.addr >= lo && r.addr < hi; }), k.end());
         auto& a = Arenas();
         for (auto it = a.begin(); it != a.end();) {
             if (it->owner_lo >= lo && it->owner_lo < hi) {

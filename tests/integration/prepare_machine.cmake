@@ -1,6 +1,7 @@
 # Prepares the machine folder used by the integration tests (cmake -P).
 #   cmake -DMACHINE=<bin>/machine -DBUILTIN_DIR=<wine-pe/out/builtin>
 #         -DGUEST_DIR=<bin>/guest -DDEFAULT_JSON=<machine/machine.default.json>
+#         [-DGUEST_DLL_DIR=<bin>/guest-dlls]   DLLs of our own (guest-dlls/): staged as builtins too
 #         -P prepare_machine.cmake
 #
 # Layout (the same one CI builds with machine/import_windows_dlls.ps1 plus the
@@ -32,7 +33,17 @@ endif()
 
 set(_builtins 0)
 if(BUILTIN_DIR AND IS_DIRECTORY "${BUILTIN_DIR}")
-  file(GLOB _files "${BUILTIN_DIR}/*.dll" "${BUILTIN_DIR}/*.exe")
+  file(GLOB _files "${BUILTIN_DIR}/*.dll" "${BUILTIN_DIR}/*.exe" "${BUILTIN_DIR}/*.drv")
+  foreach(f ${_files})
+    get_filename_component(n "${f}" NAME)
+    file(COPY_FILE "${f}" "${MACHINE}/Windows/builtin/${n}" ONLY_IF_DIFFERENT)
+    math(EXPR _builtins "${_builtins} + 1")
+  endforeach()
+endif()
+
+# Our own builtins (guest-dlls/: xinput1_4.dll and its two copies) go next to Wine's.
+if(GUEST_DLL_DIR AND IS_DIRECTORY "${GUEST_DLL_DIR}")
+  file(GLOB _files "${GUEST_DLL_DIR}/*.dll")
   foreach(f ${_files})
     get_filename_component(n "${f}" NAME)
     file(COPY_FILE "${f}" "${MACHINE}/Windows/builtin/${n}" ONLY_IF_DIFFERENT)
@@ -42,7 +53,7 @@ endif()
 
 set(_guests 0)
 if(GUEST_DIR AND IS_DIRECTORY "${GUEST_DIR}")
-  file(GLOB _files "${GUEST_DIR}/*.exe" "${GUEST_DIR}/*.dll" "${GUEST_DIR}/*.lua" "${GUEST_DIR}/*.ninja"
+  file(GLOB _files "${GUEST_DIR}/*.exe" "${GUEST_DIR}/*.dll" "${GUEST_DIR}/*.lua" "${GUEST_DIR}/*.c" "${GUEST_DIR}/*.ninja"
        "${GUEST_DIR}/*.py" "${GUEST_DIR}/*.json")
   foreach(f ${_files})
     get_filename_component(n "${f}" NAME)
@@ -94,6 +105,10 @@ if(BUILTIN_ONLY_MACHINE)
       math(EXPR _copied "${_copied} + 1")
     endif()
   endforeach()
+  # Real programs that come as a directory (tools/ci/fetch_tcc.ps1: guest/tcc with its include/ and lib/).
+  if(IS_DIRECTORY "${MACHINE}/guest/tcc")
+    file(COPY "${MACHINE}/guest/tcc" DESTINATION "${BUILTIN_ONLY_MACHINE}/guest")
+  endif()
   # Programs with a directory of their own under guest/ (MinGit: guest/mingit, a git.exe with its DLLs beside it).
   file(GLOB_RECURSE _files "${MACHINE}/guest/*/*")
   foreach(f ${_files})
@@ -112,4 +127,53 @@ if(BUILTIN_ONLY_MACHINE)
     file(CONFIGURE OUTPUT "${BUILTIN_ONLY_MACHINE}/machine.json" CONTENT "${_json}" @ONLY)
   endif()
   message(STATUS "prepare_machine: ${BUILTIN_ONLY_MACHINE}: builtin-only machine, ${_copied} files")
+endif()
+
+# -DNATIVE_GUI_MACHINE=<dir>: route B's folder (docs/GUI.md "Route B: native win32k"): the builtin-only set plus
+# the NATIVE GUI DLLs from MACHINE's System32 (user32, win32u, gdi32, gdi32full, msvcp_win, imm32: what the
+# native user32 pulls in that must be native), machine.json "gui": "native", "*": "builtin,native" and "native"
+# for those six. Everything else stays Wine's: a whole native chain (msvcrt, rpcrt4, advapi32...) imports CRT
+# apisets and ntdll internals Wine's builtins do not provide. Without the native DLLs (any non-Windows host) the
+# folder is still made and the test that uses it SKIPs on the missing user32.dll.
+if(NATIVE_GUI_MACHINE)
+  foreach(d Windows/builtin Windows/System32 Windows/System32/config Windows/Globalization/Sorting Windows/Temp
+            Users/User/AppData/Local/Temp Users/User/AppData/Roaming Users/Public
+            ProgramData "Program Files" "Program Files (x86)" guest)
+    file(MAKE_DIRECTORY "${NATIVE_GUI_MACHINE}/${d}")
+  endforeach()
+  set(_gui_dlls user32.dll win32u.dll gdi32.dll gdi32full.dll msvcp_win.dll imm32.dll)
+  file(GLOB _files "${MACHINE}/Windows/builtin/*" "${MACHINE}/guest/*" "${MACHINE}/Windows/System32/*.nls"
+                   "${MACHINE}/Windows/Globalization/Sorting/*.nls")
+  foreach(n ${_gui_dlls})
+    if(EXISTS "${MACHINE}/Windows/System32/${n}")
+      list(APPEND _files "${MACHINE}/Windows/System32/${n}")
+    endif()
+  endforeach()
+  set(_copied 0)
+  foreach(f ${_files})
+    file(RELATIVE_PATH _rel "${MACHINE}" "${f}")
+    if(NOT IS_DIRECTORY "${f}")
+      file(COPY_FILE "${f}" "${NATIVE_GUI_MACHINE}/${_rel}" ONLY_IF_DIFFERENT)
+      math(EXPR _copied "${_copied} + 1")
+    endif()
+  endforeach()
+  # imm32 delay-loads msctf.dll; the stand-in (tests/guest/msctf_stub.c) goes where the loader looks for the real one.
+  if(MSCTF_STUB AND EXISTS "${MSCTF_STUB}" AND EXISTS "${MACHINE}/Windows/System32/imm32.dll")
+    file(COPY_FILE "${MSCTF_STUB}" "${NATIVE_GUI_MACHINE}/Windows/System32/msctf.dll" ONLY_IF_DIFFERENT)
+  endif()
+  if(DEFAULT_JSON AND EXISTS "${DEFAULT_JSON}")
+    file(READ "${DEFAULT_JSON}" _json)
+    set(_ov "\"*\": \"builtin,native\"")
+    foreach(n ${_gui_dlls})
+      string(REPLACE ".dll" "" _b "${n}")
+      string(APPEND _ov ", \"${_b}\": \"native\"")
+    endforeach()
+    string(REGEX REPLACE "\"\\*\"[ \t]*:[ \t]*\"[^\"]*\"" "${_ov}" _json "${_json}")
+    string(REGEX REPLACE "\"version\"[ \t]*:[ \t]*1[ \t]*," "\"version\": 1,\n  \"gui\": \"native\"," _json "${_json}")
+    if(NOT _json MATCHES "\"gui\": \"native\"" OR NOT _json MATCHES "\"user32\": \"native\"")
+      message(FATAL_ERROR "prepare_machine: could not derive the native-GUI machine.json from ${DEFAULT_JSON}")
+    endif()
+    file(CONFIGURE OUTPUT "${NATIVE_GUI_MACHINE}/machine.json" CONTENT "${_json}" @ONLY)
+  endif()
+  message(STATUS "prepare_machine: ${NATIVE_GUI_MACHINE}: native-GUI machine, ${_copied} files")
 endif()

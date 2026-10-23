@@ -4,6 +4,7 @@
 #include "internal.h"
 #include "nt_spawn.h"
 #include "win10xbox/config.h"
+#include "win10xbox/probe.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -63,6 +64,12 @@ const char* const kNoReturn[] = {"NtContinue", "NtContinueEx", "NtRaiseException
 
 constexpr std::uint32_t kMaxId = 0x2000;   // ntdll 0x0000.., win32u 0x1000..
 constexpr std::uint32_t kWin32uFirstId = 0x1000;
+// Route B (gui native): win32u syscalls the native win32u.dll exports but Wine's table does not list get an
+// entry of their own at map time, numbered from here (Wine's win32u ids end at 0x1603). kUnknownSyscallId is
+// what a thunk whose name we cannot dispatch at all is renumbered to: no entry ever has it, so it lands in
+// "unknown syscall" instead of in whatever entry its foreign id happens to collide with.
+constexpr std::uint32_t kExtraFirstId = 0x1800;
+constexpr std::uint32_t kUnknownSyscallId = 0x1FFF;
 
 struct State {
     SRWLOCK lock = SRWLOCK_INIT;
@@ -77,6 +84,13 @@ struct State {
     LONG guest_tls_reserved = 0;       // ReserveGuestTlsSlot has run
     bool test_clobber_slot = false;    // WIN10XBOX_TEST_TLS_CLOBBER, latched in Initialize
     LARGE_INTEGER qpf{};
+    std::unordered_map<std::string, Entry*> by_name;   // every entry, for RenumberSyscallThunks
+    // Route B (config gui = native): win32u entries pass through to this module (the HOST's win32u.dll).
+    HMODULE host_win32u = nullptr;
+    bool gui_native = false;
+    std::vector<std::unique_ptr<Entry>> extra;         // native-only win32u syscalls (ids kExtraFirstId..)
+    std::uint32_t next_extra_id = kExtraFirstId;
+    const Entry* end_paint = nullptr;                  // NtUserEndPaint: presentation snapshot point
 };
 // NAMESPACE SCOPE ON PURPOSE. As a function-local `static` this emitted an
 // MSVC thread-safe-init guard, and the guard reads _Init_thread_epoch through
@@ -274,9 +288,103 @@ void AppendArg(std::string& out, std::uint64_t v) {
     out += buf;
 }
 
+bool IsWin32kName(const std::string& n) { return n.rfind("NtUser", 0) == 0 || n.rfind("NtGdi", 0) == 0; }
+
 }  // namespace
 
 const HostNt& Host() { return S().host; }
+
+// ---- Dispatch by name (any ntdll / win32u build) -------------------------------------
+// The id in a thunk's `mov eax, imm32` is the numbering of whatever build the DLL comes from: Wine's
+// (0x1000.. for win32u, the 22H2 numbers for ntdll) or, for a native win32u.dll, that Windows build's. The
+// table is keyed by Wine's numbering, so the imm32 is rewritten to OUR id for the thunk's NAME here, while the
+// image is still writable (MapImageView, right after loader::RewriteSyscallStubs). For Wine's own DLLs this is
+// a no-op; for native ones it is what makes the id mean the right function.
+std::size_t RenumberSyscallThunks(const std::vector<loader::StubPatch>& patched, const wchar_t* module) {
+    State& s = S();
+    std::size_t renumbered = 0, unknown = 0, extra = 0;
+    std::string unknown_names;
+    AcquireSRWLockExclusive(&s.lock);
+    for (const loader::StubPatch& p : patched) {
+        if (!p.address) continue;
+        std::uint32_t want = kUnknownSyscallId;
+        auto it = s.by_name.find(p.name);
+        if (it != s.by_name.end()) {
+            want = it->second->id;
+        } else if (s.gui_native && s.host_win32u && IsWin32kName(p.name) && s.next_extra_id < kUnknownSyscallId) {
+            // A win32u syscall of this Windows build that Wine's table does not have: pass it through by name too.
+            if (void* fn = reinterpret_cast<void*>(GetProcAddress(s.host_win32u, p.name.c_str()))) {
+                auto e = std::make_unique<Entry>();
+                e->id = s.next_extra_id++;
+                e->name = _strdup(p.name.c_str());   // lives as long as the entry (forever)
+                e->nargs = kMaxArgs;                 // unknown: copy the most the entry stub can
+                e->policy = Policy::PassThrough;
+                e->host_fn = fn;
+                e->note = "win32u (host win32k, native-only)";
+                want = e->id;
+                s.by_name.emplace(e->name, e.get());
+                s.by_id[e->id] = e.get();
+                s.extra.push_back(std::move(e));
+                ++extra;
+            }
+        }
+        if (want == kUnknownSyscallId) {
+            ++unknown;
+            if (unknown <= 8) (unknown_names += unknown_names.empty() ? "" : ", ") += p.name;
+        }
+        auto* imm = static_cast<std::uint8_t*>(p.address) + 4;   // mov eax, imm32 at thunk+3: B8 <imm32>
+        std::uint32_t have;
+        std::memcpy(&have, imm, 4);
+        if (have == want) continue;
+        DWORD old = 0;
+        const bool flip = VirtualProtect(imm, 4, PAGE_EXECUTE_READWRITE, &old) != 0;
+        std::memcpy(imm, &want, 4);
+        if (flip) VirtualProtect(imm, 4, old, &old);
+        ++renumbered;
+    }
+    ReleaseSRWLockExclusive(&s.lock);
+    if (renumbered || unknown)
+        TRACE(dispatch, "%ls: %zu of %zu syscall thunks renumbered to the table's ids by name (%zu added as native-only "
+                        "win32u pass-through)", module ? module : L"?", renumbered, patched.size(), extra);
+    if (unknown)
+        FIXME(dispatch, "%ls: %zu syscall thunks have no table entry and dispatch as unknown (id %#x): %s%s",
+              module ? module : L"?", unknown, kUnknownSyscallId, unknown_names.c_str(), unknown > 8 ? ", ..." : "");
+    return renumbered;
+}
+
+NTSTATUS UseHostWin32u(HMODULE win32u) {
+    State& s = S();
+    if (!s.initialized || !win32u) return st::Unsuccessful;
+    AcquireSRWLockExclusive(&s.lock);
+    std::size_t pass = 0, todo = 0;
+    for (std::size_t i = 0; i < s.entries.size(); ++i) {
+        Entry& e = s.entries[i];
+        if (e.id >= kWin32uFirstId) {
+            e.host_fn = reinterpret_cast<void*>(GetProcAddress(win32u, e.name));
+            e.policy = e.host_fn ? Policy::PassThrough : Policy::Todo;
+            e.note = e.host_fn ? "win32u (host win32k)" : "win32u (no host export)";
+            // Wine's argument counts follow Wine's prototypes, which are not Windows' in every case: copy the
+            // most the entry stub can, the callee ignores the rest.
+            e.nargs = kMaxArgs;
+            ++(e.host_fn ? pass : todo);
+            if (!std::strcmp(e.name, "NtUserEndPaint")) s.end_paint = &e;
+        } else if (!std::strcmp(e.name, "NtCallbackReturn") && e.host_fn) {
+            // The real kernel has the callback active and unwinds to the syscall that made it (docs/DISPATCHER.md
+            // "User-mode callbacks in native GUI mode"): pass it through, and relay-log it before the call.
+            e.policy = Policy::PassThrough;
+            e.note = "host kernel unwinds the user-mode callback";
+            s.noreturn[i] = 1;
+        }
+    }
+    s.host_win32u = win32u;
+    s.gui_native = true;
+    ReleaseSRWLockExclusive(&s.lock);
+    TRACE(dispatch, "gui native: %zu win32u syscalls pass through to the host's win32u.dll %p, %zu have no host "
+                    "export (Todo); NtCallbackReturn passes through", pass, win32u, todo);
+    return st::Success;
+}
+
+bool NativeGuiActive() { return g_state.gui_native; }
 
 std::uint32_t NargsOverride(const char* name) {
     static const struct { const char* name; std::uint32_t nargs; } kFix[] = {
@@ -586,6 +694,7 @@ void* HostExport(const char* name) {
 // ---- Table ----------------------------------------------------------------------
 
 NTSTATUS Initialize() {
+    probe::Install();   // before any guest syscall can hand an implementation a bad pointer
     State& s = S();
     AcquireSRWLockExclusive(&s.lock);
     if (s.initialized) { ReleaseSRWLockExclusive(&s.lock); return st::Success; }
@@ -645,9 +754,11 @@ NTSTATUS Initialize() {
              missing_names.c_str(), missing > 3 ? ", ..." : "");
     s.noreturn.assign(s.entries.size(), 0);
     std::fill(std::begin(s.by_id), std::end(s.by_id), nullptr);
+    s.by_name.clear();
     for (std::size_t i = 0; i < s.entries.size(); ++i) {
         Entry& e = s.entries[i];
         if (e.id < kMaxId) s.by_id[e.id] = &e;
+        s.by_name.emplace(e.name, &e);
         for (const char* n : kNoReturn)
             if (!std::strcmp(n, e.name)) s.noreturn[i] = 1;
     }
@@ -860,7 +971,8 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
     InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(&e->calls));
     const bool relay = trace::Enabled(&__win10xbox_dbch_relay, trace::Class::Trace);
     const bool timing = relay && trace::Enabled(&__win10xbox_dbch_timing, trace::Class::Trace);
-    if (relay && s.noreturn[static_cast<std::size_t>(e - s.entries.data())]) {
+    if (relay && e >= s.entries.data() && e < s.entries.data() + s.entries.size() &&   // not the native-only extras
+        s.noreturn[static_cast<std::size_t>(e - s.entries.data())]) {
         std::string line = FormatRelay(*e, f->args, 0);
         line.resize(line.rfind(" ret="));
         trace::Log(&__win10xbox_dbch_relay, trace::Class::Trace, "", "%s (may not return)", line.c_str());
@@ -872,6 +984,17 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
     // The win32u surface returns whole 64-bit values (HWND, LRESULT, LONG_PTR, pointers).
     const bool win32u = e->id >= kWin32uFirstId;
     std::uint64_t result64 = 0;
+    // Route B (gui native): a win32u syscall handed to the host's own win32k. win32k reports errors by writing
+    // TEB.LastErrorValue itself, which the guest must see.
+    const bool native_win32u = s.gui_native && win32u && e->policy == Policy::PassThrough && e->host_fn;
+    unsigned long native_error = last_error;
+    if (native_win32u) {
+        NoteNativeWin32uCall();   // installs the callback trampolines once the guest's user32 has its table in
+        __writegsdword(teb::LastErrorValue, last_error);
+        result64 = CallWithArgs64(e->host_fn, f->args, e->nargs);
+        native_error = __readgsdword(teb::LastErrorValue);
+        status = static_cast<NTSTATUS>(result64);
+    } else
     switch (e->policy) {
     case Policy::PassThrough:
         status = e->host_fn ? CallWithArgs(e->host_fn, f->args, e->nargs) : st::NotImplemented;
@@ -914,6 +1037,13 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
             line += hi;
         }
         trace::Log(&__win10xbox_dbch_relay, trace::Class::Trace, "", "%s", line.c_str());
+    }
+    if (native_win32u) {
+        if (e == s.end_paint) NativeGuestPainted();   // core/user/native_compose.cpp: snapshot for presentation
+        __writegsdword(teb::LastErrorValue, native_error);
+        __writegsdword(teb::LastStatusValue, last_status);
+        if (self) { self->syscall_error = outer_error; self->syscall_error_set = outer_error_set; }
+        return static_cast<std::int64_t>(result64);
     }
     __writegsdword(teb::LastErrorValue, self && self->syscall_error_set ? self->syscall_error : last_error);
     __writegsdword(teb::LastStatusValue, last_status);

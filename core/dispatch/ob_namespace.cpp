@@ -461,7 +461,8 @@ std::uint64_t Tree::Count(Kind k) {
 }
 
 NTSTATUS PackDirectoryEntries(const std::vector<DirEntry>& entries, void* buffer, ULONG size, bool single, bool restart,
-                              ULONG* context, ULONG* ret_size) {
+                              ULONG* context, ULONG* ret_size, void* user_base, ULONG* written) {
+    if (written) *written = 0;
     const ULONG index = restart ? 0 : (context ? *context : 0);
     const std::size_t total = entries.size();
     constexpr ULONG kRow = sizeof(DirInfo);
@@ -497,16 +498,16 @@ NTSTATUS PackDirectoryEntries(const std::vector<DirEntry>& entries, void* buffer
     for (i = 0; i < used_count; ++i) {
         const DirEntry& e = entries[index + i];
         const USHORT nl = static_cast<USHORT>(e.name.size() * sizeof(wchar_t)), tl = static_cast<USHORT>(e.type.size() * sizeof(wchar_t));
-        auto* base = static_cast<char*>(buffer);
-        auto* np = reinterpret_cast<wchar_t*>(base + pool);
-        rows[i].Name.Buffer = np;
+        auto* base = static_cast<char*>(user_base ? user_base : buffer);
+        auto* np = reinterpret_cast<wchar_t*>(static_cast<char*>(buffer) + pool);   // where we write
+        rows[i].Name.Buffer = reinterpret_cast<wchar_t*>(base + pool);               // where the caller will find it
         rows[i].Name.Length = nl;
         rows[i].Name.MaximumLength = static_cast<USHORT>(nl + sizeof(wchar_t));
         std::memcpy(np, e.name.data(), nl);
         np[e.name.size()] = 0;
         pool += nl + sizeof(wchar_t);
-        auto* tp = reinterpret_cast<wchar_t*>(base + pool);
-        rows[i].TypeName.Buffer = tp;
+        auto* tp = reinterpret_cast<wchar_t*>(static_cast<char*>(buffer) + pool);
+        rows[i].TypeName.Buffer = reinterpret_cast<wchar_t*>(base + pool);
         rows[i].TypeName.Length = tl;
         rows[i].TypeName.MaximumLength = static_cast<USHORT>(tl + sizeof(wchar_t));
         std::memcpy(tp, e.type.data(), tl);
@@ -514,6 +515,7 @@ NTSTATUS PackDirectoryEntries(const std::vector<DirEntry>& entries, void* buffer
         pool += tl + sizeof(wchar_t);
     }
     if (size >= kRow) std::memset(&rows[used_count], 0, kRow);
+    if (written) *written = static_cast<ULONG>(std::min<std::size_t>(size, std::max<std::size_t>(pool, size >= kRow ? kRow : 0)));
 
     if (!count && status == status::Success) {
         if (ret_size) *ret_size = kRow;

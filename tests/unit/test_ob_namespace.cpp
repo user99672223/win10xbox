@@ -420,6 +420,29 @@ TEST(ob_entry_points_enumerate_named_event) {
     close(dir);
 }
 
+TEST(ob_bad_caller_pointers_are_access_violations) {
+    auto create_dir = Impl<FnCreateDir>("NtCreateDirectoryObject");
+    auto open_dir = Impl<FnCreateDir>("NtOpenDirectoryObject");
+    auto create_event = Impl<FnCreateEvent>("NtCreateEvent");
+    CHECK(create_dir && open_dir && create_event);
+    if (!create_dir || !open_dir || !create_event) return;
+    HANDLE h = reinterpret_cast<HANDLE>(0x1234);
+    Name n(L"\\BaseNamedObjects\\w10x-unit-bad");
+    n.oa.ObjectName = reinterpret_cast<PUNICODE_STRING>(0xdeadbeef);            // unreadable name header
+    CHECK_EQ(create_dir(&h, 1, &n.oa), kAccessViolation);
+    CHECK(h == nullptr);                                                         // the handle is zeroed on failure
+    CHECK_EQ(open_dir(&h, 1, &n.oa), kAccessViolation);
+    CHECK_EQ(create_event(&h, 0x1F0003, &n.oa, 0, FALSE), kAccessViolation);
+    Name m(L"\\BaseNamedObjects\\w10x-unit-bad");
+    m.us.Buffer = reinterpret_cast<PWSTR>(0xdeadbee0);                           // unreadable characters
+    CHECK_EQ(create_dir(&h, 1, &m.oa), kAccessViolation);
+    CHECK_EQ(create_dir(reinterpret_cast<PHANDLE>(0xdeadbee0), 1, nullptr), kAccessViolation);   // unwritable handle
+    CHECK_EQ(open_dir(&h, 1, nullptr), kInvalidParameter);                       // no attributes: nothing to open
+    Name k(L"x");
+    k.oa.Length = 3;
+    CHECK_EQ(create_dir(&h, 1, &k.oa), kInvalidParameter);
+}
+
 TEST(ob_links_registered_by_other_modules) {
     auto open_link = Impl<FnCreateDir>("NtOpenSymbolicLinkObject");
     auto open_dir = Impl<FnCreateDir>("NtOpenDirectoryObject");

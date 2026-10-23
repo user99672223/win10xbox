@@ -121,8 +121,10 @@ private:
 // NtQueryDirectoryObject over a list: fills `buffer` with OBJECT_DIRECTORY_INFORMATION rows followed by an all-zero
 // row and the strings, exactly as Windows lays them out, and returns what the syscall returns. `context` is the
 // caller's resume index (read unless `restart`, written on success).
+// `user_base`, when given, is the address the finished buffer will have in the caller (the rows are built in `buffer`,
+// a private copy, and copied out); `*written` receives how many bytes of `buffer` the call filled in.
 NTSTATUS PackDirectoryEntries(const std::vector<DirEntry>& entries, void* buffer, ULONG size, bool single, bool restart,
-                              ULONG* context, ULONG* ret_size);
+                              ULONG* context, ULONG* ret_size, void* user_base = nullptr, ULONG* written = nullptr);
 
 std::wstring ParentPath(std::wstring_view path);   // "\\a\\b" -> "\\a", "\\a" -> "\\", no parent -> ""
 std::wstring LeafOf(std::wstring_view path);

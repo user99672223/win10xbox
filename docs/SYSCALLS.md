@@ -5,7 +5,7 @@ Windows 10 x64 / 22H2 NT syscall numbers) and the hand-maintained policy
 `core/dispatch/syscall_policy.inc`; win32u entries (ids 0x1000..) are Emulate when
 `core/user/user_syscalls.h` registers them. Do not edit by hand.
 
-1798 syscalls. passthrough 132, translate 58, emulate 329, todo 1279. Generated 2026-10-23.
+1798 syscalls. passthrough 130, translate 59, emulate 352, todo 1257. Generated 2026-10-23.
 
 Policy: **PassThrough** calls the host ntdll export by name; **Translate**
 rewrites arguments (paths, handles, timeouts) then passes through;
@@ -21,7 +21,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0004 | NtWaitForSingleObject | 3 | PassThrough |  |
 | 0x0005 | NtCallbackReturn | 3 | Emulate | user-mode callback results (core/user): the host kernel has no callback active |
 | 0x0006 | NtReadFile | 9 | PassThrough |  |
-| 0x0007 | NtDeviceIoControlFile | 10 | PassThrough |  |
+| 0x0007 | NtDeviceIoControlFile | 10 | Translate | sockets (\\Device\\Afd, core/afd) served on host Winsock; other handles pass through |
 | 0x0008 | NtWriteFile | 9 | PassThrough |  |
 | 0x0009 | NtRemoveIoCompletion | 5 | PassThrough |  |
 | 0x000a | NtReleaseSemaphore | 3 | PassThrough |  |
@@ -132,7 +132,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0073 | NtCompleteConnectPort | 1 | PassThrough |  |
 | 0x0074 | NtConnectPort | 8 | PassThrough |  |
 | 0x0075 | NtContinueEx | 2 | Translate | TEB switched back to the guest view before the host call (never returns) |
-| 0x0076 | NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | 4 | PassThrough |  |
+| 0x0076 | NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | 4 | Emulate | clock: no auxiliary counter, STATUS_NOT_SUPPORTED after probing |
 | 0x0077 | NtCreateDirectoryObject | 3 | Translate | object manager namespace (directory objects, links) is the layer's own; names outside it go to the host (nt_object.cpp) |
 | 0x0078 | NtCreateIoCompletion | 4 | Translate | named objects: the guest name maps onto a host object under the layer prefix (nt_object.cpp) |
 | 0x0079 | NtCreateJobObject | 3 | Translate | named objects: the guest name maps onto a host object under the layer prefix (nt_object.cpp) |
@@ -412,7 +412,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1089 | NtGdiAddInitialFonts | 0 | Todo |  |
 | 0x108a | NtGdiAddRemoteFontToDC | 0 | Todo |  |
 | 0x108b | NtGdiAddRemoteMMInstanceToDC | 0 | Todo |  |
-| 0x108c | NtGdiAlphaBlend | 12 | Todo |  |
+| 0x108c | NtGdiAlphaBlend | 12 | Emulate | core/user |
 | 0x108d | NtGdiAngleArc | 6 | Todo |  |
 | 0x108e | NtGdiAnyLinkedFonts | 0 | Todo |  |
 | 0x108f | NtGdiArcInternal | 10 | Todo |  |
@@ -933,7 +933,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1292 | NtGdiStrokePath | 1 | Todo |  |
 | 0x1293 | NtGdiSwapBuffers | 1 | Todo |  |
 | 0x1294 | NtGdiTransformPoints | 5 | Emulate | core/user |
-| 0x1295 | NtGdiTransparentBlt | 11 | Todo |  |
+| 0x1295 | NtGdiTransparentBlt | 11 | Emulate | core/user |
 | 0x1296 | NtGdiUMPDEngFreeUserMem | 0 | Todo |  |
 | 0x1297 | NtGdiUnloadPrinterDriver | 0 | Todo |  |
 | 0x1298 | NtGdiUnmapMemFont | 0 | Todo |  |
@@ -1099,7 +1099,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1338 | NtUserCallHwndParamLockSafe | 0 | Todo |  |
 | 0x1339 | NtUserCallHwndSafe | 0 | Todo |  |
 | 0x133a | NtUserCallMsgFilter | 2 | Emulate | core/user |
-| 0x133b | NtUserCallNextHookEx | 4 | Todo |  |
+| 0x133b | NtUserCallNextHookEx | 4 | Emulate | core/user |
 | 0x133c | NtUserCallNoParam | 1 | Emulate | core/user |
 | 0x133d | NtUserCallOneParam | 2 | Emulate | core/user |
 | 0x133e | NtUserCallTwoParam | 3 | Emulate | core/user |
@@ -1111,7 +1111,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1344 | NtUserChangeWindowMessageFilterEx | 0 | Todo |  |
 | 0x1345 | NtUserCheckAccessForIntegrityLevel | 0 | Todo |  |
 | 0x1346 | NtUserCheckImeShowStatusInThread | 0 | Todo |  |
-| 0x1347 | NtUserCheckMenuItem | 3 | Todo |  |
+| 0x1347 | NtUserCheckMenuItem | 3 | Emulate | core/user |
 | 0x1348 | NtUserCheckProcessForClipboardAccess | 0 | Todo |  |
 | 0x1349 | NtUserCheckProcessSession | 0 | Todo |  |
 | 0x134a | NtUserCheckWindowThreadDesktop | 0 | Todo |  |
@@ -1142,9 +1142,9 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1363 | NtUserCreateEmptyCursorObject | 0 | Todo |  |
 | 0x1364 | NtUserCreateInputContext | 1 | Todo |  |
 | 0x1365 | NtUserCreateLocalMemHandle | 0 | Todo |  |
-| 0x1366 | NtUserCreateMenu | 0 | Todo |  |
+| 0x1366 | NtUserCreateMenu | 0 | Emulate | core/user |
 | 0x1367 | NtUserCreatePalmRejectionDelayZone | 0 | Todo |  |
-| 0x1368 | NtUserCreatePopupMenu | 0 | Todo |  |
+| 0x1368 | NtUserCreatePopupMenu | 0 | Emulate | core/user |
 | 0x1369 | NtUserCreateSyntheticPointerDevice2 | 0 | Todo |  |
 | 0x136a | NtUserCreateSystemThreads | 0 | Todo |  |
 | 0x136b | NtUserCreateWindowEx | 17 | Emulate | core/user |
@@ -1160,7 +1160,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1375 | NtUserDeferredDesktopRotation | 0 | Todo |  |
 | 0x1376 | NtUserDelegateCapturePointers | 0 | Todo |  |
 | 0x1377 | NtUserDelegateInput | 0 | Todo |  |
-| 0x1378 | NtUserDeleteMenu | 3 | Todo |  |
+| 0x1378 | NtUserDeleteMenu | 3 | Emulate | core/user |
 | 0x1379 | NtUserDeleteWindowGroup | 0 | Todo |  |
 | 0x137a | NtUserDeregisterShellHookWindow | 0 | Todo |  |
 | 0x137b | NtUserDestroyAcceleratorTable | 1 | Todo |  |
@@ -1170,7 +1170,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x137f | NtUserDestroyCursor | 2 | Todo |  |
 | 0x1380 | NtUserDestroyDCompositionHwndTarget | 0 | Todo |  |
 | 0x1381 | NtUserDestroyInputContext | 1 | Todo |  |
-| 0x1382 | NtUserDestroyMenu | 1 | Todo |  |
+| 0x1382 | NtUserDestroyMenu | 1 | Emulate | core/user |
 | 0x1383 | NtUserDestroyPalmRejectionDelayZone | 0 | Todo |  |
 | 0x1384 | NtUserDestroyWindow | 1 | Emulate | core/user |
 | 0x1385 | NtUserDirectedYield | 0 | Todo |  |
@@ -1207,7 +1207,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x13a4 | NtUserEmptyClipboard | 0 | Emulate | core/user |
 | 0x13a5 | NtUserEnableChildWindowDpiMessage | 0 | Todo |  |
 | 0x13a6 | NtUserEnableIAMAccess | 0 | Todo |  |
-| 0x13a7 | NtUserEnableMenuItem | 3 | Todo |  |
+| 0x13a7 | NtUserEnableMenuItem | 3 | Emulate | core/user |
 | 0x13a8 | NtUserEnableModernAppWindowKeyboardIntercept | 0 | Todo |  |
 | 0x13a9 | NtUserEnableMouseInPointer | 1 | Todo |  |
 | 0x13aa | NtUserEnableMouseInPointerForThread | 0 | Todo |  |
@@ -1227,7 +1227,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x13b8 | NtUserEnableWindowResizeOptimization | 0 | Todo |  |
 | 0x13b9 | NtUserEnableWindowShellWindowManagementBehavior | 0 | Todo |  |
 | 0x13ba | NtUserEndDeferWindowPosEx | 2 | Todo |  |
-| 0x13bb | NtUserEndMenu | 0 | Todo |  |
+| 0x13bb | NtUserEndMenu | 0 | Emulate | core/user |
 | 0x13bc | NtUserEndPaint | 2 | Emulate | core/user |
 | 0x13bd | NtUserEnsureDpiDepSysMetCacheForPlateau | 0 | Todo |  |
 | 0x13be | NtUserEnumClipboardFormats | 1 | Emulate | core/user |
@@ -1320,9 +1320,9 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1415 | NtUserGetKeyboardType | 0 | Todo |  |
 | 0x1416 | NtUserGetLayeredWindowAttributes | 4 | Todo |  |
 | 0x1417 | NtUserGetListBoxInfo | 0 | Todo |  |
-| 0x1418 | NtUserGetMenuBarInfo | 4 | Todo |  |
+| 0x1418 | NtUserGetMenuBarInfo | 4 | Emulate | core/user |
 | 0x1419 | NtUserGetMenuIndex | 0 | Todo |  |
-| 0x141a | NtUserGetMenuItemRect | 4 | Todo |  |
+| 0x141a | NtUserGetMenuItemRect | 4 | Emulate | core/user |
 | 0x141b | NtUserGetMessage | 4 | Emulate | core/user |
 | 0x141c | NtUserGetMessagePos | 0 | Todo |  |
 | 0x141d | NtUserGetMinuserIdForBaseWindow | 0 | Todo |  |
@@ -1407,7 +1407,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x146c | NtUserHideCaret | 1 | Emulate | core/user |
 | 0x146d | NtUserHideCursorNoCapture | 0 | Todo |  |
 | 0x146e | NtUserHidePointerContactVisualization | 0 | Todo |  |
-| 0x146f | NtUserHiliteMenuItem | 4 | Todo |  |
+| 0x146f | NtUserHiliteMenuItem | 4 | Emulate | core/user |
 | 0x1470 | NtUserHungWindowFromGhostWindow | 0 | Todo |  |
 | 0x1471 | NtUserHwndQueryRedirectionInfo | 0 | Todo |  |
 | 0x1472 | NtUserHwndSetRedirectionInfo | 0 | Todo |  |
@@ -1475,7 +1475,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x14b0 | NtUserMapPointsByVisualIdentifier | 0 | Todo |  |
 | 0x14b1 | NtUserMapVirtualKeyEx | 3 | Emulate | core/user |
 | 0x14b2 | NtUserMarkWindowForRawMouse | 0 | Todo |  |
-| 0x14b3 | NtUserMenuItemFromPoint | 4 | Todo |  |
+| 0x14b3 | NtUserMenuItemFromPoint | 4 | Emulate | core/user |
 | 0x14b4 | NtUserMessageBeep | 1 | Emulate | core/user |
 | 0x14b5 | NtUserMessageCall | 7 | Emulate | core/user |
 | 0x14b6 | NtUserMinInitialize | 0 | Todo |  |
@@ -1581,7 +1581,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x151a | NtUserRemoteThinwireStats | 0 | Todo |  |
 | 0x151b | NtUserRemoveClipboardFormatListener | 1 | Emulate | core/user |
 | 0x151c | NtUserRemoveInjectionDevice | 0 | Todo |  |
-| 0x151d | NtUserRemoveMenu | 3 | Todo |  |
+| 0x151d | NtUserRemoveMenu | 3 | Emulate | core/user |
 | 0x151e | NtUserRemoveProp | 2 | Emulate | core/user |
 | 0x151f | NtUserRemoveQueueCompletion | 0 | Todo |  |
 | 0x1520 | NtUserRemoveVisualIdentifier | 0 | Todo |  |
@@ -1659,7 +1659,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x1568 | NtUserSetManipulationInputTarget | 0 | Todo |  |
 | 0x1569 | NtUserSetMenu | 2 | Emulate | core/user |
 | 0x156a | NtUserSetMenuContextHelpId | 2 | Todo |  |
-| 0x156b | NtUserSetMenuDefaultItem | 3 | Todo |  |
+| 0x156b | NtUserSetMenuDefaultItem | 3 | Emulate | core/user |
 | 0x156c | NtUserSetMenuFlagRtoL | 0 | Todo |  |
 | 0x156d | NtUserSetMessageExtraInfo | 0 | Todo |  |
 | 0x156e | NtUserSetMirrorRendering | 0 | Todo |  |
@@ -1727,7 +1727,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x15ac | NtUserSetWindowStationUser | 0 | Todo |  |
 | 0x15ad | NtUserSetWindowWord | 3 | Emulate | core/user |
 | 0x15ae | NtUserSetWindowsHookAW | 0 | Todo |  |
-| 0x15af | NtUserSetWindowsHookEx | 6 | Todo |  |
+| 0x15af | NtUserSetWindowsHookEx | 6 | Emulate | core/user |
 | 0x15b0 | NtUserShellForegroundBoostProcess | 0 | Todo |  |
 | 0x15b1 | NtUserShellHandwritingDelegateInput | 0 | Todo |  |
 | 0x15b2 | NtUserShellHandwritingHandleDelegatedInput | 0 | Todo |  |
@@ -1759,20 +1759,20 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x15cc | NtUserSystemParametersInfoForDpi | 5 | Emulate | core/user |
 | 0x15cd | NtUserTestForInteractiveUser | 0 | Todo |  |
 | 0x15ce | NtUserThreadMessageQueueAttached | 0 | Todo |  |
-| 0x15cf | NtUserThunkedMenuInfo | 2 | Todo |  |
-| 0x15d0 | NtUserThunkedMenuItemInfo | 6 | Todo |  |
+| 0x15cf | NtUserThunkedMenuInfo | 2 | Emulate | core/user |
+| 0x15d0 | NtUserThunkedMenuItemInfo | 6 | Emulate | core/user |
 | 0x15d1 | NtUserToUnicodeEx | 7 | Emulate | core/user |
 | 0x15d2 | NtUserTraceLoggingSendMixedModeTelemetry | 0 | Todo |  |
 | 0x15d3 | NtUserTrackMouseEvent | 1 | Emulate | core/user |
-| 0x15d4 | NtUserTrackPopupMenuEx | 6 | Todo |  |
+| 0x15d4 | NtUserTrackPopupMenuEx | 6 | Emulate | core/user |
 | 0x15d5 | NtUserTransformPoint | 0 | Todo |  |
 | 0x15d6 | NtUserTransformRect | 0 | Todo |  |
 | 0x15d7 | NtUserTranslateAccelerator | 3 | Todo |  |
 | 0x15d8 | NtUserTranslateMessage | 2 | Emulate | core/user |
 | 0x15d9 | NtUserUndelegateInput | 0 | Todo |  |
 | 0x15da | NtUserUnhookWinEvent | 1 | Todo |  |
-| 0x15db | NtUserUnhookWindowsHook | 2 | Todo |  |
-| 0x15dc | NtUserUnhookWindowsHookEx | 1 | Todo |  |
+| 0x15db | NtUserUnhookWindowsHook | 2 | Emulate | core/user |
+| 0x15dc | NtUserUnhookWindowsHookEx | 1 | Emulate | core/user |
 | 0x15dd | NtUserUnloadKeyboardLayout | 0 | Todo |  |
 | 0x15de | NtUserUnlockWindowStation | 0 | Todo |  |
 | 0x15df | NtUserUnregisterClass | 3 | Emulate | core/user |

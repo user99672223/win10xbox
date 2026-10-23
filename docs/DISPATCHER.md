@@ -18,6 +18,7 @@ interface: `core/include/win10xbox/dispatch.h`.
 | `core/dispatch/nt_spawn.cpp` | child processes (`NtCreateUserProcess`) and the refusals around process creation, debugging and `NtSetSystemInformation` |
 | `core/dispatch/subsystems.cpp` | registry / token / clock entry points wired as `Emulate` |
 | `core/dispatch/unix_calls.cpp` | Wine unix-call providers, Wine debug-channel replacements |
+| `core/dispatch/unix_ws2_32.cpp` | ws2_32's name-resolution unix calls on host Winsock |
 | `core/dispatch/rtl_forward.inc` / `.cpp` | function-level forwarding of guest ntdll exports (E2) |
 | `core/dispatch/cpu_sites.cpp` | scanner site handler: cpuid, rdtsc(p), raw syscall |
 | `core/dispatch/process.cpp` | `process::Launch`, guest threads, guest exit |
@@ -32,7 +33,7 @@ with exactly the state the kernel would see at `syscall`:
 
 | Register / memory | Meaning |
 |---|---|
-| `eax` | syscall id (Windows 10 x64 numbering, as in Wine's table) |
+| `eax` | syscall id: the table's id for the thunk's name (Wine's numbering; native thunks are renumbered at map time, see "Dispatch by name") |
 | `r10`, `rdx`, `r8`, `r9` | args 0-3 |
 | `[rsp]` | return address into the guest caller (the thunk was `call`ed) |
 | `[rsp+0x28+8*(i-4)]` | stack arg `i` (above the caller's 0x20 shadow space) |
@@ -150,6 +151,50 @@ thread-safe initialisation for every function-local static in `core/`, and
 several of them (`Threads()`, `Objects()`, `ExportCache()`, the `trace`
 singletons) are first touched from guest threads created at arbitrary times, so
 their initialisation is not provably ordered before concurrency.
+
+### User-mode callbacks in native GUI mode
+
+With `gui = native` (docs/GUI.md "Route B: native win32k") win32u syscalls go to the host's real win32k,
+which calls back into user mode: the kernel enters the **host** ntdll's `KiUserCallbackDispatcher` on the
+thread that made the syscall, below that syscall's frame on the same stack, and it calls
+`PEB.KernelCallbackTable[i](args, len)`. The callback normally ends in `NtCallbackReturn`, which makes the
+kernel discard the callback's stack and complete the *original* syscall. `core/dispatch/win32k_native.cpp`
+puts 512 trampolines in the PEB once the guest's user32 has installed its table (checked before every win32u
+pass-through); trampoline `i` routes by thread: a thread without a guest `ThreadState` (host-uwp's CoreWindow,
+a composer thread) gets the host's user32 `host_table[i]` exactly as before; a guest thread gets
+`CallInGuestView(guest_table[i], args, len)`.
+
+The sequence on a guest thread, with `ThreadState::depth` (asm = `core/asm/syscall_entry.{S,asm}`):
+
+| step | where | depth | TEB TLS/FLS |
+|---|---|---|---|
+| guest calls `NtUserX` | guest | 0 | guest |
+| asm entry: `++depth` (0->1), `SwapIn` | asm | 1 | host |
+| `win10xbox_dispatch` -> host win32u thunk -> `syscall` | host | 1 | host |
+| kernel callback -> `KiUserCallbackDispatcher` -> trampoline `i` | host | 1 | host |
+| `CallInGuestView`: `LeaveToGuestView()` saves `d = 1`, `depth = 0`, `SwapOut` | window | 0 | guest |
+| guest user32 `__fnXXX` -> window procedure (nested syscalls repeat this table one level down) | guest | 0 | guest |
+| guest calls `NtCallbackReturn` (Wine ntdll thunk) -> asm entry: `++depth` (0->1), `SwapIn` | asm | 1 | host |
+| dispatcher: PassThrough to the host's `NtCallbackReturn`; the kernel unwinds to the original syscall | host | 1 | host |
+| the host win32u thunk returns into `win10xbox_dispatch`, which returns to the asm | host | 1 | host |
+| asm exit: `--depth` (1->0), `SwapOut` | guest | 0 | guest |
+
+**Invariant: at every kernel transition the depth counter and the installed TLS view agree with the frame the
+kernel resumes.** `NtCallbackReturn` enters through the asm stub, which raises depth to exactly the value the
+interrupted syscall's frame had when it entered the kernel (1 for a direct guest syscall, n+1 when the syscall
+was made at depth n), and installs the host view, which is what that frame had too. So when the kernel
+abandons the callback stack (the trampoline, `CallInGuestView` with its saved `d`, the stub frame of
+`NtCallbackReturn`) nothing that was abandoned still has to be undone: `ReenterHostView(d)` is skipped, but the
+asm entry of `NtCallbackReturn` already did its work, and `guest_tls`/`guest_fls` in the `ThreadState` hold the
+same thread's guest pointers. The `kThreadGuestView` flag stays set, as after `NtContinue`; `GuestViewActive()`
+also requires `depth == 0`, so it reports correctly. A callback that **returns** to the trampoline instead
+takes the ordinary way: `ReenterHostView(d)` restores depth and the host view, the trampoline returns the
+status to `KiUserCallbackDispatcher`, and the host ntdll makes the `NtCallbackReturn` itself. Nothing between
+the swap and the guest call is host code (`CallInGuestView` resolves the target first), and the per-callback
+trace line is written before it, from the host view. Rules this relies on: nothing may hold a lock or own a
+resource across a win32u pass-through (the kernel may unwind through the trampoline frames, never through
+`win10xbox_dispatch`'s), and `NtCallbackReturn` stays PassThrough in native mode (Emulate in emulated mode,
+where core/user runs the callback itself).
 
 ### The TLS slot we hold
 
@@ -574,3 +619,15 @@ for diagnosis; `tests/host_exit` gates that nothing a DLL does at detach can cha
 
 win32u (`WIN32U_SYSCALL` lines in the generated table, ids 0x1000+) goes
 through the same entry; the table already reserves ids up to 0x1FFF.
+
+## Dispatch by name
+
+The id a thunk loads is that DLL build's numbering: Wine's for the builtins (which is what the table is keyed
+by), a Windows build's for a native `win32u.dll` (build 26100: `NtUserCreateWindowEx` = 0x106F, which in
+Wine's numbering is another function). `MapImageView` therefore calls `RenumberSyscallThunks` right after
+`loader::RewriteSyscallStubs`: every rewritten thunk's `mov eax, imm32` (thunk+4) is set to the table id for
+the thunk's **name** (VirtualProtect around the four bytes; the loader's protected-range bookkeeping is
+unchanged). For Wine's DLLs this changes nothing. A name with no entry gets id 0x1FFF, which no entry has, so it
+dispatches as "unknown syscall" with a FIXME at map time naming it, and never as whatever entry its foreign id
+collides with. In native GUI mode a `NtUser*`/`NtGdi*` name the host's `win32u.dll` exports gets an entry of its
+own instead (ids 0x1800.., PassThrough, 20 arguments copied), because route B forwards the whole win32u surface.

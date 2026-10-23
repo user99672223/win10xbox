@@ -22,6 +22,7 @@ apisetschema
 win32u
 user32
 gdi32
+msimg32      # AlphaBlend / TransparentBlt / GradientFill forward to gdi32 (docs/slices/gdibmp.md)
 
 # --- base services ---------------------------------------------------------
 advapi32
@@ -36,7 +37,6 @@ version
 imm32
 ws2_32
 winmm
-bcrypt             # RtlGenRandom-backed BCryptGenRandom for curl.exe (no unix lib: hashes/ciphers need gnutls)
 
 # --- imported by the Sysinternals Coreinfo64 / PsInfo64 guests (docs/slices/sysinfo.md) ---
 comdlg32
@@ -49,20 +49,25 @@ dnsapi
 nsi
 shcore      # shlwapi
 coml2       # ole32
-cryptbase   # advapi32's SystemFunction036 forward
 # --- imports of fastfetch.exe (docs/slices/fastfetch.md) and what they pull in ---
 cfgmgr32
 hid
 secur32
 winbrand
 wtsapi32
+# --- SDL2.dll (docs/slices/realsdl.md) static imports: setupapi (-> cfgmgr32, already built), winmm (-> msacm32) ---
+setupapi
+msacm32     # winmm static import
+
+# --- imports of wbemprox (docs/slices/identity.md); its other imports are listed above ---
+winspool.drv=winspool.drv
+setupapi
+compstui     # winspool.drv
 
 # --- COM -------------------------------------------------------------------
 ole32
 oleaut32
 combase
-coml2     # hard import of ole32 (7zr.exe imports ole32/oleaut32)
-shcore    # hard import of shlwapi and so of shell32 (7zr.exe imports shell32)
 
 # --- helpers / programs ----------------------------------------------------
 programs/services
