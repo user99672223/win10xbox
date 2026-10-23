@@ -109,10 +109,9 @@ winexbox::IWinexboxDriver* Driver() { return g_driver; }
 using KernelCallbackFn = NTSTATUS(NTAPI*)(void* args, ULONG len);
 
 NTSTATUS UserModeCallback(ULONG id, const void* args, ULONG len, void** ret_ptr, ULONG* ret_len) {
-    using dispatch::detail::peb::KernelCallbackTable;
     if (ret_ptr) *ret_ptr = nullptr;
     if (ret_len) *ret_len = 0;
-    auto* table = dispatch::detail::PebField<KernelCallbackFn*>(KernelCallbackTable);
+    auto* table = static_cast<KernelCallbackFn*>(dispatch::detail::EmuCallbackTable());
     if (!table || !table[id]) {
         ERR(user, "callback %lu: no KernelCallbackTable entry (user32 not initialised?)", id);
         return dispatch::detail::st::NotImplemented;

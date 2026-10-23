@@ -402,6 +402,23 @@ HostD3dModules g_d3d_mods;   // trivially initialised; set once before the guest
 // PEB's). The host kernel calls back through it during a passed-through NtGdiDdDDI* (thread setup, library loads: Windows
 // indices, up to ~0x70), which Wine's much shorter table cannot serve (entry 0x54 was NULL: call to rip=0).
 void* g_d3d_host_callbacks = nullptr;
+void* g_emu_callbacks = nullptr;   // Wine's user32 table, which core/user calls (UserModeCallback)
+
+// d3d native: PEB.KernelCallbackTable must be the HOST user32's, because the host functions bound into the guest (stub
+// exports, exports added from the host's user32/gdi32/win32u) execute real win32k syscalls on the guest's threads, and
+// the kernel calls back (thread setup, library loads: Windows indices up to ~0x70) through that table. Wine's user32
+// installs its own (about 20 entries, other meaning) at start: it is kept here for core/user and the PEB gets the host's.
+void* EmuCallbackTable() {
+    void* cur = PebField<void*>(peb::KernelCallbackTable);
+    if (!g_d3d_host_callbacks) return cur;
+    if (cur && cur != g_d3d_host_callbacks) {
+        g_emu_callbacks = cur;
+        PebField<void*>(peb::KernelCallbackTable) = g_d3d_host_callbacks;
+        TRACE(dispatch, "d3d native: Wine's KernelCallbackTable %p kept for core/user, PEB has the host's %p", cur,
+              g_d3d_host_callbacks);
+    }
+    return g_emu_callbacks;
+}
 
 const HostD3dModules& HostD3dMods() { return g_d3d_mods; }
 
@@ -1030,6 +1047,7 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
     NTSTATUS status;
     // The win32u surface returns whole 64-bit values (HWND, LRESULT, LONG_PTR, pointers).
     const bool win32u = e->id >= kWin32uFirstId;
+    if (g_state.d3dkmt_host) EmuCallbackTable();
     std::uint64_t result64 = 0;
     // Route B (gui native): a win32u syscall handed to the host's own win32k. win32k reports errors by writing
     // TEB.LastErrorValue itself, which the guest must see.
@@ -1047,12 +1065,7 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
     switch (e->policy) {
     case Policy::PassThrough:
         if (win32u && e->host_fn) {   // d3dkmt_host: the NtGdiDdDDI* of the host's win32u
-            // The host kernel may call back into user mode during this syscall: through the HOST user32's table.
-            void* const guest_table = PebField<void*>(peb::KernelCallbackTable);
-            const bool swap_table = g_state.d3dkmt_host && g_d3d_host_callbacks && guest_table != g_d3d_host_callbacks;
-            if (swap_table) PebField<void*>(peb::KernelCallbackTable) = g_d3d_host_callbacks;
             result64 = CallWithArgs64(e->host_fn, f->args, e->nargs);
-            if (swap_table) PebField<void*>(peb::KernelCallbackTable) = guest_table;
             status = static_cast<NTSTATUS>(result64);
         } else {
             status = e->host_fn ? CallWithArgs(e->host_fn, f->args, e->nargs) : st::NotImplemented;

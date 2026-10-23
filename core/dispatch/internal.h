@@ -373,6 +373,7 @@ struct HostD3dModules { HMODULE win32u, user32, gdi32, gdi32full; };
 NTSTATUS UseHostD3dkmt(HMODULE win32u, HMODULE user32, HMODULE gdi32, HMODULE gdi32full);
 const HostD3dModules& HostD3dMods();
 bool HostD3dkmtActive();
+void* EmuCallbackTable();   // the table core/user calls (Wine's user32); under d3d native the PEB holds the host's
 // win32k_native.cpp. Loads the host's user32/gdi32/win32u (before the PEB take-over: LoadLibrary walks
 // PEB->Ldr), connects the process to win32k, switches the win32u table over (UseHostWin32u) and resolves the
 // host GUI functions core/user's native composer uses. Called by process::Launch when config gui is Native.
