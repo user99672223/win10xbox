@@ -228,6 +228,30 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   unset(_guest_machine)
 endif()
 
+# ---- ninja 1.12.1 (official ninja-win.zip, tools/ci/fetch_ninja.ps1; docs/slices/realninja.md) -----------------------
+# ninja.exe runs on the shared machine folder next to lua.exe: ninja on Windows starts a rule's command with
+# CreateProcess and no cmd.exe, so the two rules of tests/guest/ninja/ninja_build.ninja run C:\guest\lua.exe with
+# ninja_tool.lua. Outputs go to C:\guest\ninja_out (builddir: .ninja_log too), the inputs are files already in C:\guest.
+# The tests run in order (a fresh machine folder: a rerun on the same folder finds ninja_out and builds less).
+if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  configure_file(${CMAKE_SOURCE_DIR}/tests/guest/ninja/ninja_tool.lua ${CMAKE_BINARY_DIR}/bin/guest/ninja_tool.lua COPYONLY)
+  configure_file(${CMAKE_SOURCE_DIR}/tests/guest/ninja/ninja_build.ninja ${CMAKE_BINARY_DIR}/bin/guest/ninja_build.ninja COPYONLY)
+  set(_guest_args "--version")
+  win10xbox_guest_test(ninja_version "C:\\guest\\ninja.exe" 0 "^1\\.12\\.1\n")
+  set(_guest_args "-C;C:\\guest;-f;ninja_build.ninja;-t;targets;all")
+  win10xbox_guest_test(ninja_targets "C:\\guest\\ninja.exe" 0
+    "ninja_out[/\\]a\\.txt: copy" "ninja_out[/\\]b\\.txt: copy" "ninja_out[/\\]ab\\.txt: concat")
+  set(_guest_args "-C;C:\\guest;-f;ninja_build.ninja")
+  set(_guest_file "guest/ninja_out/ab.txt")
+  win10xbox_guest_test(ninja_build "C:\\guest\\ninja.exe" 0 "\\[1/3\\]" "\\[2/3\\]" "\\[3/3\\] CONCAT ninja_out[/\\]ab\\.txt")
+  unset(_guest_file)
+  # Second run on the outputs the first one left: .ninja_log says everything is up to date.
+  set(_guest_args "-C;C:\\guest;-f;ninja_build.ninja")
+  win10xbox_guest_test(ninja_noop "C:\\guest\\ninja.exe" 0 "ninja: no work to do\\.")
+  set_tests_properties(integration.ninja_noop PROPERTIES DEPENDS integration.ninja_build)
+  unset(_guest_args)
+endif()
+
 # ---- Real GUI programs (not ours), built from source on the Windows runner ------------------------------------------
 # tools/ci/build_realgui.ps1 (a named ci.yml step of the windows job) leaves realgui_hellowin.exe (Microsoft's LearnWin32
 # Hello World) and realgui_putty.exe (PuTTY 0.85, cmake + MSVC) in <machine>/guest before ctest runs. Registered only

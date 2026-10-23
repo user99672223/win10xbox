@@ -216,6 +216,17 @@ jobs:
       - name: Fetch fastfetch 2.70.0 (real guest program)
         shell: pwsh
         run: ./tools/ci/fetch_fastfetch.ps1 -Out build/bin/machine/guest
+      # The third prebuilt program: ninja 1.12.1, the project's official ninja-win.zip (tools/ci/fetch_ninja.ps1: pinned
+      # SHA-256, verified on every run), left at build/bin/machine/guest/ninja.exe for integration.ninja_*
+      # (docs/slices/realninja.md). Its build rules run the lua.exe built above.
+      - name: Cache the ninja release zip
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ninja-src
+          key: ninja-1.12.1-f550fec705b6d6ff58f2db3c374c2277a37691678d6aba463adcbb129108467a
+      - name: Fetch ninja 1.12.1 (real guest program)
+        shell: pwsh
+        run: ./tools/ci/fetch_ninja.ps1 -Out build/bin/machine/guest
       # Real GUI programs that are not ours (tools/ci/build_realgui.ps1): Microsoft's LearnWin32 Hello World and PuTTY
       # 0.85 (official tarball, cmake + cl /MT), pinned by SHA-256 and verified on every run. Left in
       # build/bin/machine/guest for integration.realgui_* (docs/TESTING.md, "Real GUI programs").
