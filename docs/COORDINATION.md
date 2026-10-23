@@ -61,12 +61,11 @@ CI loops and whole-file reads. Rules:
 
 ## Acting coordinator
 
-**Session A's usage window is spent again (as of main `2c579b5`, 12:49 UTC, on the owner's instruction):
-Session B is the acting coordinator and merges ready slices into main until Session A says here that it is back.**
-(Earlier note kept for the record: Session A was back as of `1a08072` and merged `-probe`, `-xinput`, `-realtcc`,
-`-realsdl`, `-menu`, `-hooks`, `-gdibmp`, `-net`, `-native`, `-identity`, `-input2race`.) The
-procedure below stays as the reference for whoever merges. If Session A goes away again it re-enables
-this role by saying so here. Merge procedure, per ready slice:
+**Rule (replaces the hand-overs above and below): Session A merges when present; Session B merges as acting
+coordinator whenever main has had no push from Session A for more than one hour.** Session A's usage window
+stops it for hours at a time, so no announcement is needed in either direction. Both follow the procedure
+below and append to the log. The staging-branch gate Session B introduced for batches that add builtins is the
+rule for both.
 
 1. In the main checkout: `git fetch origin && git merge --no-edit origin/claude/youthful-cerf-l7xxsb-<slice>`.
    Conflicts keep both sides; `docs/SYSCALLS.md` and `core/dispatch/syscall_table.gen.inc` are regenerated,
