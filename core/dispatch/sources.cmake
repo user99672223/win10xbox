@@ -52,6 +52,7 @@ target_sources(win10xbox_core PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/win32k_native.cpp
   ${CMAKE_CURRENT_LIST_DIR}/native_imports.cpp
   ${CMAKE_CURRENT_LIST_DIR}/native_d3d.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/dxgi_interpose.cpp
   ${CMAKE_CURRENT_LIST_DIR}/nt_privileged.cpp
   ${CMAKE_CURRENT_LIST_DIR}/ob_namespace.cpp
   ${CMAKE_CURRENT_LIST_DIR}/nt_object.cpp

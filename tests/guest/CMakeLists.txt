@@ -255,6 +255,10 @@ if(MSVC)
   add_executable(guest_d3d11_tri d3d11_tri.c)
   target_link_libraries(guest_d3d11_tri PRIVATE dxguid)
   win10xbox_add_guest(guest_d3d11_tri)
+  # A swap chain on a window (tests/guest/d3d11_swap.c, docs/slices/swapchain2.md): the layer's DXGI interposition.
+  add_executable(guest_d3d11_swap d3d11_swap.c)
+  target_link_libraries(guest_d3d11_swap PRIVATE dxguid)
+  win10xbox_add_guest(guest_d3d11_swap)
   # The control: the same program run natively on the runner, outside the layer (exit 42 = it renders). Not for the
   # emulator build; its stdout also lists the runner's modules, i.e. the DLL closure of d3d11 (docs/slices/d3d.md).
   if(NOT CMAKE_CROSSCOMPILING_EMULATOR)
