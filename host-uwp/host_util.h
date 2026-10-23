@@ -31,6 +31,12 @@ namespace w10x_uwp
     // Leaf names of the regular files directly inside `dir` (empty if it does not exist).
     std::vector<std::wstring> ListFiles(const std::wstring& dir);
 
+    // Leaf names of the subdirectories directly inside `dir` (empty if it does not exist).
+    std::vector<std::wstring> ListDirs(const std::wstring& dir);
+    // Copies the regular files of `src` and all its subdirectories into `dst` (created), overwriting. Paths are
+    // \\?\-prefixed on the way, so trees deeper than MAX_PATH work. Returns false if any file failed.
+    bool CopyTree(const std::wstring& src, const std::wstring& dst);
+
     // A bare file name: no separators, no drive, not "." / "..", at most 128 characters.
     bool IsLeafName(const std::wstring& name);
 

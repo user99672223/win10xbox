@@ -1,0 +1,5 @@
+# A directory install (docs/slices/dirlaunch.md): this folder is C:\guest\dirtree, the program lives in a subdirectory
+# and the working directory is another one.
+exe=bin\guest_dirtree.exe
+cwd=data
+title=Directory install (dirtree)

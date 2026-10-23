@@ -410,7 +410,20 @@ namespace
         CHECK(g.args.size() == 4 && g.args[0] == "-iwad" && g.args[2] == "-window" && g.args[3] == "-nosound");
         CHECK(g.env.size() == 2 && g.env[0].first == "SDL_RENDER_DRIVER" && g.env[1].second == "a=b");
         CHECK(!ParseLaunchFile("title=x\n", &g, &err) && Contains(err, "exe="));
-        CHECK(!ParseLaunchFile("exe=sub\\\\x.exe\n", &g, &err));
+        // relative exe= with subdirectories, cwd= (directory installs)
+        CHECK(ParseLaunchFile("exe=Binaries/Win64\\App.exe\ncwd=Binaries\\Win64\n", &g, &err));
+        CHECK(g.exe == "Binaries\\Win64\\App.exe" && g.cwd == "Binaries\\Win64");
+        CHECK(ParseLaunchFile("exe=App.exe\ncwd=.\n", &g, &err) && g.cwd == ".");
+        CHECK(ParseLaunchFile("exe=App.exe\n", &g, &err) && g.cwd.empty());
+        CHECK(!ParseLaunchFile("exe=sub\\\\x.exe\n", &g, &err));          // empty component
+        CHECK(!ParseLaunchFile("exe=..\\x.exe\n", &g, &err));              // no way out of the directory
+        CHECK(!ParseLaunchFile("exe=a\\..\\x.exe\n", &g, &err));
+        CHECK(!ParseLaunchFile("exe=C:\\x.exe\n", &g, &err));              // absolute
+        CHECK(!ParseLaunchFile("exe=\\x.exe\n", &g, &err));
+        CHECK(!ParseLaunchFile("exe=sub\\\n", &g, &err));
+        CHECK(!ParseLaunchFile("exe=a.exe\ncwd=..\n", &g, &err) && Contains(err, "cwd="));
+        CHECK(!ParseLaunchFile("exe=a.exe\ncwd=C:\\x\n", &g, &err) && Contains(err, "cwd="));
+        CHECK(!ParseLaunchFile("exe=a.exe\ncwd=\n", &g, &err) && Contains(err, "cwd="));
         CHECK(!ParseLaunchFile("exe=a.exe\nbogus=1\n", &g, &err) && Contains(err, "bogus"));
         CHECK(!ParseLaunchFile("exe=a.exe\nenv=NOEQ\n", &g, &err));
         CHECK(!ParseLaunchFile("exe a.exe\n", &g, &err));
@@ -429,6 +442,11 @@ namespace
         CHECK(ParseLaunchConfig("{\"machine\": \"machine-native-d3d\"}", &lc, &err) && lc.machine == "machine-native-d3d");
         CHECK(Contains(DescribeLaunchConfig(lc), "machine=machine-native-d3d"));
         CHECK(ParseLaunchConfig("{}", &lc, &err) && lc.machine.empty() && Contains(DescribeLaunchConfig(lc), "machine=machine\n"));
+        CHECK(ParseLaunchConfig("{\"display_mode\": \"2560x1440@120\", \"guest_display\": \"3840x2160@120\", \"output_scaling\": \"layer\"}", &lc, &err) &&
+              lc.display_mode == "2560x1440@120" && lc.guest_display == "3840x2160@120" && lc.output_scaling == "layer");
+        CHECK(ParseLaunchConfig("{}", &lc, &err) && lc.display_mode == "auto" && lc.guest_display == "auto" && lc.output_scaling == "system");
+        CHECK(!ParseLaunchConfig("{\"display_mode\": \"big\"}", &lc, &err) && Contains(err, "WxH@Hz"));
+        CHECK(!ParseLaunchConfig("{\"output_scaling\": \"gpu\"}", &lc, &err) && Contains(err, "system"));
         CHECK(!ParseLaunchConfig("{\"machine\": 3}", &lc, &err) && Contains(err, "must be a string"));
         CHECK(!ParseLaunchConfig("{\"machine\": \"sub\\\\x\"}", &lc, &err) && Contains(err, "folder name"));
         CHECK(!ParseLaunchConfig("{\"machine\": \"\"}", &lc, &err));

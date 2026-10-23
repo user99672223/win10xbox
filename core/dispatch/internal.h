@@ -575,9 +575,16 @@ NTSTATUS WINAPI Ws2UnixGetAddrInfo(void* args);
 NTSTATUS WINAPI Ws2UnixGetHostByAddr(void* args);
 NTSTATUS WINAPI Ws2UnixGetHostByName(void* args);
 NTSTATUS WINAPI Ws2UnixGetNameInfo(void* args);
+// secur32's unix calls on the host's SSPI SChannel (unix_schannel.cpp); the table is registered in unix_calls.cpp.
+extern const UnixCallFn kSchannelFuncs[];
+extern const std::size_t kSchannelFuncCount;
+void PrimeSchannelHost();   // before the PEB take-over, like afd::PrimeHost
+void SwapHostPebFields();   // exchange the PEB fields the take-over replaced with the host's (twice = back); process.cpp
 // mmdevapi's driver on the host's WASAPI (unix_mmdevapi.cpp). PrimeAudio starts the host audio thread and loads the
 // host stack; call it before the PEB take-over. RegisterMmdevapiUnixLib registers the "winewasapi" unix library.
 void PrimeAudio(const std::wstring& machine_root);
+// WIN10XBOX_AUDIO_NULL_ENDPOINT=1 (latched in process::Launch before PrimeAudio): one fake render endpoint, no host COM.
+void SetAudioNullEndpoint(bool on);
 void RegisterMmdevapiUnixLib();
 std::uint64_t UnixLibHandleByName(std::wstring_view module_name);   // 0 if none
 // Replacements patched over the guest ntdll's __wine_dbg_* exports.

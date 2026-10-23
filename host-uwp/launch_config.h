@@ -34,6 +34,13 @@
 //                              "all" runs EVERY listed program in order (restarting between them) and writes
 //                              LocalState\report.txt plus one <name>.bmp per program
 //   autoselect_timeout_sec integer  per-program watchdog of the "all" run in seconds (default 60)
+//   display_mode      string   "auto" (default: keep the console's current display mode) or "WxH@Hz" (e.g.
+//                              "2560x1440@120"): requested when it is in the console's supported list
+//   guest_display     string   "auto" (default: the guest's screen is the output mode) or "WxH@Hz": the mode every
+//                              display answer of the guest reports; the presenter scales the composed frame to the output
+//   output_scaling    string   "system" (default) | "layer": who scales the guest's screen to the output mode. system = the
+//                              CoreWindow swap chain is created at the guest's size and the console's compositor scales it
+//                              (falls back to layer when refused); layer = swap chain at the output size, our presenter scales
 //   input_pump        boolean  forward CoreWindow keyboard/pointer input to the winexbox backend (default true)
 #pragma once
 
@@ -69,6 +76,9 @@ namespace w10x_uwp
         std::vector<std::string> stage_native;   // System32 file names (leaf names only)
         std::string machine;                     // machine folder name under LocalState; empty = "machine"
         bool input_pump = true;
+        std::string guest_display = "auto";      // the screen the GUEST sees: "auto" (= the output mode) or "WxH@Hz"
+        std::string output_scaling = "system";   // "system" (back buffers at the guest's size, the console scales) | "layer"
+        std::string display_mode = "auto";      // "auto" (keep the console's mode) or "WxH@Hz" (request it)
 
         // Launcher (launcher.h).
         bool has_picker = false;         // "picker" was written
@@ -82,6 +92,8 @@ namespace w10x_uwp
     // *error to "line N: message" (the caller prefixes the file name). `out` is
     // only written on success. Never throws, never recurses deeper than a few
     // levels, rejects inputs larger than 256 KiB.
+    // "auto" or "WxH" / "WxH@Hz" with non-zero numbers.
+    bool IsDisplayModeText(const std::string& text);
     bool ParseLaunchConfig(std::string_view text, LaunchConfig* out, std::string* error);
 
     // Resolves a guest path the way the "guest" and "cwd" keys do. A bare file

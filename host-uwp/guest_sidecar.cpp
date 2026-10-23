@@ -85,6 +85,18 @@ namespace w10x_uwp
         return IsLeafNameUtf8(name) && name[0] != '.';
     }
 
+    std::string ParseDisplayFile(std::string_view text, bool* ok)
+    {
+        std::string v;
+        *ok = true;
+        ForEachLine(text, [&](std::string_view line) {
+            v = std::string(Trim(line));
+            return false;
+        });
+        if (!v.empty() && !IsDisplayModeText(v)) *ok = false;
+        return *ok ? v : std::string();
+    }
+
     std::string ParseMachineFile(std::string_view text, bool* ok)
     {
         std::string name;
@@ -130,6 +142,30 @@ namespace w10x_uwp
         return words;
     }
 
+    bool NormalizeRelativePath(std::string_view in, bool allow_dot, std::string* out)
+    {
+        in = Trim(in);
+        if (allow_dot && in == ".")
+        {
+            *out = ".";
+            return true;
+        }
+        std::string r;
+        std::size_t pos = 0;
+        while (true)
+        {
+            std::size_t e = in.find_first_of("\\/", pos);
+            const std::string_view comp = in.substr(pos, e == std::string_view::npos ? std::string_view::npos : e - pos);
+            if (!IsLeafNameUtf8(comp)) return false;
+            if (!r.empty()) r.push_back('\\');
+            r.append(comp);
+            if (e == std::string_view::npos) break;
+            pos = e + 1;
+        }
+        *out = std::move(r);
+        return true;
+    }
+
     bool ParseLaunchFile(std::string_view text, GuestLaunch* out, std::string* error)
     {
         *out = GuestLaunch();
@@ -144,6 +180,14 @@ namespace w10x_uwp
             {
                 out->exe = std::string(Trim(v));
             }
+            else if (k == "cwd")
+            {
+                if (!NormalizeRelativePath(v, true, &out->cwd))
+                {
+                    *error = "cwd= must be a relative directory below the entry's directory: " + std::string(line);
+                    return false;
+                }
+            }
             else if (k == "title")
             {
                 out->title = std::string(Trim(v));
@@ -151,6 +195,15 @@ namespace w10x_uwp
             else if (k == "args")
             {
                 for (std::string& w : SplitArgLine(v)) out->args.push_back(std::move(w));
+            }
+            else if (k == "display")
+            {
+                out->display = std::string(Trim(v));
+                if (!IsDisplayModeText(out->display))
+                {
+                    *error = "display= must be auto or WxH@Hz: " + std::string(line);
+                    return false;
+                }
             }
             else if (k == "machine")
             {
@@ -179,11 +232,13 @@ namespace w10x_uwp
             return true;
         });
         if (!ok) return false;
-        if (out->exe.empty() || !IsLeafNameUtf8(out->exe))
+        std::string norm;
+        if (out->exe.empty() || !NormalizeRelativePath(out->exe, false, &norm))
         {
-            *error = "exe= must name a guest program (a leaf file name)";
+            *error = "exe= must name a guest program (a file name, or a relative path such as Binaries\\Win64\\App.exe)";
             return false;
         }
+        out->exe = std::move(norm);
         return true;
     }
 }  // namespace w10x_uwp

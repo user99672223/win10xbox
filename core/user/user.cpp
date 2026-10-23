@@ -170,6 +170,25 @@ winexbox::IWinexboxDriver* DisplayDriver() {
     return detail::g_driver;
 }
 
+bool CurrentDisplayMode(std::uint32_t* width, std::uint32_t* height, std::uint32_t* refresh_hz,
+                        std::uint32_t* bits_per_pixel) {
+    if (width) *width = 0;
+    if (height) *height = 0;
+    if (refresh_hz) *refresh_hz = 0;
+    if (bits_per_pixel) *bits_per_pixel = 0;
+    if (!detail::g_driver) return false;
+    const winexbox::DisplayConfig dc = detail::g_driver->QueryDisplay();
+    for (const winexbox::MonitorInfo& m : dc.monitors) {
+        if (!m.primary && dc.monitors.size() > 1) continue;
+        if (width) *width = m.current.width;
+        if (height) *height = m.current.height;
+        if (refresh_hz) *refresh_hz = m.current.refresh_hz;
+        if (bits_per_pixel) *bits_per_pixel = m.current.bits_per_pixel ? m.current.bits_per_pixel : 32;
+        return m.current.width != 0;
+    }
+    return false;
+}
+
 std::uint64_t FrameSerial() {
     return static_cast<std::uint64_t>(detail::g_frame_serial) + detail::NativeFrameSerial();   // + route B's
 }

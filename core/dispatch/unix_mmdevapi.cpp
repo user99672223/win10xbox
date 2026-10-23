@@ -186,11 +186,16 @@ struct Stream {
     UINT64 last_pos = 0;
     LONGLONG next_event_qpc = 0;
     bool discontinuity = false;
+    // WIN10XBOX_AUDIO_NULL_ENDPOINT: no host stream; the pump consumes the ring at real-time pace
+    bool null_stream = false;
+    LONGLONG null_last_qpc = 0;
 };
 
 struct Audio {
     bool enabled = false;        // PrimeAudio ran the thread
     bool stack_ok = false;       // the host's enumerator could be created
+    bool null_ep = false;        // WIN10XBOX_AUDIO_NULL_ENDPOINT=1: one fake render endpoint, no host COM at all
+    volatile LONG64 null_frames = 0;   // frames the null endpoint consumed
     HANDLE thread = nullptr, wake = nullptr, ready = nullptr, timer = nullptr;
     SRWLOCK queue_lock = SRWLOCK_INIT;
     Request* head = nullptr;
@@ -399,8 +404,26 @@ void SignalEventIfDue(Stream* s, LONGLONG now) {
     if (s->next_event_qpc < now) s->next_event_qpc = now + step;
 }
 
+// The null endpoint's render client: consumes what the guest wrote at the pace of the stream's own sample rate.
+void PumpNull(Stream* s, LONGLONG now) {
+    const UINT64 avail = MulDiv64(static_cast<UINT64>(now - s->null_last_qpc), s->rate, static_cast<UINT64>(g_audio.qpc_freq));
+    const UINT64 pending = s->written - s->pushed;
+    const UINT32 n = static_cast<UINT32>(std::min(pending, avail));
+    if (n) {
+        s->rd_offs = static_cast<UINT32>((static_cast<UINT64>(s->rd_offs) + n) % s->ring_frames);
+        s->pushed += n;
+        InterlockedAdd64(&g_audio.null_frames, n);
+    }
+    if (pending <= avail) s->null_last_qpc = now;   // starved: the idle time is gone, like a device that played silence
+    else s->null_last_qpc += static_cast<LONGLONG>(MulDiv64(n, static_cast<UINT64>(g_audio.qpc_freq), s->rate));
+    s->played = s->pushed;
+    s->played_qpc = now;
+    SignalEventIfDue(s, now);
+}
+
 void PumpRender(Stream* s) {
     const LONGLONG now = Qpc();
+    if (s->null_stream) { PumpNull(s, now); return; }
     UINT32 padding = 0;
     HRESULT hr = s->client->GetCurrentPadding(&padding);
     if (FAILED(hr)) { s->error = hr; return; }
@@ -485,14 +508,45 @@ bool AnyStarted() {
     return false;
 }
 
+// One render endpoint, 48 kHz stereo float, and no capture endpoint (WIN10XBOX_AUDIO_NULL_ENDPOINT=1).
+void SetupNullEndpoint() {
+    Endpoint& ep = g_audio.ep[kFlowRender];
+    wcsncpy_s(ep.name, L"win10xbox null output", _TRUNCATE);
+    wcsncpy_s(ep.id, L"{win10xbox-null-output}", _TRUNCATE);
+    Utf8(ep.id, ep.device, sizeof ep.device);
+    WAVEFORMATEXTENSIBLE& m = ep.mix;
+    std::memset(&m, 0, sizeof m);
+    m.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+    m.Format.nChannels = 2;
+    m.Format.nSamplesPerSec = 48000;
+    m.Format.wBitsPerSample = 32;
+    m.Format.nBlockAlign = 8;
+    m.Format.nAvgBytesPerSec = 48000 * 8;
+    m.Format.cbSize = 22;
+    m.Samples.wValidBitsPerSample = 32;
+    m.dwChannelMask = 0x3;
+    m.SubFormat = kSubtypeFloat;
+    ep.def_period = 100000;
+    ep.min_period = 30000;
+    ep.present = true;
+    TRACE(audio, "null endpoint '%ls': 48000 Hz, 2 ch, 32 bit float", ep.name);
+}
+
 DWORD WINAPI AudioThreadMain(void*) {
     LARGE_INTEGER f;
     QueryPerformanceFrequency(&f);
     g_audio.qpc_freq = f.QuadPart;
     g_audio.co_initialize_ex(nullptr, COINIT_MULTITHREADED);
-    HRESULT hr = g_audio.co_create_instance(kClsidMMDeviceEnumerator, nullptr, CLSCTX_INPROC_SERVER, kIidMMDeviceEnumerator,
-                                            reinterpret_cast<void**>(&g_audio.enumerator));
-    if (SUCCEEDED(hr) && g_audio.enumerator) {
+    HRESULT hr = S_OK;
+    if (g_audio.null_ep) {
+        g_audio.stack_ok = true;
+        SetupNullEndpoint();
+    } else {
+        hr = g_audio.co_create_instance(kClsidMMDeviceEnumerator, nullptr, CLSCTX_INPROC_SERVER, kIidMMDeviceEnumerator,
+                                        reinterpret_cast<void**>(&g_audio.enumerator));
+    }
+    if (g_audio.null_ep) {
+    } else if (SUCCEEDED(hr) && g_audio.enumerator) {
         g_audio.stack_ok = true;
         ProbeEndpoint(kFlowRender);
         ProbeEndpoint(kFlowCapture);
@@ -578,17 +632,24 @@ void DoCreateStream(void* arg) {
     for (UINT32 i = 0; i < s->channels; ++i) s->vols[i] = 1.0f;
 
     IMMDevice* dev = nullptr;
-    HRESULT hr = g_audio.enumerator->GetDevice(ep->id, &dev);
-    if (SUCCEEDED(hr)) hr = dev->Activate(kIidAudioClient, CLSCTX_INPROC_SERVER, nullptr, reinterpret_cast<void**>(&s->client));
-    if (dev) dev->Release();
-    if (SUCCEEDED(hr)) {
+    HRESULT hr = S_OK;
+    if (g_audio.null_ep) {
+        s->null_stream = true;
+        s->host_frames = s->ring_frames;
+        s->host_latency = 0;
+    } else {
+        hr = g_audio.enumerator->GetDevice(ep->id, &dev);
+        if (SUCCEEDED(hr)) hr = dev->Activate(kIidAudioClient, CLSCTX_INPROC_SERVER, nullptr, reinterpret_cast<void**>(&s->client));
+        if (dev) dev->Release();
+    }
+    if (SUCCEEDED(hr) && !s->null_stream) {
         REFERENCE_TIME dur = p->duration < kMinHostBufferRt ? kMinHostBufferRt : p->duration;
         hr = s->client->Initialize(AUDCLNT_SHAREMODE_SHARED, kStreamAutoConvertPcm | kStreamSrcDefaultQuality, dur, 0, fmt, nullptr);
         TRACE(audio, "host Initialize(%s, %u Hz, %u ch, %u bit%s, buffer %lld): %08lx", p->flow ? "capture" : "render",
               s->rate, s->channels, s->bits, s->is_float ? " float" : "", static_cast<long long>(dur), static_cast<unsigned long>(hr));
     }
-    if (SUCCEEDED(hr)) hr = s->client->GetBufferSize(&s->host_frames);
-    if (SUCCEEDED(hr)) {
+    if (SUCCEEDED(hr) && !s->null_stream) hr = s->client->GetBufferSize(&s->host_frames);
+    if (SUCCEEDED(hr) && !s->null_stream) {
         s->client->GetStreamLatency(&s->host_latency);
         if (p->flow == kFlowRender) hr = s->client->GetService(kIidRenderClient, reinterpret_cast<void**>(&s->render));
         else hr = s->client->GetService(kIidCaptureClient, reinterpret_cast<void**>(&s->capture));
@@ -617,10 +678,11 @@ void DoStart(void* arg) {
     else if ((s->flags & kStreamEventCallback) && !s->event) r->result = kEEventHandleNotSet;
     else if (s->started) r->result = kENotStopped;
     else {
-        r->result = s->client->Start();
+        r->result = s->null_stream ? S_OK : s->client->Start();
         if (SUCCEEDED(r->result)) {
             s->started = true;
             s->played_qpc = Qpc();
+            s->null_last_qpc = s->played_qpc;
             s->next_event_qpc = s->played_qpc;
             if (s->flow == kFlowRender) PumpRender(s); else PumpCapture(s);
         }
@@ -634,11 +696,12 @@ void DoStop(void* arg) {
     AcquireSRWLockExclusive(&s->lock);
     if (!s->started) r->result = S_FALSE;
     else {
-        r->result = s->client->Stop();
+        r->result = s->null_stream ? S_OK : s->client->Stop();
         s->started = false;
         if (s->flow == kFlowRender) {   // freeze the position where the host stopped
             UINT32 padding = 0;
-            if (SUCCEEDED(s->client->GetCurrentPadding(&padding))) s->played = s->pushed > padding ? s->pushed - padding : 0;
+            if (s->null_stream) s->played = s->pushed;
+            else if (SUCCEEDED(s->client->GetCurrentPadding(&padding))) s->played = s->pushed > padding ? s->pushed - padding : 0;
             s->played_qpc = Qpc();
         }
     }
@@ -652,7 +715,7 @@ void DoReset(void* arg) {
     if (s->started) r->result = kENotStopped;
     else if (s->getbuf_last) r->result = kEBufferOpPending;
     else {
-        r->result = s->client->Reset();
+        r->result = s->null_stream ? S_OK : s->client->Reset();
         if (SUCCEEDED(r->result)) {
             if (s->flow == kFlowRender) { s->written = s->pushed = s->played = 0; s->last_pos = 0; }
             else s->written += s->held;
@@ -675,8 +738,9 @@ void DoRelease(void* arg) {
         }
     ReleaseSRWLockExclusive(&g_audio.streams_lock);
     AcquireSRWLockExclusive(&s->lock);
-    if (s->started) { s->client->Stop(); s->started = false; }
+    if (s->started) { if (s->client) s->client->Stop(); s->started = false; }
     ReleaseSRWLockExclusive(&s->lock);
+    if (s->null_stream) TRACE(audio, "audio: null endpoint consumed %lld frames", static_cast<long long>(g_audio.null_frames));
     if (s->render) s->render->Release();
     if (s->capture) s->capture->Release();
     if (s->client) s->client->Release();
@@ -689,6 +753,12 @@ struct FormatReq { Endpoint* ep; const WAVEFORMATEX* fmt; HRESULT result; };
 
 void DoIsFormatSupported(void* arg) {
     auto* r = static_cast<FormatReq*>(arg);
+    if (g_audio.null_ep) {   // the null endpoint takes any PCM or float shared-mode format (the host engine would convert)
+        const WAVEFORMATEX* f = r->fmt;
+        const bool ok = f->wFormatTag == WAVE_FORMAT_PCM || IsFloatFormat(f) || f->wFormatTag == WAVE_FORMAT_EXTENSIBLE;
+        r->result = ok ? S_OK : AUDCLNT_E_UNSUPPORTED_FORMAT;
+        return;
+    }
     if (!r->ep->query) { r->result = kEInvalidated; return; }
     WAVEFORMATEX* closest = nullptr;
     r->result = r->ep->query->IsFormatSupported(AUDCLNT_SHAREMODE_SHARED, r->fmt, &closest);
@@ -1127,6 +1197,8 @@ const UnixCallFn kFuncs[kFuncsCount] = {
 };
 
 }  // namespace
+
+void SetAudioNullEndpoint(bool on) { g_audio.null_ep = on; }
 
 void PrimeAudio(const std::wstring& machine_root) {
     if (g_audio.enabled) return;

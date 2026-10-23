@@ -135,6 +135,41 @@ std::vector<std::wstring> ListFiles(const std::wstring& dir)
     return out;
 }
 
+std::vector<std::wstring> ListDirs(const std::wstring& dir)
+{
+    std::vector<std::wstring> out;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return out;
+    do
+    {
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && wcscmp(fd.cFileName, L".") != 0 && wcscmp(fd.cFileName, L"..") != 0)
+            out.emplace_back(fd.cFileName);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return out;
+}
+
+namespace
+{
+    std::wstring Extended(const std::wstring& p)
+    {
+        if (p.rfind(L"\\\\?\\", 0) == 0) return p;
+        if (p.rfind(L"\\\\", 0) == 0) return L"\\\\?\\UNC\\" + p.substr(2);
+        return L"\\\\?\\" + p;
+    }
+}
+
+bool CopyTree(const std::wstring& src, const std::wstring& dst)
+{
+    bool ok = EnsureDir(dst);
+    for (const std::wstring& f : ListFiles(Extended(src)))
+        if (!CopyFileW(Extended(src + L"\\" + f).c_str(), Extended(dst + L"\\" + f).c_str(), FALSE)) ok = false;
+    for (const std::wstring& d : ListDirs(Extended(src)))
+        if (!CopyTree(src + L"\\" + d, dst + L"\\" + d)) ok = false;
+    return ok;
+}
+
 bool IsLeafName(const std::wstring& name)
 {
     if (name.empty() || name.size() > 128) return false;

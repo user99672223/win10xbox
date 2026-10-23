@@ -3,6 +3,7 @@
 #   -DHOST=<win10xbox.exe> -DMACHINE=<machine dir> -DPROGRAM=<C:\guest\x.exe>
 #   -DEXPECT_EXIT=<n> -DEXPECT_REGEX=<regex;regex...> [-DEMULATOR=<wine>]
 #   [-DRUN_TIMEOUT=<seconds>]       the guest's run-time limit (default 120)
+#   [-DCWD=<guest dir>]             the guest's working directory (the host's --cwd), e.g. C:\guest\dirtree\data
 #   [-DPROGRAM_ARGS=<arg;arg...>]   the guest's own command-line arguments, one list element each ("\;" inside one)
 #   [-DFORBID_REGEX=<regex>] [-DDEBUG_SPEC=<WIN10XBOX_DEBUG spec>]
 # EXPECT_REGEX/FORBID_REGEX match the guest's stdout. The layer's own trace
@@ -85,6 +86,10 @@ if(REQUIRE_BUILTIN_DLLS)
     set(ENV{WIN10XBOX_DEBUG} "$ENV{WIN10XBOX_DEBUG},+modules")
   endif()
 endif()
+set(_cwd "")
+if(CWD)
+  set(_cwd --cwd "${CWD}")
+endif()
 # -DRUN_TIMEOUT=<seconds>: how long the guest may run (default 120).
 set(_timeout 120)
 if(RUN_TIMEOUT)
@@ -92,7 +97,7 @@ if(RUN_TIMEOUT)
 endif()
 # ${_args} is expanded right here, not through an intermediate list variable: set() joins the expanded elements
 # without their "\;" escape, so an argument that holds a ';' would be split in two.
-execute_process(COMMAND ${EMULATOR} "${HOST}" --machine "${_machine}" "${_program}" ${_args} ${_stdin}
+execute_process(COMMAND ${EMULATOR} "${HOST}" --machine "${_machine}" ${_cwd} "${_program}" ${_args} ${_stdin}
                 RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT ${_timeout})
 # Before the guest's output: ctest keeps only the first 1024 bytes of a passing test's output.
 set(_builtin_fail "")

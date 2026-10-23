@@ -12,6 +12,7 @@
 #include "win10xbox/config.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <vector>
 
@@ -225,6 +226,12 @@ namespace {
 SwapChainTargetFn g_swap_target = nullptr;   // trivially initialised
 void* g_swap_target_ctx = nullptr;
 }  // namespace
+
+namespace {
+std::atomic<unsigned> g_guest_sync{1};
+}  // namespace
+void NoteGuestPresent(unsigned sync_interval) { g_guest_sync.store(sync_interval); }
+unsigned LastGuestSyncInterval() { return g_guest_sync.load(); }
 
 void SetSwapChainTarget(SwapChainTargetFn fn, void* ctx) {
     g_swap_target_ctx = ctx;

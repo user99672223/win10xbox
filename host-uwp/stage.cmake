@@ -7,6 +7,7 @@
 #         -DPAYLOAD_DIR=<host-uwp/payload> -DBUILTIN_DIR=<wine-pe/out/builtin>
 #         -DMACHINE_JSON=<machine.default.json> [-DMSCTF_STUB=<msctf.dll stand-in of tests/guest/msctf_stub.c>]
 #         [-DGUEST_DLL_DIR=<bin/guest-dlls>: our own builtin DLLs]
+#         [-DDIRTREE_EXE=<guest_dirtree.exe> -DDIRTREE_SRC=<tests/guest/dirtree>: the directory-install guest]
 #         -P stage.cmake
 #
 # Layout (see the header of host-uwp/CMakeLists.txt):
@@ -101,6 +102,14 @@ foreach(_f IN LISTS _extra)
     file(COPY_FILE "${_f}" "${STAGE}/payload/guest/${_n}")
   endif()
 endforeach()
+# A directory install (docs/slices/dirlaunch.md): payload\guest\dirtree\ = tests/guest/dirtree/ (dirtree.launch, data\file.pak)
+# plus the program in bin\. A subdirectory of guest\ holding <dir>.launch is ONE picker entry; not listed in guests.txt.
+if(NOT "${DIRTREE_EXE}" STREQUAL "" AND IS_DIRECTORY "${DIRTREE_SRC}")
+  file(COPY "${DIRTREE_SRC}/" DESTINATION "${STAGE}/payload/guest/dirtree")
+  file(MAKE_DIRECTORY "${STAGE}/payload/guest/dirtree/bin")
+  stage_copy("${DIRTREE_EXE}" "${STAGE}/payload/guest/dirtree/bin/guest_dirtree.exe")
+  message(STATUS "stage.cmake: directory install payload/guest/dirtree")
+endif()
 list(LENGTH _extra _nx)
 message(STATUS "stage.cmake: ${_nx} extra guest file(s) (sidecars, fetched programs)")
 

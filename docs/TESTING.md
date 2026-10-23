@@ -282,6 +282,13 @@ showed: `KMUTANT.Abandoned` is a bit field of `MutantFlags` (`OB()` in `layout_l
 to `ud2`, so the #UD emulation (D18: `BCryptGenRandom`, CF=1) runs on a CPU that has the instructions. Set by `integration.guest_rdrand` and
 `integration.guest_identity`.
 
+`WIN10XBOX_AUDIO_NULL_ENDPOINT=1` (latched in `process::Launch` before `PrimeAudio`; unset/0 = no change): the host-side mmdevapi unix library
+(`core/dispatch/unix_mmdevapi.cpp`) does no host COM and exposes exactly one render endpoint, "win10xbox null output" (48 kHz stereo float, no capture
+endpoint). Its render client consumes the guest's buffers at real-time pace (by stream sample rate) and counts the frames; each stream release traces
+`audio: null endpoint consumed N frames` (channel `+audio`). Used by `integration.guest_xaudio2_play` (exit 42, N within 10 % of 48000, i.e. about 1 s of the
+XAudio2 engine's output); `integration.guest_xaudio2_play_noendpoint` runs the same guest with the option unset and requires the host's own verdict (43 on
+a runner without an endpoint, 42 with one).
+
 `WIN10XBOX_TEST_PRESENT_LIMIT=N` (latched in `process::Launch`, N=0/unset = off): the DXGI interposition (`core/dispatch/dxgi_interpose.cpp`) counts successful
 `Present`/`Present1` calls (not `DXGI_PRESENT_TEST`) over all swap chains; after the N-th, once that frame is handed to the compositor, it traces and prints
 `present-limit: N frames presented, <w>x<h>, <adapter>` and ends the guest with exit code 42 (`process::GuestExit`, the `NtTerminateProcess` path), so a

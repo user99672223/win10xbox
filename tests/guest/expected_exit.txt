@@ -17,6 +17,7 @@ smoke_cui.exe 42
 guest_hello.exe 42
 guest_cpuid.exe 0
 guest_sleep.exe 7
+dirtree 42=directory-install
 drv_client.exe 2
 guest_clipboard.exe 42
 guest_comctl.exe 42
@@ -50,9 +51,13 @@ guest_named_objects.exe 42=child-ran 1=no-child-processes
 # an expected answer (docs/slices/xaudio2play.md). The hosted CI runners now have a virtual endpoint and gate on 42.
 guest_wasapi.exe 42=endpoint 43=no-endpoint
 guest_xaudio2.exe 42=endpoint 43=no-endpoint
+guest_xaudio2_play.exe 42=played 43=no-endpoint
 
 # Gamepad: 42 with a pad, 1 after the 30 s wait without one
 guest_xinput.exe 42=pad 1=no-pad
+
+# Every display answer equals the host's one mode (no argument: the picker run only checks the four answers agree)
+guest_display_mode.exe 42=matches
 
 # Off-screen D3D11 on machine-native-d3d (guest_d3d11_tri.machine); 10 = d3d11.dll did not load (no D3D machine)
 guest_d3d11_tri.exe 42=d3d11 10=no-d3d11
@@ -60,6 +65,11 @@ guest_d3d11_tri.exe 42=d3d11 10=no-d3d11
 guest_imgui_d3d11.exe 0=frames KNOWNFAIL=-2147483392:uwp-no-hwnd-swapchain(-uwpswap)
 # The swap-chain guest on machine-native-d3d (guest_d3d11_swap.machine): 60 frames presented through the DXGI interposition.
 guest_d3d11_swap.exe 42=presented KNOWNFAIL=2:uwp-no-hwnd(-uwpswap)
+
+# UDP + TLS (tests/guest/net2.c): the TLS half needs the test server (integration.net2_tls_server); standalone the connect fails = 20
+guest_net2.exe 42=udp+tls 20=no-tls-server
+# DLL/import closure (tests/guest/closure.c): 42 when every listed import resolves, 43 when some are missing or no *_imports.txt is bundled
+guest_closure.exe 42=closed 43=open-or-no-lists
 
 # Chocolate Doom (fetched, not in tests/guest): interactive; the timedemo ends through I_Error, which exits with -1
 chocolate-doom.exe TIMEOUT=interactive

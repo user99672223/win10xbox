@@ -27,6 +27,16 @@
   // Keep the window (the last frame) on the TV after the guest has exited; close the app to end.
   "exit_when_done": false,
 
+  // The owner's test setting (their Xbox: 2560x1440 at 120 Hz, FreeSync/VRR on): ask the console for that mode ("auto" keeps
+  // whatever the console is set to; a mode not in the console's supported list is logged and the current mode stays).
+  "display_mode": "2560x1440@120",
+  // The screen the GUEST sees ("auto" = the output mode): a 4K screen supersampled onto the 1440p output. Per program:
+  // <name>.display next to the guest, or display=WxH@Hz in a .launch file.
+  "guest_display": "3840x2160@120",
+  // Who scales the guest's screen to the output: "system" = the console's compositor (swap chain at the guest's size,
+  // falls back to "layer" when the console refuses), "layer" = our presenter at the output size.
+  "output_scaling": "system",
+
   // Safety net: end the run (and the app) if the guest has not exited after 10 minutes.
   "timeout_sec": 600,
 }

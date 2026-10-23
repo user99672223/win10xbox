@@ -301,6 +301,8 @@ INT WINAPI NtGdiGetDeviceCaps(HDC hdc, INT cap) {
     if (!DcGet(hdc)) return 0;
     int w = 0, h = 0;
     ScreenSize(&w, &h);
+    std::uint32_t mode_w = 0, mode_h = 0, mode_hz = 0, mode_bpp = 0;   // the one display mode (user.h)
+    CurrentDisplayMode(&mode_w, &mode_h, &mode_hz, &mode_bpp);
     switch (cap) {
     case DRIVERVERSION: return 0x4000;
     case TECHNOLOGY: return DT_RASDISPLAY;
@@ -308,7 +310,7 @@ INT WINAPI NtGdiGetDeviceCaps(HDC hdc, INT cap) {
     case VERTSIZE: return h * 254 / 960;
     case HORZRES: return w;
     case VERTRES: return h;
-    case BITSPIXEL: return 32;
+    case BITSPIXEL: return mode_bpp ? static_cast<INT>(mode_bpp) : 32;
     case PLANES: return 1;
     case NUMBRUSHES: return -1;
     case NUMPENS: return -1;
@@ -336,7 +338,7 @@ INT WINAPI NtGdiGetDeviceCaps(HDC hdc, INT cap) {
     case COLORRES: return 24;
     case PHYSICALWIDTH: case PHYSICALHEIGHT: case PHYSICALOFFSETX: case PHYSICALOFFSETY: case SCALINGFACTORX:
     case SCALINGFACTORY: return 0;
-    case VREFRESH: return 60;
+    case VREFRESH: return mode_hz ? static_cast<INT>(mode_hz) : 60;
     case DESKTOPVERTRES: return h;
     case DESKTOPHORZRES: return w;
     case BLTALIGNMENT: return 0;
