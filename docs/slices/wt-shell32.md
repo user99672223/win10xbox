@@ -1,4 +1,5 @@
 status: wip
+parked: owner's "Game first" instruction (docs/COORDINATION.md, 2026-10-23) stops this slice. Head 20c38b4 is the implement push: shell32 COM classes registered, user shell folders, allowlist + ratchet; its baseline numbers are from local Wine 9 and the ratchet expects the first runner measurement to differ. To resume: the CI loop re-measures wine-pe/tests/shell32.baseline and the allowlist from the linux-cross-bin artifact of the ci.yml run for 20c38b4, then pushes.
 
 # Handoff (resume: allowlist growth, COM classes, profile folders)
 
