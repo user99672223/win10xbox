@@ -37,7 +37,6 @@ LONG WINAPI NtUserSetWindowLong(HWND hwnd, INT offset, LONG newval, BOOL ansi);
 LONG_PTR WINAPI NtUserSetWindowLongPtr(HWND hwnd, INT offset, LONG_PTR newval, BOOL ansi);
 WORD WINAPI NtUserSetWindowWord(HWND hwnd, INT offset, WORD newval);
 ULONG WINAPI NtUserAlterWindowStyle(HWND hwnd, UINT mask, UINT style);
-BOOL WINAPI NtUserCallMsgFilter(MSG* msg, INT code);
 UINT_PTR WINAPI NtUserQueryInputContext(HANDLE handle, UINT attr);
 ULONG_PTR WINAPI NtUserCallHwnd(HWND hwnd, DWORD code);
 ULONG_PTR WINAPI NtUserCallHwndParam(HWND hwnd, DWORD_PTR param, DWORD code);
@@ -94,6 +93,13 @@ UINT_PTR WINAPI NtUserSetTimer(HWND hwnd, UINT_PTR id, UINT timeout, TIMERPROC p
 BOOL WINAPI NtUserKillTimer(HWND hwnd, UINT_PTR id);
 UINT_PTR WINAPI NtUserSetSystemTimer(HWND hwnd, UINT_PTR id, UINT timeout);
 BOOL WINAPI NtUserKillSystemTimer(HWND hwnd, UINT_PTR id);
+// ---- win_hook.cpp ----
+HHOOK WINAPI NtUserSetWindowsHookEx(HINSTANCE inst, UNICODE_STRING* module, DWORD tid, INT id, HOOKPROC proc,
+                                    BOOL ansi);
+BOOL WINAPI NtUserUnhookWindowsHookEx(HHOOK handle);
+BOOL WINAPI NtUserUnhookWindowsHook(INT id, HOOKPROC proc);
+LRESULT WINAPI NtUserCallNextHookEx(HHOOK hhook, INT code, WPARAM wparam, LPARAM lparam);
+BOOL WINAPI NtUserCallMsgFilter(MSG* msg, INT code);
 ULONG_PTR WINAPI NtUserGetThreadState(int cls);
 DWORD WINAPI NtUserGetQueueStatus(UINT flags);
 BOOL WINAPI NtUserWaitMessage();
@@ -355,6 +361,7 @@ BOOL WINAPI NtGdiTransparentBlt(HDC hdc, INT x_dst, INT y_dst, INT width_dst, IN
     X(NtUserGetClipboardFormatName) X(NtUserGetClipboardOwner) X(NtUserGetClipboardViewer) \
     X(NtUserGetOpenClipboardWindow) X(NtUserGetClipboardSequenceNumber) X(NtUserSetClipboardViewer) \
     X(NtUserChangeClipboardChain) X(NtUserAddClipboardFormatListener) X(NtUserRemoveClipboardFormatListener) \
+    X(NtUserSetWindowsHookEx) X(NtUserUnhookWindowsHookEx) X(NtUserUnhookWindowsHook) X(NtUserCallNextHookEx) \
     X(NtUserBeginPaint) X(NtUserEndPaint) X(NtUserGetDC) X(NtUserGetDCEx) X(NtUserGetWindowDC) X(NtUserReleaseDC) \
     X(NtUserInvalidateRect) X(NtUserInvalidateRgn) X(NtUserValidateRect) X(NtUserValidateRgn) X(NtUserRedrawWindow) \
     X(NtUserGetUpdateRect) X(NtUserGetUpdateRgn) X(NtUserExcludeUpdateRgn) X(NtUserWindowFromDC) \

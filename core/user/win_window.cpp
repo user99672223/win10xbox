@@ -1197,12 +1197,6 @@ ULONG WINAPI NtUserAlterWindowStyle(HWND hwnd, UINT mask, UINT style) {
     return 1;
 }
 
-// No hooks are installed (SetWindowsHookEx is Todo), so no filter ever eats a message.
-BOOL WINAPI NtUserCallMsgFilter(MSG* msg, INT code) {
-    (void)msg; (void)code;
-    return FALSE;
-}
-
 // There is no IME: no input context exists.
 UINT_PTR WINAPI NtUserQueryInputContext(HANDLE handle, UINT attr) {
     (void)handle; (void)attr;
@@ -1842,6 +1836,7 @@ ULONG_PTR WINAPI NtUserCallNoParam(ULONG code) {
     case abi::NoParamExitingThread: {
         if (UserThread* t = FindUserThread()) {
             t->exiting = true;
+            RemoveThreadHooks(t->tid);
             DestroyThreadWindows(t);
         }
         return 0;

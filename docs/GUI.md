@@ -80,6 +80,7 @@ more. Presentation is the host's: it only needs `ComposeFrame`.
 | `win_window.cpp` | handle table, tree and z-order, rects, `NtUserCreateWindowEx` (Wine's message sequence), `ShowWindow`, `SetWindowPos` (WINDOWPOSCHANGING / NCCALCSIZE / WINDOWPOSCHANGED), `DestroyWindow` (WM_DESTROY parent first, WM_NCDESTROY children first), activation and focus, window longs, props, `NtUserCall{Hwnd,HwndParam,NoParam,OneParam,TwoParam}` codes, `FindWindowEx`, `BuildHwndList`, `WindowFromPoint`, capture, enable |
 | `win_defwnd.cpp` | the default window procedure (`NtUserMessageCall(NtUserDefWindowProc)`): text, WM_NCCALCSIZE from the style (Windows 10 frame metrics), WM_NCHITTEST, WM_NCPAINT, WM_ERASEBKGND with the class brush, WM_CTLCOLOR*, WM_CLOSE, WM_WINDOWPOSCHANGED -> WM_MOVE/WM_SIZE, WM_ACTIVATE -> focus, Alt+F4 |
 | `win_message.cpp` | per-thread queues (posted, input, cross-thread sent), WM_PAINT and WM_TIMER pseudo-messages, `GetMessage`, `PeekMessage`, `MsgWaitForMultipleObjectsEx`, `WaitMessage`, `GetQueueStatus`, `NtUserMessageCall` codes, `DispatchMessage` (WM_PAINT / timer procs), `TranslateMessage` (US layout), timers, the input sink and the thread-side processing of mouse input (hit test, activation, `WM_SETCURSOR`, double clicks), key state, `SendInput`, cursor, caret (tracked, not drawn) |
+| `win_hook.cpp` | in-process `SetWindowsHookEx` / `UnhookWindowsHook[Ex]` / `CallNextHookEx` / `CallMsgFilter` (design: item 9a), the `CbCallWindowsHook` call-out, WH_CALLWNDPROC / WH_CALLWNDPROCRET around window procedure calls |
 | `win_paint.cpp` | update regions (bounding rectangle + erase / frame / internal-paint flags), `InvalidateRect`/`Rgn`, `ValidateRect`/`Rgn`, `RedrawWindow`, `GetUpdateRect`/`Rgn`, `BeginPaint`/`EndPaint`, `GetDC`/`GetDCEx`/`GetWindowDC`/`ReleaseDC`, `ScrollWindowEx`, the non-client frame (solid colours), window surfaces from the driver, flush, `ComposeFrame` / `ComposeLastPaintedFrame` |
 | `win_scroll.cpp` | scroll state per window (`NtUserSetScrollInfo`, `GetScrollBarInfo`, `ShowScrollBar`, `EnableScrollBar`, `GetScrollInfo` via `NtUserCallHwndParam`), the non-client WS_VSCROLL / WS_HSCROLL bars (solid colours, drawn from WM_NCPAINT, HTVSCROLL / HTHSCROLL in WM_NCHITTEST, a WM_NCLBUTTONDOWN on a bar sends WM_VSCROLL / WM_HSCROLL SB_LINEUP / SB_LINEDOWN / SB_PAGEUP / SB_PAGEDOWN then SB_ENDSCROLL), the `ScrollBar` control procedure (SBM_*), `ScrollDC` |
 | `win_sysparams.cpp` | `GetSystemMetrics` (Windows 10 at 96 DPI), `SystemParametersInfo[ForDpi]`, DPI awareness, monitors (`EnumDisplayMonitors` via the callback, `GetMonitorInfo`, `MonitorFromRect/Window`), `EnumDisplaySettings`, `EnumDisplayDevices`, `SetSysColors` |
@@ -118,7 +119,7 @@ Not implemented yet (they stay Todo or are documented FIXMEs), roughly in the or
   `AddFontResource` stay Todo / failing.
 * **Menus** (`NtUserCreateMenu`, `NtUserThunkedMenuItemInfo`, `TrackPopupMenu`...): Todo; `LoadMenu` fails, so
   windows get no menu bar. **Icons and cursors** (`NtUserSetCursorIconData`, `NtUserDrawIconEx`, `LoadImage` of
-  icons/cursors): Todo. **Scroll bars**: `win_scroll.cpp` (see the module table); thumb dragging and button auto-repeat are not implemented. **Clipboard**, **hooks** (`SetWindowsHookEx`, `SetWinEventHook`), **IME**,
+  icons/cursors): Todo. **Scroll bars**: `win_scroll.cpp` (see the module table); thumb dragging and button auto-repeat are not implemented. **Clipboard**, **WinEvent hooks** (`SetWinEventHook`), **IME**,
   **raw input**, **layered windows** (`SetLayeredWindowAttributes`, `UpdateLayeredWindow`), **window regions**,
   `GradientFill` / `MaskBlt`, `PrintWindow`, `DeferWindowPos`,
   window stations / desktops: Todo.
@@ -209,8 +210,31 @@ Not implemented yet (they stay Todo or are documented FIXMEs), roughly in the or
    while they pump or wait (`GetMessage`, `PeekMessage`, `MsgWaitForMultipleObjectsEx`, `GetQueueStatus`,
    `GetAsyncKeyState`; the driver's `WakeHandle` is one of the wait handles). The wheel goes to the window under the
    cursor, like Wine; input with no window of ours under the cursor / no focus is dropped (traced as `+user`).
-   Not done: WM_MOUSELEAVE/HOVER, raw input, hooks, dead keys and other layouts (only the plain US layout), the
+   Not done: WM_MOUSELEAVE/HOVER, raw input, dead keys and other layouts (only the plain US layout), the
    journaling and key-repeat counts.
+9a. **Hooks and timers** (`win_hook.cpp`, `tests/guest/window_hooks.c`, `integration.guest_window_hooks`).
+   `SetWindowsHookEx` / `UnhookWindowsHookEx` / `UnhookWindowsHook` / `CallNextHookEx` / `CallMsgFilter` are in process:
+   the layer is one process, so a hook with thread id 0 runs on whichever thread takes the message (a module handle is
+   still required, as on Windows, but nothing is loaded: the procedure address is used as given) and a hook with a
+   thread id runs on that thread only. The handle is a user handle (0x10001...). The chain of one id runs newest first;
+   `CallNextHookEx` continues from the hook being called on the thread; nesting stops at 25 levels (Wine's limit); a hook
+   unhooked while a chain runs is swept when the chain returns. The call into the guest is the `CbCallWindowsHook`
+   callback of user32 (the lparam data is copied behind `win_hook_params`, and copied back from the result, so a
+   `WH_GETMESSAGE` hook can change the `MSG`). Implemented ids and call points: `WH_KEYBOARD` (WM_KEYDOWN/UP,
+   WM_SYSKEYDOWN/UP handed out by Peek/GetMessage: HC_ACTION when removing, HC_NOREMOVE otherwise; a non-zero result
+   drops the message), `WH_MOUSE` (MOUSEHOOKSTRUCTEX with the screen point, window, hit test, extra info, after the hit
+   test and double-click translation, before WM_SETCURSOR; non-zero drops it), `WH_GETMESSAGE` (every message Peek/
+   GetMessage return, wParam = PM_REMOVE or 0), `WH_CALLWNDPROC` / `WH_CALLWNDPROCRET` (messages sent to a window of the
+   calling thread, same-thread `SendMessage` and sends from other threads; lParam is passed as it is, pointers are valid
+   in process; changes the hook makes to the CWPSTRUCT are ignored), `WH_MSGFILTER` / `WH_SYSMSGFILTER` (`CallMsgFilter`).
+   Not implemented: the low-level hooks `WH_KEYBOARD_LL` / `WH_MOUSE_LL` (SetWindowsHookEx fails with
+   ERROR_CALL_NOT_IMPLEMENTED), `WH_CBT`, `WH_SHELL`, `WH_DEBUG`, `WH_JOURNALRECORD/PLAYBACK`, `WH_FOREGROUNDIDLE`,
+   WinEvent hooks, hooks in other processes. Timers use the performance counter (not the 15.6 ms `GetTickCount64`):
+   `SetTimer` clamps to 10 ms (`USER_TIMER_MINIMUM`), the first WM_TIMER is due `elapse` ms after the call, the next
+   deadline is the previous deadline plus `elapse` (no accumulated lag; periods missed entirely are skipped, one
+   WM_TIMER stands for them), a thread blocked in `GetMessage` / `MsgWaitForMultipleObjectsEx` wakes at the next
+   deadline, `SetTimer` on an existing id restarts it, `KillTimer` drops a WM_TIMER that is already due, and a timer
+   with a TIMERPROC carries it in lParam for `DispatchMessage` to call. Tolerance gated by `guest_window_hooks`: 20 ticks of a 50 ms timer take 950..1400 ms by the performance counter with no gap under 40 ms (CI measures about 1000 ms, shortest gap 49.7 ms), and a `SetTimer(..., 1)` x10 takes at least about 100 ms.
 10. **The first target is `tests/guest/window.c`** (`integration.guest_window`): RegisterClass,
    CreateWindowEx(WS_POPUP|WS_VISIBLE, 400x300 at 100,100), WM_PAINT with two FillRects, GetPixel
    read-back, PostMessage/SetTimer, GetMessage loop, exit 42; plus the screenshot pixels. It must
