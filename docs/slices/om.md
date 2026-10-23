@@ -1,8 +1,8 @@
-status: wip
+status: ready
 
 # Slice om: the object manager namespace
 
-Run: (pending, first push)
+Run: https://github.com/user99672223/win10xbox/actions/runs/39935668755 (head 07f4891; linux-cross, windows Debug, windows RelWithDebInfo all success; the linux-cross job was re-run once after `apt-get install` timed out three times)
 
 A Windows program sees `\BaseNamedObjects`, `\Sessions\<n>\BaseNamedObjects`, directory objects and symbolic links, and
 named events, mutexes, semaphores, sections and timers that a child it starts can open by name. The design, the layout
@@ -33,7 +33,8 @@ children in `WIN10XBOX_OBJNS`.
 ## ntdll `om` unit
 
 Not on `wine-pe/tests/ntdll.allowlist`: it cannot print its summary line through this layer, and where it can it
-reports failures that are deliberate. Measured under Wine as the host (Windows runners: see the run above):
+reports failures that are deliberate. On the Windows runners it still ends in an access violation, first assertion
+`om.c:2941` (`NtCreateDebugObject`). Measured under Wine as the host:
 
 * Before: stops at `om.c:2941` (`NtCreateDebugObject`, `STATUS_NOT_SUPPORTED`) and faults at `om.c:2942` (no handle).
   E6 keeps `NtCreateDebugObject` unsupported, so the unit still stops there: everything it does before, in
@@ -45,3 +46,20 @@ reports failures that are deliberate. Measured under Wine as the host (Windows r
   `test_globalroot`, `test_object_identity`, `test_duplicate_object`.
 * `om.c:303` and `om.c:1416` are `todo_wine` in Wine because Windows answers them the way this layer now does:
   "Test succeeded inside todo block" counts as a failure, so a more faithful layer than Wine cannot reach 0 failures.
+
+## Other tests this slice touched
+
+* `kernel32` `drive`: back at its baseline (2). `\??` now lists the machine-wide devices (`GetLogicalDrives` and
+  `QueryDosDevice` enumerate `\DosDevices`); the guest sees its own drives (C:), not the host prefix's.
+* `kernel32` `volume`: baseline 35 -> 39 (kernel32.baseline says why): `volume.c:165` and `:200` are `todo_wine` that now
+  pass, and Wine's harness counts "succeeded inside todo" as failures.
+
+## Still open
+
+* `om`: `NtCreateDebugObject` (E6), window stations (`GetProcessWindowStation` returns nothing), `NtGetNextProcess` /
+  `NtGetNextThread`, `\Device\Mailslot` / `\Device\NamedPipe` names of file handles, `IoCompletionReserve` /
+  `UserApcReserve` in `ObjectTypesInformation` (Wine host), registry key name limits (`om.c:1005..1126`, core/registry).
+* Directories and links a guest creates exist only in that process; named objects inside them are found by a child
+  only when the directory exists there too.
+* `\Device` and `\Driver` are the host's: the driver host's devices are not listed there (its links are, in `\??`).
+* `OBJ_PERMANENT` on directories and links skips the `SeCreatePermanentPrivilege` check.
