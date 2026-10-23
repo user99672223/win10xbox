@@ -154,6 +154,8 @@ struct Presenter::Impl
     HANDLE shot = INVALID_HANDLE_VALUE;
     bool shot_failed_noted = false;
 
+    FrameSource* source = nullptr;    // launcher screens, see SetFrameSource
+
     std::vector<std::string> notes;
 };
 
@@ -295,6 +297,11 @@ void Presenter::OpenScreenshot(const std::wstring& path)
         m.Note(Fmt("cannot create screen.bmp (error %lu): no periodic screenshots", GetLastError()));
 }
 
+void Presenter::SetFrameSource(FrameSource* source)
+{
+    impl_->source = source;
+}
+
 void Presenter::StartDevice()
 {
     Impl& m = *impl_;
@@ -328,15 +335,17 @@ void Presenter::Tick(bool live)
     if (m.device && !m.dead && !m.swap && !m.swap_failed && m.window) m.CreateSwapChain();
 
     const ULONGLONG now = GetTickCount64();
-    const std::uint64_t serial = live ? win10xbox::user::FrameSerial() : m.last_serial;
-    const bool changed = live && serial != m.last_serial;
+    const bool overlay = m.source != nullptr && m.source->Active();
+    const std::uint64_t serial = overlay ? m.source->Serial() : (live ? win10xbox::user::FrameSerial() : m.last_serial);
+    const bool changed = (live || overlay) && serial != m.last_serial;
     const bool refresh = now - m.last_compose >= kRefreshMs;
     const bool shot_due = live && m.shot != INVALID_HANDLE_VALUE && now - m.last_shot >= kShotMs;
-    if (live && (changed || refresh || shot_due))
+    if ((live || overlay) && (changed || refresh || shot_due))
     {
         m.last_serial = serial;
         m.last_compose = now;
-        if (win10xbox::user::ComposeFrame(m.frame.data(), m.scr_w, m.scr_h, m.scr_w * 4))
+        if (overlay) m.source->Draw(m.frame.data(), m.scr_w, m.scr_h);
+        if (overlay || win10xbox::user::ComposeFrame(m.frame.data(), m.scr_w, m.scr_h, m.scr_w * 4))
         {
             if (m.composes++ == 0) m.Note(Fmt("first composed frame (%dx%d)", m.scr_w, m.scr_h));
             m.composed = true;

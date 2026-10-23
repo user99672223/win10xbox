@@ -1,0 +1,16 @@
+xcopy
+findstr
+sort
+where
+attrib
+reg
+hostname
+whoami
+chcp
+more
+fc
+timeout
+choice
+expand
+icacls
+cacls
