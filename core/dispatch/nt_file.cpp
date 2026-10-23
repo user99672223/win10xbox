@@ -236,10 +236,66 @@ std::wstring HostPathOfHandle(HANDLE file, DWORD* error) {
     return s;
 }
 
+#if WIN10XBOX_HAVE_VFS
+namespace {
+// A name relative to a directory handle opens the file the absolute name opens, so it has to see the same machine:
+// the builtin DLL rule for C:\Windows\System32\*.dll and the name checks live in the VFS, which only sees absolute
+// names. Builds that absolute guest NT name from the directory's host path. False (the host resolves the name
+// itself, as it always did) when the handle is not a directory with a known guest path (the console's AppContainer
+// cannot ask), the name is rooted, or it has a component the host must judge ("", ".", "..", "/").
+bool RootRelativeGuestName(const OBJECT_ATTRIBUTES* in, std::wstring* nt) {
+    std::wstring_view rel = OAName(in);
+    if (rel.empty() || rel.front() == L'\\') return false;
+    std::wstring_view rest = rel;
+    if (rest.back() == L'\\') rest.remove_suffix(1);
+    for (std::size_t b = 0; b <= rest.size();) {
+        std::size_t e = rest.find(L'\\', b);
+        if (e == std::wstring_view::npos) e = rest.size();
+        std::wstring_view c = rest.substr(b, e - b);
+        if (c.empty() || c == L"." || c == L".." || c.find(L'/') != std::wstring_view::npos) return false;
+        b = e + 1;
+    }
+    std::wstring host = HostPathOfHandle(in->RootDirectory);
+    if (host.empty()) return false;
+    const DWORD attrs = GetFileAttributesW(host.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES || !(attrs & FILE_ATTRIBUTE_DIRECTORY)) return false;
+    std::wstring guest;
+    if (!UntranslateHostWin32Path(host, &guest) || guest.size() < 3 || guest[1] != L':') return false;
+    *nt = L"\\??\\" + guest;
+    if (nt->back() != L'\\') *nt += L'\\';
+    nt->append(rel);
+    return true;
+}
+}  // namespace
+#endif
+
 NTSTATUS TranslateOA(const OBJECT_ATTRIBUTES* in, TranslatedOA* out) {
     out->attr = nullptr;
     out->keep.reset();
-    if (!in || !in->ObjectName || in->RootDirectory) return st::Success;   // relative to a host handle
+    if (!in || !in->ObjectName) return st::Success;
+#if WIN10XBOX_HAVE_VFS
+    if (in->RootDirectory) {
+        std::wstring nt;
+        if (in->Length < sizeof(OBJECT_ATTRIBUTES) || !RootRelativeGuestName(in, &nt)) return st::Success;
+        UNICODE_STRING us{};
+        us.Buffer = nt.data();
+        us.Length = static_cast<USHORT>(nt.size() * sizeof(wchar_t));
+        us.MaximumLength = us.Length;
+        OBJECT_ATTRIBUTES abs = *in;
+        abs.RootDirectory = nullptr;
+        abs.ObjectName = &us;
+        auto t = std::make_shared<vfs::TranslatedAttributes>();
+        NTSTATUS s = vfs::TranslateObjectAttributes(&abs, t.get());
+        if (s) return s;
+        if (t->translated) {
+            out->attr = &t->attr;
+            out->keep = t;
+        }
+        return st::Success;
+    }
+#else
+    if (in->RootDirectory) return st::Success;   // relative to a host handle
+#endif
 #if WIN10XBOX_HAVE_VFS
     auto t = std::make_shared<vfs::TranslatedAttributes>();
     NTSTATUS s = vfs::TranslateObjectAttributes(in, t.get());

@@ -9,7 +9,10 @@
 # integration.winetest_ntdll: ntdll_test.exe (all of dlls/ntdll/tests as one guest) run by
 # run_ntdll.cmake against wine-pe/tests/ntdll.allowlist. The guest is built OUTSIDE cmake
 # (wine-pe/tests/ntdll.sh build --out <build>/winetest/ntdll: a ci.yml step of the Windows jobs, whose
-# MSVC cannot build it) and the test is registered where it exists, as the real programs are.
+# MSVC cannot build it) and the test is registered where it exists, as the real programs are. It runs on
+# the builtin-only machine folder (the console's DLL set, as the GUI tests do): on a Windows runner the
+# shared one holds the runner's own advapi32/sechost/rpcrt4/ucrtbase, which the guest's imports pull in
+# and which die on Wine's 0x80000100 import stubs.
 set(_ntdll_exe ${CMAKE_BINARY_DIR}/winetest/ntdll/ntdll_test.exe)
 if(EXISTS ${_ntdll_exe})
   set(_emu "")
@@ -18,7 +21,7 @@ if(EXISTS ${_ntdll_exe})
   endif()
   add_test(NAME integration.winetest_ntdll
     COMMAND ${CMAKE_COMMAND}
-      -DHOST=$<TARGET_FILE:win10xbox> -DMACHINE=${WIN10XBOX_MACHINE_DIR} -DEXE=${_ntdll_exe}
+      -DHOST=$<TARGET_FILE:win10xbox> -DMACHINE=${CMAKE_BINARY_DIR}/bin/machine-builtin -DEXE=${_ntdll_exe}
       -DALLOWLIST=${CMAKE_SOURCE_DIR}/wine-pe/tests/ntdll.allowlist
       -DRESULTS_DIR=${CMAKE_BINARY_DIR}/winetest/ntdll/results
       "-DEMULATOR=${_emu}"

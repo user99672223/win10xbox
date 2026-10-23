@@ -128,7 +128,7 @@ code (Wine's tests exit with `min(failures, 255)`, so 255 means "255 or more").
 | ntdll/rtlbitmap | ok | 378 | 0 | **0** | 0 | 0 | |
 | ntdll/error | ok | 1448 | 0 | **0** | 0 | 0 | |
 | ntdll/env | ok | 600 | 0 | **0** | 0 | 0 | |
-| ntdll/path | ok | 989 | 0 | 6 | 0 | 6 | path.c:736 x6: relative opens (root handle + `windows\system32\kernel32.dll`) do not go through the builtin rule; the Windows machine folder has the file |
+| ntdll/path | ok | 989 | 0 | **0** | 0 | 0 | |
 | ntdll/directory | ok | 6336 | 5 | 556 | 1 | 255 | |
 | ntdll/file | crashed | - | - | - | - | 0 | file.c:413 (`C:\windows\SYSTEM32\cmd.exe` not found, STATUS_OBJECT_NAME_NOT_FOUND) |
 | ntdll/om | crashed | - | - | - | - | 5 | om.c:2942 (`\Sessions\1\BaseNamedObjects` missing) |
