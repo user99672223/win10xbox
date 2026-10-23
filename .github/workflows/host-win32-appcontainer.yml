@@ -321,6 +321,15 @@ jobs:
           done
           if [ -f build/ac/win10xbox.dependents.txt ]; then say "  host imports (dumpbin /dependents): $(grep -ai '\.dll' build/ac/win10xbox.dependents.txt | tr -d '\r' | tr -s ' ' | tr '\n' ' ')"; fi
 
+          # Object manager namespace (non-gating): what the layer's named-object mapping (core/dispatch/nt_object.cpp) may do here.
+          say ""
+          say "OBJECT NAMESPACE (ac_probe ns.*): where Local\\ objects land, and what the process may do in that directory"
+          for ctx in plain ac lpac; do
+            for id in ns.local_event ns.local_dir ns.open_dir_query ns.list_dir ns.open_dir_create ns.create_subdir ns.create_link ns.open_global_bno; do
+              say "  $ctx $id: $(pstat "$OUT/probe-$ctx.log" $id)  $(pdetail "$OUT/probe-$ctx.log" $id | clip 170)"
+            done
+          done
+
           # ---- 1 --------------------------------------------------------------------------------------------------
           say ""
           say "=============================================================================="

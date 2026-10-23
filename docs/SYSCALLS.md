@@ -5,7 +5,7 @@ Windows 10 x64 / 22H2 NT syscall numbers) and the hand-maintained policy
 `core/dispatch/syscall_policy.inc`; win32u entries (ids 0x1000..) are Emulate when
 `core/user/user_syscalls.h` registers them. Do not edit by hand.
 
-1798 syscalls. passthrough 150, translate 39, emulate 362, todo 1247. Generated 2026-10-23.
+1798 syscalls. passthrough 129, translate 60, emulate 362, todo 1247. Generated 2026-10-23.
 
 Policy: **PassThrough** calls the host ntdll export by name; **Translate**
 rewrites arguments (paths, handles, timeouts) then passes through;
@@ -30,7 +30,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x000d | NtSetInformationThread | 4 | PassThrough |  |
 | 0x000e | NtSetEvent | 2 | PassThrough |  |
 | 0x000f | NtClose | 1 | Translate | emulated handles (registry, token, image sections) routed to their owner |
-| 0x0010 | NtQueryObject | 5 | Translate | ObjectNameInformation of a file handle names the guest NT path, not the host device path |
+| 0x0010 | NtQueryObject | 5 | Translate | directory/link handles are answered here, names of named host objects are mapped back to the guest path, a file handle names the guest NT path, not the host device path |
 | 0x0011 | NtQueryInformationFile | 5 | Translate | FileNameInformation/FileNormalizedNameInformation/FileAllInformation: the name is the guest view, built from a private reply |
 | 0x0012 | NtOpenKey | 3 | Emulate | registry |
 | 0x0013 | NtEnumerateValueKey | 6 | Emulate | registry |
@@ -69,7 +69,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0034 | NtDelayExecution | 2 | Emulate | clock |
 | 0x0035 | NtQueryDirectoryFile | 11 | PassThrough |  |
 | 0x0036 | NtQuerySystemInformation | 4 | Translate | SystemTimeOfDayInformation from the virtual clock |
-| 0x0037 | NtOpenSection | 3 | PassThrough |  |
+| 0x0037 | NtOpenSection | 3 | Translate | named objects: the guest name maps onto a host object under the layer prefix (nt_object.cpp) |
 | 0x0038 | NtQueryTimer | 5 | PassThrough |  |
 | 0x0039 | NtFsControlFile | 10 | Translate | FSCTL_SET_REPARSE_POINT/FSCTL_GET_REPARSE_POINT: the target of a junction or absolute symbolic link goes through the VFS (guest name to host name and back) |
 | 0x003a | NtWriteVirtualMemory | 5 | PassThrough |  |
@@ -78,7 +78,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x003d | NtQueryAttributesFile | 2 | Translate | VFS path rewrite |
 | 0x003e | NtClearEvent | 1 | PassThrough |  |
 | 0x003f | NtReadVirtualMemory | 5 | PassThrough |  |
-| 0x0040 | NtOpenEvent | 3 | PassThrough |  |
+| 0x0040 | NtOpenEvent | 3 | Translate | named objects: the guest name maps onto a host object under the layer prefix (nt_object.cpp) |
 | 0x0041 | NtAdjustPrivilegesToken | 6 | Emulate | token |
 | 0x0042 | NtDuplicateToken | 6 | Emulate | token |
 | 0x0043 | NtContinue | 2 | Translate | TEB switched back to the guest view before the host call (never returns) |
@@ -86,7 +86,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0045 | NtQueueApcThread | 5 | PassThrough |  |
 | 0x0046 | NtYieldExecution | 0 | PassThrough |  |
 | 0x0047 | NtAddAtom | 3 | PassThrough |  |
-| 0x0048 | NtCreateEvent | 5 | PassThrough |  |
+| 0x0048 | NtCreateEvent | 5 | Translate | named objects: the guest name maps onto a host object under the layer prefix (nt_object.cpp) |
 | 0x0049 | NtQueryVolumeInformationFile | 5 | PassThrough |  |
 | 0x004a | NtCreateSection | 7 | Translate | SEC_IMAGE sections are ours (E3): emulated handle + manual map |
 | 0x004b | NtFlushBuffersFile | 2 | PassThrough |  |
@@ -102,7 +102,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0055 | NtCreateFile | 11 | Translate | VFS path rewrite (not for FILE_OPEN_BY_FILE_ID) |
 | 0x0056 | NtQueryEvent | 5 | PassThrough |  |
 | 0x0057 | NtWriteRequestData | 6 | PassThrough |  |
-| 0x0058 | NtOpenDirectoryObject | 3 | Translate | \\KnownDlls reported absent (E3); other directories pass through |
+| 0x0058 | NtOpenDirectoryObject | 3 | Translate | object manager namespace (directory objects, links) is the layer's own; names outside it go to the host (nt_object.cpp) |
 | 0x0059 | NtAccessCheckByTypeAndAuditAlarm | 16 | PassThrough |  |
 | 0x005a | NtQuerySystemTime | 1 | Emulate | clock |
 | 0x005b | NtWaitForMultipleObjects | 5 | PassThrough |  |
@@ -119,7 +119,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0066 | NtAlertThread | 1 | PassThrough |  |
 | 0x0067 | NtAlertThreadByThreadId | 1 | PassThrough |  |
 | 0x0068 | NtAllocateLocallyUniqueId | 1 | PassThrough |  |
-| 0x0069 | NtAllocateReserveObject | 3 | PassThrough |  |
+| 0x0069 | NtAllocateReserveObject | 3 | Translate | named objects: the guest name maps onto a host object under the layer prefix (nt_object.cpp) |
 | 0x006a | NtAllocateUuids | 4 | PassThrough |  |
 | 0x006b | NtAllocateVirtualMemoryEx | 7 | PassThrough |  |
 | 0x006c | NtAreMappedFilesTheSame | 2 | Translate | image views compared by source file |
@@ -133,22 +133,22 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x0074 | NtConnectPort | 8 | PassThrough |  |
 | 0x0075 | NtContinueEx | 2 | Translate | TEB switched back to the guest view before the host call (never returns) |
 | 0x0076 | NtConvertBetweenAuxiliaryCounterAndPerformanceCounter | 4 | Emulate | clock: no auxiliary counter, STATUS_NOT_SUPPORTED after probing |
-| 0x0077 | NtCreateDirectoryObject | 3 | PassThrough |  |
-| 0x0078 | NtCreateIoCompletion | 4 | PassThrough |  |
-| 0x0079 | NtCreateJobObject | 3 | PassThrough |  |
+| 0x0077 | NtCreateDirectoryObject | 3 | Translate | object manager namespace (directory objects, links) is the layer's own; names outside it go to the host (nt_object.cpp) |
+| 0x0078 | NtCreateIoCompletion | 4 | Translate | named objects: the guest name maps onto a host object under the layer prefix (nt_object.cpp) |
+| 0x0079 | NtCreateJobObject | 3 | Translate | named objects: the guest name maps onto a host object under the layer prefix (nt_object.cpp) |
 | 0x007a | NtCreateKeyTransacted | 8 | Emulate | registry |
-| 0x007b | NtCreateKeyedEvent | 4 | PassThrough |  |
+| 0x007b | NtCreateKeyedEvent | 4 | Translate | named objects: the guest name maps onto a host object under the layer prefix (nt_object.cpp) |
 | 0x007c | NtCreateLowBoxToken | 9 | Emulate | token: AppContainer tokens are not emulated, STATUS_NOT_SUPPORTED |
 | 0x007d | NtCreateMailslotFile | 8 | PassThrough |  |
-| 0x007e | NtCreateMutant | 4 | PassThrough |  |
+| 0x007e | NtCreateMutant | 4 | Translate | named objects: the guest name maps onto a host object under the layer prefix (nt_object.cpp) |
 | 0x007f | NtCreateNamedPipeFile | 14 | Translate | default time-out 0 (Wine: use the default) becomes 50 ms; the host kernel refuses a zero interval |
 | 0x0080 | NtCreatePagingFile | 4 | Emulate | privileged: refused like Windows does for an unprivileged caller |
 | 0x0081 | NtCreatePort | 5 | PassThrough |  |
 | 0x0082 | NtCreateSectionEx | 9 | Translate | SEC_IMAGE sections are ours (E3): emulated handle + manual map |
-| 0x0083 | NtCreateSemaphore | 5 | PassThrough |  |
-| 0x0084 | NtCreateSymbolicLinkObject | 4 | PassThrough |  |
+| 0x0083 | NtCreateSemaphore | 5 | Translate | named objects: the guest name maps onto a host object under the layer prefix (nt_object.cpp) |
+| 0x0084 | NtCreateSymbolicLinkObject | 4 | Translate | object manager namespace (directory objects, links) is the layer's own; names outside it go to the host (nt_object.cpp) |
 | 0x0085 | NtCreateThreadEx | 11 | Translate | guest thread start wrapper (E4): per-thread loader init through guest LdrInitializeThunk |
-| 0x0086 | NtCreateTimer | 4 | PassThrough |  |
+| 0x0086 | NtCreateTimer | 4 | Translate | named objects: the guest name maps onto a host object under the layer prefix (nt_object.cpp) |
 | 0x0087 | NtCreateToken | 13 | Emulate | privileged: refused like Windows does for an unprivileged caller |
 | 0x0088 | NtCreateTransaction | 10 | PassThrough |  |
 | 0x0089 | NtCreateUserProcess | 11 | Translate | D1: spawns a host process running the host executable on the guest image (host-win32, config child_processes); STATUS_NOT_SUPPORTED elsewhere |
@@ -183,26 +183,26 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x00a6 | NtCreateDebugObject | 4 | Emulate | STATUS_NOT_SUPPORTED: no debugger support (E6) |
 | 0x00a7 | NtLockVirtualMemory | 4 | PassThrough |  |
 | 0x00a8 | NtMakePermanentObject | 1 | PassThrough |  |
-| 0x00a9 | NtMakeTemporaryObject | 1 | PassThrough |  |
+| 0x00a9 | NtMakeTemporaryObject | 1 | Translate | directory/link handles are ours, others pass through |
 | 0x00aa | NtMapViewOfSectionEx | 9 | Translate | views of our image sections are mapped by core/loader |
 | 0x00ab | NtNotifyChangeDirectoryFile | 9 | PassThrough |  |
 | 0x00ac | NtNotifyChangeKey | 10 | Emulate | registry |
 | 0x00ad | NtNotifyChangeMultipleKeys | 12 | Emulate | registry |
-| 0x00ae | NtOpenIoCompletion | 3 | PassThrough |  |
-| 0x00af | NtOpenJobObject | 3 | PassThrough |  |
+| 0x00ae | NtOpenIoCompletion | 3 | Translate | named objects: the guest name maps onto a host object under the layer prefix (nt_object.cpp) |
+| 0x00af | NtOpenJobObject | 3 | Translate | named objects: the guest name maps onto a host object under the layer prefix (nt_object.cpp) |
 | 0x00b0 | NtOpenKeyEx | 4 | Emulate | registry |
 | 0x00b1 | NtOpenKeyTransacted | 4 | Emulate | registry (transaction ignored) |
 | 0x00b2 | NtOpenKeyTransactedEx | 5 | Emulate | registry (transaction ignored) |
-| 0x00b3 | NtOpenKeyedEvent | 3 | PassThrough |  |
-| 0x00b4 | NtOpenMutant | 3 | PassThrough |  |
+| 0x00b3 | NtOpenKeyedEvent | 3 | Translate | named objects: the guest name maps onto a host object under the layer prefix (nt_object.cpp) |
+| 0x00b4 | NtOpenMutant | 3 | Translate | named objects: the guest name maps onto a host object under the layer prefix (nt_object.cpp) |
 | 0x00b5 | NtOpenProcessToken | 3 | Emulate | token |
-| 0x00b6 | NtOpenSemaphore | 3 | PassThrough |  |
-| 0x00b7 | NtOpenSymbolicLinkObject | 3 | Translate | \\KnownDlls reported absent (E3); other directories pass through |
+| 0x00b6 | NtOpenSemaphore | 3 | Translate | named objects: the guest name maps onto a host object under the layer prefix (nt_object.cpp) |
+| 0x00b7 | NtOpenSymbolicLinkObject | 3 | Translate | object manager namespace (directory objects, links) is the layer's own; names outside it go to the host (nt_object.cpp) |
 | 0x00b8 | NtOpenThread | 4 | PassThrough |  |
-| 0x00b9 | NtOpenTimer | 3 | PassThrough |  |
+| 0x00b9 | NtOpenTimer | 3 | Translate | named objects: the guest name maps onto a host object under the layer prefix (nt_object.cpp) |
 | 0x00ba | NtPrivilegeCheck | 3 | Emulate | token |
 | 0x00bb | NtPulseEvent | 2 | PassThrough |  |
-| 0x00bc | NtQueryDirectoryObject | 7 | PassThrough |  |
+| 0x00bc | NtQueryDirectoryObject | 7 | Translate | object manager namespace (directory objects, links) is the layer's own; names outside it go to the host (nt_object.cpp) |
 | 0x00bd | NtQueryEaFile | 9 | PassThrough |  |
 | 0x00be | NtQueryFullAttributesFile | 2 | Translate | VFS path rewrite |
 | 0x00bf | NtQueryInformationAtom | 5 | PassThrough |  |
@@ -214,7 +214,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x00c5 | NtQueryMutant | 5 | PassThrough |  |
 | 0x00c6 | NtQuerySecurityObject | 5 | Translate | token handles go to core/token |
 | 0x00c7 | NtQuerySemaphore | 5 | PassThrough |  |
-| 0x00c8 | NtQuerySymbolicLinkObject | 3 | PassThrough |  |
+| 0x00c8 | NtQuerySymbolicLinkObject | 3 | Translate | object manager namespace (directory objects, links) is the layer's own; names outside it go to the host (nt_object.cpp) |
 | 0x00c9 | NtQuerySystemEnvironmentValue | 4 | PassThrough |  |
 | 0x00ca | NtQuerySystemEnvironmentValueEx | 5 | PassThrough |  |
 | 0x00cb | NtQuerySystemInformationEx | 6 | PassThrough |  |

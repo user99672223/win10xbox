@@ -44,6 +44,10 @@ win10xbox_add_guest(guest_nowine)
 add_executable(guest_spawn spawn.c)
 win10xbox_add_guest(guest_spawn)
 
+# Named kernel objects shared with a child, and the object manager namespace listing them (tests/guest/named_objects.c).
+add_executable(guest_named_objects named_objects.c)
+win10xbox_add_guest(guest_named_objects)
+
 # Registry writes outlive the process and reach a child (docs/DISPATCHER.md "Registry persistence"): run twice.
 add_executable(guest_regpersist regpersist.c)
 target_link_libraries(guest_regpersist PRIVATE advapi32)
