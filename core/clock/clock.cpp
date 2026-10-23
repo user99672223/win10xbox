@@ -28,11 +28,13 @@
 // goes through the win10xbox dispatcher.
 #include "win10xbox/clock.h"
 #include "win10xbox/config.h"
+#include "win10xbox/probe.h"
 #include "win10xbox/trace.h"
 
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <initializer_list>
 #include <intrin.h>
 
 namespace win10xbox::clock {
@@ -40,7 +42,8 @@ namespace win10xbox::clock {
 namespace {
 
 constexpr NTSTATUS kStatusSuccess              = 0;
-constexpr NTSTATUS kStatusAccessViolation      = static_cast<NTSTATUS>(0xC0000005);
+constexpr NTSTATUS kStatusTimerResolutionNotSet = static_cast<NTSTATUS>(0xC0000245);
+constexpr NTSTATUS kStatusNotSupported         = static_cast<NTSTATUS>(0xC00000BB);
 constexpr NTSTATUS kStatusInvalidParameter     = static_cast<NTSTATUS>(0xC000000D);
 constexpr NTSTATUS kStatusInfoLengthMismatch   = static_cast<NTSTATUS>(0xC0000004);
 constexpr NTSTATUS kStatusInsufficientResources = static_cast<NTSTATUS>(0xC000009A);
@@ -273,6 +276,8 @@ static_assert(sizeof(TimeOfDayInfo) == 0x30, "SYSTEM_TIMEOFDAY_INFORMATION layou
 constexpr ULONG kTimerResCoarsest = 156250;  // MinimumResolution (largest period), 15.625 ms
 constexpr ULONG kTimerResFinest   = 5000;    // MaximumResolution (smallest period), 0.5 ms
 std::atomic<ULONG> g_timer_res{kTimerResCoarsest};
+// This process holds a timer resolution request (NtSetTimerResolution with Set = TRUE, not yet rescinded).
+std::atomic<bool> g_timer_requested{false};
 
 // ---- shared data -------------------------------------------------------------
 std::uint8_t*  g_page = nullptr;
@@ -341,6 +346,7 @@ NTSTATUS Initialize(const Settings& s) {
               (unsigned long long)g_st.s.initial_uptime_100ns);
     }
     g_timer_res.store(kTimerResCoarsest);
+    g_timer_requested.store(false);
     if (g_page) {   // re-initialised while the page exists: refresh it
         {
             ReadLock r;
@@ -469,32 +475,41 @@ PLARGE_INTEGER TranslateTimeout(PLARGE_INTEGER in, LARGE_INTEGER* storage) {
 // NT entry points
 // =============================================================================
 
+// Caller memory goes through win10xbox/probe.h in every entry point below: Windows probes the pointers it is
+// given and answers STATUS_ACCESS_VIOLATION, so a NULL or wild pointer must not fault the layer. Only the
+// pointers Windows treats as optional are tested for NULL.
+
 NTSTATUS Clk_NtQueryPerformanceCounter(PLARGE_INTEGER Counter, PLARGE_INTEGER Frequency) {
-    if (!Counter && !Frequency) return kStatusAccessViolation;
-    if (Counter) Counter->QuadPart = static_cast<LONGLONG>(Qpc());
-    if (Frequency) Frequency->QuadPart = static_cast<LONGLONG>(QpcFrequency());
+    // The counter is required (a NULL one is an access violation); the frequency is optional. Both are probed
+    // before either is written.
+    if (NTSTATUS s = probe::ProbeWrite(Counter, sizeof(*Counter), sizeof(ULONG))) return s;
+    if (Frequency)
+        if (NTSTATUS s = probe::ProbeWrite(Frequency, sizeof(*Frequency), sizeof(ULONG))) return s;
+    if (NTSTATUS s = probe::Store<LONGLONG>(&Counter->QuadPart, static_cast<LONGLONG>(Qpc()))) return s;
+    if (Frequency)
+        if (NTSTATUS s = probe::Store<LONGLONG>(&Frequency->QuadPart, static_cast<LONGLONG>(QpcFrequency()))) return s;
     return kStatusSuccess;
 }
 
 NTSTATUS Clk_NtQuerySystemTime(PLARGE_INTEGER SystemTime) {
-    if (!SystemTime) return kStatusAccessViolation;
-    SystemTime->QuadPart = SystemTime100ns();
-    return kStatusSuccess;
+    return probe::Store<LONGLONG>(&SystemTime->QuadPart, SystemTime100ns());
 }
 
 NTSTATUS Clk_NtSetSystemTime(PLARGE_INTEGER NewTime, PLARGE_INTEGER OldTime) {
     // Only the virtual offset moves; the host clock is never touched. Windows
     // would demand SeSystemtimePrivilege here; we do not consult the token
     // module (the guest cannot hurt anything by moving its private clock).
-    if (!NewTime) return kStatusAccessViolation;
-    const std::int64_t want = NewTime->QuadPart;
+    LONGLONG want_in = 0;
+    if (NTSTATUS s = probe::Load<LONGLONG>(&NewTime->QuadPart, &want_in)) return s;
+    if (OldTime)
+        if (NTSTATUS s = probe::ProbeWrite(OldTime, sizeof(*OldTime), sizeof(ULONG))) return s;
+    const std::int64_t want = want_in;
     if (want <= 0) return kStatusInvalidParameter;
     EnsureInit();
     WriteLock w;
     const std::uint64_t hq = HostQpc();
     const std::uint64_t ht = g_st.host_tsc_freq ? __rdtsc() : 0;
     const Vals cur = Compute(g_st, hq, ht);
-    if (OldTime) OldTime->QuadPart = cur.sys;
     const std::int64_t delta = want - cur.sys;
     // Rebase so the counters stay continuous; only system time jumps.
     g_st.host_ref = hq;
@@ -505,28 +520,31 @@ NTSTATUS Clk_NtSetSystemTime(PLARGE_INTEGER NewTime, PLARGE_INTEGER OldTime) {
     g_st.sys_ref = want;
     g_st.s.offset_100ns += delta;
     TRACE(clock, "NtSetSystemTime: offset now %lld (delta %lld)", (long long)g_st.s.offset_100ns, (long long)delta);
-    return kStatusSuccess;
+    return OldTime ? probe::Store<LONGLONG>(&OldTime->QuadPart, cur.sys) : kStatusSuccess;
 }
 
 NTSTATUS Clk_NtGetTickCount(ULONG* Out) {
-    if (!Out) return kStatusAccessViolation;
-    *Out = static_cast<ULONG>(TickCountMs());
-    return kStatusSuccess;
+    return probe::Store<ULONG>(Out, static_cast<ULONG>(TickCountMs()));
 }
 
 NTSTATUS Clk_NtDelayExecution(BOOLEAN Alertable, PLARGE_INTEGER Timeout) {
     static const NtDelayExecutionFn host = reinterpret_cast<NtDelayExecutionFn>(HostNtdllExport("NtDelayExecution"));
     if (!host) return kStatusInsufficientResources;
-    LARGE_INTEGER tmp;
-    PLARGE_INTEGER t = TranslateTimeout(Timeout, &tmp);
+    // The timeout is optional (NULL waits forever). Read it once, here: the host then sees our copy.
+    LARGE_INTEGER requested, tmp;
+    if (Timeout)
+        if (NTSTATUS s = probe::Load<LARGE_INTEGER>(Timeout, &requested)) return s;
+    PLARGE_INTEGER t = TranslateTimeout(Timeout ? &requested : nullptr, &tmp);
     return host(Alertable, t);
 }
 
 NTSTATUS Clk_NtQueryTimerResolution(PULONG Min, PULONG Max, PULONG Current) {
-    if (Min) *Min = kTimerResCoarsest;
-    if (Max) *Max = kTimerResFinest;
-    if (Current) *Current = g_timer_res.load();
-    return kStatusSuccess;
+    // All three are written by Windows, so none may be NULL.
+    for (PULONG out : {Min, Max, Current})
+        if (NTSTATUS s = probe::ProbeWrite(out, sizeof(ULONG), sizeof(ULONG))) return s;
+    probe::Store<ULONG>(Min, kTimerResCoarsest);
+    probe::Store<ULONG>(Max, kTimerResFinest);
+    return probe::Store<ULONG>(Current, g_timer_res.load());
 }
 
 NTSTATUS Clk_NtSetTimerResolution(ULONG Requested, BOOLEAN Set, PULONG Actual) {
@@ -534,11 +552,17 @@ NTSTATUS Clk_NtSetTimerResolution(ULONG Requested, BOOLEAN Set, PULONG Actual) {
     // request is also forwarded best-effort so the host kernel's real sleeps get
     // the same accuracy the guest asked for. A host refusal is ignored.
     static const NtSetTimerResolutionFn host = reinterpret_cast<NtSetTimerResolutionFn>(HostNtdllExport("NtSetTimerResolution"));
+    if (NTSTATUS s = probe::ProbeWrite(Actual, sizeof(ULONG), sizeof(ULONG))) return s;   // required, as on Windows
     ULONG cur;
     if (Set) {
         cur = Requested;
         if (cur < kTimerResFinest) cur = kTimerResFinest;
         if (cur > kTimerResCoarsest) cur = kTimerResCoarsest;
+        g_timer_requested.store(true);
+    } else if (!g_timer_requested.exchange(false)) {
+        // Nothing to rescind: Windows "fails" and reports the resolution in force.
+        if (NTSTATUS s = probe::Store<ULONG>(Actual, g_timer_res.load())) return s;
+        return kStatusTimerResolutionNotSet;
     } else {
         cur = kTimerResCoarsest;
     }
@@ -547,8 +571,22 @@ NTSTATUS Clk_NtSetTimerResolution(ULONG Requested, BOOLEAN Set, PULONG Actual) {
         ULONG hostActual = 0;
         (void)host(Requested, Set, &hostActual);
     }
-    if (Actual) *Actual = cur;
-    return kStatusSuccess;
+    return probe::Store<ULONG>(Actual, cur);
+}
+
+NTSTATUS Clk_NtConvertBetweenAuxiliaryCounterAndPerformanceCounter(BOOLEAN ToPerformanceCounter,
+                                                                  PULONGLONG Value, PULONGLONG Converted,
+                                                                  PULONGLONG Error) {
+    // This machine has no auxiliary counter (that needs platform hardware the layer does not model), which
+    // Windows reports as STATUS_NOT_SUPPORTED after it has probed the arguments: the value is read, the result
+    // is written to, the conversion error is optional. Nothing is written.
+    (void)ToPerformanceCounter;
+    ULONGLONG value;
+    if (NTSTATUS s = probe::Load<ULONGLONG>(Value, &value)) return s;
+    if (NTSTATUS s = probe::ProbeWrite(Converted, sizeof(*Converted), sizeof(ULONG))) return s;
+    if (Error)
+        if (NTSTATUS s = probe::ProbeWrite(Error, sizeof(*Error), sizeof(ULONG))) return s;
+    return kStatusNotSupported;
 }
 
 NTSTATUS Clk_NtQuerySystemInformation_TimeOfDay(PVOID Buffer, ULONG Length, PULONG ReturnLength) {
@@ -556,10 +594,12 @@ NTSTATUS Clk_NtQuerySystemInformation_TimeOfDay(PVOID Buffer, ULONG Length, PULO
     // prefix. Anything shorter is a length mismatch (nothing is written).
     constexpr ULONG kMinLen = 0x20;
     if (Length < kMinLen) {
-        if (ReturnLength) *ReturnLength = sizeof(TimeOfDayInfo);
+        probe::StoreIfPresent<ULONG>(ReturnLength, sizeof(TimeOfDayInfo));
         return kStatusInfoLengthMismatch;
     }
-    if (!Buffer) return kStatusAccessViolation;
+    if (NTSTATUS s = probe::ProbeWrite(Buffer, Length < sizeof(TimeOfDayInfo) ? Length : sizeof(TimeOfDayInfo))) return s;
+    if (ReturnLength)
+        if (NTSTATUS s = probe::ProbeWrite(ReturnLength, sizeof(ULONG), sizeof(ULONG))) return s;
     const Vals v = Snapshot();
     TimeOfDayInfo info{};
     info.CurrentTime.QuadPart = v.sys;
@@ -569,9 +609,8 @@ NTSTATUS Clk_NtQuerySystemInformation_TimeOfDay(PVOID Buffer, ULONG Length, PULO
     info.BootTimeBias = 0;
     info.SleepTimeBias = 0;
     const ULONG n = Length < sizeof(info) ? Length : static_cast<ULONG>(sizeof(info));
-    std::memcpy(Buffer, &info, n);
-    if (ReturnLength) *ReturnLength = n;
-    return kStatusSuccess;
+    if (NTSTATUS s = probe::CopyToUser(Buffer, &info, n)) return s;
+    return ReturnLength ? probe::Store<ULONG>(ReturnLength, n) : kStatusSuccess;
 }
 
 // =============================================================================

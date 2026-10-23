@@ -163,7 +163,7 @@ code (Wine's tests exit with `min(failures, 255)`, so 255 means "255 or more").
 | ntdll/om | crashed | - | - | - | - | 5 | om.c:2942 (`\Sessions\1\BaseNamedObjects` missing) |
 | ntdll/reg | timeout | - | - | - | - | 124 | reg.c:1987 loops forever on `NtEnumerateKey` = STATUS_INVALID_PARAMETER (millions of failures) |
 | ntdll/info | crashed | - | - | - | - | 5 | info.c:2372 (system handle information) |
-| ntdll/time | crashed | - | - | - | - | 5 | time.c:129 (expects an access violation from a bad pointer) |
+| ntdll/time | ok | 10657 | 2 | **0** | 0 | 0 | |
 | kernel32/atom | ok | 1049715 | 0 | **0** | 0 | 0 | |
 | kernel32/codepage | ok | 394761 | 0 | **0** | 0 | 0 | |
 | kernel32/environ | ok | 428 | 0 | 10 | 3 | 10 | |
@@ -179,9 +179,9 @@ code (Wine's tests exit with `min(failures, 255)`, so 255 means "255 or more").
 | kernel32/module | crashed | - | - | - | - | 0 | module.c:1793 |
 | advapi32/registry | crashed | - | - | - | - | 5 | registry.c:4085 |
 
-Totals: **25 binaries; 14 complete** (8 with zero failures: ntdll rtlstr,
-string, rtlbitmap, error, env and kernel32 atom, codepage, directory; 6 with
-failures), **9 crash**, **2 time out**.
+Totals: **25 binaries; 15 complete** (9 with zero failures: ntdll rtlstr,
+string, rtlbitmap, error, env, time and kernel32 atom, codepage, directory; 6 with
+failures), **8 crash**, **2 time out**.
 
 How to read the crashes: `exit 5` = the host printed `win10xbox: could not
 start ...: status c0000005`, i.e. an unhandled STATUS_ACCESS_VIOLATION escaped

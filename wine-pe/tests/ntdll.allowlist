@@ -16,3 +16,4 @@ large_int  300
 path       500
 rtlbitmap  200
 string     1000000
+time       5000

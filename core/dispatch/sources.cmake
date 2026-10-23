@@ -46,10 +46,11 @@ target_sources(win10xbox_core PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/cpu_sites.cpp
   ${CMAKE_CURRENT_LIST_DIR}/process.cpp
   ${CMAKE_CURRENT_LIST_DIR}/nt_privileged.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/probe.cpp
 )
 
 if(MSVC)
-  target_sources(win10xbox_core PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../asm/syscall_entry.asm)
+  target_sources(win10xbox_core PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../asm/syscall_entry.asm ${CMAKE_CURRENT_LIST_DIR}/../asm/probe.asm)
 else()
-  target_sources(win10xbox_core PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../asm/syscall_entry.S)
+  target_sources(win10xbox_core PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../asm/syscall_entry.S ${CMAKE_CURRENT_LIST_DIR}/../asm/probe.S)
 endif()

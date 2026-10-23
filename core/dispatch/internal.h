@@ -4,6 +4,7 @@
 #pragma once
 #include "win10xbox/dispatch.h"
 #include "win10xbox/loader.h"
+#include "win10xbox/probe.h"
 #include "win10xbox/trace.h"
 #include <intrin.h>
 #include <cstddef>

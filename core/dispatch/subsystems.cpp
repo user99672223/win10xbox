@@ -72,6 +72,8 @@ const ImplDef* SubsystemImpls() {
         W10X_IMPL(NtDelayExecution, clock::Clk_NtDelayExecution),
         W10X_IMPL(NtQueryTimerResolution, clock::Clk_NtQueryTimerResolution),
         W10X_IMPL(NtSetTimerResolution, clock::Clk_NtSetTimerResolution),
+        W10X_IMPL(NtConvertBetweenAuxiliaryCounterAndPerformanceCounter,
+                  clock::Clk_NtConvertBetweenAuxiliaryCounterAndPerformanceCounter),
 #endif
         {nullptr, nullptr},
     };
