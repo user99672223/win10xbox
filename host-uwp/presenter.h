@@ -29,6 +29,18 @@
 
 namespace w10x_uwp
 {
+    // An optional source of frames that replaces the composed desktop while Active() (the
+    // launcher's list / result screens, launcher.h). All three are called on the UI thread, from
+    // Presenter::Tick.
+    class FrameSource
+    {
+    public:
+        virtual ~FrameSource() = default;
+        virtual bool Active() = 0;                    // draw this source instead of user::ComposeFrame
+        virtual std::uint64_t Serial() = 0;           // changes whenever Draw would produce another picture
+        virtual void Draw(std::uint32_t* bgra, int width, int height) = 0;   // top-down, width * 4 bytes per row
+    };
+
     class Presenter
     {
     public:
@@ -53,6 +65,8 @@ namespace w10x_uwp
         // file is rewritten through this handle later, never re-opened by path while the guest
         // owns the PEB.
         void OpenScreenshot(const std::wstring& path);
+
+        void SetFrameSource(FrameSource* source);   // UI thread; nullptr = none (the default)
 
         void StartDevice();          // spawns the device thread (UI thread, once)
         Device DeviceState() const;  // any thread

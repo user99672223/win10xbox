@@ -1,5 +1,217 @@
 # Status
 
+## Real programs: Lua 5.4.7, the first guest that is not ours (2026-10-22)
+
+`lua.exe` (upstream tarball, SHA-256 pinned and checked every run, `cl /O2 /MT`, `tools/ci/build_lua.ps1`) runs through
+`win10xbox.exe` on both Windows configs and under console conditions (`host-win32-smoke.yml`: builtin DLLs only, host
+paths unknown). `integration.lua_hello` (`-e "print('hello from lua', 6*7) os.exit(42)"`), `integration.lua_smoke`
+(`tests/guest/lua/smoke.lua`: argv, string.format, sort, io.write, os.time/date/clock, `USERPROFILE`, write/read/rename/
+remove of a file under `C:\Users\User`, tmpname, io.lines, dofile, require, pcall/error/xpcall, 1 MB `string.rep`,
+exit 42; each section line is gated) and `integration.lua_unwind_tables`, plus two rows in
+`tools/ci/smoke_guests.ps1` (`-RealPrograms`). Registered only on MSVC builds (or `-DWIN10XBOX_REAL_PROGRAMS=ON`), so
+linux-cross is unchanged (nothing skipped).
+
+* First run on real Windows, `ci.yml` run [39843631737](https://github.com/user99672223/win10xbox/actions/runs/39843631737)
+  (`d27e433`): `lua_hello` passed; `lua_smoke` ran every section and failed two: `os.rename` ("No such file or
+  directory") and the `os.remove` that depended on it. No Todo syscall, no crash.
+* Green: `ci.yml` run [39845563454](https://github.com/user99672223/win10xbox/actions/runs/39845563454) and
+  `host-win32-smoke.yml` run [39845563348](https://github.com/user99672223/win10xbox/actions/runs/39845563348) on `9366ab0`
+  (`100% tests passed out of 37` on windows, `ctest gate: PASS`, `guest smoke: PASS (9 guests)`, `lua_hello` and
+  `lua_smoke` ok in both the desktop and the console-conditions smoke).
+
+What Lua hit, and what was fixed (each gated by the Lua tests):
+
+1. **The command line ran into the next string** (`core/dispatch/process.cpp`, found under Wine; Windows would have shown
+   it too). `RtlCreateProcessParametersEx` packs the strings back to back by `MaximumLength`, which was `Length`, so
+   `GetCommandLineW` had no terminating NUL and the last argument carried the image path and `WinSta0\Default` after it
+   (`-vC:\guest\lua.exeWinSta0\Default`). Every earlier guest took no arguments. Gate: `integration.lua_hello` /
+   `lua_smoke` (argv exact, last argument `beta gamma`).
+2. **`os.rename` / `MoveFileExW` failed** (`NtSetInformationFile` was pass-through). `FileRenameInformation` and
+   `FileLinkInformation` (and the `Ex` and bypass classes) carry the target as an NT path in the buffer, which the host
+   looked up on its own C:. Now `Translate`: the target goes through the VFS (`Xl_NtSetInformationFile` in
+   `core/dispatch/nt_file.cpp`; a root-directory-relative target is left to the host). Gate: `smoke: os.rename ok`,
+   `os.remove ok`.
+3. **`HostNtdllProc` returned null after the PEB take-over under the Wine host** (`core/loader/internal.cpp`):
+   `GetProcAddress` finds nothing once `PEB->Ldr` is the guest's, so `RtlAddFunctionTable` resolved for the first two
+   images and failed for kernel32, kernelbase and ucrtbase (`warn:loader:... RtlAddFunctionTable failed`). The three
+   exports the loader needs are now resolved together at the latch. **Measured on real Windows: not needed there** (the
+   experiment commit `ac10275`, old code, passed `lua_unwind_tables` and everything else in run
+   [39846768572](https://github.com/user99672223/win10xbox/actions/runs/39846768572)); it is kept for the Wine host and
+   the guard `integration.lua_unwind_tables` is a no-op guard on Windows. Do not read it as a Windows fix.
+
+Also recorded:
+
+* **A guest that dies abnormally exits 0.** On the Wine host a Lua error (`longjmp` through `RtlUnwindEx`) ends the guest
+  with `err:virtual:virtual_setup_exception stack overflow` and the host reports `guest main thread ended without
+  ExitProcess (code 0)` and exit code 0: a silent success. The Lua tests catch it because they require exit 42 and the
+  final line, but the host should not turn it into 0. Not changed here.
+* **Under Wine 9 as host, Lua's error path does not run** (the cross-built `lua.exe`, `-DWIN10XBOX_REAL_PROGRAMS=ON`):
+  the first `pcall` that catches a Lua error unwinds through the host ntdll, which logs `invalid frame` for a guest
+  stack frame and ends in the stack overflow above; real Windows is fine (green). Cause not isolated (the host's
+  `virtual_unwind` logs `exception data not found in "lua.exe"`, i.e. it looks guest images up through the guest
+  loader list). Everything before the first error is checked locally.
+* `+relay` on the host ntdll side together with default (`all`) tracing made one local run exit 5; `-all,+relay` works.
+  Always pass `-all,+<channel>` when tracing a real program.
+
+What the next program needs: more than the file/env/time surface Lua uses. Candidates in order of cost: a program that
+reads stdin interactively (console input, `NtReadFile` on the console handle; Lua's REPL), one that starts a child
+process (`io.popen` / `os.execute`: `NtCreateUserProcess` is Todo), one that sleeps on timers or threads
+(`NtCreateThreadEx`, waits are pass-through but untested with real programs), and anything that loads a native DLL
+beyond the Wine builtins. SQLite (`tools/ci/build_sqlite.ps1`, another branch) adds locking and `FlushFileBuffers`.
+
+## CreateProcess works: NtCreateUserProcess starts a real host child (2026-10-22)
+
+`NtCreateUserProcess` is implemented (`core/dispatch/nt_spawn.cpp`, design and the argument mapping in docs/DISPATCHER.md
+"Child processes", decisions E6-E8 in docs/DECISIONS.md): a new host process running the host executable on the child's
+guest image, with command line, current directory, environment and standard handles carried over, and the host child's
+process/thread handles, client id and image information returned. Waiting on the handle and `GetExitCodeProcess` work
+through the pass-through because the host child's exit code is the guest's. host-win32 turns it on
+(`config::Config::child_processes`); the UWP host leaves it off and gets `STATUS_NOT_SUPPORTED` with a warning, so the
+console-side "can a Game-bucket app resume its child" question (probe-v2 item 1) is still open. Also in this change:
+`NtCreateProcessEx`, `NtCreateThread`, `NtCreateDebugObject`, `NtDebugActiveProcess`, `NtCreateLowBoxToken` ->
+`STATUS_NOT_SUPPORTED` + FIXME; `NtSetSystemInformation` -> `STATUS_PRIVILEGE_NOT_HELD` except `SystemComPlusPackage`;
+`NtMakePermanentObject` -> pass-through.
+
+* Tests: `integration.guest_spawn` (tests/guest/spawn.c: `CreateProcessW("C:\\guest\\guest_hello.exe")`, wait, exit code
+  42, prints `spawn: child exit 42`; then itself with a quoted command line, a working directory and an environment
+  variable, exit 7) and 12 unit tests in `tests/unit/test_syscalls_process.cpp` (policies, refusals, privilege split,
+  quoting/command line/environment helpers, and a real suspended spawn -> resume -> wait -> exit 42 through the asm
+  entry with a non-inheritable stdout pipe). Local: `100% tests passed, 0 tests failed out of 32`.
+* `ci.yml` run [39869487010](https://github.com/user99672223/win10xbox/actions/runs/39869487010) on `503d3a0`: linux-cross
+  (61/61, `ctest gate: PASS`), windows (Debug) and windows (RelWithDebInfo) (41/41 each, gate PASS), `integration.guest_spawn`
+  passed on both Windows configs (real `CreateProcessW` of the host). linux-cross failed once on
+  `integration.guest_window_input2` ("another thread's window: delivered on that thread", core/user input, not this
+  change) and passed on the re-run of the same commit (the run before, 39867793207 on `a9bcd14`; on `503d3a0` linux-cross's first attempt died in an apt mirror timeout and passed on re-run); run [39847437801](https://github.com/user99672223/win10xbox/actions/runs/39847437801)
+  (`ae63311`) was green on all three jobs as well (its linux-cross first attempt died in an apt mirror timeout).
+* Found by the test and fixed on the way: a command line passed through `process::Launch` was not NUL-terminated in the
+  parameter block (also fixed independently on main; the merged version is main's). First Windows run failed to build
+  because MSVC's `winternl.h` has no `PCLIENT_ID`.
+* Not available: `cmd.exe` is not in the wine-pe builtin set, so `CreateProcess("cmd.exe ...")` and `system()` find no
+  program until one is staged; a child does not know drives mapped at run time by `process::MapHostDirectory`.
+
+## Current state of main (2026-10-22)
+
+**What works, measured.** On the Xbox Series S (build 26100) one unmodified MSVC x64 guest is mapped, bound,
+run and exits 42 (the hardware run described in HANDOFF.md). Under Wine and on the Windows CI runners, the
+following run and are gated (`ci.yml`, `host-win32-smoke.yml`, `host-win32-appcontainer.yml`, `host-uwp.yml`):
+
+* **Loader** (`core/loader`): PE mapping, import binding, Wine builtin stub rewrite, scanner.
+* **Dispatcher** (`core/dispatch`): by-name syscall table generated from Wine's headers; per-syscall policy
+  (`Emulate` / `PassThrough` / `Todo`); privileged NT calls answered as an unprivileged caller would.
+* **VFS** (`core/vfs`): virtual `C:\` over the machine folder, case-folded path comparison, NT path translation.
+* **Registry** (`core/registry`): virtual `\Registry` from read-only REGF hives plus an in-memory write overlay.
+* **NLS** (`core/dispatch/nt_nls.cpp`): `NtGetNlsSectionPtr` / `NtInitializeNlsFiles` map the `.nls` files staged
+  in the machine folder; a missing file fails with `STATUS_OBJECT_NAME_NOT_FOUND`, nothing is faked.
+* **Console guests**: `tests/guest/{hello,cpuid,sleep,dll}` and the smoke guest, through the host, with exit codes.
+* **core/user** (`core/user/`, Wine 11.9 win32u contract): 234 `NtUser*`/`NtGdi*` syscalls emulated. Windows
+  (class, create, show, paint, timers, PostMessage/SendMessage, DestroyWindow), GDI (DCs, DIB sections, memory DCs,
+  BitBlt, FillRect, GetPixel), and input delivery in `win_message.cpp` (mouse and key messages queued to the
+  window). Gated: `integration.guest_window`, `integration.guest_window2`, and input delivery
+  (`integration.guest_window_input`, `guest_window_input2`: scripted mouse and keys reach the guest's window,
+  merged from `-input` at `d9f7639`). Not on main: glyph text, menus,
+  clipboard, hooks (see in-flight list).
+* **D3D11 presenter** (`host-uwp/presenter.cpp`, `blit.cpp`): `user::ComposeFrame()` into a flip-sequential swap
+  chain on the CoreWindow, presented from the UI thread's 60 Hz pump. Device on its own thread; hardware, then WARP,
+  then headless with a `display:` line. `LocalState\screen.bmp` is written every 5 s and at exit.
+* **Nine bundled guests** in the host-uwp package (`host-uwp/CMakeLists.txt`, `HOST_UWP_GUESTS`): `window.exe`
+  (the default), `hello.exe`, `hello_cui.exe`, `guest_hello`, `guest_cpuid`, `guest_sleep`, `guest_dll`,
+  `smoke_cui.exe`, `drv_client.exe`.
+* **Native user32/gdi32 in an AppContainer (measured, non-gating)**: a genuine AppContainer process can load the
+  native user32/gdi32, create, show and paint a window and read pixels back on the Windows runner's session
+  (run 39827778745, `tests/appcontainer/ac_gui_probe.c`). Not measured on the console. This is the evidence for
+  route B (forward to the host's win32u); route A (core/user) remains the gated path.
+
+**What does not work yet.** Glyph text (`ExtTextOut`/`DrawText` fill rectangles only), menus, clipboard, hooks,
+window-frame dragging, networking, audio, guest child processes, D3D for guest apps (M6), and the 21 `todo`
+syscalls. `integration.guest_window_text` is `DISABLED` on main until the `-text` slice lands. The package's `window.exe` is a 30-second blue window that exits 42 only when painted.
+
+**Packaged `.msix`.** Artifact `host-uwp-msix` from the latest completed green `host-uwp.yml` run on main:
+[39837028686](https://github.com/user99672223/win10xbox/actions/runs/39837028686) (head `fb86712`; main has since
+moved to `1a6fb74`, whose run [39846504150](https://github.com/user99672223/win10xbox/actions/runs/39846504150) was
+still in progress when this was written).
+
+## In-flight slices (branches `claude/youthful-cerf-l7xxsb-<slice>`)
+
+Found on origin at this writing (each is created from main; the one-line scope is from its latest commit):
+
+| Slice | Branch | Scope |
+|---|---|---|
+| native | `-native` | route B: native user32/gdi32 in the guest, `gui` knob in machine.json |
+| text | `-text` | built-in 8x16 bitmap font for `TextOutW`/`DrawTextW` (`font8x16.h`) |
+| texttest | `-texttest` | `guest_window_text` (disabled until `-text` lands) |
+| input | `-input` | input delivery into core/user: merged into main at `d9f7639` |
+| inputtest | `-inputtest` | `WIN10XBOX_TEST_INJECT_INPUT` host hook, `guest_window_input` (merged with input) |
+| realprog | `-realprog` | Lua 5.4.7 as the first real guest |
+| sqlite | `-sqlite` | SQLite shell as a real guest (pinned amalgamation build) |
+| sys1 / sys2 | `-sys1`, `-sys2` | privileged NT syscalls; five Todo syscalls via existing modules |
+| syscalls | `-syscalls` | syscall work (its own commits are on the branch; main was merged into it) |
+| present | `-present` | `window.exe` exits 42 only when painted and quit by its timer |
+| ci | `-ci` | CI uploads crash.txt, crash.dmp, entry-reached.txt, GUI screenshots |
+| gui-probe | `-gui-probe` | the AppContainer native user32/gdi32 measurement (above) |
+| user | `-user` | core/user emulation and its STATUS/TESTING entries |
+
+Named for the next slices but **no remote branch found at this writing**: `-ncframe` (non-client frame),
+`-menu`, `-dialog`, `-clipboard`, `-hooks` (timers and hooks), `-guiapp` (a real GUI program), `-net` (ws2_32/AFD),
+`-audio`, `-uwpchild` (child processes in UWP), `-d3d` (ImGui on d3d11 via route B). Check `git ls-remote` before
+relying on them.
+
+## Real programs: the SQLite shell (2026-10-22)
+
+`sqlite3.exe` (SQLite 3.54.1, the official amalgamation, `cl /O2 /MT shell.c sqlite3.c`; `tools/ci/build_sqlite.ps1`,
+pinned by URL and SHA-256 and verified on every run) runs unmodified through the layer on both Windows configs:
+`integration.sqlite_memory` (`-batch :memory: "select 6*7;"` prints `42`), `integration.sqlite_script`
+(`tests/guest/sqlite/smoke.sql` on stdin against `C:\Users\User\smoke.db`: table, inserts with one rollback journal
+each, ordered and aggregate selects, an index, `.dump`, `date('now')`, `pragma integrity_check`, `.exit 42`; every
+output line gated, the `.db` file must exist in the machine folder) and the smoke rows. `ci.yml` run
+[39871612881](https://github.com/user99672223/win10xbox/actions/runs/39871612881) on `05953b0` (the merge of main with all three fixes; later commits only change docs). That run: linux-cross green; windows (RelWithDebInfo) green; windows (Debug) green after one re-run, the first attempt having hung in `integration.driver_kmdf_ioctl` (150 s, no guest output; it passed in the run before and in the re-run, so a flake of the driver host, not of this slice). The first attempt on the commit before the last merge had `integration.guest_window_input2` ("another thread's window: delivered on that thread") fail once on linux-cross; also not this slice: windows (Debug) and windows (RelWithDebInfo) green, `43 tests, 0 failures, 0 skipped` in each
+job's `ctest-junit.xml`; `host-win32-smoke` (console conditions), `host-win32-appcontainer`, `uwp-lite`, `host-uwp`
+green on the same commit. The script's stdout (identical in both configs and under Wine):
+
+```
+plum|7        pear|5        apple|3       fig|2
+4|17|2.0      pear|3.75     plum|1.75     apple|1.5      indexed|1
+PRAGMA foreign_keys=OFF; BEGIN TRANSACTION; CREATE TABLE fruit(...); INSERT INTO fruit VALUES(1,'apple',3,0.5); ...
+CREATE INDEX fruit_name on fruit(name); COMMIT;
+date|10|1|1      ok
+```
+
+Three defects, all found by running it, none visible to our own test programs; each has a regression test that runs
+without SQLite:
+
+1. **The command line ran into the next string.** `RtlCreateProcessParametersEx` packs the block's strings by
+   `MaximumLength`, which was `Length`, so `GetCommandLineW()` returned `select 6*7;C:\guest\sqlite3.exeWinSta0\Default`
+   (a "near C: syntax error"). Fixed in `core/dispatch/process.cpp` (the Lua bring-up found the same defect on its
+   branch and made the same change; the merge keeps one). `integration.guest_args`.
+2. **Every file lock failed on real Windows.** Wine's kernelbase calls `NtLockFile` with `IoStatusBlock == NULL`; Windows
+   answers `STATUS_ACCESS_VIOLATION` (10 microseconds, in the trace), SQLite reported "database is locked" on its first
+   statement. `NtLockFile`/`NtUnlockFile` are now `Translate` (`core/dispatch/nt_file.cpp`, `docs/DISPATCHER.md`): a
+   Windows host gets a block of the layer's, a Wine host (which refuses any block in `NtLockFile`, and where `NtUnlockFile`
+   wants NULL on Wine 9 and a block on Wine 11) gets what it accepts. `integration.guest_lockfile`, which passes on
+   linux-cross, Debug and RelWithDebInfo.
+3. **The scanner patched a jump table.** MSVC without optimisation (the Debug configuration) puts a switch's jump table
+   inside `.text`; the sweep decoded its bytes, found a `syscall` in them and wrote an INT3 over the low byte of an entry
+   (`0x5c1c5` became `0x5c1cc`), so `printf("%lu")` jumped into the middle of a `call` and died with an access violation. Only
+   `guest_lockfile` in Debug showed it (sqlite3.exe is Release); the crash record's `rax = rip - 2`, `rcx` = image
+   base and the `7c fa` at the target gave it away, and the CI artifact carrying the guest's exe and pdb confirmed the table.
+   `core/loader/scanner.cpp` now finds such tables from the `mov eax,[base+idx*4+TABLE]` that reads them, keeps them out of
+   the sweep and takes their entries as branch targets. `unit.core` `loader_scan_leaves_jump_tables_in_code_alone`.
+
+Not defects of the layer, worth knowing: the Linux reproduction's host is Wine 9.0 while the guest's DLLs are Wine 11.9,
+which disagree about `NtUnlockFile` (handled above); `sqlite_*` are registered on MSVC builds only (the Linux job has no
+`sqlite3.exe`), so they cannot skip there. What `sqlite3.exe` did not need, and the next program might: memory-mapped
+files (`PRAGMA mmap_size`), `LockFileEx` with a pending wait on an overlapped handle (returns `STATUS_PENDING` into a
+block the layer keeps alive, never completed), WAL's shared memory (`CreateFileMapping` over the `-shm` file), the
+console (`.mode` with a terminal, `isatty`), and `GetFileAttributesEx` on directories other than the machine folder.
+
+## Install the package on the console
+
+1. Download artifact `host-uwp-msix` from the green run above (or the newest green `host-uwp.yml` run on main).
+2. Device Portal: install the `.cer` certificate first, then the `.msix`.
+3. The default `LocalState\launch.json` runs `window.exe` (30 s, expects exit 42) and keeps the last frame on the TV.
+   Result: `RESULT: PASS` or `RESULT: FAIL` at the top of `LocalState\status.txt`.
+4. `LocalState\screen.bmp` is the last composed frame; `LocalState\entry-reached.txt` and `crash.txt` are written
+   on the run. A `launch.json` placed in `LocalState` overrides the default (`launch.example.json` lists the keys).
+
 ## core/user: text rendering (2026-10-22)
 
 `TextOutW` / `ExtTextOutW` / `DrawTextW` now put glyphs on the screen: `core/user/font8x16.h` is a public-domain
@@ -23,11 +235,13 @@ docs/SYSCALLS.md, plus `NtCallbackReturn`; design and the not-implemented list i
 
 * Local (llvm-mingw + Wine): `100% tests passed, 0 tests failed out of 28` (`ctest --test-dir build-mingw
   --label-exclude wine_conformance`; no skips); `unit.core`: `121 tests, 0 failures` (the `user_*` cases included).
-* `ci.yml` run [39834605986](https://github.com/user99672223/win10xbox/actions/runs/39834605986) on `bc82f9a`:
+* `ci.yml` run [39839907345](https://github.com/user99672223/win10xbox/actions/runs/39839907345) on `249d386`
+  (first green on `bc82f9a`, run [39834605986](https://github.com/user99672223/win10xbox/actions/runs/39834605986)):
   windows (Debug) and windows (RelWithDebInfo) green with the full suite gated (`100% tests passed out of 32`,
-  `ctest gate: PASS (nothing skipped, nothing missing)`). The guest's stdout in both configs (from the jobs'
-  `ctest-junit.xml`):
+  `ctest gate: 32 registered, 32 ran and passed, 0 DISABLED`). The tests' output in both configs (from the jobs'
+  `ctest-junit.xml`; the first line is run_guest.cmake's `+modules` check, the rest the guest's stdout):
   ```
+  guest system DLLs from Windows\builtin: kernel32.dll kernelbase.dll user32.dll gdi32.dll advapi32.dll sechost.dll ucrtbase.dll msvcrt.dll win32u.dll imm32.dll
   window: class registered
   window: created hwnd=0000000000010021 client=400x300
   window: painted
