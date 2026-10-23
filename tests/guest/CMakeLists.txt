@@ -33,6 +33,10 @@ endif()
 target_link_libraries(guest_identity PRIVATE ole32 oleaut32 advapi32)
 win10xbox_add_guest(guest_identity)
 
+# RDRAND through the layer's #UD emulation (D18): integration.guest_rdrand, with WIN10XBOX_TEST_FORCE_RDRAND_TRAP=1.
+add_executable(guest_rdrand rdrand.c)
+win10xbox_add_guest(guest_rdrand)
+
 add_executable(guest_sleep sleep.c)
 win10xbox_add_guest(guest_sleep)
 

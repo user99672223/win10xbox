@@ -357,6 +357,7 @@ NTSTATUS MapImageView(const std::shared_ptr<ImageSection>& sec, const MapOptions
     loader::ScanOptions so;
     so.patch_cpuid = config::Current().patch_cpuid;
     so.patch_rdtsc = true;
+    so.trap_random = ForceRandomTrap();
     so.patch_syscall = !view->stubs_rewritten;   // rewritten thunks no longer hold `syscall`
 #if WIN10XBOX_HAVE_CLOCK
     if (clock::VirtualSharedData()) {   // D18: the version block of KUSER_SHARED_DATA says 10.0.19045, not the host's build

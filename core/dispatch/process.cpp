@@ -664,6 +664,12 @@ int Launch(const LaunchOptions& opts) {
         const DWORD n = GetEnvironmentVariableW(L"WIN10XBOX_TEST_LEAK_GUEST_ACTCTX", v, 8);
         g.leak_actctx = n != 0 && n < 8 && v[0] != L'0';
     }
+    {
+        // Test hook, latched here for the same reason: rdrand/rdseed sites become ud2 so the emulation runs on a CPU that has them.
+        wchar_t v[8];
+        const DWORD n = GetEnvironmentVariableW(L"WIN10XBOX_TEST_FORCE_RDRAND_TRAP", v, 8);
+        SetForceRandomTrap(n != 0 && n < 8 && v[0] != L'0');
+    }
 #if WIN10XBOX_HAVE_VFS
     {
         CpuPolicy cp;
@@ -715,7 +721,7 @@ int Launch(const LaunchOptions& opts) {
         const CpuPolicy cp = GetCpuPolicy();
         vendor = cp.vendor.empty() ? std::string("AuthenticAMD") : cp.vendor;
         dispatch::detail::BuildFirmwareTables(vendor);
-        if (cp.advertise_rdrand) InstallRandomInstructionEmulation();
+        if (cp.advertise_rdrand || ForceRandomTrap()) InstallRandomInstructionEmulation();
     }
 #if WIN10XBOX_HAVE_AFD
     afd::PrimeHost();   // before the PEB take-over (see afd.h)

@@ -105,7 +105,7 @@ std::size_t RewriteSyscallStubs(const MappedImage& img, void* target, std::vecto
 // instructions when the site and its successors can be moved safely,
 // (b) a 1-byte `int3` + vectored-exception-handler fallback otherwise.
 // Both are transparent to the caller of ScanAndPatch.
-enum class SiteKind : std::uint8_t { Cpuid, Rdtsc, Rdtscp, Syscall, Sysenter, Int2E, KuserRead };
+enum class SiteKind : std::uint8_t { Cpuid, Rdtsc, Rdtscp, Syscall, Sysenter, Int2E, KuserRead, Random };
 
 struct ScanRegs {         // what handlers get: mutable GPRs + flags
     std::uint64_t rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp, r8, r9, r10, r11, r12, r13, r14, r15, rflags, rip;
@@ -116,6 +116,9 @@ using SiteHandler = bool (*)(SiteKind kind, ScanRegs* regs, void* ctx);
 
 struct ScanOptions {
     bool patch_cpuid = true, patch_rdtsc = true, patch_syscall = true, patch_kuser_reads = false;
+    // trap_random: every rdrand/rdseed (register form) becomes a ud2 and the original bytes are kept for the #UD handler
+    // (RandomSiteBytes): the emulation path then runs on hosts whose CPU has the instructions (test mode only).
+    bool trap_random = false;
     // patch_kuser_reads covers [kuser_lo, kuser_hi) (default: the whole KUSER_SHARED_DATA page). With kuser_addresses
     // it also covers `mov reg, imm` / `lea reg, [abs]` forming an address in that window, whose later loads cannot be
     // seen as sites (the handler gets the instruction and returns the matching address in its own page).
@@ -130,6 +133,8 @@ struct ScanResult { std::vector<ScanSite> sites; std::size_t patched = 0, trappe
 // The original bytes (out: at least 15) of a patched KuserRead site, which a handler needs to decode: by the time it runs
 // the site holds a jump or an int3.
 bool KuserSiteBytes(std::uint64_t site, std::uint8_t* out, std::uint8_t* len);
+// Likewise for a Random site (rdrand/rdseed rewritten to ud2 by ScanOptions::trap_random).
+bool RandomSiteBytes(std::uint64_t site, std::uint8_t* out, std::uint8_t* len);
 
 NTSTATUS ScanAndPatch(const MappedImage& img, const ScanOptions& opts, ScanResult* result);
 // Scan an arbitrary range (e.g. JIT output or a host-loaded module).
