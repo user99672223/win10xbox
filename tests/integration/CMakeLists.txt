@@ -233,7 +233,11 @@ endif()
 # in <machine>/guest/tcc before ctest runs (docs/slices/realtcc.md). tcc_compile writes C:\Users\User\tcc_hello.exe
 # (GUEST_FILE: deleted before, required after) and tcc_hello_runs runs that exe, so it DEPENDS on tcc_compile;
 # tcc_run is tcc's in-memory mode (-run: the program is relocated into VirtualAlloc'd memory and called).
+# It runs on the builtin-only folder like fastfetch: tcc.exe loads libtcc.dll, user32 and advapi32, and on the
+# shared folder those pull the runner's native sechost/ucrtbase under Wine's user32 and the first call dies on
+# EXCEPTION_WINE_STUB (0x80000100); measured in the first run of this slice.
 if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
+  set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
   configure_file(${CMAKE_SOURCE_DIR}/tests/guest/tcc/hello.c ${CMAKE_BINARY_DIR}/bin/guest/tcc_hello.c COPYONLY)
   set(_guest_args "-v")
   win10xbox_guest_test(tcc_version "C:\\guest\\tcc\\tcc.exe" 0 "tcc version 0\\.9\\.27")
@@ -249,6 +253,7 @@ if(MSVC OR WIN10XBOX_REAL_PROGRAMS)
   win10xbox_guest_test(tcc_run "C:\\guest\\tcc\\tcc.exe" 42
     "hello from tcc 42" "argc=1 sizeof\\(void\\*\\)=8")
   unset(_guest_args)
+  unset(_guest_machine)
 endif()
 
 # ---- Real GUI programs (not ours), built from source on the Windows runner ------------------------------------------
