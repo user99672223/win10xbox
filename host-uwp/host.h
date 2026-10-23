@@ -77,7 +77,10 @@ namespace w10x_uwp
         // worker thread, calls CoreApplication::RequestRestartAsync(arg) and returns only on failure, with the
         // reason (on success the process ends). Set before StartWorker().
         using RestartFn = std::function<std::string(const std::string& arg)>;
-        void SetRestart(int run, const std::string& select, RestartFn fn);
+        // `all_k` is the "Run every program" chain position of the argument (-1 = no such chain), `restarted` says
+        // that this activation carried a valid restart argument (the launcher then shows even if launch.json
+        // does not ask for it).
+        void SetRestart(bool restarted, int run, const std::string& select, int all_k, RestartFn fn);
 
         // ---- display / input backend (UI thread) --------------------------
         // The winexbox backend. M5 only creates it and counts the input that reaches it;

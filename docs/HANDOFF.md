@@ -139,11 +139,29 @@ if no pad is ever seen) and keyboard (arrows, Enter/Space, Esc/Backspace).
   entry k in run k without input; between runs the app restarts itself. `exit_when_done` (default true)
   ends the app after the last one. A restart failure under autoselect stops the chain, so the missing
   `run=2` block is the symptom.
+* **Run every program (report).** To test a package on the console: start the app, pick "Run every program
+  (report)" (top of the list), wait, download `LocalState\report.txt` and the BMPs (Device Portal, File
+  explorer, LocalState). `launch.json` `"autoselect": "all"` (and `"autoselect_timeout_sec"`, default 60)
+  does the same without input. It runs every list entry in name order, restarting the app between
+  programs (restart argument `picker run=N all=K select=<name>`), except entries with a `<name>.exe.skip-auto`
+  or `<name>.skip-auto` file beside them (they get a SKIPPED block). Per program `report.txt` gets a block:
+  `program=`, `exit_code=`, `verdict=` (PASS or FAIL against the built-in expected exit code of the known
+  programs, `KnownExpectedExit`; else EXITED, CRASH for an NTSTATUS-style exit code, TIMEOUT), `screen=<name>.bmp`
+  (`user::WriteScreenshot` right after the guest exits or at the timeout, the periodic `screen.bmp` as fallback),
+  `crash=yes|no` plus the first 5 new lines of `crash.txt`, and the last 10 stdout lines. At the end the header
+  (`os_build` from `RtlGetVersion`, package, version, date, counts) is put on top of `report.txt` and a summary
+  screen (program, verdict, exit code) is shown; B returns to the picker. `launcher_result.txt` keeps its
+  per-run blocks. Limits: a guest that kills the whole process (a crash the host cannot return from) ends the
+  chain, the report then lacks the later programs; a TIMEOUT ends the process (the guest owns the PEB), so
+  the restart for the next program is requested from the worker thread before that, best effort and
+  unproven on hardware.
 * **Gate.** `host-uwp.yml` job `launcher` (needs `msix`, not continue-on-error): installs the `.msix` on
   the runner, writes `LocalState\launch.json` with `picker` + the two-entry `autoselect`, activates the
   app, waits for the `run=2` block and asserts two blocks, each `ran=yes` and `exit_code=42`, run
   numbers 1 and 2, and `hello from guest` in the first. Parser keys and the restart argument are covered
-  by `host_uwp.selftest`.
+  by `host_uwp.selftest`. The same job then runs `"autoselect": "all"` (20 s per program) and asserts on
+  `report.txt`: a block per bundled program, PASS for window.exe, hello_cui.exe, guest_hello.exe,
+  guest_cpuid.exe and guest_xinput.exe (without a pad its own expected exit code is 1).
 * **Not proven.** Gamepad/keyboard navigation (CI cannot press buttons) and `RequestRestartAsync` itself
   on the runner and on the Series S (written against the documented API; the first CI run and the first
   console run are the evidence). `uwp_activate` may see the first process end; the job polls for `run=2`.

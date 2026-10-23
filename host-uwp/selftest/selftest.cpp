@@ -252,6 +252,49 @@ namespace
         EXPECT_ERROR("{\"autoselect\": \"C:\\\\x.exe\"}", "bare file name");
     }
 
+    void TestReportAndAll()
+    {
+        LaunchConfig c;
+        std::string err;
+        CHECK(ParseLaunchConfig("{\"autoselect\": \"all\", \"autoselect_timeout_sec\": 30}", &c, &err));
+        CHECK(c.autoselect_all && c.autoselect.empty() && c.autoselect_timeout_sec == 30);
+        CHECK(ParseLaunchConfig("{\"autoselect\": \"all\"}", &c, &err) && c.autoselect_timeout_sec == 60);
+        EXPECT_ERROR("{\"autoselect_timeout_sec\": 0}", "autoselect_timeout_sec");
+        CHECK(FormatRestartArgs(3, "a.exe", 2) == "picker run=3 all=2 select=a.exe");
+        RestartArgs r = ParseRestartArgs("picker run=3 all=2 select=a b.exe");
+        CHECK(r.valid && r.run == 3 && r.all_k == 2 && r.select == "a b.exe");
+        r = ParseRestartArgs("picker run=3 select=a.exe");
+        CHECK(r.valid && r.all_k == -1);
+        CHECK(!ParseRestartArgs("picker all=x").valid);
+        int code = -1;
+        CHECK(KnownExpectedExit("Hello_CUI.exe", false, &code) && code == 42);
+        CHECK(KnownExpectedExit("guest_cpuid.exe", false, &code) && code == 0);
+        CHECK(KnownExpectedExit("guest_xinput.exe", false, &code) && code == 1);
+        CHECK(KnownExpectedExit("guest_xinput.exe", true, &code) && code == 42);
+        CHECK(!KnownExpectedExit("guest_net.exe", false, &code));
+        CHECK(VerdictWord(ReportVerdict(false, 42, true, 42)) == "PASS");
+        CHECK(VerdictWord(ReportVerdict(false, 3, true, 42)) == "FAIL");
+        CHECK(VerdictWord(ReportVerdict(false, 3, false, 0)) == "EXITED");
+        CHECK(VerdictWord(ReportVerdict(false, static_cast<long>(0xC0000005u), false, 0)) == "CRASH");
+        CHECK(VerdictWord(ReportVerdict(true, 0, true, 0)) == "TIMEOUT");
+        ReportBlock b;
+        b.program = "x.exe";
+        b.exit_code = 42;
+        b.verdict = ReportVerdict(false, 42, true, 42);
+        b.screen = "x.bmp";
+        b.crash = true;
+        b.crash_lines = {"c1"};
+        b.stdout_lines = {"hello", "world"};
+        ReportBlock b2 = b;
+        b2.program = "y.exe";
+        b2.crash = false;
+        b2.crash_lines.clear();
+        const std::vector<ReportBlock> back = ParseReport("# header\nprograms=2\n\n" + FormatReportBlock(b) + FormatReportBlock(b2));
+        CHECK(back.size() == 2 && back[0].program == "x.exe" && back[0].exit_code == 42 && back[0].crash &&
+              back[0].crash_lines.size() == 1 && back[0].stdout_lines.size() == 2 && back[0].screen == "x.bmp" &&
+              VerdictWord(back[0].verdict) == "PASS" && back[1].program == "y.exe" && !back[1].crash);
+    }
+
     void TestRestartArgs()
     {
         CHECK(FormatRestartArgs(1, "hello_cui.exe") == "picker run=1 select=hello_cui.exe");
@@ -311,6 +354,7 @@ int main(int argc, char** argv)
     TestQuoting();
     TestLauncherKeys();
     TestRestartArgs();
+    TestReportAndAll();
     if (argc > 1) TestPackagedPayload(argv[1]);   // ctest passes host-uwp/payload
     std::printf("host_uwp_selftest: %d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

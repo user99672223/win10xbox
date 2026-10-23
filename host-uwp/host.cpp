@@ -201,6 +201,10 @@ struct Host::Impl
 
     void RunWorker();
     void RunImpl();
+    std::string CaptureScreen();
+    void RecordAllRun(bool timed_out, long exit_code, const std::string& screen);
+    void FinishAllChain();
+    std::string NextRestartArg() const;
     void ShowLauncherResult(const std::string& verdict, bool ran, long exit_code);
     void Fail(const std::string& what, const std::string& hint = std::string());
     void EndProcessAfterFinalStatus(const std::string& verdict, DWORD exit_code);
@@ -230,6 +234,15 @@ struct Host::Impl
     std::string restart_select;         // the cursor starts on this entry (the program that ran last)
     Host::RestartFn restart_fn;
     std::size_t autoselect_total = 0;   // entries in launch.json "autoselect" of this run
+    bool chain_cfg_all = false;         // launch.json "autoselect": "all"
+    bool restarted = false;             // this activation carried a restart argument
+    int restart_all_k = -1;             // ... of a "Run every program" chain, position of the next program
+    // "Run every program" chain state of this run (docs/HANDOFF.md "Launcher"), set by RunImpl.
+    bool chain_all = false;             // this run is part of the all-programs chain (report.txt)
+    bool chain_auto = false;            // the next program follows without input (list autoselect or all)
+    bool chain_more = false;            // ... and there is a next one
+    int all_k = 0;                      // position of this run in the all-programs list
+    unsigned long long crash_off = 0;   // size of crash.txt when this run started
 
     std::mutex reason_mu;
     std::string stop_reason;
@@ -244,6 +257,120 @@ void Host::Impl::Fail(const std::string& what, const std::string& hint)
     report.SetVerdict("FAIL (" + what + ")");
     report.Flush();
     ShowLauncherResult("FAIL (" + what + ")", false, 0);
+}
+
+namespace
+{
+std::string StemOf(const std::string& name)
+{
+    const std::size_t dot = name.find_last_of('.');
+    return dot == std::string::npos || dot == 0 ? name : name.substr(0, dot);
+}
+}  // namespace
+
+std::string Host::Impl::NextRestartArg() const
+{
+    return FormatRestartArgs(run_index + 1, picked_name, chain_all ? all_k + 1 : -1);
+}
+
+// "Run every program": a copy of the screen as it is now, LocalState\<name>.bmp. user::WriteScreenshot composes the
+// current (or last) frame; the periodic screen.bmp is the fallback.
+std::string Host::Impl::CaptureScreen()
+{
+    const std::string name = StemOf(picked_name) + ".bmp";
+    const std::wstring dst = info.local_state + L"\\" + Widen(name);
+    if (win10xbox::user::WriteScreenshot(dst)) return name;
+    const std::wstring src = info.local_state + L"\\screen.bmp";
+    unsigned long long sz = 0;
+    if (FileSize(src, &sz) && sz > 0 && CopyFileW(src.c_str(), dst.c_str(), FALSE)) return name;
+    return "none";
+}
+
+// One block in LocalState\report.txt for the program of this run.
+void Host::Impl::RecordAllRun(bool timed_out, long exit_code, const std::string& screen)
+{
+    ReportBlock b;
+    b.program = picked_name;
+    b.exit_code = exit_code;
+    int expected = 0;
+    const bool known = KnownExpectedExit(picked_name, launcher != nullptr && launcher->PadSeen(), &expected);
+    b.verdict = ReportVerdict(timed_out, exit_code, known, expected);
+    b.screen = screen;
+    b.stdout_lines = TailLines(info.local_state + L"\\stdout.txt", 10);
+    std::string crash;
+    if (ReadTextFile(info.local_state + L"\\crash.txt", &crash) && crash.size() > crash_off)
+    {
+        b.crash = true;
+        std::size_t pos = static_cast<std::size_t>(crash_off);
+        while (pos < crash.size() && b.crash_lines.size() < 5)
+        {
+            std::size_t e = crash.find('\n', pos);
+            if (e == std::string::npos) e = crash.size();
+            std::string line = crash.substr(pos, e - pos);
+            pos = e + 1;
+            while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+            if (!line.empty()) b.crash_lines.push_back(line);
+        }
+    }
+    if (!WriteTextFile(info.local_state + L"\\report.txt", FormatReportBlock(b), true))
+        diag::Line("launcher: cannot append to report.txt (error %lu)", GetLastError());
+    diag::Line("report: %s: %s", picked_name.c_str(), b.verdict.c_str());
+}
+
+// The end of an all-programs chain: the header of report.txt (once) and the summary screen.
+void Host::Impl::FinishAllChain()
+{
+    const std::wstring path = info.local_state + L"\\report.txt";
+    std::string body;
+    ReadTextFile(path, &body);
+    const std::vector<ReportBlock> blocks = ParseReport(body);
+    unsigned pass = 0, fail = 0, exited = 0, timeout = 0, crash = 0, skipped = 0;
+    std::vector<std::string> rows;
+    for (const ReportBlock& b : blocks)
+    {
+        const std::string w = VerdictWord(b.verdict);
+        if (w == "PASS") ++pass;
+        else if (w == "FAIL") ++fail;
+        else if (w == "EXITED") ++exited;
+        else if (w == "TIMEOUT") ++timeout;
+        else if (w == "CRASH") ++crash;
+        else if (w == "SKIPPED") ++skipped;
+        rows.push_back(b.program + "  " + w + "  exit " + std::to_string(b.exit_code));
+    }
+    const std::string counts = Fmt("%u programs: %u PASS, %u FAIL, %u EXITED, %u TIMEOUT, %u CRASH, %u SKIPPED",
+                                   static_cast<unsigned>(blocks.size()), pass, fail, exited, timeout, crash, skipped);
+    if (body.rfind("# win10xbox report", 0) != 0)
+    {
+        std::string os = "unknown";
+        using RtlGetVersionFn = LONG(WINAPI*)(PRTL_OSVERSIONINFOW);
+        if (HMODULE nt = GetModuleHandleW(L"ntdll.dll"))
+            if (auto fn = reinterpret_cast<RtlGetVersionFn>(GetProcAddress(nt, "RtlGetVersion")))
+            {
+                RTL_OSVERSIONINFOW vi = {};
+                vi.dwOSVersionInfoSize = sizeof vi;
+                if (fn(&vi) == 0) os = Fmt("%lu.%lu.%lu", vi.dwMajorVersion, vi.dwMinorVersion, vi.dwBuildNumber);
+            }
+        std::string head = "# win10xbox report\n";
+        head += "os_build=" + os + "\n";
+        head += "package=" + info.package_full_name + "\n";
+        head += "package_version=" + info.package_version + "\n";
+        head += "date_utc=" + TimestampUtc() + "\n";
+        head += "programs=" + std::to_string(blocks.size()) + "\n";
+        head += Fmt("pass=%u\nfail=%u\nexited=%u\ntimeout=%u\ncrash=%u\nskipped=%u\n\n", pass, fail, exited, timeout, crash, skipped);
+        if (!WriteTextFile(path, head + body, false)) diag::Line("launcher: cannot write the report.txt header (error %lu)", GetLastError());
+    }
+    diag::Line("report: %s", counts.c_str());
+    report.Set("report", counts);
+    report.Flush();
+    if (launcher != nullptr)
+    {
+        LauncherResult r;
+        r.summary = true;
+        r.name = "Run every program: summary";
+        r.verdict = counts;
+        r.lines = rows;
+        launcher->ShowResult(r);
+    }
 }
 
 // The launcher's result screen and LocalState\launcher_result.txt for the guest chosen in this run.
@@ -294,22 +421,29 @@ void Host::Impl::RunWorker()
         // process, docs/HANDOFF.md "Launcher"): RequestRestartAsync ends this process on success. Only when
         // the restart is refused does the worker go round in this process (the old behaviour, whose next
         // Launch is refused with a message naming the restart). A failure before a guest was chosen, a
-        // stop request, or the end of the autoselect list end the loop.
+        // stop request, or the end of a launch.json driven chain end the loop.
         for (;;)
         {
             picked = false;
             RunImpl();
             if (!picked || launcher == nullptr || stop.load()) break;
-            const bool more_autoselect = autoselected && static_cast<std::size_t>(run_index) + 1 < autoselect_total;
-            if (autoselected && !more_autoselect) break;
-            if (!autoselected && !launcher->WaitDismiss(stop)) break;
+            const bool from_config = autoselect_total != 0 || chain_cfg_all;   // launch.json drives the chain
+            std::string arg;
+            if (chain_auto && chain_more)
+                arg = NextRestartArg();
+            else
+            {
+                if (chain_all) FinishAllChain();
+                if (chain_auto && from_config) break;   // the app ends (exit_when_done)
+                if (!launcher->WaitDismiss(stop)) break;
+                arg = FormatRestartArgs(run_index + 1, picked_name, -1);
+            }
 
             std::string why;
             if (!restart_fn)
                 why = "the shell offers no restart";
             else
             {
-                const std::string arg = FormatRestartArgs(run_index + 1, picked_name);
                 diag::Line("launcher: restarting the app for the next program (argument \"%s\")", arg.c_str());
                 report.Set("launcher.restart", "requested: " + arg);
                 report.Flush();
@@ -320,7 +454,11 @@ void Host::Impl::RunWorker()
             diag::Line("launcher: restart failed: %s", why.c_str());
             report.Set("launcher.restart", "FAILED: " + why);
             report.Flush();
-            if (autoselected) break;   // the test hook cannot continue without the restart: the missing block says so
+            if (chain_auto)
+            {
+                if (chain_all && chain_more) FinishAllChain();   // keep what was measured
+                break;   // a chain cannot continue without the restart: the missing blocks say so
+            }
 
             // Interactive: the reason on the result screen, then back to the list in this process.
             LauncherResult r;
@@ -436,9 +574,12 @@ void Host::Impl::RunImpl()
     // launch.json at all. The list is the guests bundled in the package plus any .exe in LocalState\guests.
     LauncherEntry chosen;
     autoselected = false;
+    chain_all = chain_auto = chain_more = false;
+    all_k = 0;
     autoselect_total = lc.autoselect.size();
+    chain_cfg_all = lc.autoselect_all;
     const bool no_config = source.rfind("built-in defaults", 0) == 0;
-    if (launcher != nullptr && (lc.has_picker ? lc.picker : (no_config || !lc.autoselect.empty())))
+    if (launcher != nullptr && (restarted || (lc.has_picker ? lc.picker : (no_config || !lc.autoselect.empty() || lc.autoselect_all))))
     {
         report.Set("phase", "launcher");
         report.Flush();
@@ -460,11 +601,56 @@ void Host::Impl::RunImpl()
             return _stricmp(a.name.c_str(), b.name.c_str()) < 0;
         });
         diag::Line("launcher: %u entr%s", static_cast<unsigned>(entries.size()), entries.size() == 1 ? "y" : "ies");
-        int idx = -1;
-        if (!lc.autoselect.empty() && static_cast<std::size_t>(run_index) < lc.autoselect.size())
+
+        // The all-programs list: every entry in name order except those with a "<name>.exe.skip-auto" or
+        // "<name>.skip-auto" file beside them (programs that need a person at the controller).
+        std::vector<LauncherEntry> runlist;
+        std::string skipped_blocks;
+        auto build_runlist = [&]() {
+            runlist.clear();
+            skipped_blocks.clear();
+            for (const LauncherEntry& e : entries)
+            {
+                const std::wstring a1 = e.path + L".skip-auto";
+                const std::wstring a2 = e.path.substr(0, e.path.size() - 4) + L".skip-auto";
+                if (GetFileAttributesW(a1.c_str()) != INVALID_FILE_ATTRIBUTES || GetFileAttributesW(a2.c_str()) != INVALID_FILE_ATTRIBUTES)
+                {
+                    ReportBlock b;
+                    b.program = e.name;
+                    b.verdict = "SKIPPED (skip-auto file: needs interactive input)";
+                    b.screen = "none";
+                    skipped_blocks += FormatReportBlock(b);
+                }
+                else
+                    runlist.push_back(e);
+            }
+        };
+        auto start_all = [&](int k) -> bool {
+            chain_all = true;
+            all_k = k;
+            build_runlist();
+            if (runlist.empty() || static_cast<std::size_t>(k) >= runlist.size())
+            {
+                Fail("the all-programs run has no program number " + std::to_string(k) + " (" + std::to_string(runlist.size()) + " to run)");
+                return false;
+            }
+            chosen = runlist[static_cast<std::size_t>(k)];
+            chain_more = static_cast<std::size_t>(k) + 1 < runlist.size();
+            if (k == 0 && !WriteTextFile(ls + L"\\report.txt", skipped_blocks, false))
+                diag::Line("launcher: cannot create report.txt (error %lu)", GetLastError());
+            lc.timeout_sec = lc.autoselect_timeout_sec;
+            return true;
+        };
+
+        if (lc.autoselect_all || restart_all_k >= 0)
+        {
+            if (!start_all(restart_all_k >= 0 ? restart_all_k : 0)) return;
+        }
+        else if (!lc.autoselect.empty() && static_cast<std::size_t>(run_index) < lc.autoselect.size())
         {
             autoselected = true;
             const std::string& want = lc.autoselect[static_cast<std::size_t>(run_index)];
+            int idx = -1;
             for (std::size_t i = 0; i < entries.size(); ++i)
                 if (_stricmp(entries[i].name.c_str(), want.c_str()) == 0) idx = static_cast<int>(i);
             if (idx < 0)
@@ -472,6 +658,8 @@ void Host::Impl::RunImpl()
                 Fail("launch.json \"autoselect\" names " + want + ", which is not in the launcher list");
                 return;
             }
+            chosen = entries[static_cast<std::size_t>(idx)];
+            chain_more = static_cast<std::size_t>(run_index) + 1 < lc.autoselect.size();
         }
         else
         {
@@ -479,21 +667,34 @@ void Host::Impl::RunImpl()
             // The cursor starts on the program that just ran (restart argument), else on launch.json "guest".
             const std::string start_on =
                 !restart_select.empty() ? restart_select : (slash == std::string::npos ? lc.guest : lc.guest.substr(slash + 1));
-            idx = launcher->Pick(entries, start_on, stop);
+            std::vector<LauncherEntry> pick_entries;
+            LauncherEntry all_entry;
+            all_entry.name = kRunAllTitle;
+            all_entry.run_all = true;
+            pick_entries.push_back(all_entry);
+            pick_entries.insert(pick_entries.end(), entries.begin(), entries.end());
+            const int idx = launcher->Pick(pick_entries, start_on, stop);
             if (idx < 0)
             {
                 Fail("stopped by the shell in the launcher (" + StopReason() + ")");
                 return;
             }
+            if (pick_entries[static_cast<std::size_t>(idx)].run_all)
+            {
+                if (!start_all(0)) return;
+            }
+            else
+                chosen = pick_entries[static_cast<std::size_t>(idx)];
         }
-        chosen = entries[static_cast<std::size_t>(idx)];
+        chain_auto = autoselected || chain_all;
+        { unsigned long long cs = 0; crash_off = FileSize(ls + L"\\crash.txt", &cs) ? cs : 0; }
         launcher->SetRunning();
         picked = true;
         picked_name = chosen.name;
         // The settings written for another guest (arguments, expected exit code) do not belong to this one;
         // the autoselect test hook keeps them.
         const std::string configured = lc.guest.substr(lc.guest.find_last_of('\\') + 1);
-        if (!autoselected && _stricmp(configured.c_str(), chosen.name.c_str()) != 0)
+        if (chain_all || (!autoselected && _stricmp(configured.c_str(), chosen.name.c_str()) != 0))
         {
             lc.args.clear();
             lc.args_raw.clear();
@@ -502,7 +703,7 @@ void Host::Impl::RunImpl()
         lc.guest = "C:\\guest\\" + chosen.name;
         report.Set("launch.guest", lc.guest);
         report.Set("launcher.picked", chosen.name + (chosen.from_localstate ? " (LocalState\\guests)" : " (bundled)") +
-                                          (autoselected ? " by autoselect" : ""));
+                                          (chain_all ? " by the all-programs run" : autoselected ? " by autoselect" : ""));
         report.Flush();
         diag::Line("launcher: %s %s", autoselected ? "autoselected" : "chosen", chosen.name.c_str());
         if (stop.load())
@@ -738,6 +939,22 @@ void Host::Impl::RunImpl()
             report.Set("guest.runtime_ms", Fmt("%llu", static_cast<unsigned long long>(GetTickCount64() - guest_start_tick)));
             report.Set("hint", "the guest did not exit within \"timeout_sec\"; the last 'relay' lines in trace.log (set "
                                "\"trace\": \"+relay\") show where it is stuck");
+            if (chain_all)
+            {
+                // The process ends below (the guest owns the PEB), so the block is written and the restart for the next
+                // program asked for first, from this thread. Best effort: WinRT while a guest is running is unproven.
+                RecordAllRun(true, 0, CaptureScreen());
+                if (chain_more && restart_fn)
+                {
+                    const std::string arg = NextRestartArg();
+                    diag::Line("launcher: guest timed out, restarting the app for the next program (argument \"%s\")", arg.c_str());
+                    report.Flush();
+                    diag::FlushLog();
+                    const std::string why = restart_fn(arg);   // does not return when granted
+                    diag::Line("launcher: restart after the timeout failed: %s", why.c_str());
+                }
+                FinishAllChain();
+            }
             EndProcessAfterFinalStatus(Fmt("FAIL (guest watchdog timeout after %u s)", static_cast<unsigned>(lc.timeout_sec)),
                                        0x7E57);
             return;   // not reached
@@ -763,6 +980,7 @@ void Host::Impl::RunImpl()
         report.Set("user", text);
         diag::Line("user: %s", text.c_str());
     }
+    const std::string all_screen = chain_all ? CaptureScreen() : std::string();   // before the guest's windows go
     win10xbox::dispatch::Shutdown();   // dumps the per-syscall relay statistics into trace.log
     win10xbox::Shutdown();             // also detaches the trace sink
     report.ReleaseHold();
@@ -800,6 +1018,7 @@ void Host::Impl::RunImpl()
     report.SetVerdict(verdict);
     diag::Line("verdict: %s", verdict.c_str());
     report.Flush();
+    if (chain_all) RecordAllRun(false, exit_code, all_screen);
     ShowLauncherResult(verdict, true, exit_code);
     diag::FlushLog();
 }
@@ -851,8 +1070,10 @@ void Host::AttachLauncher(Launcher* launcher)
     impl_->launcher = launcher;
 }
 
-void Host::SetRestart(int run, const std::string& select, RestartFn fn)
+void Host::SetRestart(bool restarted, int run, const std::string& select, int all_k, RestartFn fn)
 {
+    impl_->restarted = restarted;
+    impl_->restart_all_k = all_k;
     impl_->run_index = run;
     impl_->restart_select = select;
     impl_->restart_fn = std::move(fn);

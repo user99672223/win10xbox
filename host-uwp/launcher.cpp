@@ -171,6 +171,31 @@ bool WriteLauncherResult(const std::wstring& path, const LauncherResult& r)
     return true;
 }
 
+bool WriteTextFile(const std::wstring& path, const std::string& text, bool append)
+{
+    HANDLE h = CreateFileW(path.c_str(), append ? FILE_APPEND_DATA : GENERIC_WRITE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           append ? OPEN_ALWAYS : CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    WriteAll(h, text.data(), text.size());
+    FlushFileBuffers(h);
+    CloseHandle(h);
+    return true;
+}
+
+bool ReadTextFile(const std::wstring& path, std::string* out)
+{
+    out->clear();
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    char buf[16384];
+    DWORD got = 0;
+    while (out->size() < (8u << 20) && ReadFile(h, buf, sizeof buf, &got, nullptr) && got != 0) out->append(buf, got);
+    CloseHandle(h);
+    return true;
+}
+
 // ----------------------------------------------------------------------
 Launcher::Launcher() = default;
 Launcher::~Launcher() = default;
@@ -225,6 +250,11 @@ bool Launcher::WaitDismiss(const std::atomic<bool>& stop)
         if (stop.load()) return false;
         std::this_thread::sleep_for(std::chrono::milliseconds(30));
     }
+}
+
+bool Launcher::PadSeen()
+{
+    return pad_seen_.load();
 }
 
 bool Launcher::Consumes()
@@ -323,7 +353,7 @@ void Launcher::PollGamepad()
             win10xbox::input::DisconnectGamepad(0);
             return;
         }
-        pad_seen_ = true;
+        pad_seen_.store(true);
         const wgi::Gamepad pad = pads.GetAt(0);
         const wgi::GamepadReading r = pad.GetCurrentReading();
         const unsigned b = static_cast<unsigned>(r.Buttons);
@@ -412,6 +442,22 @@ void Launcher::Draw(std::uint32_t* bgra, int width, int height)
     else if (mode_ == Mode::Result)
     {
         const int footer = height - lh - margin;
+        if (result_.summary)
+        {
+            c.Text(margin, y, result_.name, kTitle);
+            y += lh;
+            c.Text(margin, y, result_.verdict, kText);
+            y += lh * 2;
+            for (const std::string& l : result_.lines)
+            {
+                if (y > footer - lh) break;
+                const bool bad = l.find(" PASS ") == std::string::npos && l.find(" EXITED ") == std::string::npos;
+                c.Text(margin, y, l, bad ? kBad : kGood);
+                y += lh;
+            }
+            c.Text(margin, footer, "B or Esc or Enter: back to the list    (details: LocalState\\report.txt)", kDim);
+            return;
+        }
         c.Text(margin, y, "Guest: " + result_.name, kText);
         y += lh;
         const bool good = result_.ran && result_.verdict.compare(0, 4, "FAIL") != 0;

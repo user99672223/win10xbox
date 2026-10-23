@@ -82,4 +82,5 @@
   // written to LocalState\\launcher_result.txt. A list runs the entries one after the other, the
   // app restarting itself between them (one block per run in the result file).
   // "autoselect": ["hello_cui.exe", "guest_hello.exe"],
+  // "autoselect": "all" runs every program and writes LocalState\\report.txt (see "autoselect_timeout_sec").
 }

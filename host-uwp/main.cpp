@@ -379,7 +379,7 @@ namespace
                 // constructor hands the display backend to core/user; the worker is not running yet.
                 Host* const host = new Host(info);
                 host->AttachLauncher(&launcher_);          // launcher.h: picker / autoselect in launch.json
-                host->SetRestart(restart_.run, restart_.select, [](const std::string& arg) { return RequestAppRestart(arg); });
+                host->SetRestart(restart_.valid, restart_.run, restart_.select, restart_.all_k, [](const std::string& arg) { return RequestAppRestart(arg); });
                 presenter_.SetFrameSource(&launcher_);
 
                 StartPresenter(window, dispatcher, info, px);

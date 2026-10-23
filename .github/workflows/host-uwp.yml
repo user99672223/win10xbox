@@ -484,7 +484,7 @@ jobs:
     needs: msix
     if: ${{ !cancelled() && needs.msix.result == 'success' }}
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
         with:
@@ -602,6 +602,71 @@ jobs:
           else { $fail | ForEach-Object { $lines += "- FAIL: $_"; Write-Host "::error::$_" } }
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           if ($fail.Count -gt 0) { exit 1 }
+
+      # "Run every program (report)": launch.json "autoselect": "all" runs every bundled program in turn (the app restarts
+      # between them), 20 s each, and writes LocalState\report.txt (header + one block per program) and <name>.bmp. The
+      # runner has no gamepad, so guest_xinput.exe's expected result is its own "no pad" exit code (the verdict says PASS).
+      - name: Write LocalState launch.json (autoselect all) and run every program
+        id: all
+        if: ${{ !cancelled() }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $pkg = Get-AppxPackage -Name win10xbox.uwp
+          $ls = Join-Path $env:LOCALAPPDATA ("Packages\" + $pkg.PackageFamilyName + "\LocalState")
+          foreach ($f in 'launcher_result.txt', 'report.txt') { Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $ls $f) }
+          $json = '{ "picker": true, "autoselect": "all", "autoselect_timeout_sec": 20, "exit_when_done": true }'
+          Set-Content -Path (Join-Path $ls 'launch.json') -Value $json -Encoding ascii
+          & .\uwp_activate.exe "$($pkg.PackageFamilyName)!App" --package-full-name $pkg.PackageFullName --timeout 300
+          $report = Join-Path $ls 'report.txt'
+          for ($i = 0; $i -lt 700; $i++) {
+            if ((Test-Path $report) -and (Select-String -Path $report -Pattern '^programs=' -Quiet)) { break }
+            Start-Sleep -Seconds 2
+          }
+          Write-Host ("report.txt finished: " + ((Test-Path $report) -and (Select-String -Path $report -Pattern '^programs=' -Quiet)))
+          exit 0
+
+      - name: Assert on report.txt
+        if: ${{ !cancelled() }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $pkg = Get-AppxPackage -Name win10xbox.uwp
+          $ls = Join-Path $env:LOCALAPPDATA ("Packages\" + $pkg.PackageFamilyName + "\LocalState")
+          New-Item -ItemType Directory -Force -Path uwp-evidence-all | Out-Null
+          foreach ($f in 'report.txt', 'status.txt', 'crash.txt') { $p = Join-Path $ls $f; if (Test-Path $p) { Copy-Item $p uwp-evidence-all -Force } }
+          Get-ChildItem -Path $ls -Filter *.bmp -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName uwp-evidence-all -Force }
+          $p = Join-Path $ls 'report.txt'
+          $text = if (Test-Path $p) { Get-Content -Path $p -Raw } else { '' }
+          if ($text) { Write-Host '--- report.txt (header and verdict lines) ---'; $text -split "`n" | Where-Object { $_ -match '^(# |os_build|package|date_utc|programs|pass|fail|exited|timeout|crash=|crash$|skipped|program=|verdict=)' } | ForEach-Object { Write-Host $_ } }
+          $fail = @()
+          if (-not $text) { $fail += 'LocalState\report.txt was not written' }
+          else {
+            if ($text -notmatch '(?m)^os_build=\d+\.\d+\.\d+') { $fail += 'the report header has no os_build' }
+            $dir = Join-Path $pkg.InstallLocation 'payload\guest'
+            $bundled = @(Get-ChildItem -Path $dir -Filter *.exe -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+            if ($bundled.Count -eq 0) { $bundled = @('window.exe', 'hello.exe', 'hello_cui.exe', 'guest_hello.exe', 'guest_cpuid.exe', 'guest_xinput.exe') }
+            Write-Host "bundled programs: $($bundled.Count)"
+            foreach ($n in $bundled) {
+              if ($text -notmatch ('(?m)^program=' + [regex]::Escape($n) + '\s*$')) { $fail += "no block for $n" }
+            }
+            foreach ($n in 'window.exe', 'hello_cui.exe', 'guest_hello.exe', 'guest_cpuid.exe', 'guest_xinput.exe') {
+              if ($text -notmatch ('(?ms)^program=' + [regex]::Escape($n) + '\s*\r?\n(?:(?!program=).)*?^verdict=PASS\b')) { $fail += "$n is not PASS" }
+            }
+          }
+          $lines = @('### host-uwp launcher: Run every program (autoselect all)')
+          if ($fail.Count -eq 0) { $lines += '- PASS: every bundled program has a block in report.txt and the known-good ones are PASS' }
+          else { $fail | ForEach-Object { $lines += "- FAIL: $_"; Write-Host "::error::$_" } }
+          $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($fail.Count -gt 0) { exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: host-uwp-launcher-all-evidence
+          path: uwp-evidence-all
+          if-no-files-found: ignore
+          retention-days: 7
 
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
