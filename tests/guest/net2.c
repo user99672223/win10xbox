@@ -89,7 +89,7 @@ static const char* proto_name(DWORD p) {
 
 static int tls_test(int port) {
     static char inbuf[65536];
-    int inlen = 0;
+    int inlen = 0, calls = 0;
     SOCKET s;
     struct sockaddr_in a;
     SCHANNEL_CRED sc;
@@ -121,6 +121,7 @@ static int tls_test(int port) {
 
     for (;;) {
         SecBuffer ib[2], ob[1];
+        calls++;
         SecBufferDesc id, od;
         id.cBuffers = 0;
         ob[0].BufferType = SECBUFFER_TOKEN; ob[0].cbBuffer = 0; ob[0].pvBuffer = NULL;
@@ -141,7 +142,9 @@ static int tls_test(int port) {
             continue;
         }
         if (ss != SEC_E_OK && ss != SEC_I_CONTINUE_NEEDED) {
-            printf("net2: InitializeSecurityContext %08lx\n", (unsigned long)ss);
+            printf("net2: InitializeSecurityContext %08lx (call %d, %d bytes in: %02x %02x %02x %02x %02x %02x)\n",
+                   (unsigned long)ss, calls, inlen, (unsigned char)inbuf[0], (unsigned char)inbuf[1],
+                   (unsigned char)inbuf[2], (unsigned char)inbuf[3], (unsigned char)inbuf[4], (unsigned char)inbuf[5]);
             return fail(22, "InitializeSecurityContext");
         }
         have_ctx = TRUE;

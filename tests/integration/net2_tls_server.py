@@ -88,7 +88,9 @@ def serve(port, state):
             continue
         try:
             conn = ctx.wrap_socket(raw, server_side=True)
-        except (OSError, ssl.SSLError):
+        except (OSError, ssl.SSLError) as e:
+            if not isinstance(e, (ssl.SSLEOFError, ConnectionError)) and "EOF" not in str(e):   # not the start probe
+                print("handshake error: %r" % (e,), file=sys.stderr, flush=True)
             raw.close()
             continue
         threading.Thread(target=handle, args=(conn,), daemon=True).start()
@@ -131,6 +133,13 @@ def main():
         os.makedirs(sys.argv[2], exist_ok=True)
         open(os.path.join(sys.argv[2], "stop"), "w").close()
         time.sleep(1.5)
+        try:
+            text = open(os.path.join(sys.argv[2], "server.log"), "r", errors="replace").read()
+        except OSError:
+            text = ""
+        if "handshake error" in text:    # a TLS handshake failed on the server: show why (the guest test fails too)
+            print(text)
+            return 1
         return 0
     print(__doc__, file=sys.stderr)
     return 2
