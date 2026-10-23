@@ -26,6 +26,62 @@ bool HasNonClient(const WindowObj* w) {
            w->window.bottom != w->client.bottom;
 }
 
+// a minus b when the result is still one rectangle (b spans a in one direction and touches an edge in the other,
+// or misses or covers a); false leaves *out untouched. Update regions are one bounding rectangle per window, so a
+// hole in the middle cannot be represented and the caller keeps the larger (conservative) region.
+bool RectSubtractExact(const RECT& a, const RECT& b, RECT* out) {
+    const RECT i = RectIntersect(a, b);
+    if (RectEmpty(i)) { *out = a; return true; }
+    if (i.left == a.left && i.right == a.right && i.top == a.top && i.bottom == a.bottom) { *out = RECT{0, 0, 0, 0}; return true; }
+    if (i.left <= a.left && i.right >= a.right) {
+        if (i.top <= a.top) { *out = RECT{a.left, i.bottom, a.right, a.bottom}; return true; }
+        if (i.bottom >= a.bottom) { *out = RECT{a.left, a.top, a.right, i.top}; return true; }
+    }
+    if (i.top <= a.top && i.bottom >= a.bottom) {
+        if (i.left <= a.left) { *out = RECT{i.right, a.top, a.right, a.bottom}; return true; }
+        if (i.right >= a.right) { *out = RECT{a.left, a.top, i.left, a.bottom}; return true; }
+    }
+    return false;
+}
+
+// A window painted `painted` (its client coordinates): win32k's get_update_region validates that area on every
+// ancestor that does not clip its children (server/window.c validate_parents), so a parent painted later does not
+// erase it again. Only the cases RectSubtractExact can represent are validated.
+void ValidateInAncestors(const WindowObj* w, RECT painted) {
+    while (w && !RectEmpty(painted)) {
+        painted = RectOffset(painted, w->client.left, w->client.top);   // into the parent's client coordinates
+        WindowObj* a = Win(w->parent);
+        if (!a || (a->flags & kWinIsDesktop)) return;
+        if (!(a->style & WS_CLIPCHILDREN) && !RectEmpty(a->update)) {
+            RECT out;
+            if (RectSubtractExact(a->update, painted, &out)) {
+                a->update = out;
+                if (RectEmpty(a->update)) a->erase_pending = false;
+            }
+        }
+        w = a;
+    }
+}
+
+}  // namespace
+
+// A window that does not clip its children paints (and erases) over them; the children it covered are repainted
+// afterwards (the region bookkeeping above is a bounding rectangle, so the exact "child already valid" case of
+// win32k cannot always be kept).
+void InvalidateChildrenCoveredBy(WindowObj* w, const RECT& area) {
+    if (!w || RectEmpty(area) || (w->style & WS_CLIPCHILDREN)) return;
+    for (HWND ch : std::vector<HWND>(w->children)) {
+        WindowObj* c = Win(ch);
+        if (!c || !(c->style & WS_VISIBLE)) continue;
+        const RECT hit = RectIntersect(area, c->window);
+        if (RectEmpty(hit)) continue;
+        const RECT in_child = RectOffset(hit, -c->client.left, -c->client.top);
+        InvalidateWindow(ch, &in_child, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME);
+    }
+}
+
+namespace {
+
 void RetainFrame() {
     State& s = S();
     s.retained.clear();
@@ -154,9 +210,12 @@ void InvalidateWindow(HWND hwnd, const RECT* client_rect, UINT flags) {
             if (NeedsPaint(w)) WakeThread(FindUserThreadById(w->tid), QS_PAINT);
         }
     } else if (flags & RDW_VALIDATE) {
-        if (!client_rect || (r.left <= w->update.left && r.top <= w->update.top && r.right >= w->update.right &&
-                             r.bottom >= w->update.bottom))
+        if (!client_rect) {
             w->update = RECT{0, 0, 0, 0};
+        } else {
+            RECT rest;
+            if (RectSubtractExact(w->update, r, &rest)) w->update = rest;
+        }
         if (flags & RDW_NOERASE) w->erase_pending = false;
         if (flags & RDW_NOFRAME) w->nc_pending = false;
         if (flags & RDW_NOINTERNALPAINT) w->internal_paint = false;
@@ -250,9 +309,11 @@ void SendEraseMessages(HWND hwnd, HDC hdc_in, bool* erased) {
                 dc->paint_clip = clip;
             }
         }
+        const RECT erased_area = w->update;
         const LRESULT r = SendMessageInternal(hwnd, WM_ERASEBKGND, reinterpret_cast<WPARAM>(hdc), 0);
         if (erased) *erased = r != 0;
         if (!hdc_in) ReleaseDCInternal(hwnd, hdc);
+        InvalidateChildrenCoveredBy(Win(hwnd), erased_area);
     }
 }
 
@@ -398,6 +459,8 @@ HDC BeginPaintInternal(HWND hwnd, PAINTSTRUCT* ps) {
     w->erase_pending = false;
     w->nc_pending = false;
     w->internal_paint = false;
+    ValidateInAncestors(w, update);
+    InvalidateChildrenCoveredBy(w, update);
     if (nc && HasNonClient(w)) {
         SendMessageInternal(hwnd, WM_NCPAINT, 1, 0);
         if (!(w = Win(hwnd))) return nullptr;
