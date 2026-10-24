@@ -442,6 +442,11 @@ namespace
         CHECK(ParseLaunchConfig("{\"machine\": \"machine-native-d3d\"}", &lc, &err) && lc.machine == "machine-native-d3d");
         CHECK(Contains(DescribeLaunchConfig(lc), "machine=machine-native-d3d"));
         CHECK(ParseLaunchConfig("{}", &lc, &err) && lc.machine.empty() && Contains(DescribeLaunchConfig(lc), "machine=machine\n"));
+        CHECK(ParseLaunchConfig("{\"display_mode\": \"2560x1440@120\", \"guest_display\": \"3840x2160@120\", \"output_scaling\": \"layer\"}", &lc, &err) &&
+              lc.display_mode == "2560x1440@120" && lc.guest_display == "3840x2160@120" && lc.output_scaling == "layer");
+        CHECK(ParseLaunchConfig("{}", &lc, &err) && lc.display_mode == "auto" && lc.guest_display == "auto" && lc.output_scaling == "system");
+        CHECK(!ParseLaunchConfig("{\"display_mode\": \"big\"}", &lc, &err) && Contains(err, "WxH@Hz"));
+        CHECK(!ParseLaunchConfig("{\"output_scaling\": \"gpu\"}", &lc, &err) && Contains(err, "system"));
         CHECK(!ParseLaunchConfig("{\"machine\": 3}", &lc, &err) && Contains(err, "must be a string"));
         CHECK(!ParseLaunchConfig("{\"machine\": \"sub\\\\x\"}", &lc, &err) && Contains(err, "folder name"));
         CHECK(!ParseLaunchConfig("{\"machine\": \"\"}", &lc, &err));

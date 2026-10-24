@@ -44,13 +44,40 @@ if(TARGET guest_hello)
                    guest_dialog guest_comctl guest_seh guest_window_scroll guest_clipboard guest_net msctf_stub
                    guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput xinput1_4 gdi32full_stub guest_identity
                    guest_cursor guest_regpersist guest_wasapi guest_xaudio2 guest_tebframe guest_rdrand
-                   stage_guest_dirtree guest_xaudio2_play)
+                   stage_guest_dirtree guest_xaudio2_play guest_net2 guest_display_mode)
   if(TARGET guest_d3d11_tri)
     add_dependencies(prepare_machine guest_d3d11_tri)
   endif()
   if(TARGET guest_d3d11_swap)
     add_dependencies(prepare_machine guest_d3d11_swap)
   endif()
+endif()
+# Import lists of the guests that run on the machine folders (tools/game/dump_imports.py), written into the guest folder
+# (<bin>/guest/<guest>.exe_imports.txt, staged with the guests as C:\guest): the input of integration.guest_closure*.
+find_program(WIN10XBOX_PYTHON NAMES python3 python)
+set(_closure_guests "")
+if(TARGET guest_closure AND WIN10XBOX_PYTHON)
+  foreach(_g guest_hello guest_xinput guest_net guest_net2 guest_wasapi guest_xaudio2 guest_d3d11_tri)
+    if(TARGET ${_g})
+      list(APPEND _closure_guests ${_g})
+    endif()
+  endforeach()
+  set(_closure_files "")
+  foreach(_g ${_closure_guests})
+    list(APPEND _closure_files $<TARGET_FILE:${_g}>)
+  endforeach()
+  # The builtins a game pulls in beyond its own imports: their OWN imports are measured too (the VC runtime, winhttp,
+  # wininet and its dhcpcsvc). Only the ones present in WIN10XBOX_BUILTIN_DIR at configure time are listed.
+  foreach(_b winhttp wininet msvcp140 msvcp140_1 vcruntime140 vcruntime140_1 dhcpcsvc)
+    if(EXISTS ${WIN10XBOX_BUILTIN_DIR}/${_b}.dll)
+      list(APPEND _closure_files ${WIN10XBOX_BUILTIN_DIR}/${_b}.dll)
+    endif()
+  endforeach()
+  add_custom_target(closure_lists ALL
+    COMMAND ${WIN10XBOX_PYTHON} ${CMAKE_SOURCE_DIR}/tools/game/dump_imports.py ${_closure_files} ${CMAKE_BINARY_DIR}/bin/guest
+    COMMENT "Import lists of the guests for guest_closure" VERBATIM)
+  add_dependencies(closure_lists ${_closure_guests} guest_closure)
+  add_dependencies(prepare_machine closure_lists)
 endif()
 add_test(NAME integration.prepare_machine COMMAND ${CMAKE_COMMAND} ${_prepare_args})
 set_tests_properties(integration.prepare_machine PROPERTIES FIXTURES_SETUP w10x_machine)
@@ -365,10 +392,56 @@ win10xbox_guest_test(guest_xinput "C:\\guest\\guest_xinput.exe" 42
   "xinput: screen=[0-9]+x[0-9]+" "xinput: caps ok type=1 subtype=1" "xinput: idle packet=[0-9]+ buttons=0x0000"
   "xinput: packet changed [0-9]+ -> [0-9]+" "xinput: buttons=0x1000 lx=1000 ly=-2000 rx=3000 ry=-4000 lt=128 rt=255"
   "xinput: users 1\\.\\.3 not connected \\(1167 1167 1167\\)" "xinput: set state ok, battery type=1 level=3, bad index=160"
+  "xinput: ex ordinal 100 buttons=0x1000, users 1\\.\\.3 setstate/battery/keystroke/ex all 1167, enable ok"
   "xinput: done")
 set_tests_properties(integration.guest_xinput PROPERTIES
-  ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=pad 0 0 0 0 0 0 0\\;padwait 30000\\;sleep 300\\;pad 1000 1000 -2000 3000 -4000 128 255"
+  ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=pad 0 0 0 0 0 0 0\\;padwait 10000\\;sleep 300\\;pad 1000 1000 -2000 3000 -4000 128 255"
   FAIL_REGULAR_EXPRESSION "xinput: FAIL")
+# Display mode (tests/guest/display_mode.c): the host's one mode (here 1280x720@75 through WIN10XBOX_DISPLAY_MODE) is what
+# GetSystemMetrics, GetDeviceCaps (HORZRES/VERTRES/VREFRESH/BITSPIXEL), EnumDisplaySettings and the monitor rectangle report.
+set(_guest_args "1280x720@75")
+win10xbox_guest_test(guest_display_mode "C:\\guest\\guest_display_mode.exe" 42
+  "display: GetSystemMetrics=1280x720" "display: GetDeviceCaps=1280x720 vrefresh=75 bitspixel=32"
+  "display: EnumDisplaySettings=1280x720@75 bpp=32" "display: monitor=1280x720" "display: done")
+unset(_guest_args)
+set_tests_properties(integration.guest_display_mode PROPERTIES
+  ENVIRONMENT "WIN10XBOX_DISPLAY_MODE=1280x720@75" FAIL_REGULAR_EXPRESSION "display: FAIL")
+# The guest's screen (guest_display) differs from the console output: the guest sees 1920x1080@120, the output is a
+# headless 800x600@60 (WIN10XBOX_OUTPUT_MODE); the composed frame stays 1920x1080 and the presenter's scaler runs
+# over it (host-uwp prints the same "scale=" in status.txt).
+set(_guest_args "1920x1080@120")
+win10xbox_guest_test(guest_display_mode_scaled "C:\\guest\\guest_display_mode.exe" 42
+  "display: GetSystemMetrics=1920x1080" "display: GetDeviceCaps=1920x1080 vrefresh=120 bitspixel=32"
+  "display: EnumDisplaySettings=1920x1080@120 bpp=32" "display: monitor=1920x1080" "display: done"
+  "host-win32: composed=1920x1080 scale=1920x1080->800x600")
+unset(_guest_args)
+set_tests_properties(integration.guest_display_mode_scaled PROPERTIES
+  ENVIRONMENT "WIN10XBOX_DISPLAY_MODE=1920x1080@120;WIN10XBOX_OUTPUT_MODE=800x600@60" FAIL_REGULAR_EXPRESSION "display: FAIL")
+# The same guest on machine-native-d3d (route B + D3D: native System32 present next to the builtins). xinput1_4 must still be
+# OUR builtin (Windows\\builtin\\xinput1_4.dll, IsAlwaysBuiltin), never a host System32 copy. Native Windows builds only,
+# like integration.guest_d3d11.
+if(NOT CMAKE_CROSSCOMPILING AND TARGET guest_d3d11_tri)
+add_test(NAME integration.guest_xinput_native_d3d
+  COMMAND ${CMAKE_COMMAND}
+    -DHOST=$<TARGET_FILE:win10xbox>
+    -DMACHINE=${WIN10XBOX_D3D_MACHINE_DIR}
+    -DPROGRAM=C:\\guest\\guest_xinput.exe
+    -DEXPECT_EXIT=42
+    "-DEXPECT_REGEX=xinput: caps ok type=1 subtype=1;xinput: buttons=0x1000 lx=1000 ly=-2000 rx=3000 ry=-4000 lt=128 rt=255;xinput: users 1\\.\\.3 not connected \\(1167 1167 1167\\);xinput: ex ordinal 100 buttons=0x1000, users 1\\.\\.3 setstate/battery/keystroke/ex all 1167, enable ok;xinput: done"
+    "-DEXPECT_TRACE_REGEX=System32.xinput1_4.dll \\([0-9]+ bytes, host path [^)]*Windows.builtin.xinput1_4.dll\\)"
+    "-DFORBID_TRACE_REGEX=host path [^)]*[Ss]ystem32.xinput1_[34].dll"
+    -DDEBUG_SPEC=+modules
+    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
+set_tests_properties(integration.guest_xinput_native_d3d PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "guest_e2e"
+  TIMEOUT 180
+  ENVIRONMENT "WIN10XBOX_TEST_INJECT_INPUT=pad 0 0 0 0 0 0 0\\;padwait 10000\\;sleep 300\\;pad 1000 1000 -2000 3000 -4000 128 255"
+  FAIL_REGULAR_EXPRESSION "xinput: FAIL")
+endif()
 # Scroll bars (tests/guest/window_scroll.c, core/user/win_scroll.cpp): range/position round trip, HTVSCROLL hit test,
 # ScrollWindowEx / ScrollDC pixels, and a host-injected click on the vertical bar's down arrow that must arrive as
 # WM_VSCROLL SB_LINEDOWN + SB_ENDSCROLL. The screenshot shows the bar's track colour (COLOR_SCROLLBAR, ffc8c8c8) at
@@ -440,6 +513,42 @@ win10xbox_guest_test(guest_net "C:\\guest\\guest_net.exe" 42
   "net: connected" "net: FIONBIO ok" "net: sent 35 bytes" "net: received 35 bytes: hello from the guest over loopback"
   "net: done")
 set_tests_properties(integration.guest_net PROPERTIES FAIL_REGULAR_EXPRESSION "net: FAILED")
+unset(_guest_no_user32)
+unset(_guest_machine)
+
+# tests/guest/net2.c: UDP loopback on Wine's ws2_32 and TLS (SChannel over the host's SSPI) against a local server.
+set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+set(_guest_no_user32 ON)
+# The TLS server (tests/integration/net2_tls_server.py, a self-signed certificate made at test time) is a fixture:
+# the setup test starts it detached on 127.0.0.1:${_net2_port} and the cleanup test stops it.
+find_program(WIN10XBOX_PYTHON NAMES python3 python)
+set(_net2_port 47583)
+set(_net2_state ${CMAKE_BINARY_DIR}/bin/net2_tls)
+if(WIN10XBOX_PYTHON)
+  set(_net2_py ${WIN10XBOX_PYTHON})
+else()
+  set(_net2_py ${CMAKE_COMMAND} -E false)   # no python on this machine: the fixture, and with it the test, fails
+endif()
+add_test(NAME integration.net2_tls_server_start
+  COMMAND ${_net2_py} ${CMAKE_CURRENT_SOURCE_DIR}/net2_tls_server.py start ${_net2_port} ${_net2_state})
+add_test(NAME integration.net2_tls_server_stop
+  COMMAND ${_net2_py} ${CMAKE_CURRENT_SOURCE_DIR}/net2_tls_server.py stop ${_net2_state})
+set_tests_properties(integration.net2_tls_server_start PROPERTIES FIXTURES_SETUP w10x_net2_server TIMEOUT 120)
+set_tests_properties(integration.net2_tls_server_stop PROPERTIES FIXTURES_CLEANUP w10x_net2_server TIMEOUT 60)
+set(_guest_args ${_net2_port})
+set(_guest_debug "-all,+schannel")   # TEMP: per-step handshake trace in the Windows job log
+win10xbox_guest_test(guest_net2 "C:\\guest\\guest_net2.exe" 42
+  "net2: udp ok" "net2: tls handshake ok, protocol TLS 1\\.[23]" "net2: tls sent 14 bytes"
+  "net2: tls received 14 bytes: hello over tls" "net2: tls ok \\(TLS 1\\.[23]\\)" "net2: done")
+set_tests_properties(integration.guest_net2 PROPERTIES FAIL_REGULAR_EXPRESSION "net2: FAILED"
+  FIXTURES_REQUIRED "w10x_machine;w10x_net2_server")
+# Control: the same program NOT through the layer (the runner's own SChannel on Windows, Wine's on linux-cross) against
+# the same server. If this fails where guest_net2 fails, the server/SChannel pairing is at fault, not the layer.
+add_test(NAME integration.net2_native COMMAND guest_net2 ${_net2_port})
+set_tests_properties(integration.net2_native PROPERTIES PASS_REGULAR_EXPRESSION "net2: tls ok \\(TLS 1\\.[23]\\)"
+  FAIL_REGULAR_EXPRESSION "net2: FAILED" FIXTURES_REQUIRED w10x_net2_server TIMEOUT 120 LABELS "guest_e2e")
+unset(_guest_args)
+unset(_guest_debug)
 unset(_guest_no_user32)
 unset(_guest_machine)
 
@@ -873,6 +982,35 @@ set_tests_properties(integration.guest_d3d11 PROPERTIES
   ENVIRONMENT "WIN10XBOX_WINEDEBUG=+loaddll,warn+module,+seh,+rpc,+service")
 endif()
 
+# XAudio2 2.9 as the game runs it (docs/slices/xaudio2play.md): the runner's NATIVE xaudio2_9.dll (guest code, "xaudio2_9":
+# "native" in machine-native-d3d's machine.json) on top of Wine's mmdevapi and the layer's WASAPI bridge, playing the 200 ms
+# buffer of tests/guest/xaudio2.c to the virtual render endpoint tools/ci/install_virtual_audio.ps1 installs on the
+# Windows runners. Exit 42 + "RESULT played" (OnBufferEnd from the engine, BuffersQueued seen); the trace must show the
+# native DLL mapped from the machine folder (not Wine's builtin). Runs where the workflow installed the device
+# (WIN10XBOX_CI_AUDIO_ENDPOINT=1); SKIPs elsewhere because a machine without an endpoint answers 43 by design.
+if(NOT CMAKE_CROSSCOMPILING AND TARGET guest_xaudio2)
+add_test(NAME integration.guest_xaudio2_native
+  COMMAND ${CMAKE_COMMAND}
+    -DHOST=$<TARGET_FILE:win10xbox>
+    -DMACHINE=${WIN10XBOX_D3D_MACHINE_DIR}
+    -DPROGRAM=C:\\guest\\guest_xaudio2.exe
+    -DEXPECT_EXIT=42
+    -DSAVE_STDOUT=${CMAKE_BINARY_DIR}/bin/guest_xaudio2_native.log   # the OnBufferEnd / BuffersQueued line, uploaded by CI
+    "-DEXPECT_REGEX=xaudio2: XAudio2Create ok;xaudio2: OnBufferEnd received after about [0-9]+ ms;BuffersQueued max [0-9]+;xaudio2: RESULT played;xaudio2: done"
+    "-DEXPECT_TRACE_REGEX=host path [^)]*[Ss]ystem32.[Xx][Aa]udio2_9.dll"
+    -DDEBUG_SPEC=+modules
+    -DREQUIRE=Windows/System32/xaudio2_9.dll
+    -DSKIP_UNLESS_ENV=WIN10XBOX_CI_AUDIO_ENDPOINT
+    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
+set_tests_properties(integration.guest_xaudio2_native PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "guest_e2e"
+  TIMEOUT 240)
+endif()
+
 # A swap chain on a window, route B (docs/slices/swapchain2.md): tests/guest/d3d11_swap.c on the same machine. The layer
 # interposes the guest's dxgi (CreateDXGIFactory*) and d3d11 (D3D11CreateDeviceAndSwapChain), so the swap chain is
 # a wrapper around the real one; after each Present the real back buffer is copied to a staging texture and handed
@@ -888,7 +1026,7 @@ add_test(NAME integration.guest_d3d11_swap
     -DEXPECT_EXIT=42
     -DSAVE_STDOUT=${CMAKE_BINARY_DIR}/bin/guest_d3d11_swap.log
     "-DEXPECT_REGEX=swap: window hwnd=;swap: CreateDXGIFactory1 -> 00000000;swap: CreateSwapChain -> 00000000;swap: readback centre=ffff0000 corner=ff0000ff;swap: presented 60 frames;swap: done"
-    "-DEXPECT_TRACE_REGEX=dxgi: dxgi.dll: 3 export\\(s\\) interposed;dxgi: d3d11.dll: 1 export\\(s\\) interposed;dxgi: CreateDXGIFactory1 -> 00000000;dxgi: IDXGIFactory::CreateSwapChain\\(window [0-9a-fA-Fx]+, 256x256[^)]*\\) -> 00000000;dxgi: IDXGISwapChain::Present\\(1, 0x0\\) -> 0000000[0-9] \\(back buffer copied\\)"
+    "-DEXPECT_TRACE_REGEX=dxgi: dxgi.dll: 3 export\\(s\\) interposed;dxgi: d3d11.dll: 2 export\\(s\\) interposed;dxgi: CreateDXGIFactory1 -> 00000000;dxgi: IDXGIFactory::CreateSwapChain\\(window [0-9a-fA-Fx]+, 256x256[^)]*\\) -> 00000000;dxgi: IDXGISwapChain::Present\\(1, 0x0\\) -> 0000000[0-9] \\(back buffer copied\\)"
     "-DFORBID_TRACE_REGEX=host state reached under the guest TLS view;not handed to the compositor"
     -DDEBUG_SPEC=+dispatch,+modules,+process,+user
     -DREQUIRE=Windows/System32/d3d11.dll
@@ -1013,6 +1151,33 @@ set_tests_properties(integration.guest_imgui_d3d11_emu PROPERTIES
   LABELS "guest_e2e"
   TIMEOUT 240
   ENVIRONMENT "WIN10XBOX_IMGUI_FRAMES=60;WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_imgui_d3d11_emu.bmp;WIN10XBOX_EXPECT_SCREENSHOT_VARIED=110,140,1010,760,40,3,ff738c99")
+endif()
+
+# The DLL/import closure (docs/slices/gameclosure.md): tests/guest/closure.c LoadLibrary's and GetProcAddress's every import of the
+# guests listed above (tools/game/dump_imports.py, built into C:\guest) through the layer. Exit 42 = nothing missing; the
+# summary line must say 0 missing dlls, 0 missing symbols. The owner's game lists (docs/game/*_imports.txt) are run the same
+# way: docs/game/README.md.
+if(NOT CMAKE_CROSSCOMPILING AND TARGET guest_d3d11_tri AND _closure_guests)
+set(_guest_machine ${WIN10XBOX_D3D_MACHINE_DIR})
+set(_guest_args "C:\\guest")
+set(_guest_save_stdout ${CMAKE_BINARY_DIR}/bin/guest_closure.log)
+win10xbox_guest_test(guest_closure "C:\\guest\\guest_closure.exe" 42
+  "closure: [1-9][0-9]* modules, [1-9][0-9]* dlls, [1-9][0-9]* symbols, 0 missing dlls, 0 missing symbols")
+set_tests_properties(integration.guest_closure PROPERTIES TIMEOUT 240)
+unset(_guest_machine)
+unset(_guest_args)
+unset(_guest_save_stdout)
+endif()
+# Local (linux-cross, Wine) check of the same guest on the builtin-only folder, with the lists of the mingw guests.
+if(CMAKE_CROSSCOMPILING AND _closure_guests)
+set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+set(_guest_console ON)
+set(_guest_args "C:\\guest")
+win10xbox_guest_test(guest_closure_builtin "C:\\guest\\guest_closure.exe" 42
+  "closure: [1-9][0-9]* modules, [1-9][0-9]* dlls, [1-9][0-9]* symbols, 0 missing dlls, 0 missing symbols")
+unset(_guest_machine)
+unset(_guest_console)
+unset(_guest_args)
 endif()
 
 win10xbox_guest_test(guest_hello_appcontainer_sim "C:\\guest\\guest_hello.exe" 42 "hello from guest")

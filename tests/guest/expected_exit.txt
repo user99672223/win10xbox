@@ -46,13 +46,18 @@ guest_dialog.exe 42=clicked 1=no-click
 guest_spawn.exe 42=child-ran 1=no-child-processes
 guest_named_objects.exe 42=child-ran 1=no-child-processes
 
-# Audio: the runner has no endpoint (hr 0x80070490), the console has one
+# Audio: the console has HDMI audio, so its verdict is 42 (a buffer played, OnBufferEnd from the engine). 43 stays listed only
+# because host-uwp's own runner job has no endpoint (hr 0x80070490); on the console 43 would be a regression to look at, not
+# an expected answer (docs/slices/xaudio2play.md). The hosted CI runners now have a virtual endpoint and gate on 42.
 guest_wasapi.exe 42=endpoint 43=no-endpoint
 guest_xaudio2.exe 42=endpoint 43=no-endpoint
 guest_xaudio2_play.exe 42=played 43=no-endpoint
 
-# Gamepad: 42 with a pad, 1 after the 30 s wait without one
+# Gamepad: 42 with a pad, 1 after the 10 s wait without one
 guest_xinput.exe 42=pad 1=no-pad
+
+# Every display answer equals the host's one mode (no argument: the picker run only checks the four answers agree)
+guest_display_mode.exe 42=matches
 
 # Off-screen D3D11 on machine-native-d3d (guest_d3d11_tri.machine); 10 = d3d11.dll did not load (no D3D machine)
 guest_d3d11_tri.exe 42=d3d11 10=no-d3d11
@@ -60,6 +65,11 @@ guest_d3d11_tri.exe 42=d3d11 10=no-d3d11
 guest_imgui_d3d11.exe 0=frames
 # The swap-chain guest on machine-emu-d3d (guest_d3d11_swap.machine): 60 frames presented through the virtual swap chain.
 guest_d3d11_swap.exe 42=presented
+
+# UDP + TLS (tests/guest/net2.c): the TLS half needs the test server (integration.net2_tls_server); standalone the connect fails = 20
+guest_net2.exe 42=udp+tls 20=no-tls-server
+# DLL/import closure (tests/guest/closure.c): 42 when every listed import resolves, 43 when some are missing or no *_imports.txt is bundled
+guest_closure.exe 42=closed 43=open-or-no-lists
 
 # Chocolate Doom (fetched, not in tests/guest): interactive; the timedemo ends through I_Error, which exits with -1
 chocolate-doom.exe TIMEOUT=interactive

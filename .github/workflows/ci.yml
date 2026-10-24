@@ -458,6 +458,15 @@ jobs:
       - name: Fetch MinGit (real guest program, pinned SHA-256 verified)
         shell: pwsh
         run: ./tools/ci/fetch_mingit.ps1 -Out build/bin/machine/guest/mingit
+      # A virtual render endpoint (docs/slices/xaudio2play.md): the pinned, hash-verified Scream 4.0 driver, else VB-CABLE,
+      # installed with the vendor's own installer. It counts only when guest_wasapi, run directly on this host, plays (exit
+      # 42); then WIN10XBOX_CI_AUDIO_ENDPOINT=1 is exported, which makes integration.guest_wasapi / guest_xaudio2 /
+      # guest_xaudio2_native require "RESULT played" instead of accepting the no-endpoint answer (43). Fails the job
+      # with the exact error of each attempt when no device can be installed.
+      - name: Install a virtual audio render endpoint
+        shell: pwsh
+        timeout-minutes: 12
+        run: ./tools/ci/install_virtual_audio.ps1 -Probe build/bin/guest/guest_wasapi.exe
       # What audio the runner has (docs/slices/audio.md): the services, the endpoint devices, and the verdict of the two
       # audio guests run directly on the host (42 = a device played the sound, 43 = no render endpoint, with the
       # HRESULT). integration.guest_wasapi / guest_xaudio2 require the layer to answer exactly as the host does, so
@@ -484,6 +493,14 @@ jobs:
             Show-Audio 'audio after Start-Service Audiosrv'
           }
           exit 0   # the probe reports; the gates are integration.guest_wasapi / guest_xaudio2 and the fastfetch Sound module
+      - name: Import table of the runner's native xaudio2_9.dll
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $d = Join-Path $env:RUNNER_TEMP 'xa2imports'
+          New-Item -ItemType Directory -Force $d | Out-Null
+          python tools/game/dump_imports.py C:\Windows\System32\xaudio2_9.dll $d
+          Get-Content "$d\*_imports.txt" | Select-String -NotMatch 'api-ms-win-core|api-ms-win-crt' | ForEach-Object { $_.Line }
       # The whole suite, end-to-end included. The guest's stdout IS captured on
       # real Windows: run 39818491081 (RelWithDebInfo, the one job of that run
       # that had the builtins) printed "hello from guest" and passed 11 of 13
@@ -563,30 +580,6 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: ./tools/ci/smoke_guests.ps1 -Bin build/bin -Machine build/bin/machine -LogDir build/guest-smoke -RealPrograms -Sysinternals
-      # Native or builtin xaudio2_9 (docs/slices/audio.md)? The gate above runs Wine's builtin. This measures the runner's
-      # own xaudio2_9.dll on the layer (dll_overrides "xaudio2_9": "native" on a copy of the builtin-only folder), with
-      # Wine's mmdevapi under it: the guest's exit code and the layer's err:/fixme: lines are printed, nothing gates.
-      - name: Measure - native xaudio2_9 from the runner's System32 on the layer (informational)
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $m = (Resolve-Path build/bin/machine-builtin).Path
-          $x = Join-Path $env:RUNNER_TEMP 'machine-native-xa'
-          robocopy $m $x /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
-          Copy-Item (Join-Path $env:SystemRoot 'System32\xaudio2_9.dll') (Join-Path $x 'Windows\System32\xaudio2_9.dll') -Force
-          $j = Get-Content (Join-Path $x 'machine.json') -Raw | ConvertFrom-Json
-          $j.dll_overrides | Add-Member -NotePropertyName 'xaudio2_9' -NotePropertyValue 'native' -Force
-          $j | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $x 'machine.json')
-          $env:WIN10XBOX_DEBUG = '+audio,+modules'
-          $p = Start-Process build/bin/win10xbox.exe -ArgumentList '--machine', $x, 'C:\guest\guest_xaudio2.exe' `
-                 -RedirectStandardOutput nx.out -RedirectStandardError nx.err -PassThru -NoNewWindow
-          $null = $p.Handle
-          if (-not $p.WaitForExit(120000)) { $p.Kill(); $p.WaitForExit(); Write-Host 'native xaudio2_9: killed after 120 s' }
-          Write-Host ("guest_xaudio2 with the native xaudio2_9: exit {0}" -f $p.ExitCode)
-          Get-Content nx.out | Write-Host
-          Select-String -Path nx.err -Pattern 'xaudio2_9|err:|fixme:|unresolved|EXCEPTION_WINE_STUB|c0000135' | Select-Object -First 30 | ForEach-Object { Write-Host "    $($_.Line)" }
-          exit 0
       # fastfetch module by module on the console's DLL set, gating: one process per module, so a module that stops the
       # guest fails by name. Each module that works must exit 0 and print its line. The ones that do not yet (Display,
       # GPU, Packages, LocalIp, Battery, Bluetooth) are the todo list of docs/slices/fastfetch.md; Sound is gated here since

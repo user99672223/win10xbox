@@ -59,8 +59,14 @@ namespace w10x_uwp
 
         // UI thread, once: the CoreWindow (as IUnknown) and its size in physical pixels, and the
         // size of the virtual screen ComposeFrame composes for (normally the same).
+        // screen_* = the guest's screen (the composed frame), output_* = the console's output mode (the swap chain);
+        // the frame is scaled (win10xbox/frame_scale.h) when they differ.
+        // system_scaling: back buffers at the guest's size, the console's compositor scales (DXGI_SCALING_STRETCH);
+        // falls back to our own scaling pass when the console refuses (OutputScaling() says which).
         void Configure(IUnknown* core_window, int window_width, int window_height, int screen_width,
-                       int screen_height);
+                       int screen_height, int output_width, int output_height, bool system_scaling);
+        // "system", "layer" or "layer (system refused: 0x...)"
+        std::string OutputScaling() const;
         // Opens LocalState\screen.bmp for the periodic screenshots. Call while no guest runs: the
         // file is rewritten through this handle later, never re-opened by path while the guest
         // owns the PEB.

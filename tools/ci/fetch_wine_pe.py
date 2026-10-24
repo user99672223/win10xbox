@@ -26,6 +26,7 @@ Needs `gh` with GH_TOKEN (actions: read). Prints the run id it used.
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -60,11 +61,27 @@ def live_artifacts(repo, run_id):
 
 
 def download(repo, run_id, name, dest):
+    # `gh run download` refuses to overwrite ("file exists"), so a rerun on a laptop (tools/dev/prepare-windows.ps1)
+    # failed after the first run: reuse the directory when it already holds this very run's artifact (marker file),
+    # otherwise start from an empty one.
+    marker = os.path.join(dest, ".wine-pe-run")
+    if os.path.isdir(dest) and os.listdir(dest):
+        try:
+            with open(marker) as f:
+                have = f.read().strip()
+        except OSError:
+            have = ""
+        if have == f"{run_id} {name}":
+            print(f"  {name} from run {run_id} already in {dest}", flush=True)
+            return
+        shutil.rmtree(dest)
     os.makedirs(dest, exist_ok=True)
     for i in range(1, 4):
         p = subprocess.run(["gh", "run", "download", str(run_id), "--repo", repo, "--name", name, "--dir", dest],
                            capture_output=True, text=True)
         if p.returncode == 0 and os.listdir(dest):
+            with open(marker, "w") as f:
+                f.write(f"{run_id} {name}\n")
             return
         print(f"  download {name} from run {run_id}: attempt {i} failed "
               f"(exit {p.returncode}: {(p.stderr or p.stdout).strip()[:300]}); retrying in {5 * i}s", flush=True)
@@ -79,6 +96,8 @@ def main():
     ap.add_argument("--sha", required=True)
     ap.add_argument("--artifact", action="append", required=True, help="NAME=DEST")
     ap.add_argument("--wait-minutes", type=float, default=45)
+    ap.add_argument("--main-branch", default="claude/youthful-cerf-l7xxsb",
+                    help="fallback source of builtins for a branch without its own wine-pe run")
     a = ap.parse_args()
     wanted = dict(s.split("=", 1) for s in a.artifact)
 
@@ -111,7 +130,10 @@ def main():
     # 2. Newest successful run (branch, then repository) that still has every artifact.
     if not chosen:
         seen = set()
+        # The main branch comes before "any branch": another slice's artifact may carry that slice's wine-pe
+        # patches, and a slice without its own wine-pe run must get main's builtins, not a sibling's.
         for scope, query in (("branch " + a.branch, f"branch={a.branch}&status=success&per_page=20"),
+                             ("main branch " + a.main_branch, f"branch={a.main_branch}&status=success&per_page=20"),
                              ("repository", "status=success&per_page=30")):
             for run in sorted(runs(a.repo, query), key=lambda r: r["run_number"], reverse=True):
                 if run["id"] in seen:

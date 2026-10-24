@@ -225,7 +225,7 @@ set_target_properties(window_guest PROPERTIES OUTPUT_NAME "window")
 
 # Every other guest of the repo, so the package carries them all to the console (HANDOFF.md
 # "Standing testing rule"). Console programs; output names as in the main tree.
-foreach(_g hello cpuid sleep spawn named_objects xinput identity regpersist tebframe rdrand)
+foreach(_g hello cpuid sleep spawn named_objects xinput identity regpersist tebframe rdrand net2 closure)
   add_executable(guest_${_g} "${WIN10XBOX_ROOT}/tests/guest/${_g}.c")
 endforeach()
 # The Direct3D 11 off-screen guest (tests/guest/d3d11_tri.c): native d3d11/dxgi loaded at run time, dxguid for the IIDs.
@@ -269,6 +269,7 @@ target_link_libraries(guest_xinput PRIVATE xinput1_4 user32)
 target_sources(guest_identity PRIVATE "${WIN10XBOX_ROOT}/tests/guest/identity.manifest")
 target_link_libraries(guest_identity PRIVATE ole32 oleaut32 advapi32)
 target_link_libraries(guest_regpersist PRIVATE advapi32)   # the registry API
+target_link_libraries(guest_net2 PRIVATE ws2_32 secur32 crypt32)   # UDP + SChannel TLS (tests/guest/net2.c)
 add_library(guest_dll SHARED "${WIN10XBOX_ROOT}/tests/guest/dll.c")
 set_target_properties(guest_dll PROPERTIES PREFIX "")
 add_executable(smoke_guest_cui "${WIN10XBOX_ROOT}/host-uwp-lite/smoke_guest.c")
@@ -281,7 +282,7 @@ target_include_directories(drv_client PRIVATE "${WIN10XBOX_ROOT}/tests/drivers")
 
 # The remaining GUI guests of tests/guest (same output names as ci.yml's bin/guest), and the GUI
 # smoke variant, so the package carries every guest ci.yml builds (HANDOFF.md "Package contents").
-foreach(_g window2 window_input window_input2 window_text window_hooks window_nc window_scroll clipboard window_menu cursor)
+foreach(_g window2 window_input window_input2 window_text window_hooks window_nc window_scroll clipboard window_menu cursor display_mode)
   add_executable(guest_${_g} "${WIN10XBOX_ROOT}/tests/guest/${_g}.c")
   target_link_libraries(guest_${_g} PRIVATE user32 gdi32)
 endforeach()
@@ -324,8 +325,8 @@ set(HOST_UWP_GUESTS window_guest hello_guest hello_guest_cui guest_hello guest_c
     smoke_guest_cui drv_client guest_window2 guest_window_input guest_window_input2 guest_window_text smoke_guest
     guest_spawn guest_window_nc guest_dialog guest_comctl guest_seh guest_seh_dll guest_window_scroll guest_clipboard
     guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput guest_identity guest_net guest_cursor
-    guest_regpersist guest_wasapi guest_xaudio2 guest_xaudio2_play guest_nowine guest_named_objects guest_tebframe guest_d3d11_tri guest_d3d11_swap
-    guest_rdrand)
+    guest_regpersist guest_wasapi guest_xaudio2 guest_xaudio2_play guest_nowine guest_named_objects guest_tebframe
+    guest_d3d11_tri guest_d3d11_swap guest_rdrand guest_net2 guest_closure guest_display_mode)
 if(TARGET guest_imgui_d3d11)
   list(APPEND HOST_UWP_GUESTS guest_imgui_d3d11)
 endif()

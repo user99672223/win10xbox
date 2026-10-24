@@ -42,6 +42,7 @@ namespace w10x_uwp
         std::string title;       // shown instead of the file name when not empty
         std::vector<std::string> args;                            // replaces launch.json "args" for this launch
         std::vector<std::pair<std::string, std::string>> env;     // set for this launch only
+        std::string display;     // the guest's screen for this program (.display / display=), "" = launch.json guest_display
         std::string machine;     // machine folder under LocalState ("" = launch.json "machine", else "machine")
         bool run_all = false;    // the top entry "Run every program (report)": no file, starts the all-programs run
     };

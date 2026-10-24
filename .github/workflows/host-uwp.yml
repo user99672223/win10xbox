@@ -257,7 +257,8 @@ jobs:
                         'guest_cursor.exe', 'guest_regpersist.exe', 'guest_identity.exe',
                         'guest_net.exe', 'guest_wasapi.exe', 'guest_xaudio2.exe', 'guest_xaudio2_play.exe', 'guest_nowine.exe', 'guest_named_objects.exe', 'guest_rdrand.exe',
                         'guest_d3d11_tri.exe', 'guest_imgui_d3d11.exe', 'guest_d3d11_tri.machine', 'guest_imgui_d3d11.machine',
-                        'guest_d3d11_swap.exe', 'guest_d3d11_swap.machine')
+                        'guest_d3d11_swap.exe', 'guest_d3d11_swap.machine',
+                        'guest_tebframe.exe', 'guest_net2.exe', 'guest_closure.exe', 'guest_display_mode.exe')
           $missing = @($expected | Where-Object { -not (Test-Path "$stage/payload/guest/$_") })
           Write-Host ("bundled guests: " + (@(Get-ChildItem "$stage/payload/guest" -File | ForEach-Object { $_.Name }) -join ', '))
           if ($missing.Count -gt 0) {

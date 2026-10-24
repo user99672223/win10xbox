@@ -327,6 +327,19 @@ public:
     HRESULT STDMETHODCALLTYPE GetDevice(REFIID r, void** pp) override { return sc0_->GetDevice(r, pp); }
     // IDXGISwapChain
     HRESULT STDMETHODCALLTYPE Present(UINT sync, UINT flags) override {
+        if ((flags & DXGI_PRESENT_TEST) == 0) {
+            { HostModeScope w10x_host_; user::NoteGuestPresent(sync); }
+            // VRR / FreeSync: a swap chain created with ALLOW_TEARING (the host's target does that when the system
+            // supports it) presents interval-0 frames with tearing.
+            if (sync == 0 && !(flags & DXGI_PRESENT_ALLOW_TEARING) && sc1_) {
+                if (!tear_checked_) {
+                    DXGI_SWAP_CHAIN_DESC1 d1{};
+                    tear_ = SUCCEEDED(sc1_->GetDesc1(&d1)) && (d1.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0;
+                    tear_checked_ = true;
+                }
+                if (tear_) flags |= DXGI_PRESENT_ALLOW_TEARING;
+            }
+        }
         const bool cap = (flags & DXGI_PRESENT_TEST) == 0 && Capture();
         const HRESULT hr = sc0_->Present(sync, flags);
         W10X_TR( "dxgi: IDXGISwapChain::Present(%u, 0x%x) -> %08lx%s", sync, flags, static_cast<unsigned long>(hr),
@@ -483,12 +496,170 @@ private:
     IDXGISwapChain1* sc1_ = nullptr;
     HWND hwnd_;
     bool no_capture_ = false;
+    bool tear_checked_ = false, tear_ = false;
     ID3D11Texture2D* staging_ = nullptr;
     UINT st_w_ = 0, st_h_ = 0;
     DXGI_FORMAT st_fmt_ = DXGI_FORMAT_UNKNOWN;
     std::vector<std::uint32_t> pix_;
     std::int32_t pix_w_ = 0, pix_h_ = 0;
 };
+
+// ---- Wrapper adapter / output (the display mode of the emulated windows) --------------------------------------------
+// On host-uwp (a swap-chain target is set) the guest's windows are the layer's, so the display its DXGI reports must be
+// the layer's one display mode (user::CurrentDisplayMode), not whatever the host's real output says. The factory's
+// adapters are wrapped; their outputs answer GetDesc / GetDisplayModeList / FindClosestMatchingMode with that mode and
+// forward everything else. An adapter without an output (the runner's WARP) forwards DXGI_ERROR_NOT_FOUND unchanged.
+// A wrapped adapter handed back to D3D11CreateDevice* is unwrapped there (kUnwrapAdapterIid); D3D12CreateDevice is not
+// interposed, so a D3D12 guest on host-uwp would receive the wrapper (see docs/slices/displaymode.md).
+const GUID kUnwrapAdapterIid = {0x7a1f0c52, 0x3b9e, 0x4d16, {0x9c, 0x0a, 0x5e, 0x21, 0xb4, 0x7d, 0x88, 0x31}};
+
+bool LayerMode(UINT* w, UINT* h, UINT* hz) {
+    std::uint32_t mw = 0, mh = 0, mhz = 0, bpp = 0;
+    bool ok;
+    { HostModeScope w10x_host_; ok = user::CurrentDisplayMode(&mw, &mh, &mhz, &bpp); }
+    if (!ok || !mw || !mh) return false;
+    *w = mw; *h = mh; *hz = mhz ? mhz : 60;
+    return true;
+}
+
+class WrapOutput final : public IDXGIOutput {
+public:
+    W10X_HOST_NEW_DELETE
+    explicit WrapOutput(IDXGIOutput* o) : o_(o) {}
+    ~WrapOutput() { if (o_) o_->Release(); }
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** pp) override {
+        if (!pp) return E_POINTER;
+        if (IsIid(riid, __uuidof(IUnknown)) || IsIid(riid, __uuidof(IDXGIObject)) || IsIid(riid, __uuidof(IDXGIOutput))) {
+            *pp = static_cast<IDXGIOutput*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *pp = nullptr;   // IDXGIOutput1..6: callers fall back to IDXGIOutput
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return static_cast<ULONG>(InterlockedIncrement(&ref_)); }
+    ULONG STDMETHODCALLTYPE Release() override {
+        const LONG r = InterlockedDecrement(&ref_);
+        if (r == 0) delete this;
+        return static_cast<ULONG>(r);
+    }
+    HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID n, UINT s, const void* d) override { return o_->SetPrivateData(n, s, d); }
+    HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID n, const IUnknown* u) override { return o_->SetPrivateDataInterface(n, u); }
+    HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID n, UINT* s, void* d) override { return o_->GetPrivateData(n, s, d); }
+    HRESULT STDMETHODCALLTYPE GetParent(REFIID r, void** pp) override { return o_->GetParent(r, pp); }
+    HRESULT STDMETHODCALLTYPE GetDesc(DXGI_OUTPUT_DESC* d) override {
+        const HRESULT hr = o_->GetDesc(d);
+        UINT w, h, hz;
+        if (SUCCEEDED(hr) && d && LayerMode(&w, &h, &hz)) {
+            d->DesktopCoordinates = RECT{0, 0, static_cast<LONG>(w), static_cast<LONG>(h)};
+            d->AttachedToDesktop = TRUE;
+            d->Rotation = DXGI_MODE_ROTATION_IDENTITY;
+        }
+        W10X_TRACE_HR("IDXGIOutput::GetDesc", hr);
+    }
+    HRESULT STDMETHODCALLTYPE GetDisplayModeList(DXGI_FORMAT fmt, UINT flags, UINT* num, DXGI_MODE_DESC* modes) override {
+        UINT w, h, hz;
+        if (!num || !LayerMode(&w, &h, &hz)) return o_->GetDisplayModeList(fmt, flags, num, modes);
+        if (modes) {
+            if (*num < 1) { *num = 1; W10X_TRACE_HR("IDXGIOutput::GetDisplayModeList(layer mode)", DXGI_ERROR_MORE_DATA); }
+            modes[0] = MakeMode(fmt, w, h, hz);
+        }
+        *num = 1;
+        W10X_TRACE_HR("IDXGIOutput::GetDisplayModeList(layer mode)", S_OK);
+    }
+    HRESULT STDMETHODCALLTYPE FindClosestMatchingMode(const DXGI_MODE_DESC* in, DXGI_MODE_DESC* closest, IUnknown* dev) override {
+        UINT w, h, hz;
+        if (!in || !closest || !LayerMode(&w, &h, &hz)) return o_->FindClosestMatchingMode(in, closest, dev);
+        *closest = MakeMode(in->Format, w, h, hz);
+        W10X_TRACE_HR("IDXGIOutput::FindClosestMatchingMode(layer mode)", S_OK);
+    }
+    HRESULT STDMETHODCALLTYPE WaitForVBlank() override { return o_->WaitForVBlank(); }
+    HRESULT STDMETHODCALLTYPE TakeOwnership(IUnknown* d, BOOL e) override { return o_->TakeOwnership(d, e); }
+    void STDMETHODCALLTYPE ReleaseOwnership() override { o_->ReleaseOwnership(); }
+    HRESULT STDMETHODCALLTYPE GetGammaControlCapabilities(DXGI_GAMMA_CONTROL_CAPABILITIES* c) override { return o_->GetGammaControlCapabilities(c); }
+    HRESULT STDMETHODCALLTYPE SetGammaControl(const DXGI_GAMMA_CONTROL* c) override { return o_->SetGammaControl(c); }
+    HRESULT STDMETHODCALLTYPE GetGammaControl(DXGI_GAMMA_CONTROL* c) override { return o_->GetGammaControl(c); }
+    HRESULT STDMETHODCALLTYPE SetDisplaySurface(IDXGISurface* s) override { return o_->SetDisplaySurface(s); }
+    HRESULT STDMETHODCALLTYPE GetDisplaySurfaceData(IDXGISurface* s) override { return o_->GetDisplaySurfaceData(s); }
+    HRESULT STDMETHODCALLTYPE GetFrameStatistics(DXGI_FRAME_STATISTICS* s) override { return o_->GetFrameStatistics(s); }
+
+private:
+    static DXGI_MODE_DESC MakeMode(DXGI_FORMAT fmt, UINT w, UINT h, UINT hz) {
+        DXGI_MODE_DESC m{};
+        m.Width = w;
+        m.Height = h;
+        m.RefreshRate = DXGI_RATIONAL{hz, 1};
+        m.Format = fmt == DXGI_FORMAT_UNKNOWN ? DXGI_FORMAT_R8G8B8A8_UNORM : fmt;
+        m.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE;
+        m.Scaling = DXGI_MODE_SCALING_UNSPECIFIED;
+        return m;
+    }
+    LONG ref_ = 1;
+    IDXGIOutput* o_;
+};
+
+class WrapAdapter final : public IDXGIAdapter1 {
+public:
+    W10X_HOST_NEW_DELETE
+    explicit WrapAdapter(IDXGIAdapter* a) : a0_(a) { a0_->QueryInterface(__uuidof(IDXGIAdapter1), reinterpret_cast<void**>(&a1_)); }
+    ~WrapAdapter() {
+        if (a1_) a1_->Release();
+        if (a0_) a0_->Release();
+    }
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** pp) override {
+        if (!pp) return E_POINTER;
+        if (IsIid(riid, kUnwrapAdapterIid)) {   // the real adapter, one reference (UnwrapAdapter)
+            a0_->AddRef();
+            *pp = a0_;
+            return S_OK;
+        }
+        if (IsIid(riid, __uuidof(IUnknown)) || IsIid(riid, __uuidof(IDXGIObject)) || IsIid(riid, __uuidof(IDXGIAdapter)) ||
+            (a1_ && IsIid(riid, __uuidof(IDXGIAdapter1)))) {
+            *pp = static_cast<IDXGIAdapter1*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *pp = nullptr;   // IDXGIAdapter2.. and private interfaces: refused so the object stays a plain adapter
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return static_cast<ULONG>(InterlockedIncrement(&ref_)); }
+    ULONG STDMETHODCALLTYPE Release() override {
+        const LONG r = InterlockedDecrement(&ref_);
+        if (r == 0) delete this;
+        return static_cast<ULONG>(r);
+    }
+    HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID n, UINT s, const void* d) override { return a0_->SetPrivateData(n, s, d); }
+    HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID n, const IUnknown* u) override { return a0_->SetPrivateDataInterface(n, u); }
+    HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID n, UINT* s, void* d) override { return a0_->GetPrivateData(n, s, d); }
+    HRESULT STDMETHODCALLTYPE GetParent(REFIID r, void** pp) override { return a0_->GetParent(r, pp); }
+    HRESULT STDMETHODCALLTYPE EnumOutputs(UINT i, IDXGIOutput** out) override {
+        IDXGIOutput* real = nullptr;
+        const HRESULT hr = a0_->EnumOutputs(i, out ? &real : nullptr);
+        if (FAILED(hr) || !real || !out) return hr;
+        *out = new WrapOutput(real);
+        W10X_TRACE_HR("IDXGIAdapter::EnumOutputs(layer mode)", S_OK);
+    }
+    HRESULT STDMETHODCALLTYPE GetDesc(DXGI_ADAPTER_DESC* d) override { return a0_->GetDesc(d); }
+    HRESULT STDMETHODCALLTYPE CheckInterfaceSupport(REFGUID g, LARGE_INTEGER* v) override { return a0_->CheckInterfaceSupport(g, v); }
+    HRESULT STDMETHODCALLTYPE GetDesc1(DXGI_ADAPTER_DESC1* d) override { return a1_ ? a1_->GetDesc1(d) : E_NOTIMPL; }
+
+private:
+    LONG ref_ = 1;
+    IDXGIAdapter* a0_;
+    IDXGIAdapter1* a1_ = nullptr;
+};
+
+// The adapter a layer-made wrapper stands for (one reference, *owned), or `a` itself (*owned null).
+IDXGIAdapter* UnwrapAdapter(IDXGIAdapter* a, IDXGIAdapter** owned) {
+    *owned = nullptr;
+    if (!a) return nullptr;
+    IDXGIAdapter* real = nullptr;
+    if (SUCCEEDED(a->QueryInterface(kUnwrapAdapterIid, reinterpret_cast<void**>(&real))) && real) {
+        *owned = real;
+        return real;
+    }
+    return a;
+}
 
 // ---- Virtual swap chain (emulated windows, docs/slices/uwpswap.md) -----------------------------------------
 // A window of core/user's own window manager cannot be the target of a real HWND swap chain (the native dxgi would
@@ -805,10 +976,13 @@ public:
     HRESULT STDMETHODCALLTYPE GetParent(REFIID r, void** pp) override { return f0_->GetParent(r, pp); }
     // IDXGIFactory
     HRESULT STDMETHODCALLTYPE EnumAdapters(UINT i, IDXGIAdapter** a) override {
+        IDXGIAdapter* real = nullptr;
         const LONG n0 = g_exc_n;
-        HRESULT hr = f0_->EnumAdapters(i, a);
+        const HRESULT hr = f0_->EnumAdapters(i, a ? &real : nullptr);
         W10X_TR("dxgi: EnumAdapters(%u) -> %08lx, %ld exception(s) during the call", i, static_cast<unsigned long>(hr), static_cast<long>(g_exc_n - n0));
         if (g_exc_n != n0) DumpExceptions("EnumAdapters", hr);
+        if (FAILED(hr) || !real || !a) return hr;
+        *a = user::GetSwapChainTarget(nullptr) ? static_cast<IDXGIAdapter*>(new WrapAdapter(real)) : real;
         return hr;
     }
     HRESULT STDMETHODCALLTYPE MakeWindowAssociation(HWND h, UINT fl) override {
@@ -868,7 +1042,18 @@ public:
     }
     HRESULT STDMETHODCALLTYPE CreateSoftwareAdapter(HMODULE m, IDXGIAdapter** a) override { return f0_->CreateSoftwareAdapter(m, a); }
     // IDXGIFactory1
-    HRESULT STDMETHODCALLTYPE EnumAdapters1(UINT i, IDXGIAdapter1** a) override { return f1_ ? f1_->EnumAdapters1(i, a) : DXGI_ERROR_UNSUPPORTED; }
+    HRESULT STDMETHODCALLTYPE EnumAdapters1(UINT i, IDXGIAdapter1** a) override {
+        if (!f1_) return DXGI_ERROR_UNSUPPORTED;
+        IDXGIAdapter1* real = nullptr;
+        const HRESULT hr = f1_->EnumAdapters1(i, a ? &real : nullptr);
+        if (FAILED(hr) || !real || !a) return hr;
+        if (user::GetSwapChainTarget(nullptr)) {
+            *a = new WrapAdapter(real);
+        } else {
+            *a = real;
+        }
+        return hr;
+    }
     BOOL STDMETHODCALLTYPE IsCurrent() override { return f1_ ? f1_->IsCurrent() : TRUE; }
     // IDXGIFactory2
     BOOL STDMETHODCALLTYPE IsWindowedStereoEnabled() override { return f2_ ? f2_->IsWindowedStereoEnabled() : FALSE; }
@@ -998,12 +1183,26 @@ HRESULT WINAPI W10x_CreateDXGIFactory2(UINT flags, REFIID riid, void** pp) {
     W10X_TRACE_HR("CreateDXGIFactory2", hr);
 }
 
-HRESULT WINAPI W10x_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* adapter, D3D_DRIVER_TYPE type, HMODULE sw, UINT flags,
+HRESULT WINAPI W10x_D3D11CreateDevice(IDXGIAdapter* adapter, D3D_DRIVER_TYPE type, HMODULE sw, UINT flags,
+                                      const D3D_FEATURE_LEVEL* levels, UINT n_levels, UINT sdk, ID3D11Device** out_dev,
+                                      D3D_FEATURE_LEVEL* out_level, ID3D11DeviceContext** out_ctx) {
+    if (!g_real_create_device) return E_FAIL;
+    IDXGIAdapter* owned = nullptr;
+    IDXGIAdapter* real = UnwrapAdapter(adapter, &owned);
+    const HRESULT hr = g_real_create_device(real, type, sw, flags, levels, n_levels, sdk, out_dev, out_level, out_ctx);
+    if (owned) owned->Release();
+    return hr;
+}
+
+HRESULT WINAPI W10x_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* adapter_in, D3D_DRIVER_TYPE type, HMODULE sw, UINT flags,
                                                   const D3D_FEATURE_LEVEL* levels, UINT n_levels, UINT sdk,
                                                   const DXGI_SWAP_CHAIN_DESC* desc, IDXGISwapChain** swap,
                                                   ID3D11Device** out_dev, D3D_FEATURE_LEVEL* out_level,
                                                   ID3D11DeviceContext** out_ctx) {
     if (!g_real_create_device) return E_FAIL;
+    IDXGIAdapter* owned_adapter = nullptr;
+    IDXGIAdapter* adapter = UnwrapAdapter(adapter_in, &owned_adapter);
+    struct Release { IDXGIAdapter* a; ~Release() { if (a) a->Release(); } } release_adapter{owned_adapter};
     if (!desc || !swap) {   // device only: the d3d11's own function (its original export, when it has one)
         if (g_real_create_device_and_swap)
             W10X_TRACE_HR("D3D11CreateDeviceAndSwapChain (no swap chain)",
@@ -1136,10 +1335,12 @@ bool InterposeDxgiImage(const loader::MappedImage& img, const std::wstring& id) 
     }
     if (IsModule(id, L"d3d11.dll")) {
         g_internal[1] = {reinterpret_cast<std::uintptr_t>(img.base), static_cast<std::uintptr_t>(img.size)};
-        // D3D11CreateDevice is only read (the layer calls it), D3D11CreateDeviceAndSwapChain is replaced.
+        // D3D11CreateDevice's own code is read first (the layer calls it); both exports are then replaced (a wrapped
+        // adapter is unwrapped on the way in).
         void* real_device_and_swap = nullptr;
         const Replace list[] = {
             {"D3D11CreateDeviceAndSwapChain", reinterpret_cast<const void*>(&W10x_D3D11CreateDeviceAndSwapChain), &real_device_and_swap},
+            {"D3D11CreateDevice", reinterpret_cast<const void*>(&W10x_D3D11CreateDevice), nullptr},
         };
         // The original D3D11CreateDevice: look it up before the table is touched.
         auto* base = static_cast<std::uint8_t*>(img.base);
@@ -1158,7 +1359,7 @@ bool InterposeDxgiImage(const loader::MappedImage& img, const std::wstring& id) 
             W10X_WN( "dxgi: d3d11.dll has no D3D11CreateDevice code export: D3D11CreateDeviceAndSwapChain not interposed");
             return false;
         }
-        const std::size_t n = ReplaceExports(img, list, 1, "d3d11.dll");
+        const std::size_t n = ReplaceExports(img, list, 2, "d3d11.dll");
         g_real_create_device_and_swap = reinterpret_cast<CreateDeviceAndSwapFn>(real_device_and_swap);
         return n != 0;
     }

@@ -153,6 +153,11 @@ win10xbox_add_guest(guest_cursor)
 add_executable(guest_xinput xinput.c)
 target_link_libraries(guest_xinput PRIVATE xinput1_4 user32)
 win10xbox_add_guest(guest_xinput)
+# Display mode (tests/guest/display_mode.c): GetSystemMetrics, GetDeviceCaps, EnumDisplaySettings and the monitor rectangle
+# must all report the one mode the host set (integration test: WIN10XBOX_DISPLAY_MODE=1280x720@75).
+add_executable(guest_display_mode display_mode.c)
+target_link_libraries(guest_display_mode PRIVATE user32 gdi32)
+win10xbox_add_guest(guest_display_mode)
 # Exception handling coverage (seh.cpp + the DLL it throws across): C++ throw/catch, SEH, vectored handlers.
 # __try/__except is native on MSVC. For clang's mingw target it is used when a configure-time compile+link of a
 # __try/__except program with -fms-extensions succeeds (SEH_NATIVE); otherwise seh.cpp falls back to a vectored
@@ -215,6 +220,11 @@ add_executable(guest_net net.c)
 target_link_libraries(guest_net PRIVATE ws2_32)
 win10xbox_add_guest(guest_net)
 
+# The DLL/import closure of a program set (tests/guest/closure.c, docs/slices/gameclosure.md): LoadLibrary + GetProcAddress of
+# every import listed by tools/game/dump_imports.py, through the layer. integration.guest_closure*.
+add_executable(guest_closure closure.c)
+win10xbox_add_guest(guest_closure)
+
 # Audio (docs/slices/audio.md): WASAPI and XAudio2 guests. Exit 42 = a device played the sound, 43 = the host has no
 # audio endpoint (the exact HRESULT is printed); tests/integration/audio_test.cmake requires the layer to agree with
 # the same program run directly on the host.
@@ -272,6 +282,11 @@ endif()
 
 # Guests from the SQLite shell bring-up (tests/guest/sqlite).
 add_subdirectory(sqlite)
+
+add_executable(guest_net2 net2.c)
+target_link_libraries(guest_net2 PRIVATE ws2_32 secur32 crypt32)
+win10xbox_add_guest(guest_net2)
+
 # Direct3D 11 off-screen (tests/guest/d3d11_tri.c, docs/slices/d3d.md): the guest loads the NATIVE d3d11/dxgi/d3dcompiler_47
 # at run time (LoadLibrary), renders a triangle into a render-target texture and reads the pixels back. MSVC only (the
 # Windows SDK's d3d11.h/dxguid.lib); run on the route-B + D3D machine folder (integration.guest_d3d11).
