@@ -159,6 +159,16 @@ jobs:
           if (-not (Test-Path "$dir/examples/example_win32_directx11/main.cpp")) { throw "Dear ImGui v1.93.0 not fetched" }
           "WIN10XBOX_IMGUI_DIR=$dir" >> $env:GITHUB_ENV
 
+      # The unmodified Direct3D 11 sample guest_d3dsample (host-uwp/CMakeLists.txt reads WIN10XBOX_D3DSAMPLE_DIR; same pin as ci.yml).
+      - name: Cache the Direct3D 11 sample source
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/d3dsample
+          key: d3dsample-src-1ad8f0f6a3e4d9be7e54ca52640ac12b6565ab0c
+      - name: Fetch the Direct3D 11 sample (guest_d3dsample)
+        shell: pwsh
+        run: ./tools/ci/fetch_d3dsample.ps1 -Out "${{ runner.temp }}/d3dsample"
+
       # Mirror ci.yml's proven windows Configure. No -DCMAKE_POLICY_VERSION_MINIMUM:
       # ci.yml builds the same third_party/zydis + core/ on this runner without it,
       # and the earlier malformed value ("3") poisoned the cache so every
@@ -258,6 +268,7 @@ jobs:
                         'guest_net.exe', 'guest_wasapi.exe', 'guest_xaudio2.exe', 'guest_xaudio2_play.exe', 'guest_nowine.exe', 'guest_named_objects.exe', 'guest_rdrand.exe',
                         'guest_d3d11_tri.exe', 'guest_imgui_d3d11.exe', 'guest_d3d11_tri.machine', 'guest_imgui_d3d11.machine',
                         'guest_d3d11_swap.exe', 'guest_d3d11_swap.machine',
+                        'guest_d3dsample.exe', 'guest_d3dsample.machine', 'guest_d3dsample.env', 'guest_d3dsample.cwd', 'Tutorial07.fxh', 'seafloor.dds',
                         'guest_gamelike.exe', 'guest_gamelike.machine', 'guest_gamelike.env', 'guest_gamelike.title',
                         'guest_tebframe.exe', 'guest_net2.exe', 'guest_closure.exe', 'guest_display_mode.exe')
           $missing = @($expected | Where-Object { -not (Test-Path "$stage/payload/guest/$_") })
@@ -344,7 +355,9 @@ jobs:
           if ($missing.Count -gt 0) { Write-Host "::error::guest(s) missing from the .msix: $($missing -join ', ')"; exit 1 }
           $d3dMissing = @('payload/machine-native-d3d/machine.json', 'payload/machine-native-d3d/msctf.dll',
                           'payload/guest/guest_d3d11_tri.machine', 'payload/guest/guest_imgui_d3d11.machine',
-                          'payload/guest/guest_d3d11_swap.machine', 'payload/machine-emu-d3d/machine.json', 'payload/machine-emu-d3d/gdi32full.dll') | Where-Object { $entries -notcontains $_ }
+                          'payload/guest/guest_d3d11_swap.machine', 'payload/machine-emu-d3d/machine.json', 'payload/machine-emu-d3d/gdi32full.dll',
+                          'payload/guest/guest_d3dsample.machine', 'payload/guest/guest_d3dsample.env', 'payload/guest/guest_d3dsample.cwd',
+                          'payload/guest/Tutorial07.fxh', 'payload/guest/seafloor.dds') | Where-Object { $entries -notcontains $_ }
           if ($d3dMissing) { Write-Host "::error::machine-native-d3d file(s) missing from the .msix: $($d3dMissing -join ', ')"; exit 1 }
           if ($doomMissing) { Write-Host "::error::Chocolate Doom file(s) missing from the .msix: $($doomMissing -join ', ')"; exit 1 }
           if ($mb -gt 500) { Write-Host "::error::package is $mb MB, over the 500 MB sideload budget"; exit 1 }

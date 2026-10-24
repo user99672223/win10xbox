@@ -26,6 +26,7 @@ msimg32      # AlphaBlend / TransparentBlt / GradientFill forward to gdi32 (docs
 
 # --- base services ---------------------------------------------------------
 advapi32
+rsaenh           # CryptAcquireContext(PROV_RSA_AES): d3dcompiler_47 hashes with it when D3DCOMPILE_DEBUG is set (docs/slices/d3dsample.md round 3)
 cryptsp          # api-ms-win-security-cryptoapi-l1-1-0 (apisetschema) resolves here: d3dcompiler_47 imports it
 cryptbase        # advapi32 forwards SystemFunction036 (RtlGenRandom, msvcrt's rand_s) here: git.exe
 sechost

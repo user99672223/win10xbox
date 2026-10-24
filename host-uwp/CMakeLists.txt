@@ -252,6 +252,18 @@ if(WIN10XBOX_IMGUI_DIR AND EXISTS "${WIN10XBOX_IMGUI_DIR}/examples/example_win32
   target_link_libraries(guest_imgui_d3d11 PRIVATE d3d11 dxgi d3dcompiler user32 gdi32 imm32)
   message(STATUS "guest_imgui_d3d11: Dear ImGui from ${_im}")
 endif()
+# walbourn/directx-sdk-samples Direct3D11Tutorials/Tutorial07, unmodified (docs/slices/d3dsample.md): host-uwp.yml fetches the
+# pinned commit and passes its root as WIN10XBOX_D3DSAMPLE_DIR (environment or cache). It opens Tutorial07.fxh and seafloor.dds
+# by relative name, so stage.cmake puts both next to it (D3DSAMPLE_DATA) and guest_d3dsample.cwd makes C:\guest its working
+# directory. Runs on machine-native-d3d (guest_d3dsample.machine) with the present limit of guest_d3dsample.env.
+set(WIN10XBOX_D3DSAMPLE_DIR "$ENV{WIN10XBOX_D3DSAMPLE_DIR}" CACHE PATH "directx-sdk-samples root (guest_d3dsample)")
+set(_ds "${WIN10XBOX_D3DSAMPLE_DIR}/Direct3D11Tutorials/Tutorial07")
+set(WIN10XBOX_D3DSAMPLE_DATA "")
+if(WIN10XBOX_D3DSAMPLE_DIR AND EXISTS "${_ds}/Tutorial07.cpp")
+  add_subdirectory(d3dsample)   # Release whatever the configuration (tests/guest/d3dsample_release.cmake)
+  set(WIN10XBOX_D3DSAMPLE_DATA "${_ds}/Tutorial07.fxh,${_ds}/seafloor.dds")
+  message(STATUS "guest_d3dsample: directx-sdk-samples Tutorial07 from ${_ds}")
+endif()
 # The msctf.dll stand-in of the machine-native-d3d folder (imm32 delay-loads msctf; tests/guest/msctf_stub.c), staged into
 # payload\machine-native-d3d by stage.cmake. Not a guest.
 add_library(msctf_stub SHARED "${WIN10XBOX_ROOT}/tests/guest/msctf_stub.c")
@@ -332,6 +344,9 @@ set(HOST_UWP_GUESTS window_guest hello_guest hello_guest_cui guest_hello guest_c
     guest_d3d11_tri guest_d3d11_swap guest_rdrand guest_net2 guest_closure guest_display_mode guest_gamelike)
 if(TARGET guest_imgui_d3d11)
   list(APPEND HOST_UWP_GUESTS guest_imgui_d3d11)
+endif()
+if(TARGET guest_d3dsample)
+  list(APPEND HOST_UWP_GUESTS guest_d3dsample)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -448,6 +463,7 @@ add_custom_target(stage_appx ALL
           "-DPAYLOAD_DIR=${CMAKE_CURRENT_SOURCE_DIR}/payload"
           "-DBUILTIN_DIR=${HOST_UWP_BUILTIN_DIR}"
           "-DEXTRA_GUEST_DIR=${HOST_UWP_EXTRA_GUEST_DIR}"
+          "-DD3DSAMPLE_DATA=${WIN10XBOX_D3DSAMPLE_DATA}"
           "-DDIRTREE_EXE=$<TARGET_FILE:guest_dirtree>"
           "-DDIRTREE_SRC=${WIN10XBOX_ROOT}/tests/guest/dirtree"
           "-DNLS_DIR=${HOST_UWP_NLS_DIR}"

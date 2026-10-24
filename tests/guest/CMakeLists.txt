@@ -311,6 +311,20 @@ if(MSVC)
   endif()
 endif()
 
+# An unmodified real-world Direct3D 11 program: walbourn/directx-sdk-samples Direct3D11Tutorials/Tutorial07 (a textured, lit
+# cube; its own window, run-time HLSL through d3dcompiler_47, seafloor.dds), built from a pinned commit that CI fetches
+# (tools/ci/fetch_d3dsample.ps1) and passes as WIN10XBOX_D3DSAMPLE_DIR (docs/slices/d3dsample.md). The program reads
+# Tutorial07.fxh and seafloor.dds from its working directory, so both are staged next to it in the guest folder.
+set(WIN10XBOX_D3DSAMPLE_DIR "$ENV{WIN10XBOX_D3DSAMPLE_DIR}" CACHE PATH "directx-sdk-samples root (guest_d3dsample)")
+set(_ds "${WIN10XBOX_D3DSAMPLE_DIR}/Direct3D11Tutorials/Tutorial07")
+if(MSVC AND WIN10XBOX_D3DSAMPLE_DIR AND EXISTS "${_ds}/Tutorial07.cpp")
+  add_subdirectory(d3dsample)   # Release whatever the configuration (d3dsample_release.cmake)
+  set(WIN10XBOX_HAVE_D3DSAMPLE_GUEST ON CACHE INTERNAL "guest_d3dsample is built")
+  message(STATUS "guest_d3dsample: directx-sdk-samples Tutorial07 from ${_ds}")
+else()
+  set(WIN10XBOX_HAVE_D3DSAMPLE_GUEST OFF CACHE INTERNAL "guest_d3dsample is built")
+endif()
+
 # Dear ImGui's example_win32_directx11, unmodified, as a guest of route B + Direct3D 11 (tests/guest/imgui_d3d11.cpp
 # wraps it; docs/DECISIONS.md G1). The Dear ImGui release source is not vendored: CI fetches it on the Windows runner
 # (ci.yml, "Fetch Dear ImGui") and passes its root as WIN10XBOX_IMGUI_DIR (environment or cache). MSVC only, like

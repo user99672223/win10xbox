@@ -1,0 +1,2 @@
+# Needs the native D3D11 runtime on the emulated window path: emulated GUI + native D3D11, virtual swap chain (docs/slices/uwpswap.md, docs/slices/d3dsample.md).
+machine-emu-d3d

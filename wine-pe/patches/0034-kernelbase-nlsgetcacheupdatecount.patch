@@ -1,0 +1,41 @@
+win10xbox: kernelbase exports NlsGetCacheUpdateCount
+
+The genuine gdi32full calls kernelbase!NlsGetCacheUpdateCount from GdiGetCharDimensions (any MessageBox sizing its text on the
+native-GUI machine folders); Wine had it as a stub, so the first call raised EXCEPTION_WINE_STUB (0x80000100) and ended the
+process (docs/slices/d3dsample.md round 3). The real function returns the NLS cache update counter that changes when the
+locale changes; Wine reads its locale data once at load and never updates it, so the equivalent is a constant 0.
+
+diff --git a/dlls/kernelbase/locale.c b/dlls/kernelbase/locale.c
+--- a/dlls/kernelbase/locale.c
++++ b/dlls/kernelbase/locale.c
+@@ -763,6 +763,18 @@
+ }
+ 
+ 
++/******************************************************************************
++ *	NlsGetCacheUpdateCount   (kernelbase.@)
++ *
++ * The real one returns the counter of NLS cache updates (locale changes); the genuine gdi32full compares it with the
++ * value it saw when it cached text metrics (GdiGetCharDimensions). Locale data is read once at load here and never
++ * updated, so the count never changes.
++ */
++ULONG WINAPI NlsGetCacheUpdateCount(void)
++{
++    return 0;
++}
++
+ static int locale_return_data( const WCHAR *data, int datalen, LCTYPE type, WCHAR *buffer, int len )
+ {
+     if (type & LOCALE_RETURN_NUMBER)
+diff --git a/dlls/kernelbase/kernelbase.spec b/dlls/kernelbase/kernelbase.spec
+--- a/dlls/kernelbase/kernelbase.spec
++++ b/dlls/kernelbase/kernelbase.spec
+@@ -1018,7 +1018,7 @@
+ @ stub NlsDispatchAnsiEnumProc
+ @ stub NlsEventDataDescCreate
+ @ stub NlsGetACPFromLocale
+-@ stub NlsGetCacheUpdateCount
++@ stdcall NlsGetCacheUpdateCount()
+ @ stub NlsIsUserDefaultLocale
+ @ stub NlsUpdateLocale
+ @ stub NlsUpdateSystemLocale

@@ -17,9 +17,14 @@
 //               ComposeFrame / the screenshot show the window's client area;
 //   host-uwp:   user::SetSwapChainTarget is set by the host: the real swap chain is created on the presenter's
 //               CoreWindow instead (the guest's frames are then the presenter's swap chain), no copy is made.
-// Known gaps: a factory reached through device -> adapter -> GetParent (not through CreateDXGIFactory*) is the real
-// one, so a swap chain made on it is not seen; IDXGIFactory3.. / IDXGISwapChain2.. QueryInterface fails with
-// E_NOINTERFACE on the wrappers (callers fall back); multisampled or non-8-bit back buffers are not captured.
+// A factory reached through device -> IDXGIDevice::GetAdapter -> GetParent (the way the SDK samples and most engines
+// get theirs, docs/slices/d3dsample.md) never passes a CreateDXGIFactory* export, so the layer hooks IDXGIObject::GetParent
+// in the vtable of the real adapter a created device hands out (HookAdapterGetParent): a factory asked for through it by
+// the guest comes back as a wrapper too. D3D11_CREATE_DEVICE_DEBUG is dropped from the flags of D3D11CreateDevice*: the
+// SDK layers (d3d11sdklayers.dll) are not part of the machine folder or of a retail console, and a program built in
+// Debug asks for them.
+// Known gaps: IDXGIFactory3.. / IDXGISwapChain2.. QueryInterface fails with E_NOINTERFACE on the wrappers (callers
+// fall back); multisampled or non-8-bit back buffers are not captured.
 // Every wrapper call is traced at +dispatch with its HRESULT. No function-local statics on these guest-reachable paths.
 #include "internal.h"
 
@@ -1162,6 +1167,86 @@ HRESULT WrapFactoryFor(IDXGIFactory* real, REFIID riid, void** pp) {
     return hr;
 }
 
+// ---- IDXGIObject::GetParent hook on the real adapter -----------------------------------------------------------
+
+// The adapter classes of the native dxgi share one vtable per interface pointer type; slot 6 of IDXGIObject is GetParent.
+// The slot is replaced (once per vtable) with W10x_AdapterGetParent, which asks the original and wraps a factory result.
+constexpr std::size_t kGetParentSlot = 6;
+struct AdapterHook { void** vtbl; void* original; };
+constexpr int kMaxAdapterHooks = 4;
+AdapterHook g_adapter_hooks[kMaxAdapterHooks];
+std::atomic<int> g_n_adapter_hooks{0};
+std::atomic<int> g_hook_lock{0};
+
+void* OriginalAdapterGetParent(void** vtbl) {
+    const int n = g_n_adapter_hooks.load();
+    for (int i = 0; i < n && i < kMaxAdapterHooks; ++i)
+        if (g_adapter_hooks[i].vtbl == vtbl) return g_adapter_hooks[i].original;
+    return nullptr;
+}
+
+HRESULT STDMETHODCALLTYPE W10x_AdapterGetParent(IDXGIObject* self, REFIID riid, void** pp) {
+    using Fn = HRESULT(STDMETHODCALLTYPE*)(IDXGIObject*, REFIID, void**);
+    const auto original = reinterpret_cast<Fn>(OriginalAdapterGetParent(*reinterpret_cast<void***>(self)));
+    if (!original) return E_FAIL;
+    const HRESULT hr = original(self, riid, pp);
+    if (FAILED(hr) || !pp || !*pp || CalledFromInternal(W10X_RETADDR())) return hr;
+    if (!IsWrappedFactoryIid(riid)) return hr;
+    auto* got = static_cast<IUnknown*>(*pp);
+    IDXGIFactory* f = nullptr;
+    if (FAILED(got->QueryInterface(__uuidof(IDXGIFactory), reinterpret_cast<void**>(&f))) || !f) return hr;   // not a factory
+    got->Release();
+    *pp = nullptr;
+    const HRESULT whr = WrapFactoryFor(f, riid, pp);   // consumes f
+    W10X_TRACE_HR("IDXGIAdapter::GetParent(factory wrapped)", whr);
+}
+
+// Hooks IDXGIObject::GetParent in the vtable of `a` (a real adapter); idempotent per vtable.
+void HookAdapterGetParent(IDXGIAdapter* a) {
+    if (!a) return;
+    void** vtbl = *reinterpret_cast<void***>(a);
+    void** slot = vtbl + kGetParentSlot;
+    while (g_hook_lock.exchange(1)) YieldProcessor();
+    bool done = *slot == reinterpret_cast<void*>(&W10x_AdapterGetParent);
+    const int n = g_n_adapter_hooks.load();
+    if (!done && n < kMaxAdapterHooks) {
+        g_adapter_hooks[n] = {vtbl, *slot};
+        g_n_adapter_hooks.store(n + 1);   // the table entry is complete before the slot points at the hook
+        HostModeScope w10x_host_;
+        DWORD old = 0;
+        if (VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &old)) {
+            *slot = reinterpret_cast<void*>(&W10x_AdapterGetParent);
+            DWORD ignored = 0;
+            VirtualProtect(slot, sizeof(void*), old, &ignored);
+            FlushInstructionCache(GetCurrentProcess(), slot, sizeof(void*));
+            TRACE(dispatch, "dxgi: IDXGIObject::GetParent hooked in the adapter vtable %p", static_cast<void*>(vtbl));
+        } else {
+            g_n_adapter_hooks.store(n);
+            WARN(dispatch, "dxgi: cannot make the adapter vtable %p writable (%lu): factories reached through the adapter are not wrapped",
+                 static_cast<void*>(vtbl), GetLastError());
+        }
+    }
+    g_hook_lock.store(0);
+}
+
+// device -> IDXGIDevice -> GetAdapter, hooked; the device is left untouched.
+void HookDeviceAdapter(ID3D11Device* dev) {
+    if (!dev) return;
+    IDXGIDevice* dxgi_dev = nullptr;
+    if (FAILED(dev->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(&dxgi_dev))) || !dxgi_dev) return;
+    IDXGIAdapter* ad = nullptr;
+    if (SUCCEEDED(dxgi_dev->GetAdapter(&ad)) && ad) {
+        HookAdapterGetParent(ad);
+        IDXGIAdapter1* ad1 = nullptr;   // a distinct vtable on some implementations
+        if (SUCCEEDED(ad->QueryInterface(__uuidof(IDXGIAdapter1), reinterpret_cast<void**>(&ad1))) && ad1) {
+            HookAdapterGetParent(ad1);
+            ad1->Release();
+        }
+        ad->Release();
+    }
+    dxgi_dev->Release();
+}
+
 // ---- The functions the guest's imports are bound to ---------------------------------------------------------
 
 HRESULT CreateWrappedFactory(HRESULT real_hr, IUnknown* real_unk, REFIID riid, void** pp) {
@@ -1213,8 +1298,11 @@ HRESULT WINAPI W10x_D3D11CreateDevice(IDXGIAdapter* adapter, D3D_DRIVER_TYPE typ
     if (!g_real_create_device) return E_FAIL;
     IDXGIAdapter* owned = nullptr;
     IDXGIAdapter* real = UnwrapAdapter(adapter, &owned);
-    const HRESULT hr = g_real_create_device(real, type, sw, flags, levels, n_levels, sdk, out_dev, out_level, out_ctx);
+    if (flags & D3D11_CREATE_DEVICE_DEBUG) W10X_TR("dxgi: D3D11CreateDevice: D3D11_CREATE_DEVICE_DEBUG dropped (no SDK layers)");
+    const HRESULT hr = g_real_create_device(real, type, sw, flags & ~static_cast<UINT>(D3D11_CREATE_DEVICE_DEBUG), levels,
+                                            n_levels, sdk, out_dev, out_level, out_ctx);
     if (owned) owned->Release();
+    if (SUCCEEDED(hr) && out_dev && *out_dev) HookDeviceAdapter(*out_dev);
     return hr;
 }
 
@@ -1227,6 +1315,7 @@ HRESULT WINAPI W10x_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* adapter_in, D3D_
     IDXGIAdapter* owned_adapter = nullptr;
     IDXGIAdapter* adapter = UnwrapAdapter(adapter_in, &owned_adapter);
     struct Release { IDXGIAdapter* a; ~Release() { if (a) a->Release(); } } release_adapter{owned_adapter};
+    flags &= ~static_cast<UINT>(D3D11_CREATE_DEVICE_DEBUG);   // no SDK layers (see the header comment)
     if (!desc || !swap) {   // device only: the d3d11's own function (its original export, when it has one)
         if (g_real_create_device_and_swap)
             W10X_TRACE_HR("D3D11CreateDeviceAndSwapChain (no swap chain)",
@@ -1244,6 +1333,7 @@ HRESULT WINAPI W10x_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* adapter_in, D3D_
         DumpExceptions("d3d11!D3D11CreateDevice", FAILED(hr) ? hr : E_FAIL);
         return FAILED(hr) ? hr : E_FAIL;
     }
+    HookDeviceAdapter(dev);
     IDXGIFactory* real_factory = nullptr;
     IDXGIDevice* dxgi_dev = nullptr;
     IDXGIAdapter* ad = nullptr;

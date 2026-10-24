@@ -243,6 +243,16 @@ jobs:
           }
           if (-not (Test-Path "$dir/examples/example_win32_directx11/main.cpp")) { throw "Dear ImGui v1.93.0 not fetched" }
           "WIN10XBOX_IMGUI_DIR=$dir" >> $env:GITHUB_ENV
+      # An unmodified Direct3D 11 sample (walbourn/directx-sdk-samples Tutorial07, pinned commit; docs/slices/d3dsample.md) for
+      # guest_d3dsample. Not vendored; CMake reads WIN10XBOX_D3DSAMPLE_DIR at configure.
+      - name: Cache the Direct3D 11 sample source
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/d3dsample
+          key: d3dsample-src-1ad8f0f6a3e4d9be7e54ca52640ac12b6565ab0c
+      - name: Fetch the Direct3D 11 sample (guest_d3dsample)
+        shell: pwsh
+        run: ./tools/ci/fetch_d3dsample.ps1 -Out "${{ runner.temp }}/d3dsample"
       - name: Configure
         env: { SCCACHE_GHA_ENABLED: "true" }
         run: >

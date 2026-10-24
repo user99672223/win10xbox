@@ -67,6 +67,9 @@ guest_imgui_d3d11.exe 0=frames
 guest_d3d11_swap.exe 42=presented
 # The game-like frame loop on machine-emu-d3d (guest_gamelike.machine): window, D3D11, XAudio2, XInput; 42 = ran to the frame limit
 guest_gamelike.exe 42=frames
+# An unmodified SDK sample (walbourn/directx-sdk-samples Tutorial07, docs/slices/d3dsample.md) on machine-emu-d3d: WIN10XBOX_TEST_PRESENT_LIMIT=60
+# (guest_d3dsample.env) ends it after the 60th presented frame.
+guest_d3dsample.exe 42=frames
 
 # UDP + TLS (tests/guest/net2.c): the TLS half needs the test server (integration.net2_tls_server); standalone the connect fails = 20
 guest_net2.exe 42=udp+tls 20=no-tls-server

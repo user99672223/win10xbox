@@ -20,7 +20,9 @@
 #include <Zydis/Zydis.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
+#include <string>
 
 #include "win10xbox/trace.h"
 
@@ -579,6 +581,50 @@ bool InRange(const std::vector<Range>& rs, u64 a) {
     return false;
 }
 
+// Diagnostics: one line per planned site (RVA, kind, the decision) plus the bytes around it, so a site that is really
+// data (a jump table the heuristics missed) can be told from a real instruction in the log.
+std::string& ScanLabel() { static thread_local std::string l; return l; }
+
+void HexLine(const char* what, u64 rva, const u8* p, std::size_t n) {
+    char buf[1100];
+    std::size_t k = 0;
+    for (std::size_t i = 0; i < n && k + 3 < sizeof buf; ++i) k += static_cast<std::size_t>(std::snprintf(buf + k, sizeof buf - k, "%02x", p[i]));
+    buf[k] = 0;
+    TRACE(scan, "site-bytes %s rva %llx: %s", what, static_cast<unsigned long long>(rva), buf);
+}
+
+void LogSite(const Job& job, const SiteInfo& s, const char* mode, std::size_t region_len, u64 stub) {
+    const u64 sa = reinterpret_cast<u64>(s.addr);
+    const u64 rva = sa - job.reach_lo;
+    u64 fn = 0;
+    {
+        auto it = std::upper_bound(job.funcs.begin(), job.funcs.end(), sa);
+        if (it != job.funcs.begin()) fn = *(it - 1);
+    }
+    const Range* range = nullptr;
+    for (auto& r : job.exec)
+        if (sa >= reinterpret_cast<u64>(r.start) && sa < reinterpret_cast<u64>(r.start) + r.size) range = &r;
+    std::string nearest = "no data range near";
+    for (const Range& d : job.data) {
+        const u64 ds = reinterpret_cast<u64>(d.start);
+        if (ds + d.size + 0x100 >= sa && ds <= sa + 0x100) {
+            char t[96];
+            std::snprintf(t, sizeof t, "data range rva %llx+%zx", static_cast<unsigned long long>(ds - job.reach_lo), d.size);
+            nearest = t;
+            break;
+        }
+    }
+    TRACE(scan, "site %s rva %llx kind %d len %u -> %s (region %zu, thunk %llx), function start rva %llx, %s", ScanLabel().c_str(),
+          static_cast<unsigned long long>(rva), static_cast<int>(s.kind), static_cast<unsigned>(s.len), mode, region_len,
+          static_cast<unsigned long long>(stub), static_cast<unsigned long long>(fn ? fn - job.reach_lo : 0), nearest.c_str());
+    if (range) {
+        const u8* lo = std::max(range->start, s.addr - 96);
+        const u8* hi = std::min(range->start + range->size, s.addr + s.len + 32);
+        HexLine("before", rva - static_cast<u64>(s.addr - lo), lo, static_cast<std::size_t>(s.addr - lo));
+        HexLine("site+after", rva, s.addr, static_cast<std::size_t>(hi - s.addr));
+    }
+}
+
 NTSTATUS ScanCore(const Job& job, const ScanOptions& opts, ScanResult* result) {
     if (result) *result = ScanResult{};
     if (!opts.handler) return kStatusInvalidParameter;
@@ -723,6 +769,8 @@ NTSTATUS ScanCore(const Job& job, const ScanOptions& opts, ScanResult* result) {
     for (std::size_t i = 0; i < sites.size(); ++i) {
         const SiteInfo& s = sites[i];
         const Plan& pl = plans[i];
+        LogSite(job, s, pl.mode == Plan::Skip ? "skip" : pl.mode == Plan::Inline ? "inline" : pl.mode == Plan::Trap ? "trap" : "ud2",
+                pl.region_len, pl.stub);
         if (pl.mode == Plan::Skip) {
             if (result) ++result->skipped;
             continue;
@@ -863,12 +911,54 @@ NTSTATUS ScanAndPatchRange(void* start, std::size_t size, const ScanOptions& opt
 // tests/guest/sqlite/lockfile.c: a printf with %lu died with an access violation, Release was fine). Find the
 // tables from the instruction that reads them, keep their bytes out of the sweep, and take their entries as branch
 // targets, which the hint scan of the non-executable sections cannot do for tables in code.
+//
+// A sparse switch (many case values, fewer distinct blocks) adds a second table of one byte per case value, read first:
+//   cmp eax,N; ja default; movzx eax,byte ptr [rdx+rax+IDX]; mov ecx,[rdx+rax*4+TABLE]; add rcx,rdx; jmp rcx
+// An optimised, profile-guided image (d3dcompiler_47.dll: its HLSL compiler, first reached by walbourn/directx-sdk-samples
+// Tutorial07, docs/slices/d3dsample.md) keeps both tables in the code, and a pair of index bytes such as 0F 31 (rdtsc) or 0F A2
+// (cpuid) became a site: the trap patch wrote an INT3 over one index byte, the switch read case 0xCC of a 20-entry table
+// and jumped through the code bytes that follow it. The index table (N+1 bytes, N from the bounds check in front of it) is
+// found from the movzx that reads it and kept out of the sweep; the jump table behind it has max(index)+1 entries, which
+// replaces the "case block within 64 KiB" test for it (profile-guided cold blocks are further away).
 void FindInlineJumpTables(Job* job) {
     const u64 base = job->reach_lo, image_end = job->reach_hi;
     std::vector<Range> found;
     std::vector<Range> none;
     for (const Range& r : job->exec) {
-        Sweep(r, job->funcs, none, [&](const u8*, const Decoded& d) {
+        const u8* last_cmp_at = nullptr;     // the latest `cmp reg, imm` and its immediate (the switch's bounds check)
+        u64 last_cmp_imm = 0;
+        const u8* pending_index = nullptr;    // the latest byte table read by `movzx r, byte [base+idx+disp]` and where
+        const u8* pending_index_at = nullptr;
+        Sweep(r, job->funcs, none, [&](const u8* ip, const Decoded& d) {
+            if (d.ins.mnemonic == ZYDIS_MNEMONIC_CMP && d.ins.operand_count_visible >= 2 &&
+                d.ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER && d.ops[1].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
+                last_cmp_at = ip;
+                last_cmp_imm = d.ops[1].imm.value.u;
+                if (d.ops[1].size < 64) last_cmp_imm &= (1ull << d.ops[1].size) - 1;
+            }
+            if (d.ins.mnemonic == ZYDIS_MNEMONIC_MOVZX && d.ins.operand_count_visible >= 2 &&
+                d.ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER && d.ops[1].type == ZYDIS_OPERAND_TYPE_MEMORY &&
+                d.ops[1].size == 8 && d.ops[1].mem.type == ZYDIS_MEMOP_TYPE_MEM &&
+                d.ops[1].mem.base != ZYDIS_REGISTER_NONE && d.ops[1].mem.base != ZYDIS_REGISTER_RIP &&
+                d.ops[1].mem.index != ZYDIS_REGISTER_NONE && d.ops[1].mem.scale == 1 && d.ops[1].mem.disp.size &&
+                d.ops[1].mem.disp.value > 0) {
+                const u64 table = base + static_cast<u64>(d.ops[1].mem.disp.value);
+                if (!InRange(job->exec, table)) return;
+                const u8* t = reinterpret_cast<const u8*>(table);
+                const bool bounded = last_cmp_at && ip > last_cmp_at && ip - last_cmp_at < 64 && last_cmp_imm > 0 && last_cmp_imm < 4096 &&
+                                     InRange(job->exec, table + last_cmp_imm);
+                pending_index = t;                  // whatever the bounds check looks like, the jump table that follows sizes the bytes
+                pending_index_at = ip;
+                if (!bounded) return;
+                const std::size_t len = static_cast<std::size_t>(last_cmp_imm) + 1;
+                u8 top = 0;
+                for (std::size_t i = 0; i < len; ++i) top = std::max<u8>(top, t[i]);
+                found.push_back({const_cast<u8*>(t), len});
+                const std::size_t index_entries = static_cast<std::size_t>(top) + 1;
+                TRACE(scan, "index table of %zu bytes (%zu jump-table entries) at %p read at %p", len, index_entries,
+                      static_cast<const void*>(t), static_cast<const void*>(ip));
+                return;
+            }
             if (d.ins.mnemonic != ZYDIS_MNEMONIC_MOV || d.ins.operand_count_visible < 2) return;
             const ZydisDecodedOperand& dst = d.ops[0];
             const ZydisDecodedOperand& src = d.ops[1];
@@ -888,16 +978,39 @@ void FindInlineJumpTables(Job* job) {
                 return t;
             }();
             std::size_t n = 0;
+            // An index table read within 32 bytes before this load makes it a sparse switch: its cases may be anywhere in the
+            // function (profile-guided layout puts rarely taken ones far away), so only "an RVA inside the code" is asked, and
+            // the count comes from the entries, not from a bounds check that may be far away or about something else.
+            const bool after_index = pending_index && pending_index_at && ip > pending_index_at && ip - pending_index_at < 32;
             while (n < 4096 && t + 4 * (n + 1) <= limit) {
                 u32 v;
                 std::memcpy(&v, t + 4 * n, 4);
                 // a case block: an RVA inside the image's code, within reach of the table (the same function)
                 const u64 diff = v > src.mem.disp.value ? v - static_cast<u64>(src.mem.disp.value)
                                                        : static_cast<u64>(src.mem.disp.value) - v;
-                if (!v || v >= image_end - base || !InRange(job->exec, base + v) || diff > 0x10000) break;
+                if (!v || v >= image_end - base || !InRange(job->exec, base + v) || (!after_index && diff > 0x10000)) break;
                 ++n;
             }
             if (n < 2) return;
+            if (after_index && n <= 255) {
+                // The index bytes are valid case numbers, so they are all below n; they end at the first larger byte, the end of
+                // the function (padding, the next function) or the end of the code.
+                const u8* ie = pending_index;
+                const u8* const ilimit = [&]() -> const u8* {
+                    const u8* lim = limit;
+                    auto fit = std::upper_bound(job->funcs.begin(), job->funcs.end(), reinterpret_cast<u64>(pending_index));
+                    if (fit != job->funcs.end() && reinterpret_cast<const u8*>(*fit) < lim) lim = reinterpret_cast<const u8*>(*fit);
+                    return lim;
+                }();
+                while (ie < ilimit && *ie < n) ++ie;
+                if (ie - pending_index >= 2) {
+                    found.push_back({const_cast<u8*>(pending_index), static_cast<std::size_t>(ie - pending_index)});
+                    TRACE(scan, "index table of %zu bytes (sized by its %zu jump-table entries) at %p read at %p",
+                          static_cast<std::size_t>(ie - pending_index), n, static_cast<const void*>(pending_index),
+                          static_cast<const void*>(pending_index_at));
+                }
+            }
+            pending_index = nullptr;
             found.push_back({const_cast<u8*>(t), n * 4});
             for (std::size_t i = 0; i < n; ++i) {
                 u32 v;
@@ -908,7 +1021,11 @@ void FindInlineJumpTables(Job* job) {
     }
     std::sort(found.begin(), found.end(), [](const Range& a, const Range& b) { return a.start < b.start; });
     for (const Range& f : found) {
-        if (!job->data.empty() && job->data.back().start + job->data.back().size > f.start) continue;   // same table again
+        if (!job->data.empty() && job->data.back().start + job->data.back().size > f.start) {   // same table again, or a longer reading of it
+            Range& back = job->data.back();
+            if (f.start + f.size > back.start + back.size) back.size = static_cast<std::size_t>(f.start + f.size - back.start);
+            continue;
+        }
         job->data.push_back(f);
     }
     if (!job->data.empty()) TRACE(scan, "%zu jump table(s) inside executable sections left out of the sweep", job->data.size());
@@ -922,6 +1039,14 @@ NTSTATUS ScanAndPatch(const MappedImage& img, const ScanOptions& opts, ScanResul
         return kStatusInvalidParameter;
     auto* base = static_cast<u8*>(img.base);
     const u32 image_size = static_cast<u32>(img.size ? img.size : nt->OptionalHeader.SizeOfImage);
+
+    // The image name labels the per-site log lines.
+    {
+        std::string name;
+        for (wchar_t c : img.path.substr(img.path.find_last_of(L"\\/") == std::wstring::npos ? 0 : img.path.find_last_of(L"\\/") + 1))
+            name += static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : (c < 128 ? c : '?'));
+        ScanLabel() = name;
+    }
 
     Job job;
     job.reach_lo = reinterpret_cast<u64>(base);

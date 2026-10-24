@@ -479,6 +479,16 @@ namespace
         CHECK(ParseMachineFile(ReadAll(dir + "/guest/guest_d3d11_tri.machine", &ok), &mok) == kD3dMachineName && ok && mok);
         CHECK(ParseMachineFile(ReadAll(dir + "/guest/guest_imgui_d3d11.machine", &ok), &mok) == kEmuD3dMachineName && ok && mok);
         CHECK(ParseMachineFile(ReadAll(dir + "/guest/guest_d3d11_swap.machine", &ok), &mok) == kEmuD3dMachineName && ok && mok);
+        CHECK(ParseMachineFile(ReadAll(dir + "/guest/guest_d3dsample.machine", &ok), &mok) == kEmuD3dMachineName && ok && mok);
+        {
+            // guest_d3dsample: present limit in .env, working directory C:\guest in .cwd, a title.
+            std::vector<std::pair<std::string, std::string>> env;
+            std::string why, cwd;
+            CHECK(ParseEnvFile(ReadAll(dir + "/guest/guest_d3dsample.env", &ok), &env, &why) && ok && env.size() == 1 &&
+                  env[0].first == "WIN10XBOX_TEST_PRESENT_LIMIT" && env[0].second == "60");
+            CHECK(NormalizeRelativePath(ParseTitleFile(ReadAll(dir + "/guest/guest_d3dsample.cwd", &ok)), true, &cwd) && ok && cwd == ".");
+            CHECK(!ParseTitleFile(ReadAll(dir + "/guest/guest_d3dsample.title", &ok)).empty() && ok);
+        }
         // The packaged default launch.json keeps the default machine folder.
         LaunchConfig pl;
         CHECK(ParseLaunchConfig(ReadAll(dir + "/launch.json", &ok), &pl, &err) && ok && pl.machine.empty());
