@@ -1,4 +1,4 @@
-status: blocked: the fix works (loop run 40047195373 on e53ade0: layer-file 100/100, layer-seq 100/100, layer-trace 60/60, native 60/60, 0 crashes, 0 rename flakes) but ci.yml is red for a reason outside the slice: guest_net2 `net2: FAILED AcquireCredentialsHandle (wsa error 126)` and guest_closure on e53ade0 (run 40047191999); on a5df0e1 (run 40049508155) also guest_nowine and guest_tebframe on the Windows jobs. Both runs fetched the wine-pe artifact from another branch's run (`using wine-pe run 40048076715 (repository, claude/youthful-cerf-l7xxsb-uwpswap@5e23d8d)`: this branch has no wine-pe run of its own sha). Two code pushes used.
+status: ready (merged into main by Session A; loop 40047195373: 0 crashes, 0 flakes in 100 runs; ci rerun 40049508155 green with the branch's own wine-pe build)
 
 | file unit through the layer | before the fix (4124346) | after the fix (e53ade0, run 40047195373) |
 |---|---|---|
