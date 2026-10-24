@@ -1,4 +1,4 @@
-status: wip
+status: ready
 owner: unassigned
 
 # -crypto-rsaaes: CryptAcquireContext(PROV_RSA_AES) returns FALSE (error 0xcb) after the provider resolves
@@ -45,3 +45,30 @@ Native control: the same call succeeds on Windows (same binary, no layer): the p
 Related, found on the same path: the MessageBox route of the sample (user32/gdi32full text path) calls
 `TextShaping.dll!ShapingGetBreakingProperties`; the machine has no TextShaping builtin, so it is an unresolved import there.
 Add a builtin (or a stub export) when a program reaches a MessageBox; not needed for the passing sample.
+
+## Result (ready)
+
+Head 5a0160d. ci.yml run 40139906165 (linux-cross, windows RelWithDebInfo, windows Debug: green, includes
+`integration.guest_cryptapi` under Wine and `guest.cryptapi`, the native control, on the Windows jobs); host-uwp run 40139932010
+(msix/run/launcher green; the launcher chain lists `guest_cryptapi.exe` PASS, exit 42 = crypto).
+
+Root cause of 0xcb: not rsaenh, not the registry. `CPAcquireContext` (dlls/rsaenh/rsaenh.c) calls `GetUserNameA` whenever the
+container name is empty, i.e. for every `CRYPT_VERIFYCONTEXT` acquire. Wine's `GetUserNameA/W` read one environment variable;
+wine-pe patch 0008-neutral-internal-names renamed it `WINEUSERNAME` -> `NTSYS_USERNAME`, and `EnsureWineUserName`
+(core/dispatch/process.cpp) still set `WINEUSERNAME`. `GetEnvironmentVariable` failed with ERROR_ENVVAR_NOT_FOUND (0xcb),
+`GetUserNameA` returned FALSE, the provider's acquire returned FALSE and advapi32 unloaded rsaenh. Named containers worked
+(no GetUserName call), which is how it was told apart. Fix: the layer sets `NTSYS_USERNAME`. Everything before it (registry
+keys, Image Path, LoadLibrary, CPAcquireContext table) was fine.
+
+Second defect found on the same guest: `BCryptGenerateSymmetricKey` returned STATUS_NOT_IMPLEMENTED ("no encryption support")
+because the layer registered no unix library for bcrypt (Wine's ciphers are on its gnutls unix side). New
+`core/dispatch/unix_bcrypt.cpp`: AES-128/192/256, ECB/CBC/CFB8, self-contained; 3DES, RC4, GCM/CCM and the asymmetric keys stay
+STATUS_NOT_IMPLEMENTED.
+
+Test placement: `integration.guest_cryptapi` runs on the builtin-only machine, not the default one. On a Windows runner the default
+machine's System32 holds the runner's native bcrypt.dll, whose DllMain imports `api-ms-win-core-crt-l2-1-0!_initterm_e`
+(EXCEPTION_WINE_STUB, run 40138058544, the docs/GUI.md rule 8 failure); the layer's own crypto is only reachable on builtins.
+
+Not proven: AES modes other than ECB (FIPS-197 vector) and CBC (round trip); CFB8 is untested; RSA key generation, signing and
+container key persistence (only create/reopen/delete); the launcher entry for guest_cryptapi.exe reports `crash=yes` next to its PASS
+(guest_seh and guest_tebframe do too; not traced).
