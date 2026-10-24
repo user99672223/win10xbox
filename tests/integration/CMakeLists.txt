@@ -1241,32 +1241,6 @@ set_tests_properties(integration.guest_d3dsample PROPERTIES
   ENVIRONMENT "WIN10XBOX_TEST_PRESENT_LIMIT=60;WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_d3dsample.bmp;WIN10XBOX_EXPECT_SCREENSHOT_VARIED=150,150,650,450,40,3")
 endif()
 
-# DIAGNOSIS ONLY (d3dsample round 2, removed once the scanner decision is fixed): the same run with d3dcompiler_47 left unscanned.
-if(NOT CMAKE_CROSSCOMPILING AND WIN10XBOX_HAVE_D3DSAMPLE_GUEST)
-add_test(NAME integration.guest_d3dsample_noscan
-  COMMAND ${CMAKE_COMMAND}
-    -DHOST=$<TARGET_FILE:win10xbox>
-    -DMACHINE=${WIN10XBOX_D3D_MACHINE_DIR}
-    -DPROGRAM=C:\\guest\\guest_d3dsample.exe
-    -DCWD=C:\\guest
-    -DEXPECT_EXIT=42
-    -DSAVE_STDOUT=${CMAKE_BINARY_DIR}/bin/guest_d3dsample_noscan.log
-    "-DEXPECT_REGEX=present-limit: 60 frames presented, "
-    "-DEXPECT_TRACE_REGEX=dxgi: IDXGIFactory2::CreateSwapChainForHwnd\\(window [0-9a-fA-Fx]+, [0-9]+x[0-9]+[^)]*\\) -> 00000000;dxgi: IDXGISwapChain::Present\\(0, 0x0\\) -> 0000000[0-9] \\(back buffer copied\\);present-limit: 60 frames presented"
-    "-DFORBID_TRACE_REGEX=host state reached under the guest TLS view;not handed to the compositor"
-    -DDEBUG_SPEC=+dispatch,+modules,+process,+user,+scan
-    -DREQUIRE=Windows/System32/d3d11.dll
-    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
-    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
-set_tests_properties(integration.guest_d3dsample_noscan PROPERTIES
-  FIXTURES_REQUIRED w10x_machine
-  SKIP_RETURN_CODE 77
-  SKIP_REGULAR_EXPRESSION "SKIP:"
-  LABELS "guest_e2e"
-  TIMEOUT 240
-  ENVIRONMENT "WIN10XBOX_TEST_PRESENT_LIMIT=60;WIN10XBOX_SCAN_SKIP_IMAGE=d3dcompiler_47.dll;WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_d3dsample_noscan.bmp;WIN10XBOX_EXPECT_SCREENSHOT_VARIED=150,150,650,450,40,3")
-endif()
-
 # The first Direct3D 11 program that is neither ours nor Dear ImGui's (docs/slices/d3dsample.md): directx-sdk-samples
 # Tutorial07, unmodified, on machine-native-d3d. It creates its own window, compiles Tutorial07.fxh at run time with the
 # native d3dcompiler_47, loads seafloor.dds and renders a lit textured cube until closed; WIN10XBOX_TEST_PRESENT_LIMIT=60
