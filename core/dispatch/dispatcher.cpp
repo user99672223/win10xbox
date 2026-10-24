@@ -449,8 +449,28 @@ NTSTATUS UseHostD3dkmt(HMODULE win32u, HMODULE user32, HMODULE gdi32, HMODULE gd
     for (Entry& e : s.entries) {
         if (e.id < kWin32uFirstId || (std::strncmp(e.name, "NtGdiDdDDI", 10) != 0 && std::strncmp(e.name, "NtDxgk", 6) != 0)) continue;
         e.host_fn = reinterpret_cast<void*>(GetProcAddress(win32u, e.name));
+        e.note = "win32u (host dxgkrnl)";
+        if (!e.host_fn && std::strncmp(e.name, "NtGdiDdDDI", 10) == 0) {
+            // The runner's win32u does not export this name, but the real gdi32 reaches the kernel for it some other way.
+            // NtGdiDdDDIFoo(pData) and D3DKMTFoo(pData) take the same single struct pointer and return an NTSTATUS, so the
+            // host's own D3DKMTFoo (gdi32, else gdi32full) is the pass-through target.
+            char alt[160];
+            std::snprintf(alt, sizeof alt, "D3DKMT%s", e.name + 10);
+            for (HMODULE m : {gdi32, gdi32full}) {
+                if (!m || e.host_fn) continue;
+                e.host_fn = reinterpret_cast<void*>(GetProcAddress(m, alt));
+                if (e.host_fn) {
+                    e.note = "gdi32 D3DKMT export (win32u has no such export)";
+                    TRACE(dispatch, "d3d native: %s has no win32u export, passes through to host %s %p", e.name,
+                          m == gdi32 ? "gdi32" : "gdi32full", e.host_fn);
+                }
+            }
+        }
         e.policy = e.host_fn ? Policy::PassThrough : Policy::Todo;
-        e.note = e.host_fn ? "win32u (host dxgkrnl)" : "win32u (no host export)";
+        if (!e.host_fn) {
+            e.note = "win32u (no host export)";
+            WARN(dispatch, "d3d native: %s has no host export (win32u, gdi32, gdi32full)", e.name);
+        }
         e.nargs = kMaxArgs;
         ++(e.host_fn ? pass : todo);
     }

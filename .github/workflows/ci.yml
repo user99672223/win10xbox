@@ -294,6 +294,27 @@ jobs:
           $realK = @($real['gdi32.dll']) + @($real['gdi32full.dll']) | Where-Object { $_ -like 'D3DKMT*' } | Sort-Object -Unique
           Write-Host "real gdi32+gdi32full D3DKMT names ($($realK.Count)): $($realK -join ' ')"
           Write-Host "D3DKMT in real gdi32/gdi32full but NOT in Wine gdi32: $((Compare-Object $realK $wine | Where-Object { $_.SideIndicator -eq '<=' }).InputObject -join ' ')"
+      # docs/slices/uwpswap.md round 14: which win32u export (or syscall) the runner's real gdi32/gdi32full D3DKMT entry points
+      # reach, for the names the pass-through reports as having no host export (informational).
+      - name: Probe - disassemble the runner's D3DKMTCreateSynchronizationObject2 and win32u's Synchronization exports
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $od = Join-Path $env:LLVM_MINGW_WIN "bin/llvm-objdump.exe"
+          $sys = "$env:SystemRoot\System32"
+          Write-Host "win32u Synchronization exports:"
+          (& $od -p "$sys\win32u.dll" 2>$null | Select-String -Pattern 'Synchronization|SignalSync|WaitForSync' | ForEach-Object { $_.Line.Trim() }) | Write-Host
+          foreach ($m in 'gdi32.dll', 'gdi32full.dll') {
+            $lines = & $od -p "$sys\$m" 2>$null
+            $ib = 0; foreach ($l in $lines) { if ($l -match '^ImageBase\s+(?:0x)?([0-9a-fA-F]+)') { $ib = [Convert]::ToInt64($Matches[1], 16); break } }
+            foreach ($l in $lines) {
+              if ($l -match '^\s*\[?\s*\d*\]?\s*(?:\d+\s+)?0x([0-9a-fA-F]+)\s+D3DKMTCreateSynchronizationObject2?\b' -or $l -match '^\s+\d+\s+0x([0-9a-fA-F]+)\s+D3DKMTCreateSynchronizationObject') {
+                $rva = [Convert]::ToInt64($Matches[1], 16)
+                Write-Host "=== $m : $($l.Trim()) ==="
+                & $od -d --no-show-raw-insn ("--start-address=0x{0:x}" -f ($ib + $rva)) ("--stop-address=0x{0:x}" -f ($ib + $rva + 96)) "$sys\$m" 2>&1 | ForEach-Object { Write-Host "  $_" }
+              }
+            }
+          }
       # A real program that is not ours: 7-Zip 24.09's 7zr.exe from the official source tarball (pinned SHA-256, the
       # cache key carries it), nmake in CPP/7zip/Bundles/Alone7z -> build/bin/machine/guest/7zr.exe; run by
       # integration.real7z (tests/integration/real7z.cmake).
