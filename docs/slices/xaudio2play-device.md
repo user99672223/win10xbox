@@ -1,5 +1,6 @@
-status: wip
+status: blocked
 owner: B (A lifts it)
+<!-- handoff
 1. Changed: tools/ci/install_virtual_audio.ps1 (new) installs a virtual render endpoint on the Windows runners; ci.yml step "Install a virtual
    audio render endpoint" runs it before the probe. It counts only when guest_wasapi run directly on the host exits 42, then exports
    WIN10XBOX_CI_AUDIO_ENDPOINT=1 (and ..._DEVICE=<name>); with no device it fails the job with each attempt's exact error.
@@ -25,7 +26,24 @@ owner: B (A lifts it)
 9. If neither installs: record the exact error here (job log, step "Install a virtual audio render endpoint"), set status: blocked.
 -->
 
-# Slice: xaudio2play (a real buffer through XAudio2 2.9 to an endpoint)
+# Slice: xaudio2play-device (a real buffer through XAudio2 2.9 to a virtual endpoint)
 
-(pending the CI loop: run URL, the device that installed, the measured OnBufferEnd time and BuffersQueued line from the job log of
-integration.guest_xaudio2_native, and the exact install error if both failed.)
+Run https://github.com/user99672223/win10xbox/actions/runs/40045351364 (head 1b1b961): linux-cross green; both Windows jobs 114/115,
+the one failure is integration.guest_xaudio2_native. Everything else of this slice is measured and green:
+
+- Device installed: VB-CABLE driver pack 43 (pinned URL + sha256 above, hash verified in the job), `VBCABLE_Setup_x64.exe -i -h`, exit 0, then
+  AudioEndpointBuilder/Audiosrv restarted. The runner then enumerates "CABLE Input (VB-Audio Virtual Cable)" (render) and
+  "CABLE Output"; guest_wasapi run directly on the host exits 42 (`wasapi: RESULT played`, mix 2 ch 48000 Hz, drained=1).
+- Scream 4.0 does not install on the hosted runner: its catalog signer (CN=Tom Kistner) has status UnknownError and
+  `devcon install Scream.inf *Scream` waits for a driver-trust prompt forever (the first run hung for an hour; the script now kills
+  every install process after a time limit, so the fallback to VB-CABLE runs after 120 s).
+- Gate (WIN10XBOX_CI_AUDIO_ENDPOINT=1 from the install step): integration.guest_wasapi, guest_xaudio2, guest_xaudio2_play and A's
+  guest_xaudio2_play_noendpoint all pass on Windows Debug and RelWithDebInfo. The host-direct xaudio2 probe printed:
+  `xaudio2: OnBufferEnd received after about 190 ms; OnStreamEnd received; while playing: BuffersQueued max 1, SamplesPlayed max 9120`, `RESULT played`.
+- NOT passing: integration.guest_xaudio2_native, `xaudio2: FAILED LoadLibrary(xaudio2_9.dll) hr=0x8007007e` (module not found). The layer
+  maps the native xaudio2_9.dll, then Wine's mmdevapi, oleaut32, version, shcore and kernel.appcore, then a further import of
+  xaudio2_9.dll is not found. The loader trace does not name it. Likely avrt.dll (native XAudio2 2.9 imports it; it is neither in
+  wine-pe/dlls.txt nor in machine/guest_dlls_d3d.txt) but this is unverified. Next step: run tools/game/dump_imports.py on the runner's
+  System32\xaudio2_9.dll, stage every non-api-set import that is neither in Windows/builtin nor in System32 of machine-native-d3d
+  (machine/guest_dlls_d3d.txt, or wine-pe/dlls.txt for a Wine build), rerun.
+- Console: unchanged from handoff item 5 (host-uwp runs on main only).
