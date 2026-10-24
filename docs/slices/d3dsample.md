@@ -1,4 +1,4 @@
-status: wip
+status: blocked (ci run https://github.com/user99672223/win10xbox/actions/runs/40122999773 @ 3847a71): integration.guest_d3dsample, first error: FATAL first-chance 0xc0000005 executing d3dcompiler_47 base + 0x8B45F08B (rip = rcx, rax = 0xCC), inside D3DCompileFromFile of Tutorial07.fxh, after CreateSwapChainForHwnd and GetBuffer succeeded
 owner: A
 
 # -d3dsample: an unmodified real-world Direct3D 11 sample as a gated guest
@@ -56,4 +56,39 @@ Further fixes found by CI are listed below.
 
 ## Status
 
-Not yet run on Windows. Local: llvm-mingw build of the layer and host-uwp selftest (262 checks) green; the sample itself only builds with MSVC.
+Budget: 2 code pushes used (03e0237, 3847a71), blocked.
+
+Everything up to the shader compile works on the Windows runner (RelWithDebInfo, both runs): the sample builds (MSVC, seconds), the 4 other
+guests and the other 117 ctest tests pass, the package builds (msix job green), and the sample's window, `D3D11CreateDevice`, the
+device -> adapter -> `GetParent` factory (now wrapped), `CreateSwapChainForHwnd` (traced `-> 00000000`) and `GetBuffer` all succeed.
+Then the process dies, both runs with the same registers and the same address, in `CompileShaderFromFile(L"Tutorial07.fxh", "VS", "vs_4_0")`:
+
+    FATAL-LOOKING first-chance exception code=0xc0000005 address=base+0x8B45F08B (D3DCOMPILER_47 base 0x2CC46550000 in run 1)
+    rax=0xCC rcx=rip rdx=0x11 rbx=rdi=heap object; the stack holds D3DCOMPILER_47 .data pointers (+0x3b71d0..) and return
+    addresses +0xff268 +0xc1835 +0xc2f06 +0xcd870 +0x6fffc +0x771e7 +0x3f75f +0x573e0; no ntdll/exception-dispatch frame
+
+imgui's `D3DCompile` (vs_4_0 and ps_4_0 from memory, same DLL, same machine) works, so the difference is the shader or the file path
+(`D3DCompileFromFile`, `D3DCOMPILE_ENABLE_STRICTNESS`, `mul(float4, matrix)`, a `Texture2D`/`SamplerState` pair).
+
+What was ruled out: the index-table hypothesis of fix 3 is NOT the cause here (the identical crash after it; the trace
+`index table of N bytes` lines appear for the exe and d3d11.dll but none for d3dcompiler_47). The fix itself is still right (it
+reproduces in the unit test and makes the scanner leave 50 in-code tables of the sample's own image alone), but it did not change d3dcompiler_47's
+"4 candidate sites, patched 3 inline, 1 trapped".
+
+Next (for whoever continues, in this order, each is one CI run):
+1. Prove or exclude the scanner: run the d3dsample test with the scan of d3dcompiler_47.dll disabled (an env switch in `ScanAndPatch`, or
+   `patch_cpuid`/`patch_rdtsc` off for that image) and log the four site addresses with their bytes (`ScanCore` logs only counts). If the crash
+   goes away, a site (or the jump-back of an inline thunk, or a switch whose case target falls in a displaced region that the
+   `targets` list missed) is the cause; the stack suggests a `movzx`/`mov` table read with rax = 0xCC (a trap byte) in the function whose return
+   address is +0xff268.
+2. If the scanner is innocent: a tiny guest that calls `D3DCompile` on the text of Tutorial07.fxh from memory (VS, then PS) separates the file
+   read from the compiler; then `D3DCompileFromFile` of the same file.
+3. Package: under host-uwp (launcher job of run https://github.com/user99672223/win10xbox/actions/runs/40123022766 @ 3847a71) the sample
+   exits 0 (its `InitWindow`/`InitDevice` failure path, the CoreApplication process cannot create HWNDs: the `-uwpswap` limitation that
+   `guest_d3d11_swap` and `guest_imgui_d3d11` record as KNOWN-FAIL), so the all-programs assert says `guest_d3dsample.exe is FAIL
+   (exit code 0, expected 42)`. The brief asked for `guest_d3dsample.exe 42=frames`; add `KNOWNFAIL=0:uwp-no-hwnd(-uwpswap)` to that row
+   until `-uwpswap` lands (tests/guest/expected_exit.txt), as the two siblings have it.
+
+Runs: ci https://github.com/user99672223/win10xbox/actions/runs/40121039057 @ 03e0237 (linux-cross green; RelWithDebInfo red on this one test),
+https://github.com/user99672223/win10xbox/actions/runs/40122999773 @ 3847a71 (same); host-uwp https://github.com/user99672223/win10xbox/actions/runs/40121069939
+and https://github.com/user99672223/win10xbox/actions/runs/40123022766 (msix + run green, launcher red as above).
