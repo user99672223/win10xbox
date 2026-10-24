@@ -467,6 +467,13 @@ jobs:
       - name: Test
         env: { WIN10XBOX_DEBUG: "+all" }
         run: ctest --test-dir build --output-on-failure --timeout 300 --output-junit ctest-junit.xml
+      # docs/slices/uwpswap.md round 8: guest_d3d11_swap on machine-native-d3d and machine-emu-d3d side by side (modules with
+      # their origin, failing syscalls, the syscalls after dxgi.dll is mapped). Informational.
+      - name: Probe - the DXGI factory path on machine-native-d3d against machine-emu-d3d
+        if: ${{ !cancelled() && matrix.config == 'RelWithDebInfo' }}
+        continue-on-error: true
+        shell: pwsh
+        run: ./tools/ci/probe_d3d_chain.ps1 2>&1 | Out-String | Write-Host
       - name: Gate - nothing skipped
         if: ${{ !cancelled() }}
         run: >
