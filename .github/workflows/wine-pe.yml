@@ -67,9 +67,9 @@ jobs:
             wine-pe/wine-src
             wine-pe/build
             ~/.cache/ccache
-          key: wine-pe-${{ env.WINE_TAG }}-${{ hashFiles('wine-pe/*.sh', 'wine-pe/dlls.txt', 'wine-pe/patches/*.patch') }}
+          key: wine-pe-v2-${{ env.WINE_TAG }}-${{ hashFiles('wine-pe/*.sh', 'wine-pe/dlls.txt', 'wine-pe/patches/*.patch') }}
           restore-keys: |
-            wine-pe-${{ env.WINE_TAG }}-
+            wine-pe-v2-${{ env.WINE_TAG }}-
 
       - name: Fetch Wine and apply patches
         run: wine-pe/fetch-wine.sh

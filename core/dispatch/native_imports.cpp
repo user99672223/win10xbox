@@ -231,9 +231,9 @@ std::size_t ExtendExports(const loader::MappedImage& img, const wchar_t* label, 
         std::size_t& n = a.wine ? nw : nh;
         if (n++ < 12) (s += s.empty() ? "" : ", ") += a.name;
     }
-    TRACE(dispatch, "gui native: guest kernelbase: %zu exports added, %zu as jumps to Wine's kernel32 (%s%s), %zu to "
-                    "the host kernelbase (%s%s); %zu forwarders moved",
-          add.size(), from_wine, wine_names.c_str(), nw > 12 ? ", ..." : "", add.size() - from_wine,
+    TRACE(dispatch, "gui native: guest %ls: %zu exports added, %zu as jumps to Wine's kernel32 (%s%s), %zu to "
+                    "the host module (%s%s); %zu forwarders moved",
+          label, add.size(), from_wine, wine_names.c_str(), nw > 12 ? ", ..." : "", add.size() - from_wine,
           host_names.c_str(), nh > 12 ? ", ..." : "", old_forwarders);
     return add.size();
 }
@@ -276,7 +276,13 @@ void NoteNativeGuestImage(const loader::MappedImage& img, const std::wstring& ho
         // those (and only those) come from the host's gdi32. Wine's user32/gdi32/win32u are otherwise left as they are.
         g_guest_gdi32 = img.base;
         const std::size_t n = ExtendExports(img, L"gdi32.dll", HostD3dMods().gdi32, nullptr, true, true);
-        TRACE(dispatch, "d3d native: guest gdi32: %zu D3DKMT export(s) added from the host's gdi32", n);
+        // Wine's apisetschema maps ext-ms-win-gdi-desktop-l1-1-0 to gdi32.dll (Windows: gdi32full.dll), and the native dxgi
+        // looks D3DKMT functions up through it (LdrGetProcedureAddress "D3DKMTGetSharedResourceAdapterLuid" in gdi32.dll:
+        // not found, STATUS_PROCEDURE_NOT_FOUND, CreateDXGIFactory1 -> E_UNEXPECTED, ci run 40040423933). The host's
+        // gdi32 does not export it; its gdi32full does: those D3DKMT names too.
+        const std::size_t n2 = ExtendExports(img, L"gdi32.dll", HostD3dMods().gdi32full, nullptr, true, true);
+        TRACE(dispatch, "d3d native: guest gdi32: %zu D3DKMT export(s) added from the host's gdi32, %zu from its gdi32full", n,
+              n2);
     }
 }
 

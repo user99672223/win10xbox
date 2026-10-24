@@ -119,8 +119,20 @@ void CopyName(char* to, std::size_t cap, std::uintptr_t from) {
     to[cap - 1] = 0;
 }
 
+// OutputDebugString text of the native runtimes (DBG_PRINTEXCEPTION_C / _WIDE_C): the last few lines, kept apart so
+// that they do not push the real exceptions out of the ring.
+constexpr unsigned kDbgRing = 12;
+char g_dbg[kDbgRing][160];
+volatile LONG g_dbg_n = 0;
+
 LONG CALLBACK ExcRecorder(PEXCEPTION_POINTERS info) {
     const EXCEPTION_RECORD* r = info->ExceptionRecord;
+    if (r->ExceptionCode == 0x40010006 && r->NumberParameters >= 2) {   // DBG_PRINTEXCEPTION_C: (length with NUL, ANSI text)
+        char* line = g_dbg[static_cast<unsigned>(InterlockedIncrement(&g_dbg_n) - 1) % kDbgRing];
+        CopyName(line, sizeof g_dbg[0], r->ExceptionInformation[1]);
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (r->ExceptionCode == 0x4001000A) return EXCEPTION_CONTINUE_SEARCH;   // _WIDE_C: the same text, raised first
     ExcRec& e = g_exc[static_cast<unsigned>(InterlockedIncrement(&g_exc_n) - 1) % kExcRing];
     e = ExcRec{};
     e.code = r->ExceptionCode;
@@ -157,6 +169,9 @@ void DumpExceptions(const char* what, HRESULT hr) {
     W10X_TR("dxgi: %s failed %08lx: TEB.LastStatusValue %08lx LastErrorValue %lu; %ld exception(s) raised in the process, last %u:",
             what, static_cast<unsigned long>(hr), static_cast<unsigned long>(last_status), static_cast<unsigned long>(last_error),
             static_cast<long>(n), n < static_cast<LONG>(kExcRing) ? static_cast<unsigned>(n) : kExcRing);
+    const LONG nd = g_dbg_n;
+    for (LONG i = nd > static_cast<LONG>(kDbgRing) ? nd - static_cast<LONG>(kDbgRing) : 0; i < nd; ++i)
+        W10X_TR("dxgi:   debug string #%ld: %.150s", static_cast<long>(i), g_dbg[static_cast<unsigned>(i) % kDbgRing]);
     for (LONG i = n > static_cast<LONG>(kExcRing) ? n - static_cast<LONG>(kExcRing) : 0; i < n; ++i) {
         const ExcRec e = g_exc[static_cast<unsigned>(i) % kExcRing];
         char w[48], w2[48];
