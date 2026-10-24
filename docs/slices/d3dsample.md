@@ -1,4 +1,4 @@
-status: blocked (ci run https://github.com/user99672223/win10xbox/actions/runs/40122999773 @ 3847a71): integration.guest_d3dsample, first error: FATAL first-chance 0xc0000005 executing d3dcompiler_47 base + 0x8B45F08B (rip = rcx, rax = 0xCC), inside D3DCompileFromFile of Tutorial07.fxh, after CreateSwapChainForHwnd and GetBuffer succeeded
+status: blocked (ci run https://github.com/user99672223/win10xbox/actions/runs/40127762838 @ fac6ffc; host-uwp https://github.com/user99672223/win10xbox/actions/runs/40127784443 green): windows (RelWithDebInfo) and linux-cross pass incl. integration.guest_d3dsample and _emu (present-limit line, screenshot gate); windows (Debug) fails both: the Debug sample build's D3DCompileFromFile (D3DCOMPILE_DEBUG|SKIP_OPTIMIZATION) returns an error, the sample shows its "FX file cannot be compiled" MessageBox, and user32 sizing it raises the unresolved import kernelbase.dll!NlsGetCacheUpdateCount (EXCEPTION_WINE_STUB 0x80000100, from gdi32full GdiGetCharDimensions): exit 0xc0000409 native, timeout emu
 owner: A
 
 # -d3dsample: an unmodified real-world Direct3D 11 sample as a gated guest
@@ -13,6 +13,14 @@ run-time HLSL from `Tutorial07.fxh` through `D3DCompileFromFile` (d3dcompiler_47
 files (`Tutorial07.cpp`, `DDSTextureLoader.cpp`, `Tutorial07.rc`); compiles in seconds, far under the 5-minute budget. DirectXTK's sample
 projects need the whole library built first; the DXUT samples need DXUT, Effects11 and the SDK media. Not modified: the sources are
 compiled from the fetched tree, never copied into the repository.
+
+
+## Round 2 handoff (agent 2, head fac6ffc)
+
+* Merged main (uwpswap, gamelike, chainfix); the sample runs on `machine-emu-d3d` (package, `guest_d3dsample.machine`, selftest) with `integration.guest_d3dsample_emu`; `integration.guest_d3dsample` stays on `machine-native-d3d`.
+* Root cause of the round-1 crash (found with a per-site log and a run with d3dcompiler_47 unscanned, which passed): the scanner took index bytes `0F 05` of a sparse-switch table at d3dcompiler_47 RVA 0xFF990 for `syscall` and trapped it (0xCC over the 0x0F); the switch then read entry 0xCC of its jump table. That switch has no bounds check near its `movzx`, and four of its 16 case targets are more than 0x10000 from the table, so neither the `cmp` rule nor the distance rule of round 1 matched. Fix (core/loader/scanner.cpp `FindInlineJumpTables`): a `movzx r, byte [base+idx+disp]` read within 32 bytes before the scaled dword load makes that load a sparse switch; the entry count comes from the entries (RVAs into the code, any distance), the index bytes run while below that count up to the next function start, overlapping data ranges merge. Unit test `loader_scan_leaves_index_tables_without_bounds_check_alone` uses the bytes from the CI log. The other three sites (cpuid at RVA 0x14C637, 0x14C65E, 0x14C6EE) are real code, patched inline.
+* The scanner now logs one line per planned site (RVA, kind, inline/trap/skip, function start, nearby data range) and the bytes around it under `+scan`.
+* Open (budget of two code pushes used): the Debug configuration of the sample. Its `D3DCompileFromFile` fails after reading Tutorial07.fxh, opening guest_d3dsample.exe, probing `Software\Microsoft\Direct3D\Direct3D12`, `Time Zones\UTC` and `Cryptography\Provider Type 024` (all c0000034) and starting two threads; the HRESULT is not logged. Next step: trace the compile's HRESULT (the sample sends the error blob to OutputDebugStringA; log it) and look for which of those lookups the debug-info path needs (time zone / crypto provider keys missing from the machine folder's registry, or a thread/event API). Separately `kernelbase.dll!NlsGetCacheUpdateCount` is an unresolved import of the Wine gdi32full used by any MessageBox on these machine folders.
 
 ## What was added
 
