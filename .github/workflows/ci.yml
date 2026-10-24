@@ -438,6 +438,14 @@ jobs:
             Show-Audio 'audio after Start-Service Audiosrv'
           }
           exit 0   # the probe reports; the gates are integration.guest_wasapi / guest_xaudio2 and the fastfetch Sound module
+      - name: Import table of the runner's native xaudio2_9.dll
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $d = Join-Path $env:RUNNER_TEMP 'xa2imports'
+          New-Item -ItemType Directory -Force $d | Out-Null
+          python tools/game/dump_imports.py C:\Windows\System32\xaudio2_9.dll $d
+          Get-Content "$d\*_imports.txt" | Select-String -NotMatch 'api-ms-win-core|api-ms-win-crt' | ForEach-Object { $_.Line }
       # The whole suite, end-to-end included. The guest's stdout IS captured on
       # real Windows: run 39818491081 (RelWithDebInfo, the one job of that run
       # that had the builtins) printed "hello from guest" and passed 11 of 13

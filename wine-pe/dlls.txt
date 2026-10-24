@@ -83,6 +83,8 @@ mfplat
 mfreadwrite
 propsys
 rtworkq
+# the native xaudio2_9 (integration.guest_xaudio2_native) imports avrt (AvSetMmThreadCharacteristicsW)
+avrt
 
 # --- helpers / programs ----------------------------------------------------
 programs/services

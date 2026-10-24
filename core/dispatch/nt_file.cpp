@@ -385,7 +385,7 @@ NTSTATUS NTAPI Xl_NtCreateFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRI
                                ea, ea_length);
 }
 
-NTSTATUS NTAPI Xl_NtOpenFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr, PIO_STATUS_BLOCK io,
+static NTSTATUS OpenFileImpl(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr, PIO_STATUS_BLOCK io,
                              ULONG sharing, ULONG options) {
 #if WIN10XBOX_HAVE_AFD
     if (afd::IsAfdDeviceName(attr)) return afd::Open(handle, io);   // sockets: core/afd
@@ -402,6 +402,24 @@ NTSTATUS NTAPI Xl_NtOpenFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBU
         if (s != st::AccessDenied) return s;
     }
     return Host().NtOpenFile(handle, access, t.Get(attr), io, sharing, options);
+}
+
+// A library that cannot be opened is how a missing import surfaces: Wine's loader walks the import table and opens each
+// DLL by name, then reports only "module not found" (ERROR_MOD_NOT_FOUND) without saying which one. Name it here.
+NTSTATUS NTAPI Xl_NtOpenFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr, PIO_STATUS_BLOCK io,
+                             ULONG sharing, ULONG options) {
+    NTSTATUS s = OpenFileImpl(handle, access, attr, io, sharing, options);
+    if ((s == st::ObjectNameNotFound || s == st::ObjectPathNotFound) && attr && !(options & kFileOpenByFileId)) {
+        std::wstring_view n = OAName(attr);
+        if (n.size() > 4) {
+            std::wstring tail(n.substr(n.size() - 4));
+            for (auto& c : tail) c = static_cast<wchar_t>(towlower(c));
+            if (tail == L".dll")
+                WARN(dispatch, "library %.*ls not found (status 0x%08lx): an import of the module being loaded",
+                     static_cast<int>(n.size()), n.data(), static_cast<unsigned long>(s));
+        }
+    }
+    return s;
 }
 
 // Pipes live in the host's own \\Device\\NamedPipe: the name is not a file-system path and passes unchanged. What is
