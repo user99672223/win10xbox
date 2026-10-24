@@ -1,0 +1,2 @@
+# Needs the native D3D11 runtime: route B + Direct3D 11 machine folder (docs/slices/d3dsample.md).
+machine-native-d3d

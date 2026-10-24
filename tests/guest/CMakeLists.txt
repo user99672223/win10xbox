@@ -298,6 +298,28 @@ if(MSVC)
   endif()
 endif()
 
+# An unmodified real-world Direct3D 11 program: walbourn/directx-sdk-samples Direct3D11Tutorials/Tutorial07 (a textured, lit
+# cube; its own window, run-time HLSL through d3dcompiler_47, seafloor.dds), built from a pinned commit that CI fetches
+# (tools/ci/fetch_d3dsample.ps1) and passes as WIN10XBOX_D3DSAMPLE_DIR (docs/slices/d3dsample.md). The program reads
+# Tutorial07.fxh and seafloor.dds from its working directory, so both are staged next to it in the guest folder.
+set(WIN10XBOX_D3DSAMPLE_DIR "$ENV{WIN10XBOX_D3DSAMPLE_DIR}" CACHE PATH "directx-sdk-samples root (guest_d3dsample)")
+set(_ds "${WIN10XBOX_D3DSAMPLE_DIR}/Direct3D11Tutorials/Tutorial07")
+if(MSVC AND WIN10XBOX_D3DSAMPLE_DIR AND EXISTS "${_ds}/Tutorial07.cpp")
+  add_executable(guest_d3dsample WIN32 ${_ds}/Tutorial07.cpp ${_ds}/DDSTextureLoader.cpp ${_ds}/Tutorial07.rc)
+  target_include_directories(guest_d3dsample PRIVATE ${_ds})
+  target_compile_definitions(guest_d3dsample PRIVATE UNICODE _UNICODE)
+  target_compile_options(guest_d3dsample PRIVATE /W3)   # third-party code: not held to the project's /W4
+  target_link_libraries(guest_d3dsample PRIVATE d3d11 d3dcompiler dxguid comctl32 user32 gdi32)
+  win10xbox_add_guest(guest_d3dsample)
+  add_custom_command(TARGET guest_d3dsample POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_ds}/Tutorial07.fxh ${_ds}/seafloor.dds ${WIN10XBOX_GUEST_DIR}
+    COMMENT "Staging guest_d3dsample's shader and texture" VERBATIM)
+  set(WIN10XBOX_HAVE_D3DSAMPLE_GUEST ON CACHE INTERNAL "guest_d3dsample is built")
+  message(STATUS "guest_d3dsample: directx-sdk-samples Tutorial07 from ${_ds}")
+else()
+  set(WIN10XBOX_HAVE_D3DSAMPLE_GUEST OFF CACHE INTERNAL "guest_d3dsample is built")
+endif()
+
 # Dear ImGui's example_win32_directx11, unmodified, as a guest of route B + Direct3D 11 (tests/guest/imgui_d3d11.cpp
 # wraps it; docs/DECISIONS.md G1). The Dear ImGui release source is not vendored: CI fetches it on the Windows runner
 # (ci.yml, "Fetch Dear ImGui") and passes its root as WIN10XBOX_IMGUI_DIR (environment or cache). MSVC only, like

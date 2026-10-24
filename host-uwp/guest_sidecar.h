@@ -6,6 +6,7 @@
 //   <name>.title   first non-blank line = the text the picker shows instead of "<name>.exe"
 //   <name>.machine first non-blank line = the machine folder under LocalState this guest runs on (default "machine";
 //                  "machine-native-d3d" = route B + native Direct3D 11, docs/slices/uwpd3d.md)
+//   <name>.cwd     first non-blank line = the guest's working directory relative to C:\guest ("." = C:\guest itself)
 //   <name>.display first non-blank line = "WxH@Hz" (or "auto"): the screen this program sees (launch.json "guest_display")
 //   <name>.launch  an extra picker entry that runs another guest: lines  exe=, title=, args= (whitespace separated,
 //                  "double quotes" group a word), env=KEY=VALUE (repeatable), machine=<folder>, display=WxH@Hz, cwd=<dir relative to the

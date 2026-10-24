@@ -714,6 +714,14 @@ void Host::Impl::RunImpl()
                     e.env.clear();
                 }
                 if (read(stem + L".title", &text)) e.title = ParseTitleFile(text);
+                if (read(stem + L".cwd", &text))
+                {
+                    // First non-blank line: a directory relative to C:\guest ("." = C:\guest itself), for programs that open
+                    // their data files by relative name (guest_d3dsample).
+                    std::string line = ParseTitleFile(text), norm;
+                    if (NormalizeRelativePath(line, true, &norm)) e.cwd = norm;
+                    else diag::Line("launcher: %s.cwd ignored (not a relative directory)", Narrow(stem).c_str());
+                }
                 if (read(stem + L".display", &text))
                 {
                     bool dok = true;
