@@ -1,5 +1,14 @@
-status: blocked
+status: ready
 owner: B (A lifts it)
+<!-- ci result
+ci.yml green on all three jobs for 7d760ae: https://github.com/user99672223/win10xbox/actions/runs/40047932075 (117/117 on windows Debug)
+wine-pe.yml green: https://github.com/user99672223/win10xbox/actions/runs/40047932078
+Device: VB-CABLE pack 43 installed on the runner (Scream rejected: signer trust prompt). Gate WIN10XBOX_CI_AUDIO_ENDPOINT=1 passes:
+guest_wasapi, guest_xaudio2, guest_xaudio2_play print "RESULT played" through the layer; integration.guest_xaudio2_native passes.
+Cause of the native failure: the runner's xaudio2_9.dll imports avrt.dll (AvSetMmThreadCharacteristicsA, AvRevertMmThreadCharacteristics,
+AvSetMmThreadPriority), absent from the machine folder. Fix: avrt added to wine-pe/dlls.txt (Wine builtin). machine/guest_dlls_d3d.txt unchanged.
+Diagnostic: Xl_NtOpenFile WARNs "library <name>.dll not found" when a .dll open fails; the CI step prints the native xaudio2_9 import table.
+-->
 <!-- handoff
 1. Changed: tools/ci/install_virtual_audio.ps1 (new) installs a virtual render endpoint on the Windows runners; ci.yml step "Install a virtual
    audio render endpoint" runs it before the probe. It counts only when guest_wasapi run directly on the host exits 42, then exports
