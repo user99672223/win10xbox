@@ -140,7 +140,7 @@ void DumpFailFast(PEXCEPTION_POINTERS info) {
             r->NumberParameters > 1 ? reinterpret_cast<void*>(r->ExceptionInformation[1]) : nullptr);
     DumpExceptions("fail-fast", static_cast<HRESULT>(r->ExceptionCode));
     unsigned shown = 0;
-    for (unsigned i = 0; i < 256 && shown < 24; ++i) {
+    for (unsigned i = 0; i < 640 && shown < 32; ++i) {
         std::uintptr_t v = 0;
         if (probe::CopyFromUser(&v, reinterpret_cast<const void*>(rsp + 8u * i), sizeof v) != 0) break;
         MEMORY_BASIC_INFORMATION mbi{};
@@ -182,10 +182,15 @@ const char* Where(std::uintptr_t a, char* buf, std::size_t cap) {
     const char* const kName[2] = {"dxgi", "d3d11"};
     for (int i = 0; i < 2; ++i)
         if (g_internal[i].base && a >= g_internal[i].base && a - g_internal[i].base < g_internal[i].size) {
-            std::snprintf(buf, cap, "%s+0x%llx", kName[i], static_cast<unsigned long long>(a - g_internal[i].base));
+            std::snprintf(buf, cap, "%s.dll+0x%llx", kName[i], static_cast<unsigned long long>(a - g_internal[i].base));
             return buf;
         }
-    std::snprintf(buf, cap, "0x%llx", static_cast<unsigned long long>(a));
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(reinterpret_cast<void*>(a), &mbi, sizeof mbi) && mbi.Type == MEM_IMAGE)
+        std::snprintf(buf, cap, "image@%llx+0x%llx", static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(mbi.AllocationBase)),
+                      static_cast<unsigned long long>(a - reinterpret_cast<std::uintptr_t>(mbi.AllocationBase)));
+    else
+        std::snprintf(buf, cap, "0x%llx", static_cast<unsigned long long>(a));
     return buf;
 }
 
@@ -1110,6 +1115,15 @@ void SetPresentLimitImpl(unsigned n) { g_present_limit.store(n); g_presents.stor
 
 bool IsDxgiInterposedModule(const std::wstring& id) { return IsModule(id, L"dxgi.dll") || IsModule(id, L"d3d11.dll"); }
 
+}  // namespace win10xbox::dispatch::detail
+
+namespace win10xbox::dispatch::detail {
+// Called by NtRaiseException before the host kernel is asked to raise a fail-fast record (it bypasses every handler).
+void DumpFailFastRaise(const EXCEPTION_RECORD* rec, const CONTEXT* ctx) {
+    if (!rec || !ctx) return;
+    EXCEPTION_POINTERS ep{const_cast<EXCEPTION_RECORD*>(rec), const_cast<CONTEXT*>(ctx)};
+    DumpFailFast(&ep);
+}
 }  // namespace win10xbox::dispatch::detail
 
 namespace win10xbox::dispatch {

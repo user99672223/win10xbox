@@ -636,6 +636,8 @@ void NoteNativeGuestImage(const loader::MappedImage& img, const std::wstring& ho
 // (D3D11CreateDeviceAndSwapChain) to the layer's wrappers; true when something was interposed.
 bool InterposeDxgiImage(const loader::MappedImage& img, const std::wstring& id);
 bool IsDxgiInterposedModule(const std::wstring& id);
+// Prints a fail-fast record (code, rip, code addresses on the stack as module+RVA) to the trace; NtRaiseException calls it.
+void DumpFailFastRaise(const EXCEPTION_RECORD* rec, const CONTEXT* ctx);
 // native_d3d.cpp. Route B + Direct3D: called by win10xbox_dispatch around every win32u pass-through (host view).
 // Before NtUserDestroyWindow: compose the guest's windows (NativeGuestPainted). After a NtGdiDdDDI* (D3DKMT) call:
 // trace each name the first time, and compose after present-type calls (throttled).
