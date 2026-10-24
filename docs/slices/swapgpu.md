@@ -1,4 +1,4 @@
-status: blocked (hypothesis refuted; root cause of the host AV after guest exit 42 not yet isolated)
+status: ready (ci https://github.com/user99672223/win10xbox/actions/runs/40131935073 3/3 green, host-uwp https://github.com/user99672223/win10xbox/actions/runs/40140009189 green, head 9d27338; Wine hosts keep kill-and-restore, Windows hosts tear down at process level)
 
 # swapgpu: integration.guest_d3d11_swap intermittent host access violation
 
