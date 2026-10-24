@@ -389,6 +389,12 @@ NTSTATUS NTAPI Xl_NtCreateFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRI
               static_cast<int>(OAName(attr).size()), OAName(attr).data(), static_cast<unsigned long>(access),
               static_cast<unsigned long>(sharing), static_cast<unsigned long>(disposition),
               static_cast<unsigned long>(options), static_cast<unsigned long>(r));
+    // FILE_CREATE on a name that already exists is STATUS_OBJECT_NAME_COLLISION on Windows, directory or not (the
+    // host answers FILE_IS_A_DIRECTORY for a directory). Wine's GetTempFileNameW stops on any other error and
+    // would hand back the directory's name as a fresh file.
+    constexpr ULONG kFileCreate = 2, kFileNonDirectoryFile = 0x40;
+    if (r == static_cast<NTSTATUS>(0xC00000BA) && disposition == kFileCreate && (options & kFileNonDirectoryFile))
+        r = static_cast<NTSTATUS>(0xC0000035);
     return r;
 }
 

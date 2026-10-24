@@ -4,8 +4,6 @@ name: ntdllfile-loop
 # tests/winetest/run_ntdll.cmake), after the units that precede it, with the relay trace, and natively; maps the RVAs of the
 # crash records to ntdll_test.exe functions; uploads every iteration that does not complete.
 on:
-  push:
-    branches: ["claude/youthful-cerf-l7xxsb-ntdllfile"]
   workflow_dispatch:
     inputs:
       n_file: { description: "file alone through the layer", default: "100" }
