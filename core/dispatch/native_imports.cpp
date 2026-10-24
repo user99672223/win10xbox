@@ -15,6 +15,7 @@
 // The new directory and the jumps live in one allocation within 4 GiB above the image (export RVAs are 32-bit).
 #include "internal.h"
 
+#include <cstdio>
 #include <cstring>
 #include <cwchar>
 #include <string>
@@ -238,6 +239,94 @@ std::size_t ExtendExports(const loader::MappedImage& img, const wchar_t* label, 
     return add.size();
 }
 
+// Wine's gdi32 exports ordinals 1000..1016 without a name, as `stub` (gdi32.spec: the real gdi32 has private ordinal-only
+// exports whose names Wine does not know). The native dxgi imports one of them by ordinal (ci run 40054174156:
+// EXCEPTION_WINE_STUB, gdi32.dll ordinal 0x3ec, called from dxgi). The ordinal is the runner's own gdi32's, since the
+// importer is the runner's dxgi: every such stub slot of the guest image is pointed at the host module's export of the same
+// ordinal (GetProcAddress by ordinal resolves a forwarder too), and the trace names what that is (module!nearest export
+// of the module it lives in), so the answer is in the log whichever function it turns out to be.
+std::size_t PassOrdinalStubs(const loader::MappedImage& img, const wchar_t* label, HMODULE host_kb) {
+    Exports guest;
+    if (!host_kb || !guest.Open(img.base)) return 0;
+    const std::uint32_t nf = guest.dir->NumberOfFunctions, nn = guest.dir->NumberOfNames, ob = guest.dir->Base;
+    std::vector<bool> named(nf, false);
+    for (std::uint32_t i = 0; i < nn; ++i) if (guest.ordinals[i] < nf) named[guest.ordinals[i]] = true;
+    struct Hit { std::uint32_t idx; const void* target; };
+    std::vector<Hit> hits;
+    for (std::uint32_t i = 0; i < nf; ++i) {
+        if (named[i] || !guest.functions[i]) continue;
+        const std::uint32_t ord = ob + i;
+        if (ord > 0xFFFF) continue;
+        if (const void* t = reinterpret_cast<const void*>(
+                GetProcAddress(host_kb, reinterpret_cast<LPCSTR>(static_cast<std::uintptr_t>(ord)))))
+            hits.push_back({i, t});
+    }
+    if (hits.empty()) {
+        TRACE(dispatch, "d3d native: guest %ls: no ordinal-only export has a host counterpart (base %u, %u functions)", label,
+              ob, nf);
+        return 0;
+    }
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(img.base);
+    const std::uintptr_t gran = si.dwAllocationGranularity;
+    const std::size_t total = hits.size() * kJumpSlot;
+    std::uint8_t* mem = nullptr;
+    for (std::uintptr_t a = (base + img.size + gran - 1) & ~(gran - 1); a + total - base < 0xFFFF0000ull && !mem;
+         a += gran) {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (!VirtualQuery(reinterpret_cast<void*>(a), &mbi, sizeof mbi) || mbi.State != MEM_FREE) continue;
+        mem = static_cast<std::uint8_t*>(
+            VirtualAlloc(reinterpret_cast<void*>(a), total, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+    }
+    if (!mem) {
+        WARN(dispatch, "d3d native: no room within 4 GiB of the guest %ls for %zu ordinal jumps", label, hits.size());
+        return 0;
+    }
+    std::vector<DWORD> rvas;
+    std::uint8_t* t = mem;
+    for (auto& h : hits) {
+        const std::uint8_t code[6] = {0xFF, 0x25, 0, 0, 0, 0};
+        std::memcpy(t, code, sizeof code);
+        const std::uint64_t target = reinterpret_cast<std::uint64_t>(h.target);
+        std::memcpy(t + 6, &target, 8);
+        std::memset(t + 14, 0xCC, kJumpSlot - 14);
+        rvas.push_back(static_cast<DWORD>(reinterpret_cast<std::uintptr_t>(t) - base));
+        t += kJumpSlot;
+    }
+    DWORD old = 0;
+    VirtualProtect(mem, total, PAGE_EXECUTE_READ, &old);
+    FlushInstructionCache(GetCurrentProcess(), mem, total);
+    DWORD* functions = const_cast<DWORD*>(guest.functions);
+    VirtualProtect(functions, 4 * nf, PAGE_READWRITE, &old);
+    for (std::size_t k = 0; k < hits.size(); ++k) functions[hits[k].idx] = rvas[k];
+    VirtualProtect(functions, 4 * nf, old, &old);
+    for (auto& h : hits) {
+        // Name what the host's ordinal is: the module it lives in and the nearest named export at or below it.
+        HMODULE m = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(h.target), &m);
+        wchar_t mod[MAX_PATH] = L"?";
+        if (m) GetModuleFileNameW(m, mod, MAX_PATH);
+        const std::uintptr_t ta = reinterpret_cast<std::uintptr_t>(h.target);
+        char near_name[200] = "?";
+        Exports he;
+        if (m && he.Open(m)) {
+            std::uintptr_t best = 0;
+            const char* bn = nullptr;
+            for (std::uint32_t i = 0; i < he.dir->NumberOfNames; ++i) {
+                const std::uint32_t rva = he.functions[he.ordinals[i]];
+                const std::uintptr_t a = reinterpret_cast<std::uintptr_t>(he.base) + rva;
+                if (a <= ta && a > best && he.IsCode(rva)) { best = a; bn = he.Name(i); }
+            }
+            if (bn) std::snprintf(near_name, sizeof near_name, "%s+0x%llx", bn, static_cast<unsigned long long>(ta - best));
+        }
+        TRACE(dispatch, "d3d native: guest %ls ordinal #%u (Wine stub) -> host %ls +0x%llx (%s)", label, ob + h.idx, mod,
+              static_cast<unsigned long long>(ta - reinterpret_cast<std::uintptr_t>(m)), near_name);
+    }
+    return hits.size();
+}
+
 }  // namespace
 
 void NoteNativeGuestImage(const loader::MappedImage& img, const std::wstring& host_path,
@@ -281,6 +370,7 @@ void NoteNativeGuestImage(const loader::MappedImage& img, const std::wstring& ho
         // not found, STATUS_PROCEDURE_NOT_FOUND, CreateDXGIFactory1 -> E_UNEXPECTED, ci run 40040423933). The host's
         // gdi32 does not export it; its gdi32full does: those D3DKMT names too.
         const std::size_t n2 = ExtendExports(img, L"gdi32.dll", HostD3dMods().gdi32full, nullptr, true, true);
+        PassOrdinalStubs(img, L"gdi32.dll", HostD3dMods().gdi32);
         TRACE(dispatch, "d3d native: guest gdi32: %zu D3DKMT export(s) added from the host's gdi32, %zu from its gdi32full", n,
               n2);
     }

@@ -22,7 +22,7 @@ function Off($pe, [uint32]$rva) {
   foreach ($s in $pe.secs) { if ($rva -ge $s.va -and $rva -lt $s.va + [Math]::Max($s.vs, $s.rs)) { return [int]($rva - $s.va + $s.raw) } }
   -1
 }
-function Dir($pe, $i) { $o = $pe.opt + 112 + 8 * $i; @([BitConverter]::ToUInt32($pe.b, $o), [BitConverter]::ToUInt32($pe.b, $o + 4)) }
+function DataDir($pe, $i) { $o = $pe.opt + 112 + 8 * $i; @([BitConverter]::ToUInt32($pe.b, $o), [BitConverter]::ToUInt32($pe.b, $o + 4)) }
 function Cstr($pe, [uint32]$rva) {
   $o = Off $pe $rva; if ($o -lt 0) { return '?' }
   $e = $o; while ($pe.b[$e] -ne 0) { $e++ }
@@ -33,7 +33,7 @@ function Cstr($pe, [uint32]$rva) {
 foreach ($m in 'gdi32.dll', 'gdi32full.dll', 'win32u.dll') {
   $f = Join-Path $System32 $m; if (-not (Test-Path $f)) { Write-Host "ord: $m missing"; continue }
   $pe = Open-Pe $f
-  $d = Dir $pe 0; $eo = Off $pe $d[0]
+  $d = DataDir $pe 0; $eo = Off $pe $d[0]
   $base = [BitConverter]::ToUInt32($pe.b, $eo + 16); $nf = [BitConverter]::ToUInt32($pe.b, $eo + 20); $nn = [BitConverter]::ToUInt32($pe.b, $eo + 24)
   $af = Off $pe ([BitConverter]::ToUInt32($pe.b, $eo + 28)); $an = Off $pe ([BitConverter]::ToUInt32($pe.b, $eo + 32)); $ao = Off $pe ([BitConverter]::ToUInt32($pe.b, $eo + 36))
   $names = @{}
@@ -54,7 +54,7 @@ foreach ($m in 'gdi32.dll', 'gdi32full.dll', 'win32u.dll') {
 foreach ($n in 'dxgi', 'd3d11', 'd3d10warp', 'dxcore', 'd3dcompiler_47', 'dwmapi', 'D3DSCache', 'directxdatabasehelper', 'msvcp_win') {
   $f = Join-Path $System32 "$n.dll"; if (-not (Test-Path $f)) { continue }
   $pe = Open-Pe $f
-  $d = Dir $pe 1; if (-not $d[0]) { continue }
+  $d = DataDir $pe 1; if (-not $d[0]) { continue }
   $io = Off $pe $d[0]
   $slots = @{}   # IAT rva -> 'dll!name'
   for (; ; $io += 20) {
