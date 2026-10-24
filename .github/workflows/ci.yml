@@ -486,6 +486,12 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: ./tools/ci/probe_d3d_chain.ps1 2>&1 | Out-String | Write-Host
+      # docs/slices/uwpswap.md round 12: the RPC dxgi makes in EnumAdapters (interface UUID, binding strings, pipe opens), both machines.
+      - name: Probe - the RPC of dxgi EnumAdapters (interface, endpoint, caller), native-d3d against emu-d3d
+        if: ${{ !cancelled() && matrix.config == 'RelWithDebInfo' }}
+        continue-on-error: true
+        shell: pwsh
+        run: ./tools/ci/probe_rpc.ps1 2>&1 | Out-String | Write-Host
       - name: Dumps - fail-fast and crash dumps of win10xbox.exe (dumpinfo, dxgi disassembly)
         if: ${{ !cancelled() }}
         continue-on-error: true
@@ -505,7 +511,7 @@ jobs:
           # The layer prints a fail-fast raised through NtRaiseException itself (no WER dump exists for those): the ctest log.
           $lt = Get-ChildItem build/Testing/Temporary -Filter LastTest.log -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($lt) {
-            Select-String -Path $lt.FullName -Pattern 'dxgi: fail-fast|dxgi:   stack\[|dxgi:   exc|dxgi:   debug' | Select-Object -First 80 | ForEach-Object { Write-Host $_.Line }
+            Select-String -Path $lt.FullName -Pattern 'ipc: |dxgi: EnumAdapters|dxgi: fail-fast|dxgi:   stack\[|dxgi:   exc|dxgi:   debug' | Select-Object -First 200 | ForEach-Object { Write-Host $_.Line }
             foreach ($dll in 'dxgi.dll', 'd3d11.dll') { ./tools/ci/disasm_at.ps1 -ObjDump $od -Dll $dll -InfoFile $lt.FullName -Max 4 2>&1 | Out-String | Write-Host }
           }
       - name: Gate - nothing skipped

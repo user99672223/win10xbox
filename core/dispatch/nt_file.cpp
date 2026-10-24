@@ -374,6 +374,24 @@ static NTSTATUS TranslateCaptured(const OBJECT_ATTRIBUTES* in, TranslatedOA* out
 
 // ---- Translators ------------------------------------------------------------
 
+// Round 12: Wine's builtin rpcrt4 has no trace (WINE_NO_TRACE_MSGS), so the endpoint of an RPC the guest tries is read
+// here: every open of a named pipe or of an RPC Control object, with the status.
+static void TracePipeOpen(const char* api, const OBJECT_ATTRIBUTES* oa, NTSTATUS s) {
+    std::wstring_view n = OAName(oa);
+    if (n.empty()) return;
+    auto has = [&](const wchar_t* w) {
+        const size_t l = wcslen(w);
+        for (size_t i = 0; i + l <= n.size(); ++i) {
+            size_t k = 0;
+            while (k < l && towlower(n[i + k]) == towlower(w[k])) ++k;
+            if (k == l) return true;
+        }
+        return false;
+    };
+    if (has(L"pipe") || has(L"rpc control") || has(L"lrpc") || has(L"epmapper"))
+        TRACE(dispatch, "ipc: %s '%.*ls' -> %08lx", api, static_cast<int>(n.size()), n.data(), static_cast<unsigned long>(s));
+}
+
 NTSTATUS NTAPI Xl_NtCreateFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr, PIO_STATUS_BLOCK io,
                                PLARGE_INTEGER alloc_size, ULONG attributes, ULONG sharing, ULONG disposition,
                                ULONG options, PVOID ea, ULONG ea_length) {
@@ -381,8 +399,10 @@ NTSTATUS NTAPI Xl_NtCreateFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRI
     // FILE_OPEN_BY_FILE_ID: the "name" is a binary file ID (relative to a directory or volume handle), not a path.
     if (!(options & kFileOpenByFileId))
         if (NTSTATUS s = TranslateOA(attr, &t, options)) return s;
-    return Host().NtCreateFile(handle, access, t.Get(attr), io, alloc_size, attributes, sharing, disposition, options,
-                               ea, ea_length);
+    NTSTATUS rs = Host().NtCreateFile(handle, access, t.Get(attr), io, alloc_size, attributes, sharing, disposition, options,
+                                      ea, ea_length);
+    TracePipeOpen("NtCreateFile", attr, rs);
+    return rs;
 }
 
 NTSTATUS NTAPI Xl_NtOpenFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr, PIO_STATUS_BLOCK io,
@@ -399,9 +419,11 @@ NTSTATUS NTAPI Xl_NtOpenFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBU
     if (access == SYNCHRONIZE) {
         constexpr ACCESS_MASK kFileWriteAttributes = 0x100;
         NTSTATUS s = Host().NtOpenFile(handle, access | kFileWriteAttributes, t.Get(attr), io, sharing, options);
-        if (s != st::AccessDenied) return s;
+        if (s != st::AccessDenied) { TracePipeOpen("NtOpenFile", attr, s); return s; }
     }
-    return Host().NtOpenFile(handle, access, t.Get(attr), io, sharing, options);
+    NTSTATUS rs = Host().NtOpenFile(handle, access, t.Get(attr), io, sharing, options);
+    TracePipeOpen("NtOpenFile", attr, rs);
+    return rs;
 }
 
 // Pipes live in the host's own \\Device\\NamedPipe: the name is not a file-system path and passes unchanged. What is

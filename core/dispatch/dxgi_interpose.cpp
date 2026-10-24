@@ -101,6 +101,8 @@ struct ExcRec {
     DWORD code, nparams;
     std::uintptr_t addr, p[3];
     char s0[48], s1[64];   // EXCEPTION_WINE_STUB: the dll and function names of the stub
+    unsigned nstk;         // 0x6ba / C++ throw: the code-looking words on the stack at the raise (who called)
+    std::uintptr_t stk[14];
 };
 constexpr unsigned kExcRing = 24;
 ExcRec g_exc[kExcRing];
@@ -166,6 +168,17 @@ LONG CALLBACK ExcRecorder(PEXCEPTION_POINTERS info) {
     e.nparams = r->NumberParameters;
     e.addr = reinterpret_cast<std::uintptr_t>(r->ExceptionAddress);
     for (DWORD i = 0; i < 3 && i < r->NumberParameters; ++i) e.p[i] = r->ExceptionInformation[i];
+    if (r->ExceptionCode == 0x000006ba || r->ExceptionCode == 0xe06d7363) {
+        const std::uintptr_t rsp = info->ContextRecord->Rsp;
+        for (unsigned i = 0; i < 700 && e.nstk < 14; ++i) {
+            std::uintptr_t v = 0;
+            if (probe::CopyFromUser(&v, reinterpret_cast<const void*>(rsp + 8u * i), sizeof v) != 0) break;
+            MEMORY_BASIC_INFORMATION mbi{};
+            if (v < 0x10000 || !VirtualQuery(reinterpret_cast<void*>(v), &mbi, sizeof mbi)) continue;
+            if (mbi.Type != MEM_IMAGE || !(mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) continue;
+            e.stk[e.nstk++] = v;
+        }
+    }
     if (r->ExceptionCode == 0x80000100 && r->NumberParameters >= 2) {
         CopyName(e.s0, sizeof e.s0, r->ExceptionInformation[0]);
         CopyName(e.s1, sizeof e.s1, r->ExceptionInformation[1]);
@@ -186,9 +199,17 @@ const char* Where(std::uintptr_t a, char* buf, std::size_t cap) {
             return buf;
         }
     MEMORY_BASIC_INFORMATION mbi{};
-    if (VirtualQuery(reinterpret_cast<void*>(a), &mbi, sizeof mbi) && mbi.Type == MEM_IMAGE)
-        std::snprintf(buf, cap, "image@%llx+0x%llx", static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(mbi.AllocationBase)),
-                      static_cast<unsigned long long>(a - reinterpret_cast<std::uintptr_t>(mbi.AllocationBase)));
+    if (VirtualQuery(reinterpret_cast<void*>(a), &mbi, sizeof mbi) && mbi.Type == MEM_IMAGE) {
+        // the image's own name from its export directory (the layer's loader keeps no list the handler may read)
+        char nm[32] = "?";
+        const auto base = reinterpret_cast<std::uintptr_t>(mbi.AllocationBase);
+        std::uint32_t lfa = 0, exp_rva = 0, name_rva = 0;
+        if (probe::CopyFromUser(&lfa, reinterpret_cast<const void*>(base + 0x3c), 4) == 0 && lfa < 0x1000 &&
+            probe::CopyFromUser(&exp_rva, reinterpret_cast<const void*>(base + lfa + 0x88), 4) == 0 && exp_rva &&
+            probe::CopyFromUser(&name_rva, reinterpret_cast<const void*>(base + exp_rva + 12), 4) == 0 && name_rva)
+            CopyName(nm, sizeof nm, base + name_rva);
+        std::snprintf(buf, cap, "%s@%llx+0x%llx", nm, static_cast<unsigned long long>(base), static_cast<unsigned long long>(a - base));
+    }
     else
         std::snprintf(buf, cap, "0x%llx", static_cast<unsigned long long>(a));
     return buf;
@@ -214,6 +235,7 @@ void DumpExceptions(const char* what, HRESULT hr) {
             W10X_TR("dxgi:   exc #%ld %08lx at %s params %llx %llx %llx", static_cast<long>(i), static_cast<unsigned long>(e.code),
                     Where(e.addr, w, sizeof w), static_cast<unsigned long long>(e.p[0]), static_cast<unsigned long long>(e.p[1]),
                     static_cast<unsigned long long>(e.p[2]));
+        for (unsigned k = 0; k < e.nstk; ++k) W10X_TR("dxgi:   exc #%ld stk[%u] %s", static_cast<long>(i), k, Where(e.stk[k], w2, sizeof w2));
     }
 }
 
@@ -757,7 +779,13 @@ public:
     HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID n, UINT* s, void* d) override { return f0_->GetPrivateData(n, s, d); }
     HRESULT STDMETHODCALLTYPE GetParent(REFIID r, void** pp) override { return f0_->GetParent(r, pp); }
     // IDXGIFactory
-    HRESULT STDMETHODCALLTYPE EnumAdapters(UINT i, IDXGIAdapter** a) override { return f0_->EnumAdapters(i, a); }
+    HRESULT STDMETHODCALLTYPE EnumAdapters(UINT i, IDXGIAdapter** a) override {
+        const LONG n0 = g_exc_n;
+        HRESULT hr = f0_->EnumAdapters(i, a);
+        W10X_TR("dxgi: EnumAdapters(%u) -> %08lx, %ld exception(s) during the call", i, static_cast<unsigned long>(hr), static_cast<long>(g_exc_n - n0));
+        if (g_exc_n != n0) DumpExceptions("EnumAdapters", hr);
+        return hr;
+    }
     HRESULT STDMETHODCALLTYPE MakeWindowAssociation(HWND h, UINT fl) override {
         if (h && IsVirtualWindow(h)) return S_OK;   // nothing to hook in an emulated window
         W10X_TRACE_HR("IDXGIFactory::MakeWindowAssociation", f0_->MakeWindowAssociation(h, fl));
