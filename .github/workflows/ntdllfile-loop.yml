@@ -8,10 +8,10 @@ on:
     branches: ["claude/youthful-cerf-l7xxsb-ntdllfile"]
   workflow_dispatch:
     inputs:
-      n_file: { description: "file alone through the layer", default: "30" }
-      n_seq: { description: "file after the units that precede it", default: "30" }
-      n_trace: { description: "file with +relay (kept when it fails)", default: "30" }
-      n_native: { description: "file natively, no layer", default: "30" }
+      n_file: { description: "file alone through the layer", default: "100" }
+      n_seq: { description: "file after the units that precede it", default: "100" }
+      n_trace: { description: "file with +relay,+dispatch (kept when it fails)", default: "60" }
+      n_native: { description: "file natively, no layer", default: "60" }
 
 permissions:
   contents: read
@@ -150,8 +150,8 @@ jobs:
         shell: pwsh
         run: >
           ./tools/ci/ntdll_file_loop.ps1 -Bin build/bin -Exe build/winetest/ntdll/ntdll_test.exe -Out ntdllfile-loop
-          -N ${{ inputs.n_file || '30' }} -NSeq ${{ inputs.n_seq || '30' }} -NTrace ${{ inputs.n_trace || '30' }}
-          -NNative ${{ inputs.n_native || '30' }} -Gate
+          -N ${{ inputs.n_file || '100' }} -NSeq ${{ inputs.n_seq || '100' }} -NTrace ${{ inputs.n_trace || '60' }}
+          -NNative ${{ inputs.n_native || '60' }} -Gate
       - uses: actions/upload-artifact@v4
         if: always()
         with:

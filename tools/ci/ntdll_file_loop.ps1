@@ -6,7 +6,7 @@
 #   ntdll_file_loop.ps1 -Bin build/bin -Exe build/winetest/ntdll/ntdll_test.exe -Out ntdllfile-loop [-N 30] [-NSeq 30] [-NTrace 30] [-NNative 30]
 param(
   [string]$Bin = 'build/bin', [string]$Exe = 'build/winetest/ntdll/ntdll_test.exe', [string]$Out = 'ntdllfile-loop',
-  [int]$N = 30, [int]$NSeq = 30, [int]$NTrace = 30, [int]$NNative = 30, [switch]$Gate
+  [int]$N = 100, [int]$NSeq = 100, [int]$NTrace = 60, [int]$NNative = 60, [switch]$Gate
 )
 $ErrorActionPreference = 'Stop'
 $Bin = (Resolve-Path $Bin).Path
@@ -31,6 +31,15 @@ function Run-Proc([string]$file, [string[]]$a, [string]$so, [string]$se, [int]$t
   if (-not $p.WaitForExit($to * 1000)) { $p.Kill(); $p.WaitForExit(); return 'timeout' }
   return $p.ExitCode
 }
+# The foo*.tmp entries (GetTempFileNameW's names: tick-derived) anywhere in the machine folder, "d name" or "f name".
+function Temp-Snapshot {
+  $r = @()
+  foreach ($root in @($machine, $env:TEMP)) {
+    $r += @(Get-ChildItem -Path $root -Recurse -Force -Filter 'foo*.tmp' -ErrorAction SilentlyContinue |
+      ForEach-Object { $(if ($_.PSIsContainer) { 'd' } else { 'f' }) + ' ' + $_.FullName })
+  }
+  return $r
+}
 function Save-Tail([string]$path, [string]$dest, [long]$max) {
   if (-not (Test-Path $path)) { return }
   $len = (Get-Item $path).Length
@@ -42,7 +51,8 @@ function Save-Tail([string]$path, [string]$dest, [long]$max) {
     $fs.CopyTo($z); $z.Close(); $gz.Close()
   } finally { $fs.Close() }
 }
-function Measure-File([string]$mode, [int]$i, $rc, [string]$so, [string]$se, [bool]$trace) {
+function Measure-File([string]$mode, [int]$i, $rc, [string]$so, [string]$se, [bool]$trace, $pre) {
+  $post = Temp-Snapshot
   $text = if (Test-Path $so) { Get-Content $so -Raw } else { '' }; if ($null -eq $text) { $text = '' }
   $best = $null
   foreach ($m in [regex]::Matches($text, $re)) { if ($null -eq $best -or [int]$m.Groups[1].Value -gt [int]$best.Groups[1].Value) { $best = $m } }
@@ -52,12 +62,14 @@ function Measure-File([string]$mode, [int]$i, $rc, [string]$so, [string]$se, [bo
   $precursor = @($fails | Where-Object { $_ -match 'file\.c:(1[6-8]\d\d):' }).Count
   $tag = "$mode-$('{0:d3}' -f $i)"
   $row = [pscustomobject]@{ mode = $mode; i = $i; rc = "$rc"; outcome = $outcome; executed = $(if ($best) { $best.Groups[1].Value } else { 0 });
-                            failures = $(if ($best) { $best.Groups[4].Value } else { -1 }); precursor = $precursor; first = $first }
+                            failures = $(if ($best) { $best.Groups[4].Value } else { -1 }); precursor = $precursor; first = $first;
+                            temp_before = @($pre).Count; temp_after = @($post).Count; dirs_after = @($post | Where-Object { $_ -like 'd *' }).Count }
   $rows.Add($row)
   Write-Host ("{0}: rc={1} {2} executed={3} failures={4} precursor={5} first='{6}'" -f $tag, $rc, $outcome, $row.executed, $row.failures, $precursor, $first)
-  if ($outcome -ne 'ok' -or $precursor -gt 0) {
+  if ($outcome -ne 'ok' -or $precursor -gt 6) {   # 6 rename-test failures are in every run (todo_wine blocks)
     Copy-Item $so (Join-Path $Out "$tag.out.txt") -Force
     if (Test-Path $crash) { Copy-Item $crash (Join-Path $Out "$tag.crash.txt") -Force }
+    @('before:') + $pre + @('after:') + $post | Set-Content (Join-Path $Out "$tag.temp.txt")
     if ($trace) { Save-Tail $se (Join-Path $Out "$tag.relay.gz") 120MB }
     elseif ((Test-Path $se) -and (Get-Item $se).Length -gt 0) { Copy-Item $se (Join-Path $Out "$tag.err.txt") -Force }
   }
@@ -73,37 +85,41 @@ $env:WIN10XBOX_DEBUG = '-all'
 for ($i = 1; $i -le $N; $i++) {
   Remove-Item $crash -ErrorAction SilentlyContinue
   $so = Join-Path $tmp 'o.txt'; $se = Join-Path $tmp 'e.txt'
+  $pre = Temp-Snapshot
   $rc = Layer-Unit 'file' $so $se
-  Measure-File 'layer-file' $i $rc $so $se $false
+  Measure-File 'layer-file' $i $rc $so $se $false $pre
 }
 for ($i = 1; $i -le $NSeq; $i++) {
   foreach ($u in $before) { $null = Layer-Unit $u (Join-Path $tmp "pre.txt") (Join-Path $tmp "pre.err") }
   Remove-Item $crash -ErrorAction SilentlyContinue
   $so = Join-Path $tmp 'o.txt'; $se = Join-Path $tmp 'e.txt'
+  $pre = Temp-Snapshot
   $rc = Layer-Unit 'file' $so $se
-  Measure-File 'layer-seq' $i $rc $so $se $false
+  Measure-File 'layer-seq' $i $rc $so $se $false $pre
 }
-$env:WIN10XBOX_DEBUG = '-all,+relay'
+$env:WIN10XBOX_DEBUG = '-all,+relay,+dispatch'
 for ($i = 1; $i -le $NTrace; $i++) {
   Remove-Item $crash -ErrorAction SilentlyContinue
   $so = Join-Path $tmp 'o.txt'; $se = Join-Path $tmp 'e.txt'
+  $pre = Temp-Snapshot
   $rc = Layer-Unit 'file' $so $se
-  Measure-File 'layer-trace' $i $rc $so $se $true
+  Measure-File 'layer-trace' $i $rc $so $se $true $pre
 }
 $env:WIN10XBOX_DEBUG = '-all'
 for ($i = 1; $i -le $NNative; $i++) {
   $so = Join-Path $tmp 'o.txt'; $se = Join-Path $tmp 'e.txt'
+  $pre = Temp-Snapshot
   $rc = Run-Proc $Exe @('file', '--platform=windows') $so $se
-  Measure-File 'native' $i $rc $so $se $false
+  Measure-File 'native' $i $rc $so $se $false $pre
 }
 
 $rows | Export-Csv -Path (Join-Path $Out 'results.csv') -NoTypeInformation
-$md = @('| mode | runs | completed | crashed/timeout | rename-test failures (file.c:16xx-18xx) |', '|---|---|---|---|---|')
+$md = @('| mode | runs | completed | crashed/timeout | iterations with rename-test failures beyond the 6 of every run |', '|---|---|---|---|---|')
 $bad = 0
 foreach ($g in ($rows | Group-Object mode)) {
   $ok = @($g.Group | Where-Object { $_.outcome -eq 'ok' }).Count
-  $pre = @($g.Group | Where-Object { $_.precursor -gt 0 }).Count
-  $md += "| $($g.Name) | $($g.Count) | $ok | $($g.Count - $ok) | $pre |"
+  $npre = @($g.Group | Where-Object { $_.precursor -gt 6 }).Count
+  $md += "| $($g.Name) | $($g.Count) | $ok | $($g.Count - $ok) | $npre |"
   if ($g.Name -like 'layer-*') { $bad += ($g.Count - $ok) }
 }
 $md | ForEach-Object { Write-Host $_ }

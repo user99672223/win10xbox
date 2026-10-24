@@ -381,8 +381,15 @@ NTSTATUS NTAPI Xl_NtCreateFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRI
     // FILE_OPEN_BY_FILE_ID: the "name" is a binary file ID (relative to a directory or volume handle), not a path.
     if (!(options & kFileOpenByFileId))
         if (NTSTATUS s = TranslateOA(attr, &t, options)) return s;
-    return Host().NtCreateFile(handle, access, t.Get(attr), io, alloc_size, attributes, sharing, disposition, options,
-                               ea, ea_length);
+    NTSTATUS r = Host().NtCreateFile(handle, access, t.Get(attr), io, alloc_size, attributes, sharing, disposition,
+                                     options, ea, ea_length);
+    // docs/slices/ntdllfile.md: the names the guest's temp-file tests use and what the host answers.
+    if (!(options & kFileOpenByFileId))   // (a file ID is not a name, and attr was never read by the layer)
+        TRACE(dispatch, "NtCreateFile '%.*ls' access %#lx share %#lx disposition %lu options %#lx -> %#lx",
+              static_cast<int>(OAName(attr).size()), OAName(attr).data(), static_cast<unsigned long>(access),
+              static_cast<unsigned long>(sharing), static_cast<unsigned long>(disposition),
+              static_cast<unsigned long>(options), static_cast<unsigned long>(r));
+    return r;
 }
 
 NTSTATUS NTAPI Xl_NtOpenFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr, PIO_STATUS_BLOCK io,
@@ -401,7 +408,12 @@ NTSTATUS NTAPI Xl_NtOpenFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBU
         NTSTATUS s = Host().NtOpenFile(handle, access | kFileWriteAttributes, t.Get(attr), io, sharing, options);
         if (s != st::AccessDenied) return s;
     }
-    return Host().NtOpenFile(handle, access, t.Get(attr), io, sharing, options);
+    NTSTATUS r = Host().NtOpenFile(handle, access, t.Get(attr), io, sharing, options);
+    if (!(options & kFileOpenByFileId))
+        TRACE(dispatch, "NtOpenFile '%.*ls' access %#lx share %#lx options %#lx -> %#lx",
+              static_cast<int>(OAName(attr).size()), OAName(attr).data(), static_cast<unsigned long>(access),
+              static_cast<unsigned long>(sharing), static_cast<unsigned long>(options), static_cast<unsigned long>(r));
+    return r;
 }
 
 // Pipes live in the host's own \\Device\\NamedPipe: the name is not a file-system path and passes unchanged. What is
