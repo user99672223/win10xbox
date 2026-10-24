@@ -16,7 +16,7 @@ supplies the NT syscall surface beneath them, inside a UWP AppContainer.
 * **Console:** package 1.0.0.333 (run 39981119649) on an Xbox Series S, OS 26100.9445: `window.exe` painted its
   blue window and red square on the TV and `guest_xinput.exe` read the real controller (exit 42). Its three
   defects (no NLS in the package, one guest per app run, RDRAND fault) are fixed on main; the trip-2 package is
-  1.0.0.384 (run 40101558040): "Run every program (report)" plus windowed D3D11 (machine-emu-d3d). Details: STATUS.md "Trip-2 package".
+  1.0.0.391 (run 40110735441): "Run every program (report)", windowed D3D11 (machine-emu-d3d), the game-like loop guest, the chain fix. Details: STATUS.md "Trip-2 package".
 * **Loader** (`core/loader`): PE mapping, import binding, Wine builtin stub rewrite, scanner.
 * **Dispatcher** (`core/dispatch`): by-name table generated from Wine's headers; `Emulate` / `PassThrough` /
   `Todo` per syscall; privileged calls answered as an unprivileged caller.

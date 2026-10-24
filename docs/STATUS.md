@@ -1,6 +1,13 @@
 # Status
 
-## Trip-2 package: 1.0.0.384 = run 40101558040 (main 0f1b39f, 2026-10-24)
+## Trip-2 package: 1.0.0.391 = run 40110735441 (main 10f4c9b, 2026-10-24)
+
+Supersedes 1.0.0.384 and 1.0.0.352 below; same contents as 1.0.0.384 plus `guest_gamelike.exe` (a game's frame loop:
+window + D3D11 + XAudio2 + XInput on `machine-emu-d3d`, ends after 300 presented frames) and the launcher fix for the
+all-programs chain (the summary is written only by a surviving process; `chain=done|aborted` in the header). Runner
+report: `programs=45 pass=44 fail=0 knownfail=0 timeout=1` (interactive Doom), three consecutive package runs complete.
+
+## Trip-2 package (superseded): 1.0.0.384 = run 40101558040 (main 0f1b39f, 2026-10-24)
 
 Supersedes 1.0.0.352 below. Everything merged on 23-24 Oct is in it: the verdict table (every bundled program has a
 known outcome), the display-mode work (`display_mode` 2560x1440@120 requested, `guest_display` 3840x2160@120,
