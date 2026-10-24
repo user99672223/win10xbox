@@ -721,9 +721,14 @@ static int HostMain(int argc, wchar_t** argv) {
     // screenshot and EndProcess ends everything at once (docs/DECISIONS.md). The watchdog covers a frozen thread that
     // holds a lock this thread needs. Started before Launch: a thread started later would run its loader init on the
     // guest's PEB.
-    win10xbox::process::SetProcessTeardown(true);
-    g_teardown_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    if (HANDLE wd = CreateThread(nullptr, 0, &TeardownWatchdog, nullptr, 0, nullptr)) CloseHandle(wd);
+    // Not under Wine (development runs): there the freeze left the main thread blocked until the watchdog fired (every
+    // guest test took 20 s longer and the post-exit output, screenshots and observers never ran). The race it cures is
+    // the real GPU driver's thread-pool callbacks on Windows; Wine keeps the kill-and-restore path.
+    if (!GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version")) {
+        win10xbox::process::SetProcessTeardown(true);
+        g_teardown_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (HANDLE wd = CreateThread(nullptr, 0, &TeardownWatchdog, nullptr, 0, nullptr)) CloseHandle(wd);
+    }
     crash.BeforeLaunch();   // the host's module table, while PEB->Ldr is still the host's
     ActctxProbe actctx;     // test switch, off by default
     g_guest_ran = true;
@@ -733,7 +738,7 @@ static int HostMain(int argc, wchar_t** argv) {
         rc = win10xbox::process::WaitForGuest(INFINITE);   // the second half of Launch(wait = true)
     }
     g_teardown_rc = rc;
-    SetEvent(g_teardown_event);
+    if (g_teardown_event) SetEvent(g_teardown_event);
     actctx.Check();
     {
         // WIN10XBOX_OUTPUT_MODE=<W>x<H>[@<Hz>]: the console output a host-uwp presenter would scale the guest's screen to.
