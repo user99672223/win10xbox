@@ -1,0 +1,162 @@
+win10xbox: gdi32 exports every D3DKMT* thunk the native dxgi/d3d11/dxcore resolve by name
+
+The native dxgi/d3d11 (machine-emu-d3d, Wine's gdi32 + win32u over core/user) fetch the D3DKMT* entry points of the real
+gdi32.dll with GetProcAddress at run time; Wine's gdi32 exports only the subset it uses itself, so the first missing one
+(D3DKMTGetSharedResourceAdapterLuid) made CreateDXGIFactory1 fail with STATUS_PROCEDURE_NOT_FOUND. On Windows each export
+is a thin wrapper of the win32u syscall NtGdiDdDDI<same suffix> (one pointer argument), so every NtGdiDdDDI* of
+win32u.spec without a D3DKMT counterpart gets a spec forward `D3DKMTxxx(ptr) win32u.NtGdiDdDDIxxx`. win32u's stubs are
+syscall thunks the dispatcher passes through to the host's win32u by name (UseHostD3dkmt).
+
+diff --git a/dlls/gdi32/gdi32.spec b/dlls/gdi32/gdi32.spec
+index 207549f..94a6d26 100644
+--- a/dlls/gdi32/gdi32.spec
++++ b/dlls/gdi32/gdi32.spec
+@@ -148,6 +148,148 @@
+ @ stdcall D3DKMTShareObjects(long ptr ptr long ptr) win32u.NtGdiDdDDIShareObjects
+ @ stdcall D3DKMTSignalSynchronizationObjectFromCpu(ptr) win32u.NtGdiDdDDISignalSynchronizationObjectFromCpu
+ @ stdcall D3DKMTWaitForSynchronizationObjectFromCpu(ptr) win32u.NtGdiDdDDIWaitForSynchronizationObjectFromCpu
++@ stdcall D3DKMTAbandonSwapChain(ptr) win32u.NtGdiDdDDIAbandonSwapChain
++@ stdcall D3DKMTAcquireSwapChain(ptr) win32u.NtGdiDdDDIAcquireSwapChain
++@ stdcall D3DKMTAddSurfaceToSwapChain(ptr) win32u.NtGdiDdDDIAddSurfaceToSwapChain
++@ stdcall D3DKMTAdjustFullscreenGamma(ptr) win32u.NtGdiDdDDIAdjustFullscreenGamma
++@ stdcall D3DKMTCacheHybridQueryValue(ptr) win32u.NtGdiDdDDICacheHybridQueryValue
++@ stdcall D3DKMTChangeVideoMemoryReservation(ptr) win32u.NtGdiDdDDIChangeVideoMemoryReservation
++@ stdcall D3DKMTCheckExclusiveOwnership(ptr) win32u.NtGdiDdDDICheckExclusiveOwnership
++@ stdcall D3DKMTCheckMonitorPowerState(ptr) win32u.NtGdiDdDDICheckMonitorPowerState
++@ stdcall D3DKMTCheckMultiPlaneOverlaySupport(ptr) win32u.NtGdiDdDDICheckMultiPlaneOverlaySupport
++@ stdcall D3DKMTCheckMultiPlaneOverlaySupport2(ptr) win32u.NtGdiDdDDICheckMultiPlaneOverlaySupport2
++@ stdcall D3DKMTCheckMultiPlaneOverlaySupport3(ptr) win32u.NtGdiDdDDICheckMultiPlaneOverlaySupport3
++@ stdcall D3DKMTCheckSharedResourceAccess(ptr) win32u.NtGdiDdDDICheckSharedResourceAccess
++@ stdcall D3DKMTConfigureSharedResource(ptr) win32u.NtGdiDdDDIConfigureSharedResource
++@ stdcall D3DKMTCreateBundleObject(ptr) win32u.NtGdiDdDDICreateBundleObject
++@ stdcall D3DKMTCreateContext(ptr) win32u.NtGdiDdDDICreateContext
++@ stdcall D3DKMTCreateContextVirtual(ptr) win32u.NtGdiDdDDICreateContextVirtual
++@ stdcall D3DKMTCreateHwContext(ptr) win32u.NtGdiDdDDICreateHwContext
++@ stdcall D3DKMTCreateHwQueue(ptr) win32u.NtGdiDdDDICreateHwQueue
++@ stdcall D3DKMTCreateOutputDupl(ptr) win32u.NtGdiDdDDICreateOutputDupl
++@ stdcall D3DKMTCreateOverlay(ptr) win32u.NtGdiDdDDICreateOverlay
++@ stdcall D3DKMTCreatePagingQueue(ptr) win32u.NtGdiDdDDICreatePagingQueue
++@ stdcall D3DKMTCreateProtectedSession(ptr) win32u.NtGdiDdDDICreateProtectedSession
++@ stdcall D3DKMTCreateSwapChain(ptr) win32u.NtGdiDdDDICreateSwapChain
++@ stdcall D3DKMTDestroyContext(ptr) win32u.NtGdiDdDDIDestroyContext
++@ stdcall D3DKMTDestroyHwContext(ptr) win32u.NtGdiDdDDIDestroyHwContext
++@ stdcall D3DKMTDestroyHwQueue(ptr) win32u.NtGdiDdDDIDestroyHwQueue
++@ stdcall D3DKMTDestroyOutputDupl(ptr) win32u.NtGdiDdDDIDestroyOutputDupl
++@ stdcall D3DKMTDestroyOverlay(ptr) win32u.NtGdiDdDDIDestroyOverlay
++@ stdcall D3DKMTDestroyPagingQueue(ptr) win32u.NtGdiDdDDIDestroyPagingQueue
++@ stdcall D3DKMTDestroyProtectedSession(ptr) win32u.NtGdiDdDDIDestroyProtectedSession
++@ stdcall D3DKMTEvict(ptr) win32u.NtGdiDdDDIEvict
++@ stdcall D3DKMTExtractBundleObject(ptr) win32u.NtGdiDdDDIExtractBundleObject
++@ stdcall D3DKMTFlipOverlay(ptr) win32u.NtGdiDdDDIFlipOverlay
++@ stdcall D3DKMTFlushHeapTransitions(ptr) win32u.NtGdiDdDDIFlushHeapTransitions
++@ stdcall D3DKMTFreeGpuVirtualAddress(ptr) win32u.NtGdiDdDDIFreeGpuVirtualAddress
++@ stdcall D3DKMTGetAllocationPriority(ptr) win32u.NtGdiDdDDIGetAllocationPriority
++@ stdcall D3DKMTGetCachedHybridQueryValue(ptr) win32u.NtGdiDdDDIGetCachedHybridQueryValue
++@ stdcall D3DKMTGetContextInProcessSchedulingPriority(ptr) win32u.NtGdiDdDDIGetContextInProcessSchedulingPriority
++@ stdcall D3DKMTGetContextSchedulingPriority(ptr) win32u.NtGdiDdDDIGetContextSchedulingPriority
++@ stdcall D3DKMTGetDWMVerticalBlankEvent(ptr) win32u.NtGdiDdDDIGetDWMVerticalBlankEvent
++@ stdcall D3DKMTGetDeviceState(ptr) win32u.NtGdiDdDDIGetDeviceState
++@ stdcall D3DKMTGetDisplayModeList(ptr) win32u.NtGdiDdDDIGetDisplayModeList
++@ stdcall D3DKMTGetMemoryBudgetTarget(ptr) win32u.NtGdiDdDDIGetMemoryBudgetTarget
++@ stdcall D3DKMTGetMultiPlaneOverlayCaps(ptr) win32u.NtGdiDdDDIGetMultiPlaneOverlayCaps
++@ stdcall D3DKMTGetMultisampleMethodList(ptr) win32u.NtGdiDdDDIGetMultisampleMethodList
++@ stdcall D3DKMTGetOverlayState(ptr) win32u.NtGdiDdDDIGetOverlayState
++@ stdcall D3DKMTGetPostCompositionCaps(ptr) win32u.NtGdiDdDDIGetPostCompositionCaps
++@ stdcall D3DKMTGetPresentHistory(ptr) win32u.NtGdiDdDDIGetPresentHistory
++@ stdcall D3DKMTGetPresentQueueEvent(ptr) win32u.NtGdiDdDDIGetPresentQueueEvent
++@ stdcall D3DKMTGetProcessDeviceRemovalSupport(ptr) win32u.NtGdiDdDDIGetProcessDeviceRemovalSupport
++@ stdcall D3DKMTGetProcessSchedulingPriorityBand(ptr) win32u.NtGdiDdDDIGetProcessSchedulingPriorityBand
++@ stdcall D3DKMTGetProcessSchedulingPriorityClass(ptr) win32u.NtGdiDdDDIGetProcessSchedulingPriorityClass
++@ stdcall D3DKMTGetResourcePresentPrivateDriverData(ptr) win32u.NtGdiDdDDIGetResourcePresentPrivateDriverData
++@ stdcall D3DKMTGetRuntimeData(ptr) win32u.NtGdiDdDDIGetRuntimeData
++@ stdcall D3DKMTGetScanLine(ptr) win32u.NtGdiDdDDIGetScanLine
++@ stdcall D3DKMTGetSetSwapChainMetadata(ptr) win32u.NtGdiDdDDIGetSetSwapChainMetadata
++@ stdcall D3DKMTGetSharedPrimaryHandle(ptr) win32u.NtGdiDdDDIGetSharedPrimaryHandle
++@ stdcall D3DKMTGetSharedResourceAdapterLuid(ptr) win32u.NtGdiDdDDIGetSharedResourceAdapterLuid
++@ stdcall D3DKMTGetSharedResourceAdapterLuidFlipManager(ptr) win32u.NtGdiDdDDIGetSharedResourceAdapterLuidFlipManager
++@ stdcall D3DKMTGetSwapChainSurfacePhysicalAddress(ptr) win32u.NtGdiDdDDIGetSwapChainSurfacePhysicalAddress
++@ stdcall D3DKMTGetYieldPercentage(ptr) win32u.NtGdiDdDDIGetYieldPercentage
++@ stdcall D3DKMTInvalidateActiveVidPn(ptr) win32u.NtGdiDdDDIInvalidateActiveVidPn
++@ stdcall D3DKMTInvalidateCache(ptr) win32u.NtGdiDdDDIInvalidateCache
++@ stdcall D3DKMTLock(ptr) win32u.NtGdiDdDDILock
++@ stdcall D3DKMTLock2(ptr) win32u.NtGdiDdDDILock2
++@ stdcall D3DKMTMakeResident(ptr) win32u.NtGdiDdDDIMakeResident
++@ stdcall D3DKMTMapGpuVirtualAddress(ptr) win32u.NtGdiDdDDIMapGpuVirtualAddress
++@ stdcall D3DKMTMarkDeviceAsError(ptr) win32u.NtGdiDdDDIMarkDeviceAsError
++@ stdcall D3DKMTNetDispGetNextChunkInfo(ptr) win32u.NtGdiDdDDINetDispGetNextChunkInfo
++@ stdcall D3DKMTNetDispQueryMiracastDisplayDeviceStatus(ptr) win32u.NtGdiDdDDINetDispQueryMiracastDisplayDeviceStatus
++@ stdcall D3DKMTNetDispQueryMiracastDisplayDeviceSupport(ptr) win32u.NtGdiDdDDINetDispQueryMiracastDisplayDeviceSupport
++@ stdcall D3DKMTNetDispStartMiracastDisplayDevice(ptr) win32u.NtGdiDdDDINetDispStartMiracastDisplayDevice
++@ stdcall D3DKMTNetDispStopMiracastDisplayDevice(ptr) win32u.NtGdiDdDDINetDispStopMiracastDisplayDevice
++@ stdcall D3DKMTOfferAllocations(ptr) win32u.NtGdiDdDDIOfferAllocations
++@ stdcall D3DKMTOpenBundleObjectNtHandleFromName(ptr) win32u.NtGdiDdDDIOpenBundleObjectNtHandleFromName
++@ stdcall D3DKMTOpenProtectedSessionFromNtHandle(ptr) win32u.NtGdiDdDDIOpenProtectedSessionFromNtHandle
++@ stdcall D3DKMTOpenSwapChain(ptr) win32u.NtGdiDdDDIOpenSwapChain
++@ stdcall D3DKMTOutputDuplGetFrameInfo(ptr) win32u.NtGdiDdDDIOutputDuplGetFrameInfo
++@ stdcall D3DKMTOutputDuplGetMetaData(ptr) win32u.NtGdiDdDDIOutputDuplGetMetaData
++@ stdcall D3DKMTOutputDuplGetPointerShapeData(ptr) win32u.NtGdiDdDDIOutputDuplGetPointerShapeData
++@ stdcall D3DKMTOutputDuplPresent(ptr) win32u.NtGdiDdDDIOutputDuplPresent
++@ stdcall D3DKMTOutputDuplReleaseFrame(ptr) win32u.NtGdiDdDDIOutputDuplReleaseFrame
++@ stdcall D3DKMTPollDisplayChildren(ptr) win32u.NtGdiDdDDIPollDisplayChildren
++@ stdcall D3DKMTPresent(ptr) win32u.NtGdiDdDDIPresent
++@ stdcall D3DKMTPresentMultiPlaneOverlay(ptr) win32u.NtGdiDdDDIPresentMultiPlaneOverlay
++@ stdcall D3DKMTPresentMultiPlaneOverlay2(ptr) win32u.NtGdiDdDDIPresentMultiPlaneOverlay2
++@ stdcall D3DKMTPresentMultiPlaneOverlay3(ptr) win32u.NtGdiDdDDIPresentMultiPlaneOverlay3
++@ stdcall D3DKMTPresentRedirected(ptr) win32u.NtGdiDdDDIPresentRedirected
++@ stdcall D3DKMTQueryAllocationResidency(ptr) win32u.NtGdiDdDDIQueryAllocationResidency
++@ stdcall D3DKMTQueryClockCalibration(ptr) win32u.NtGdiDdDDIQueryClockCalibration
++@ stdcall D3DKMTQueryFSEBlock(ptr) win32u.NtGdiDdDDIQueryFSEBlock
++@ stdcall D3DKMTQueryProcessOfferInfo(ptr) win32u.NtGdiDdDDIQueryProcessOfferInfo
++@ stdcall D3DKMTQueryProtectedSessionInfoFromNtHandle(ptr) win32u.NtGdiDdDDIQueryProtectedSessionInfoFromNtHandle
++@ stdcall D3DKMTQueryProtectedSessionStatus(ptr) win32u.NtGdiDdDDIQueryProtectedSessionStatus
++@ stdcall D3DKMTQueryRemoteVidPnSourceFromGdiDisplayName(ptr) win32u.NtGdiDdDDIQueryRemoteVidPnSourceFromGdiDisplayName
++@ stdcall D3DKMTQueryVidPnExclusiveOwnership(ptr) win32u.NtGdiDdDDIQueryVidPnExclusiveOwnership
++@ stdcall D3DKMTReclaimAllocations(ptr) win32u.NtGdiDdDDIReclaimAllocations
++@ stdcall D3DKMTReclaimAllocations2(ptr) win32u.NtGdiDdDDIReclaimAllocations2
++@ stdcall D3DKMTReleaseProcessVidPnSourceOwners(ptr) win32u.NtGdiDdDDIReleaseProcessVidPnSourceOwners
++@ stdcall D3DKMTReleaseSwapChain(ptr) win32u.NtGdiDdDDIReleaseSwapChain
++@ stdcall D3DKMTRemoveSurfaceFromSwapChain(ptr) win32u.NtGdiDdDDIRemoveSurfaceFromSwapChain
++@ stdcall D3DKMTRender(ptr) win32u.NtGdiDdDDIRender
++@ stdcall D3DKMTReserveGpuVirtualAddress(ptr) win32u.NtGdiDdDDIReserveGpuVirtualAddress
++@ stdcall D3DKMTSetAllocationPriority(ptr) win32u.NtGdiDdDDISetAllocationPriority
++@ stdcall D3DKMTSetContextInProcessSchedulingPriority(ptr) win32u.NtGdiDdDDISetContextInProcessSchedulingPriority
++@ stdcall D3DKMTSetContextSchedulingPriority(ptr) win32u.NtGdiDdDDISetContextSchedulingPriority
++@ stdcall D3DKMTSetDisplayMode(ptr) win32u.NtGdiDdDDISetDisplayMode
++@ stdcall D3DKMTSetDodIndirectSwapchain(ptr) win32u.NtGdiDdDDISetDodIndirectSwapchain
++@ stdcall D3DKMTSetFSEBlock(ptr) win32u.NtGdiDdDDISetFSEBlock
++@ stdcall D3DKMTSetGammaRamp(ptr) win32u.NtGdiDdDDISetGammaRamp
++@ stdcall D3DKMTSetHwProtectionTeardownRecovery(ptr) win32u.NtGdiDdDDISetHwProtectionTeardownRecovery
++@ stdcall D3DKMTSetMemoryBudgetTarget(ptr) win32u.NtGdiDdDDISetMemoryBudgetTarget
++@ stdcall D3DKMTSetMonitorColorSpaceTransform(ptr) win32u.NtGdiDdDDISetMonitorColorSpaceTransform
++@ stdcall D3DKMTSetProcessDeviceRemovalSupport(ptr) win32u.NtGdiDdDDISetProcessDeviceRemovalSupport
++@ stdcall D3DKMTSetProcessSchedulingPriorityBand(ptr) win32u.NtGdiDdDDISetProcessSchedulingPriorityBand
++@ stdcall D3DKMTSetProcessSchedulingPriorityClass(ptr) win32u.NtGdiDdDDISetProcessSchedulingPriorityClass
++@ stdcall D3DKMTSetStablePowerState(ptr) win32u.NtGdiDdDDISetStablePowerState
++@ stdcall D3DKMTSetStereoEnabled(ptr) win32u.NtGdiDdDDISetStereoEnabled
++@ stdcall D3DKMTSetSyncRefreshCountWaitTarget(ptr) win32u.NtGdiDdDDISetSyncRefreshCountWaitTarget
++@ stdcall D3DKMTSetVidPnSourceHwProtection(ptr) win32u.NtGdiDdDDISetVidPnSourceHwProtection
++@ stdcall D3DKMTSetYieldPercentage(ptr) win32u.NtGdiDdDDISetYieldPercentage
++@ stdcall D3DKMTSharedPrimaryLockNotification(ptr) win32u.NtGdiDdDDISharedPrimaryLockNotification
++@ stdcall D3DKMTSharedPrimaryUnLockNotification(ptr) win32u.NtGdiDdDDISharedPrimaryUnLockNotification
++@ stdcall D3DKMTSignalSynchronizationObject(ptr) win32u.NtGdiDdDDISignalSynchronizationObject
++@ stdcall D3DKMTSignalSynchronizationObjectFromGpu(ptr) win32u.NtGdiDdDDISignalSynchronizationObjectFromGpu
++@ stdcall D3DKMTSignalSynchronizationObjectFromGpu2(ptr) win32u.NtGdiDdDDISignalSynchronizationObjectFromGpu2
++@ stdcall D3DKMTSubmitCommand(ptr) win32u.NtGdiDdDDISubmitCommand
++@ stdcall D3DKMTSubmitCommandToHwQueue(ptr) win32u.NtGdiDdDDISubmitCommandToHwQueue
++@ stdcall D3DKMTSubmitSignalSyncObjectsToHwQueue(ptr) win32u.NtGdiDdDDISubmitSignalSyncObjectsToHwQueue
++@ stdcall D3DKMTSubmitWaitForSyncObjectsToHwQueue(ptr) win32u.NtGdiDdDDISubmitWaitForSyncObjectsToHwQueue
++@ stdcall D3DKMTTrimProcessCommitment(ptr) win32u.NtGdiDdDDITrimProcessCommitment
++@ stdcall D3DKMTUnOrderedPresentSwapChain(ptr) win32u.NtGdiDdDDIUnOrderedPresentSwapChain
++@ stdcall D3DKMTUnlock(ptr) win32u.NtGdiDdDDIUnlock
++@ stdcall D3DKMTUnlock2(ptr) win32u.NtGdiDdDDIUnlock2
++@ stdcall D3DKMTUpdateAllocationProperty(ptr) win32u.NtGdiDdDDIUpdateAllocationProperty
++@ stdcall D3DKMTUpdateGpuVirtualAddress(ptr) win32u.NtGdiDdDDIUpdateGpuVirtualAddress
++@ stdcall D3DKMTUpdateOverlay(ptr) win32u.NtGdiDdDDIUpdateOverlay
++@ stdcall D3DKMTWaitForIdle(ptr) win32u.NtGdiDdDDIWaitForIdle
++@ stdcall D3DKMTWaitForSynchronizationObject(ptr) win32u.NtGdiDdDDIWaitForSynchronizationObject
++@ stdcall D3DKMTWaitForSynchronizationObjectFromGpu(ptr) win32u.NtGdiDdDDIWaitForSynchronizationObjectFromGpu
++@ stdcall D3DKMTWaitForVerticalBlankEvent(ptr) win32u.NtGdiDdDDIWaitForVerticalBlankEvent
++@ stdcall D3DKMTWaitForVerticalBlankEvent2(ptr) win32u.NtGdiDdDDIWaitForVerticalBlankEvent2
+ @ stdcall DPtoLP(long ptr long)
+ @ stdcall DeleteColorSpace(long)
+ @ stdcall DeleteDC(long)
