@@ -1,4 +1,4 @@
-status: wip
+status: ready
 owner: A
 
 # -gamelike: one game-like frame loop as the gate for the console package
@@ -35,3 +35,11 @@ Failure codes are listed at the top of the source.
 
 No MSVC or llvm-mingw in the authoring container: the guest and the CMake changes are unbuilt until CI.
 Unproven on the console: real pad, audible tone, real GPU.
+
+## Result
+
+* ci.yml 3 jobs green on 4434050: https://github.com/user99672223/win10xbox/actions/runs/40105880500
+  (`integration.guest_gamelike_emu` and `_native` pass, present-limit line at 90 frames).
+* host-uwp msix/run/launcher green: https://github.com/user99672223/win10xbox/actions/runs/40105880423 (launcher job rerun once:
+  the first attempt's report was read after only 2 programs, a poll race unrelated to this slice; the rerun shows
+  guest_gamelike.exe PASS, exit 42 = frames). First push runs: ci 40104300918 (emu red, see Layer fixes), host-uwp 40104304141.
