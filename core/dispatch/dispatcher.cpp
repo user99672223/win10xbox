@@ -406,20 +406,23 @@ const HostD3dModules& HostD3dMods() { return g_d3d_mods; }
 // core/user owns the guest's display (NtUserQueryDisplayConfig & co answer from display::Mode) but the native dxgi has
 // just enumerated the HOST's adapters (NtGdiDdDDIEnumAdapters2), so the adapter LUID / source id / target id in core/user's
 // one path must be the host's primary display path. Asked once, here, from the host win32u.
-void QueryHostDisplayTopology(HMODULE win32u) {
+void QueryHostDisplayTopology(HMODULE) {
+    // The public user32 API, not the win32u syscall: Windows' NtUserQueryDisplayConfig does not take Wine's argument
+    // list (the syscall answered STATUS_INVALID_PARAMETER for the same call, ci 40063335277); user32 translates.
     using GetSizes = LONG(WINAPI*)(UINT32, UINT32*, UINT32*);
     using Query = LONG(WINAPI*)(UINT32, UINT32*, DISPLAYCONFIG_PATH_INFO*, UINT32*, DISPLAYCONFIG_MODE_INFO*, void*);
-    auto get_sizes = reinterpret_cast<GetSizes>(GetProcAddress(win32u, "NtUserGetDisplayConfigBufferSizes"));
-    auto query = reinterpret_cast<Query>(GetProcAddress(win32u, "NtUserQueryDisplayConfig"));
-    if (!get_sizes || !query) { ERR(dispatch, "display topology: host win32u has no display-config exports"); return; }
+    HMODULE user32 = LoadLibraryW(L"user32.dll");
+    auto get_sizes = user32 ? reinterpret_cast<GetSizes>(GetProcAddress(user32, "GetDisplayConfigBufferSizes")) : nullptr;
+    auto query = user32 ? reinterpret_cast<Query>(GetProcAddress(user32, "QueryDisplayConfig")) : nullptr;
+    if (!get_sizes || !query) { ERR(dispatch, "display topology: host user32 has no display-config exports"); return; }
     HostModeScope host;
     UINT32 np = 0, nm = 0;
     LONG r = get_sizes(QDC_ONLY_ACTIVE_PATHS, &np, &nm);
-    if (r || !np) { ERR(dispatch, "display topology: host GetDisplayConfigBufferSizes -> %ld (%u paths)", r, np); return; }
+    if (r || !np) { ERR(dispatch, "display topology: host user32 GetDisplayConfigBufferSizes -> %ld (%u paths)", r, np); return; }
     std::vector<DISPLAYCONFIG_PATH_INFO> paths(np);
     std::vector<DISPLAYCONFIG_MODE_INFO> modes(nm ? nm : 1);
     r = query(QDC_ONLY_ACTIVE_PATHS, &np, paths.data(), &nm, modes.data(), nullptr);
-    if (r || !np) { ERR(dispatch, "display topology: host QueryDisplayConfig -> %ld (%u paths)", r, np); return; }
+    if (r || !np) { ERR(dispatch, "display topology: host user32 QueryDisplayConfig -> %ld (%u paths)", r, np); return; }
     const DISPLAYCONFIG_PATH_INFO& p = paths[0];
     user::SetHostDisplayTopology(p.sourceInfo.adapterId.LowPart, p.sourceInfo.adapterId.HighPart, p.sourceInfo.id, p.targetInfo.id);
     TRACE(dispatch, "display topology: host primary path adapter LUID %08lx:%08lx source %u target %u", 
