@@ -1100,6 +1100,52 @@ TEST(loader_scan_leaves_jump_tables_in_code_alone) {
     UnmapImage(img);
 }
 
+// The sparse-switch form of the same thing, as an optimised profile-guided image (d3dcompiler_47.dll) has it: a table of
+// one index byte per case value, read by `movzx` after the bounds check, then the jump table of max(index)+1 entries,
+// both in the code. Two adjacent index bytes 0F 31 decode as `rdtsc`; the trap patch wrote 0xCC over one, the switch read
+// case 0xCC of the jump table and ran through the code bytes after it (docs/slices/d3dsample.md).
+TEST(loader_scan_leaves_index_tables_in_code_alone) {
+    SynthPE pe;
+    pe.entry = 0x1000;
+    Bytes code(0x200, 0xCC);
+    const u8 head[] = {
+        0x48, 0x8D, 0x0D, 0xF9, 0xEF, 0xFF, 0xFF,         // lea rcx, [rip-0x1007]      ; rcx = image base
+        0x83, 0xF8, 0x13,                                 // cmp eax, 0x13              ; 20 case values
+        0x77, 0x14,                                       // ja default (the ret)
+        0x0F, 0xB6, 0x84, 0x01, 0x00, 0x11, 0x00, 0x00,   // movzx eax, byte [rcx+rax+0x1100]
+        0x8B, 0x84, 0x81, 0x30, 0x10, 0x00, 0x00,         // mov eax, [rcx+rax*4+0x1030]
+        0x48, 0x01, 0xC8,                                 // add rax, rcx
+        0xFF, 0xE0,                                       // jmp rax
+        0xC3,                                             // ret
+    };
+    std::memcpy(code.data(), head, sizeof head);
+    std::uint32_t entries[50];
+    for (auto& e : entries) e = 0x1120;
+    std::memcpy(code.data() + 0x30, entries, sizeof entries);
+    u8 index[20] = {};
+    index[4] = 0x0F;                                      // 15 and 49: the largest index is 49, so 50 jump-table entries
+    index[5] = 0x31;
+    std::memcpy(code.data() + 0x100, index, sizeof index);
+    const u8 real[] = {0x0F, 0x31, 0xC3};                 // a genuine rdtsc, after the tables
+    std::memcpy(code.data() + 0x140, real, sizeof real);
+    pe.secs.push_back({".text", 0x1000, 0x4000, code, kRX});
+    Bytes f = pe.Build();
+    MappedImage img;
+    CHECK(MapImageFromMemory(f.data(), f.size(), kDefaultMapFlags, nullptr, &img) >= 0);
+    if (!img.base) return;
+    TestCtx ctx;
+    ScanOptions opt;
+    opt.handler = TestHandler;
+    opt.handler_ctx = &ctx;
+    ScanResult res;
+    CHECK_EQ(ScanAndPatch(img, opt, &res), kStatusSuccess);
+    CHECK_EQ(res.sites.size(), std::size_t(1));
+    if (res.sites.size() == 1) CHECK(res.sites[0].address == static_cast<u8*>(img.base) + 0x1140);
+    CHECK(std::memcmp(static_cast<u8*>(img.base) + 0x1100, index, sizeof index) == 0);
+    CHECK(std::memcmp(static_cast<u8*>(img.base) + 0x1030, entries, sizeof entries) == 0);
+    UnmapImage(img);
+}
+
 // A big real image, when the Wine PE build is present (not in CI): stub
 // rewriting must find the Wine-form thunks and the scanner must neither crash
 // nor touch them.

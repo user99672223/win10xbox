@@ -863,12 +863,52 @@ NTSTATUS ScanAndPatchRange(void* start, std::size_t size, const ScanOptions& opt
 // tests/guest/sqlite/lockfile.c: a printf with %lu died with an access violation, Release was fine). Find the
 // tables from the instruction that reads them, keep their bytes out of the sweep, and take their entries as branch
 // targets, which the hint scan of the non-executable sections cannot do for tables in code.
+//
+// A sparse switch (many case values, fewer distinct blocks) adds a second table of one byte per case value, read first:
+//   cmp eax,N; ja default; movzx eax,byte ptr [rdx+rax+IDX]; mov ecx,[rdx+rax*4+TABLE]; add rcx,rdx; jmp rcx
+// An optimised, profile-guided image (d3dcompiler_47.dll: its HLSL compiler, first reached by walbourn/directx-sdk-samples
+// Tutorial07, docs/slices/d3dsample.md) keeps both tables in the code, and a pair of index bytes such as 0F 31 (rdtsc) or 0F A2
+// (cpuid) became a site: the trap patch wrote an INT3 over one index byte, the switch read case 0xCC of a 20-entry table
+// and jumped through the code bytes that follow it. The index table (N+1 bytes, N from the bounds check in front of it) is
+// found from the movzx that reads it and kept out of the sweep; the jump table behind it has max(index)+1 entries, which
+// replaces the "case block within 64 KiB" test for it (profile-guided cold blocks are further away).
 void FindInlineJumpTables(Job* job) {
     const u64 base = job->reach_lo, image_end = job->reach_hi;
     std::vector<Range> found;
     std::vector<Range> none;
     for (const Range& r : job->exec) {
-        Sweep(r, job->funcs, none, [&](const u8*, const Decoded& d) {
+        const u8* last_cmp_at = nullptr;     // the latest `cmp reg, imm` and its immediate (the switch's bounds check)
+        u64 last_cmp_imm = 0;
+        std::size_t index_entries = 0;        // jump-table entries implied by the index table just seen (0: none)
+        const u8* index_seen_at = nullptr;
+        Sweep(r, job->funcs, none, [&](const u8* ip, const Decoded& d) {
+            if (d.ins.mnemonic == ZYDIS_MNEMONIC_CMP && d.ins.operand_count_visible >= 2 &&
+                d.ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER && d.ops[1].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
+                last_cmp_at = ip;
+                last_cmp_imm = d.ops[1].imm.value.u;
+                if (d.ops[1].size < 64) last_cmp_imm &= (1ull << d.ops[1].size) - 1;
+            }
+            if (d.ins.mnemonic == ZYDIS_MNEMONIC_MOVZX && d.ins.operand_count_visible >= 2 &&
+                d.ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER && d.ops[1].type == ZYDIS_OPERAND_TYPE_MEMORY &&
+                d.ops[1].size == 8 && d.ops[1].mem.type == ZYDIS_MEMOP_TYPE_MEM &&
+                d.ops[1].mem.base != ZYDIS_REGISTER_NONE && d.ops[1].mem.base != ZYDIS_REGISTER_RIP &&
+                d.ops[1].mem.index != ZYDIS_REGISTER_NONE && d.ops[1].mem.scale == 1 && d.ops[1].mem.disp.size &&
+                d.ops[1].mem.disp.value > 0 && last_cmp_at && ip > last_cmp_at && ip - last_cmp_at < 64 &&
+                last_cmp_imm > 0 && last_cmp_imm < 4096) {
+                const u64 table = base + static_cast<u64>(d.ops[1].mem.disp.value);
+                const std::size_t len = static_cast<std::size_t>(last_cmp_imm) + 1;
+                if (InRange(job->exec, table) && InRange(job->exec, table + len - 1)) {
+                    const u8* t = reinterpret_cast<const u8*>(table);
+                    u8 top = 0;
+                    for (std::size_t i = 0; i < len; ++i) top = std::max<u8>(top, t[i]);
+                    found.push_back({const_cast<u8*>(t), len});
+                    index_entries = static_cast<std::size_t>(top) + 1;
+                    index_seen_at = ip;
+                    TRACE(scan, "index table of %zu bytes (%zu jump-table entries) at %p read at %p", len, index_entries,
+                          static_cast<const void*>(t), static_cast<const void*>(ip));
+                }
+                return;
+            }
             if (d.ins.mnemonic != ZYDIS_MNEMONIC_MOV || d.ins.operand_count_visible < 2) return;
             const ZydisDecodedOperand& dst = d.ops[0];
             const ZydisDecodedOperand& src = d.ops[1];
@@ -888,7 +928,21 @@ void FindInlineJumpTables(Job* job) {
                 return t;
             }();
             std::size_t n = 0;
-            while (n < 4096 && t + 4 * (n + 1) <= limit) {
+            if (index_entries && index_seen_at && ip > index_seen_at && ip - index_seen_at < 32 &&
+                t + 4 * index_entries <= limit) {
+                // the entry count is known from the index table; every entry must still be an RVA inside the code
+                std::size_t k = 0;
+                while (k < index_entries) {
+                    u32 v;
+                    std::memcpy(&v, t + 4 * k, 4);
+                    if (!v || v >= image_end - base || !InRange(job->exec, base + v)) break;
+                    ++k;
+                }
+                if (k == index_entries) n = k;
+            }
+            const bool counted = n != 0;
+            index_entries = 0;
+            while (!counted && n < 4096 && t + 4 * (n + 1) <= limit) {
                 u32 v;
                 std::memcpy(&v, t + 4 * n, 4);
                 // a case block: an RVA inside the image's code, within reach of the table (the same function)

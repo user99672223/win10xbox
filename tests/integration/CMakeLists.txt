@@ -1116,7 +1116,7 @@ add_test(NAME integration.guest_d3dsample
     "-DEXPECT_REGEX=present-limit: 60 frames presented, "
     "-DEXPECT_TRACE_REGEX=dxgi: IDXGIFactory2::CreateSwapChainForHwnd\\(window [0-9a-fA-Fx]+, [0-9]+x[0-9]+[^)]*\\) -> 00000000;dxgi: IDXGISwapChain::Present\\(0, 0x0\\) -> 0000000[0-9] \\(back buffer copied\\);present-limit: 60 frames presented"
     "-DFORBID_TRACE_REGEX=host state reached under the guest TLS view;not handed to the compositor"
-    -DDEBUG_SPEC=+dispatch,+modules,+process,+user
+    -DDEBUG_SPEC=+dispatch,+modules,+process,+user,+scan
     -DREQUIRE=Windows/System32/d3d11.dll
     -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
     -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)

@@ -41,6 +41,17 @@ compiled from the fetched tree, never copied into the repository.
 2. `D3D11_CREATE_DEVICE_DEBUG` is dropped from `D3D11CreateDevice*` flags: Tutorial07 sets it under `_DEBUG` (the ci.yml Debug job) and the SDK
    layers (d3d11sdklayers.dll) are in neither the machine folder nor a retail console, so every device type would fail.
 
+3. First CI run (ci run 40121039057 @ 03e0237, RelWithDebInfo): with 1 and 2 in place the sample got as far as `CreateSwapChainForHwnd` and
+   `GetBuffer` (so `D3DKMT`, the swap-chain wrapper and the hooked `GetParent` work), then died in `D3DCompileFromFile` with an access
+   violation executing `d3dcompiler_47 base + 0x8B45F08B` (code bytes read as a jump-table RVA), `rax = 0xCC`. Cause: the loader's code
+   scanner (core/loader/scanner.cpp) found 4 "sites" in d3dcompiler_47.dll; the profile-guided image keeps the sparse-switch index table
+   (one byte per case value, read by `movzx eax, byte [rdx+rax+IDX]`) in the code, a pair of index bytes `0F 31` decoded as `rdtsc`,
+   and the trap patch wrote `0xCC` over an index byte, so the switch read entry 204 of a smaller jump table. `FindInlineJumpTables`
+   now finds the index table from the `movzx` and the `cmp reg, N` in front of it (N+1 bytes), leaves it out of the sweep and takes
+   max(index)+1 as the size of the jump table behind it. Unit test `loader_scan_leaves_index_tables_in_code_alone` (fails without the
+   change). Unproven that this is the only table form d3dcompiler_47 uses; the integration test runs with `+scan` so the log
+   shows `index table of ...` lines.
+
 Further fixes found by CI are listed below.
 
 ## Status
