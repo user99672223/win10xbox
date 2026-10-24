@@ -61,10 +61,10 @@ guest_display_mode.exe 42=matches
 
 # Off-screen D3D11 on machine-native-d3d (guest_d3d11_tri.machine); 10 = d3d11.dll did not load (no D3D machine)
 guest_d3d11_tri.exe 42=d3d11 10=no-d3d11
-# Dear ImGui's example on machine-native-d3d (guest_imgui_d3d11.machine): 60 frames, then its normal shutdown returns 0.
-guest_imgui_d3d11.exe 0=frames KNOWNFAIL=-2147483392:uwp-no-hwnd-swapchain(-uwpswap)
-# The swap-chain guest on machine-native-d3d (guest_d3d11_swap.machine): 60 frames presented through the DXGI interposition.
-guest_d3d11_swap.exe 42=presented KNOWNFAIL=2:uwp-no-hwnd(-uwpswap)
+# Dear ImGui's example on machine-emu-d3d (guest_imgui_d3d11.machine): 60 frames, then its normal shutdown returns 0.
+guest_imgui_d3d11.exe 0=frames
+# The swap-chain guest on machine-emu-d3d (guest_d3d11_swap.machine): 60 frames presented through the virtual swap chain.
+guest_d3d11_swap.exe 42=presented
 
 # UDP + TLS (tests/guest/net2.c): the TLS half needs the test server (integration.net2_tls_server); standalone the connect fails = 20
 guest_net2.exe 42=udp+tls 20=no-tls-server

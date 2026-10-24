@@ -84,6 +84,20 @@ bool WriteScreenshot(const std::wstring& path);
 bool NotifyClientFrame(void* hwnd, const std::uint32_t* bgra, std::int32_t width, std::int32_t height,
                        std::int32_t stride_bytes);
 
+// True when `hwnd` is a window of this module's own window manager (the emulated GUI: a swap chain for it is virtual,
+// NotifyClientFrame composes its frames at the window's client rectangle). False in route B and for any other value.
+bool IsEmulatedWindow(void* hwnd);
+
+// The adapter LUID and the source / target ids of the host's primary display path (machine-emu-d3d: the native dxgi
+// enumerated the host's adapters, so the display-config syscalls answer with that adapter). Default {1,0} / 0 / 0.
+void SetHostDisplayTopology(std::uint32_t luid_low, std::int32_t luid_high, std::uint32_t source_id, std::uint32_t target_id);
+// Forwards a DISPLAYCONFIG_DEVICE_INFO_HEADER packet unchanged to the HOST's public DisplayConfigGetDeviceInfo and
+// returns its Win32 status. Set once by the dispatcher (machine-emu-d3d); null: unmodelled packet types fail.
+using HostDisplayInfoFn = long (*)(void* packet);
+void SetHostDisplayInfoForwarder(HostDisplayInfoFn fn);
+// The client size of an emulated window (what a swap chain with a 0x0 description takes); false when it is not one.
+bool GetEmulatedClientSize(void* hwnd, std::int32_t* width, std::int32_t* height);
+
 // host-uwp: creates the real swap chain for the guest on the presenter's CoreWindow instead of on the guest's
 // window. `factory` is the real IDXGIFactory2*, `device` the guest's IUnknown* device, `desc1` a
 // const DXGI_SWAP_CHAIN_DESC1*; *swap_chain receives an IDXGISwapChain1* (one reference). Returns an HRESULT.

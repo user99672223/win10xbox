@@ -921,7 +921,8 @@ void Host::Impl::RunImpl()
     // The machine folder: launch.json "machine" / the picked entry's .machine, default "machine".
     if (!lc.machine.empty()) machine_name = lc.machine;
     machine = ls + L"\\" + Widen(machine_name);
-    const bool d3d_machine = _stricmp(machine_name.c_str(), kD3dMachineName) == 0;
+    const bool emu_d3d_machine = _stricmp(machine_name.c_str(), kEmuD3dMachineName) == 0;
+    const bool d3d_machine = emu_d3d_machine || _stricmp(machine_name.c_str(), kD3dMachineName) == 0;
     report.Set("machine.folder", machine_name);
     diag::Line("machine folder: %s", machine_name.c_str());
 
@@ -1003,7 +1004,9 @@ void Host::Impl::RunImpl()
     {
         // Route B + Direct3D 11: the native GUI and D3D runtime, read BY NAME from the console's System32
         // (tests/integration/prepare_machine.cmake D3D_MACHINE), plus the package's msctf.dll stand-in.
-        for (const std::string& n : D3dMachineNativeDlls()) plan.native_names.push_back(Widen(n));
+        // machine-emu-d3d: the same without the native user32/gdi32/win32u/imm32 (the emulated window manager stays).
+        for (const std::string& n : emu_d3d_machine ? EmuD3dMachineNativeDlls() : D3dMachineNativeDlls())
+            plan.native_names.push_back(Widen(n));
         plan.profile_dir = Widen(machine_name);
     }
     const StageResult st = StageMachineFiles(plan);

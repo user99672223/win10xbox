@@ -5,7 +5,7 @@ Windows 10 x64 / 22H2 NT syscall numbers) and the hand-maintained policy
 `core/dispatch/syscall_policy.inc`; win32u entries (ids 0x1000..) are Emulate when
 `core/user/user_syscalls.h` registers them. Do not edit by hand.
 
-1798 syscalls. passthrough 129, translate 60, emulate 362, todo 1247. Generated 2026-10-23.
+1798 syscalls. passthrough 128, translate 60, emulate 363, todo 1247. Generated 2026-10-23.
 
 Policy: **PassThrough** calls the host ntdll export by name; **Translate**
 rewrites arguments (paths, handles, timeouts) then passes through;
@@ -158,7 +158,7 @@ resource; **Todo** traces loudly and returns STATUS_NOT_IMPLEMENTED.
 | 0x008d | NtDeleteFile | 1 | Translate | VFS path rewrite |
 | 0x008e | NtDeleteKey | 1 | Emulate | registry |
 | 0x008f | NtDeleteValueKey | 2 | Emulate | registry |
-| 0x0090 | NtDisplayString | 1 | PassThrough |  |
+| 0x0090 | NtDisplayString | 1 | Emulate | diagnostic channel of the guest loader (failed export lookups), not forwarded |
 | 0x0091 | NtFilterToken | 6 | Emulate | token |
 | 0x0092 | NtFlushBuffersFileEx | 5 | PassThrough |  |
 | 0x0093 | NtFlushInstructionCache | 3 | PassThrough |  |

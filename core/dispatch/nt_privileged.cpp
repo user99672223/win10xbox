@@ -10,6 +10,9 @@
 // SYSDBG_COMMAND) are ULONG here, which is what the registers carry.
 #include "internal.h"
 
+#include <algorithm>
+#include <cwchar>
+
 namespace win10xbox::dispatch::detail {
 namespace {
 
@@ -54,6 +57,32 @@ NTSTATUS NTAPI Priv_NtSystemDebugControl(ULONG /*SYSDBG_COMMAND*/, PVOID, ULONG,
     return Answer("NtSystemDebugControl", st::AccessDenied, "needs SeDebugPrivilege, not forwarded to the host");
 }
 
+// Diagnostic channel of the guest's loader (wine-pe/patches/0032): a failed GetProcAddress / LdrGetProcedureAddress or
+// delay-load resolution arrives as "lookup|<module>|<name or #ordinal>|<status>". Logged at WARN on the modules
+// channel; nothing reaches the host (NtDisplayString would need the boot-screen privilege there). Any other text is
+// traced and dropped.
+NTSTATUS NTAPI Priv_NtDisplayString(const UNICODE_STRING* text) {
+    wchar_t buf[320];
+    std::size_t n = 0;
+    if (text && text->Buffer && text->Length) {
+        MEMORY_BASIC_INFORMATION mbi{};
+        const std::size_t want = (std::min<std::size_t>)(text->Length / sizeof(wchar_t), 300);
+        if (VirtualQuery(text->Buffer, &mbi, sizeof mbi) &&
+            (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_WRITECOPY)) &&
+            !(mbi.Protect & PAGE_GUARD) && mbi.State == MEM_COMMIT &&
+            static_cast<const char*>(mbi.BaseAddress) + mbi.RegionSize >=
+                reinterpret_cast<const char*>(text->Buffer) + want * sizeof(wchar_t)) {
+            for (; n < want; ++n) buf[n] = text->Buffer[n];
+        }
+    }
+    buf[n] = 0;
+    if (n > 7 && std::wcsncmp(buf, L"lookup|", 7) == 0)
+        WARN(modules, "guest export lookup failed: %ls", buf + 7);
+    else
+        TRACE(dispatch, "NtDisplayString(%ls) dropped", buf);
+    return 0;
+}
+
 NTSTATUS NTAPI Priv_NtCreateToken(PHANDLE /*TokenHandle*/, ACCESS_MASK /*DesiredAccess*/,
                                   POBJECT_ATTRIBUTES /*ObjectAttributes*/, TOKEN_TYPE /*TokenType*/,
                                   PLUID /*AuthenticationId*/, PLARGE_INTEGER /*ExpirationTime*/,
@@ -75,6 +104,7 @@ const ImplDef* PrivilegedImpls() {
         {"NtCreatePagingFile", reinterpret_cast<void*>(&Priv_NtCreatePagingFile)},
         {"NtSetLdtEntries", reinterpret_cast<void*>(&Priv_NtSetLdtEntries)},
         {"NtSystemDebugControl", reinterpret_cast<void*>(&Priv_NtSystemDebugControl)},
+        {"NtDisplayString", reinterpret_cast<void*>(&Priv_NtDisplayString)},
         {"NtCreateToken", reinterpret_cast<void*>(&Priv_NtCreateToken)},
         {nullptr, nullptr},
     };

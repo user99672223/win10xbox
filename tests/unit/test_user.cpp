@@ -431,6 +431,8 @@ TEST(user_text_metrics_and_extents) {
     NtGdiDeleteObjectApp(small);
 }
 
+struct DISPLAYCONFIG_SDR_WHITE_LEVEL_T { DISPLAYCONFIG_DEVICE_INFO_HEADER header; ULONG level; };
+
 TEST(user_query_display_config) {
     namespace sys = win10xbox::user::sys;
     UINT32 np = 0, nm = 0;
@@ -467,5 +469,23 @@ TEST(user_query_display_config) {
     // an unknown adapter is refused
     src.header.adapterId.LowPart = 99;
     CHECK(sys::NtUserDisplayConfigGetDeviceInfo(&src.header) != 0);
+    // modes and modes_count may be NULL (the native dxgi's call): only the path is returned
+    np = 1;
+    DISPLAYCONFIG_PATH_INFO p2{};
+    CHECK_EQ(sys::NtUserQueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &np, &p2, nullptr, nullptr, nullptr), static_cast<LONG>(ERROR_SUCCESS));
+    CHECK_EQ(np, 1u);
+    // the host's adapter LUID replaces the default and the packets follow it
+    win10xbox::user::SetHostDisplayTopology(0x1234, 0, 0, 0);
+    np = 1;
+    CHECK_EQ(sys::NtUserQueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &np, &p2, nullptr, nullptr, nullptr), static_cast<LONG>(ERROR_SUCCESS));
+    CHECK_EQ(p2.sourceInfo.adapterId.LowPart, 0x1234u);
+    DISPLAYCONFIG_SDR_WHITE_LEVEL_T wl{};
+    wl.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
+    wl.header.size = sizeof wl;
+    wl.header.adapterId = p2.targetInfo.adapterId;
+    wl.header.id = p2.targetInfo.id;
+    CHECK_EQ(sys::NtUserDisplayConfigGetDeviceInfo(&wl.header), static_cast<NTSTATUS>(0));
+    CHECK_EQ(wl.level, 1000ul);
+    win10xbox::user::SetHostDisplayTopology(1, 0, 0, 0);
 }
 

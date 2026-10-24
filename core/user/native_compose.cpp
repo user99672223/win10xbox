@@ -245,6 +245,7 @@ SwapChainTargetFn GetSwapChainTarget(void** ctx) {
 
 bool NotifyClientFrame(void* hwnd, const std::uint32_t* bgra, std::int32_t width, std::int32_t height,
                        std::int32_t stride_bytes) {
+    if (!detail::NativeGui()) return detail::NotifyEmuClientFrame(hwnd, bgra, width, height, stride_bytes);
     const dispatch::detail::HostGui* h = dispatch::detail::HostGuiFunctions();
     if (!h || !hwnd || !bgra || width <= 0 || height <= 0 || width > 16384 || height > 16384 || stride_bytes < width * 4)
         return false;

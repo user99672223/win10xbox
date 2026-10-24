@@ -461,6 +461,9 @@ static NTSTATUS NTAPI Xl_NtContinueEx(PCONTEXT ctx, PVOID arg) {
 }
 
 static NTSTATUS NTAPI Xl_NtRaiseException(PEXCEPTION_RECORD rec, PCONTEXT ctx, BOOLEAN first) {
+    // docs/slices/uwpswap.md round 11: RaiseFailFastException (0xC0000602) ends the process in the kernel without running a
+    // handler or WER, so print the record and the code addresses on the stack (module+RVA) before asking the host.
+    if (rec && (rec->ExceptionCode == 0xC0000602 || rec->ExceptionCode == 0xC0000409)) DumpFailFastRaise(rec, ctx);
     return CallInGuestView(Host().NtRaiseException, rec, ctx, first);
 }
 

@@ -112,7 +112,7 @@ NTSTATUS UserModeCallback(ULONG id, const void* args, ULONG len, void** ret_ptr,
     using dispatch::detail::peb::KernelCallbackTable;
     if (ret_ptr) *ret_ptr = nullptr;
     if (ret_len) *ret_len = 0;
-    auto* table = dispatch::detail::PebField<KernelCallbackFn*>(KernelCallbackTable);
+    auto* table = static_cast<KernelCallbackFn*>(dispatch::detail::EmuCallbackTable());   // Wine's user32 table
     if (!table || !table[id]) {
         ERR(user, "callback %lu: no KernelCallbackTable entry (user32 not initialised?)", id);
         return dispatch::detail::st::NotImplemented;

@@ -341,6 +341,9 @@ abi::ThreadInfo* CurrentThreadInfo();
 
 // ---- Module state (allocated under the lock on first use) ---------------------------
 struct RetainedLayer { std::shared_ptr<winexbox::ISurface> surface; RECT screen; };
+// A swap chain frame (dxgi_interpose.cpp virtual swap chain) of an emulated window: composed over the window's client
+// rectangle; x/y are the last known screen position (kept for the retained frame once the window is gone).
+struct EmuClientFrame { HWND hwnd; std::int32_t w, h, x, y; std::vector<std::uint32_t> px; };
 struct State {
     // GDI
     abi::GdiHandleEntry* gdi_entries = nullptr;
@@ -391,6 +394,7 @@ struct State {
     // last painted frame, for screenshots: the top-level layers at the most recent flush, bottom first
     std::vector<RetainedLayer> retained;
     bool retained_valid = false;
+    std::vector<EmuClientFrame> client_frames;   // swap chain frames of emulated windows, newest per window
 };
 // Creates the state, the GDI table (installed at PEB.GdiSharedHandleTable),
 // the stock objects and the system colour brushes on first call. Lock held.
@@ -501,6 +505,7 @@ HWND TopLevelOf(HWND hwnd);
 POINT ClientOriginScreen(const WindowObj* w);  // screen coords of the client's (0,0)
 RECT WindowRectScreen(const WindowObj* w);
 RECT ClientRectScreen(const WindowObj* w);
+bool NotifyEmuClientFrame(void* hwnd, const std::uint32_t* bgra, std::int32_t w, std::int32_t h, std::int32_t stride);
 bool IsWindowReallyVisible(const WindowObj* w); // window and every ancestor WS_VISIBLE
 HWND WindowFromScreenPoint(POINT pt);
 HWND ShallowWindowFromPoint(POINT pt);          // Wine's shallow_window_from_point: the top-level window at pt, else the desktop

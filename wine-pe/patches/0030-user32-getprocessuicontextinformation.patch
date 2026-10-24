@@ -1,0 +1,48 @@
+win10xbox: user32!GetProcessUIContextInformation is a real export (it was a spec stub)
+
+The native dxgi.dll the Direct3D machines run next to Wine's user32 imports user32!GetProcessUIContextInformation
+(whether the process is in an immersive/UWP context). Wine has it as a `stub`: calling it raises EXCEPTION_WINE_STUB.
+On Windows the user32 export is the win32u function (measured on the CI runner: both return a BOOL, TRUE with
+{ PROCESS_UICONTEXT_DESKTOP, 0 } for the current process), so it is a spec forward to the win32u syscall
+NtUserGetProcessUIContextInformation(process, PROCESS_UICONTEXT_INFORMATION*), which core/user implements
+(core/user/win_sysparams.cpp). The syscall id (0x1436) is unchanged: a stub syscall already has its thunk in win32u.dll,
+the spec line only gives it an argument list (and puts it in the import library user32 links against).
+
+diff --git a/dlls/user32/user32.spec b/dlls/user32/user32.spec
+index 40e80c6..f2ccaea 100644
+--- a/dlls/user32/user32.spec
++++ b/dlls/user32/user32.spec
+@@ -32,7 +32,7 @@
+ 2518 stub @
+ 2519 stub -noname EnableMouseInputForCursorSuppression  # NtUserEnableMouseInputForCursorSuppression
+ 2520 stub -noname IsMouseInputEnabled  # NtUserIsMouseInputEnabled
+-2521 stub GetProcessUIContextInformation  # NtUserGetProcessUIContextInformation
++2521 stdcall GetProcessUIContextInformation(long ptr) NtUserGetProcessUIContextInformation
+ 2522 stub -noname SetBrokeredForeground  # NtUserSetBrokeredForeground
+ 2523 stub @
+ 2524 stub @
+diff --git a/dlls/win32u/win32u.spec b/dlls/win32u/win32u.spec
+index 49e8b4a..533aaeb 100644
+--- a/dlls/win32u/win32u.spec
++++ b/dlls/win32u/win32u.spec
+@@ -1077,7 +1077,7 @@
+ @ stdcall -syscall NtUserGetPriorityClipboardFormat(ptr long)
+ @ stdcall -syscall NtUserGetProcessDefaultLayout(ptr)
+ @ stdcall -syscall NtUserGetProcessDpiAwarenessContext(long)
+-@ stub -syscall NtUserGetProcessUIContextInformation
++@ stdcall -syscall NtUserGetProcessUIContextInformation(long ptr)
+ @ stdcall -syscall NtUserGetProcessWindowStation()
+ @ stdcall -syscall NtUserGetProp(long wstr)
+ @ stub -syscall NtUserGetProp2
+diff --git a/include/ntuser.h b/include/ntuser.h
+index ea67352..1f00cc6 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -895,6 +895,7 @@ W32KAPI BOOL    WINAPI NtUserGetPointerInfoList( UINT32 id, POINTER_INPUT_TYPE t
+ W32KAPI INT     WINAPI NtUserGetPriorityClipboardFormat( UINT *list, INT count );
+ W32KAPI BOOL    WINAPI NtUserGetProcessDefaultLayout( ULONG *layout );
+ W32KAPI ULONG   WINAPI NtUserGetProcessDpiAwarenessContext( HANDLE process );
++W32KAPI BOOL    WINAPI NtUserGetProcessUIContextInformation( HANDLE process, ULONG *info );
+ W32KAPI HWINSTA WINAPI NtUserGetProcessWindowStation(void);
+ W32KAPI HANDLE  WINAPI NtUserGetProp( HWND hwnd, const WCHAR *str );
+ W32KAPI DWORD   WINAPI NtUserGetQueueStatus( UINT flags );

@@ -255,6 +255,11 @@ add_library(msctf_stub SHARED "${WIN10XBOX_ROOT}/tests/guest/msctf_stub.c")
 set_target_properties(msctf_stub PROPERTIES OUTPUT_NAME msctf PREFIX ""
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/native-gui-stubs
   LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/native-gui-stubs)
+# The gdi32full.dll stand-in of machine-emu-d3d (tests/guest/gdi32full_stub.c), staged into payload\machine-emu-d3d.
+add_library(gdi32full_stub SHARED "${WIN10XBOX_ROOT}/tests/guest/gdi32full_stub.c")
+set_target_properties(gdi32full_stub PROPERTIES OUTPUT_NAME gdi32full PREFIX ""
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/native-gui-stubs
+  LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/native-gui-stubs)
 # Our own builtin DLLs (guest-dlls/: xinput1_4.dll and its copies xinput1_3.dll / xinput9_1_0.dll, staged into
 # payload\builtin next to Wine's) and the XInput guest that imports one.
 set(WIN10XBOX_GUEST_DLL_DIR ${CMAKE_BINARY_DIR}/bin/guest-dlls)
@@ -446,10 +451,11 @@ add_custom_target(stage_appx ALL
           "-DGUEST_DLL_DIR=${WIN10XBOX_GUEST_DLL_DIR}"
           "-DMACHINE_JSON=${WIN10XBOX_ROOT}/machine/machine.default.json"
           "-DMSCTF_STUB=$<TARGET_FILE:msctf_stub>"
+          "-DGDI32FULL_STUB=$<TARGET_FILE:gdi32full_stub>"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/stage.cmake"
   COMMENT "Staging the AppX layout in ${HOST_UWP_STAGE_DIR}"
   VERBATIM)
-add_dependencies(stage_appx host_uwp xinput1_4 msctf_stub guest_dirtree ${HOST_UWP_GUESTS})
+add_dependencies(stage_appx host_uwp xinput1_4 msctf_stub gdi32full_stub guest_dirtree ${HOST_UWP_GUESTS})
 if(HOST_UWP_WINMD_TARGET)
   add_dependencies(stage_appx ${HOST_UWP_WINMD_TARGET})
 endif()

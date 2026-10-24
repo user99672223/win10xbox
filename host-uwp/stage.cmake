@@ -5,7 +5,7 @@
 #         -DWINMD=<Win10XboxUwp.winmd or empty>
 #         -DMANIFEST=<AppxManifest.xml> -DASSETS_DIR=<dir with *.png>
 #         -DPAYLOAD_DIR=<host-uwp/payload> -DBUILTIN_DIR=<wine-pe/out/builtin>
-#         -DMACHINE_JSON=<machine.default.json> [-DMSCTF_STUB=<msctf.dll stand-in of tests/guest/msctf_stub.c>]
+#         -DMACHINE_JSON=<machine.default.json> [-DGDI32FULL_STUB=<tests/guest/gdi32full_stub.c's dll>] [-DMSCTF_STUB=<msctf.dll stand-in of tests/guest/msctf_stub.c>]
 #         [-DGUEST_DLL_DIR=<bin/guest-dlls>: our own builtin DLLs]
 #         [-DDIRTREE_EXE=<guest_dirtree.exe> -DDIRTREE_SRC=<tests/guest/dirtree>: the directory-install guest]
 #         -P stage.cmake
@@ -139,6 +139,32 @@ if(NOT "${MACHINE_JSON}" STREQUAL "" AND EXISTS "${MACHINE_JSON}")
     file(COPY_FILE "${MSCTF_STUB}" "${STAGE}/payload/machine-native-d3d/msctf.dll")
   else()
     message(WARNING "stage.cmake: no msctf stand-in (MSCTF_STUB): the Direct3D machine folder lacks msctf.dll")
+  endif()
+endif()
+
+# Third machine folder, the emulated GUI + native Direct3D 11 (LocalState\machine-emu-d3d, docs/slices/uwpswap.md): the
+# machine.json rewrite of tests/integration/prepare_machine.cmake EMU_D3D_MACHINE ("d3d": "native", no "gui": "native", the
+# native set = host-uwp/guest_sidecar.cpp EmuD3dMachineNativeDlls). No stand-in DLLs.
+if(NOT "${MACHINE_JSON}" STREQUAL "" AND EXISTS "${MACHINE_JSON}")
+  set(_emu_native gdi32full msvcp_win d3d11 dxgi d3dcompiler_47 d3d10warp dxcore dwmapi d3d12 D3D12Core D3DSCache powrprof umpdc
+                  directxdatabasehelper kernel.appcore)
+  file(READ "${MACHINE_JSON}" _json)
+  set(_ov "\"*\": \"builtin,native\"")
+  foreach(_b IN LISTS _emu_native)
+    string(APPEND _ov ", \"${_b}\": \"native\"")
+  endforeach()
+  string(REGEX REPLACE "\"\\*\"[ \t]*:[ \t]*\"[^\"]*\"" "${_ov}" _json "${_json}")
+  string(REGEX REPLACE "\"version\"[ \t]*:[ \t]*1[ \t]*," "\"version\": 1,\n  \"d3d\": \"native\"," _json "${_json}")
+  if(NOT _json MATCHES "\"d3d\": \"native\"" OR NOT _json MATCHES "\"d3d11\": \"native\"")
+    message(FATAL_ERROR "stage.cmake: could not derive the emulated Direct3D machine.json from ${MACHINE_JSON}")
+  endif()
+  file(MAKE_DIRECTORY "${STAGE}/payload/machine-emu-d3d")
+  file(CONFIGURE OUTPUT "${STAGE}/payload/machine-emu-d3d/machine.json" CONTENT "${_json}" @ONLY)
+  # payload\machine-emu-d3d\*.dll are copied into the machine's System32 (host_stage.cpp, profile_dir): the gdi32full stand-in.
+  if(NOT "${GDI32FULL_STUB}" STREQUAL "" AND EXISTS "${GDI32FULL_STUB}")
+    file(COPY_FILE "${GDI32FULL_STUB}" "${STAGE}/payload/machine-emu-d3d/gdi32full.dll")
+  else()
+    message(WARNING "stage.cmake: no gdi32full stand-in (GDI32FULL_STUB): the emulated Direct3D machine folder lacks gdi32full.dll")
   endif()
 endif()
 

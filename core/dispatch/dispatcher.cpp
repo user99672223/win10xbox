@@ -5,6 +5,8 @@
 #include "nt_spawn.h"
 #include "win10xbox/config.h"
 #include "win10xbox/probe.h"
+#include "win10xbox/user.h"
+#include <vector>
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -88,6 +90,7 @@ struct State {
     // Route B (config gui = native): win32u entries pass through to this module (the HOST's win32u.dll).
     HMODULE host_win32u = nullptr;
     bool gui_native = false;
+    bool d3dkmt_host = false;   // emulated GUI + native Direct3D (machine.json "d3d": "native"): NtGdiDdDDI* go to the host
     std::vector<std::unique_ptr<Entry>> extra;         // native-only win32u syscalls (ids kExtraFirstId..)
     std::uint32_t next_extra_id = kExtraFirstId;
     const Entry* end_paint = nullptr;                  // NtUserEndPaint: presentation snapshot point
@@ -392,12 +395,102 @@ NTSTATUS UseHostWin32u(HMODULE win32u) {
     return st::Success;
 }
 
+// Emulated GUI (Wine's user32/gdi32/win32u over core/user) with the NATIVE Direct3D runtime (machine.json "d3d":
+// "native", docs/slices/uwpswap.md): the native dxgi/d3d11/d3d10warp reach the kernel through gdi32!D3DKMT* -> win32u
+// NtGdiDdDDI*. Those (and only those) win32u syscalls pass through to the host's win32u by name; every window call
+// stays with core/user.
+HostD3dModules g_d3d_mods;   // trivially initialised; set once before the guest starts
+
+const HostD3dModules& HostD3dMods() { return g_d3d_mods; }
+
+// core/user owns the guest's display (NtUserQueryDisplayConfig & co answer from display::Mode) but the native dxgi has
+// just enumerated the HOST's adapters (NtGdiDdDDIEnumAdapters2), so the adapter LUID / source id / target id in core/user's
+// one path must be the host's primary display path. Asked once, here, from the host win32u.
+LONG (WINAPI* g_host_dc_info)(DISPLAYCONFIG_DEVICE_INFO_HEADER*) = nullptr;
+
+long ForwardHostDisplayInfo(void* packet) {
+    HostModeScope host;
+    return g_host_dc_info(static_cast<DISPLAYCONFIG_DEVICE_INFO_HEADER*>(packet));
+}
+
+void QueryHostDisplayTopology(HMODULE) {
+    // The public user32 API, not the win32u syscall: Windows' NtUserQueryDisplayConfig does not take Wine's argument
+    // list (the syscall answered STATUS_INVALID_PARAMETER for the same call, ci 40063335277); user32 translates.
+    using GetSizes = LONG(WINAPI*)(UINT32, UINT32*, UINT32*);
+    using Query = LONG(WINAPI*)(UINT32, UINT32*, DISPLAYCONFIG_PATH_INFO*, UINT32*, DISPLAYCONFIG_MODE_INFO*, void*);
+    HMODULE user32 = LoadLibraryW(L"user32.dll");
+    auto get_sizes = user32 ? reinterpret_cast<GetSizes>(GetProcAddress(user32, "GetDisplayConfigBufferSizes")) : nullptr;
+    auto query = user32 ? reinterpret_cast<Query>(GetProcAddress(user32, "QueryDisplayConfig")) : nullptr;
+    if (!get_sizes || !query) { ERR(dispatch, "display topology: host user32 has no display-config exports"); return; }
+    g_host_dc_info = user32 ? reinterpret_cast<decltype(g_host_dc_info)>(GetProcAddress(user32, "DisplayConfigGetDeviceInfo")) : nullptr;
+    if (g_host_dc_info) user::SetHostDisplayInfoForwarder(&ForwardHostDisplayInfo);
+    HostModeScope host;
+    UINT32 np = 0, nm = 0;
+    LONG r = get_sizes(QDC_ONLY_ACTIVE_PATHS, &np, &nm);
+    if (r || !np) { ERR(dispatch, "display topology: host user32 GetDisplayConfigBufferSizes -> %ld (%u paths)", r, np); return; }
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths(np);
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes(nm ? nm : 1);
+    r = query(QDC_ONLY_ACTIVE_PATHS, &np, paths.data(), &nm, modes.data(), nullptr);
+    if (r || !np) { ERR(dispatch, "display topology: host user32 QueryDisplayConfig -> %ld (%u paths)", r, np); return; }
+    const DISPLAYCONFIG_PATH_INFO& p = paths[0];
+    user::SetHostDisplayTopology(p.sourceInfo.adapterId.LowPart, p.sourceInfo.adapterId.HighPart, p.sourceInfo.id, p.targetInfo.id);
+    TRACE(dispatch, "display topology: host primary path adapter LUID %08lx:%08lx source %u target %u", 
+          static_cast<unsigned long>(p.sourceInfo.adapterId.HighPart), static_cast<unsigned long>(p.sourceInfo.adapterId.LowPart),
+          p.sourceInfo.id, p.targetInfo.id);
+}
+
+NTSTATUS UseHostD3dkmt(HMODULE win32u, HMODULE user32, HMODULE gdi32, HMODULE gdi32full) {
+    g_d3d_mods = HostD3dModules{win32u, user32, gdi32, gdi32full};
+    State& s = S();
+    if (!s.initialized || !win32u) return st::Unsuccessful;
+    QueryHostDisplayTopology(win32u);
+    AcquireSRWLockExclusive(&s.lock);
+    std::size_t pass = 0, todo = 0;
+    for (Entry& e : s.entries) {
+        if (e.id < kWin32uFirstId || (std::strncmp(e.name, "NtGdiDdDDI", 10) != 0 && std::strncmp(e.name, "NtDxgk", 6) != 0)) continue;
+        e.host_fn = reinterpret_cast<void*>(GetProcAddress(win32u, e.name));
+        e.note = "win32u (host dxgkrnl)";
+        if (!e.host_fn && std::strncmp(e.name, "NtGdiDdDDI", 10) == 0) {
+            // The runner's win32u does not export this name, but the real gdi32 reaches the kernel for it some other way.
+            // NtGdiDdDDIFoo(pData) and D3DKMTFoo(pData) take the same single struct pointer and return an NTSTATUS, so the
+            // host's own D3DKMTFoo (gdi32, else gdi32full) is the pass-through target.
+            char alt[160];
+            std::snprintf(alt, sizeof alt, "D3DKMT%s", e.name + 10);
+            for (HMODULE m : {gdi32, gdi32full}) {
+                if (!m || e.host_fn) continue;
+                e.host_fn = reinterpret_cast<void*>(GetProcAddress(m, alt));
+                if (e.host_fn) {
+                    e.note = "gdi32 D3DKMT export (win32u has no such export)";
+                    TRACE(dispatch, "d3d native: %s has no win32u export, passes through to host %s %p", e.name,
+                          m == gdi32 ? "gdi32" : "gdi32full", e.host_fn);
+                }
+            }
+        }
+        e.policy = e.host_fn ? Policy::PassThrough : Policy::Todo;
+        if (!e.host_fn) {
+            e.note = "win32u (no host export)";
+            WARN(dispatch, "d3d native: %s has no host export (win32u, gdi32, gdi32full)", e.name);
+        }
+        e.nargs = kMaxArgs;
+        ++(e.host_fn ? pass : todo);
+    }
+    s.d3dkmt_host = true;
+    ReleaseSRWLockExclusive(&s.lock);
+    TRACE(dispatch, "d3d native: %zu NtGdiDdDDI* (D3DKMT) syscalls pass through to the host's win32u.dll %p, %zu have no "
+                    "host export (Todo)", pass, win32u, todo);
+    return st::Success;
+}
+
+bool HostD3dkmtActive() { return g_state.d3dkmt_host; }
+
 bool NativeGuiActive() { return g_state.gui_native; }
 
 std::uint32_t NargsOverride(const char* name) {
     static const struct { const char* name; std::uint32_t nargs; } kFix[] = {
         {"NtMapUserPhysicalPagesScatter", 3}, {"NtWaitForMultipleObjects32", 5}, {"NtApphelpCacheControl", 2},
         {"NtCreateProcessEx", 9}, {"NtTraceEvent", 4},
+        {"NtUserGetProcessUIContextInformation", 2},   // a Wine `stub` syscall: the table says 0
+        {"NtUserIsTopLevelWindow", 1}, {"NtUserGetWindowCompositionAttribute", 2},   // likewise (wine-pe/patches/0033)
     };
     for (auto& f : kFix)
         if (!std::strcmp(f.name, name)) return f.nargs;
@@ -615,7 +708,7 @@ bool Win32uReturnsNtStatus(const char* name) {
         "NtUserDisplayConfigGetDeviceInfo", "NtUserEnumDisplayDevices", "NtUserInitializeClientPfnArrays",
         "NtUserSetClipboardData",
     };
-    if (!std::strncmp(name, "NtGdiDdDDI", 10)) return true;
+    if (!std::strncmp(name, "NtGdiDdDDI", 10) || !std::strncmp(name, "NtDxgk", 6)) return true;
     for (const char* n : kNames)
         if (!std::strcmp(n, name)) return true;
     return false;
@@ -996,6 +1089,7 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
     // TEB.LastErrorValue itself, which the guest must see.
     const bool native_win32u = s.gui_native && win32u && e->policy == Policy::PassThrough && e->host_fn;
     unsigned long native_error = last_error;
+    if (win32u && s.d3dkmt_host) NoteD3dSyscall(e->name);
     if (native_win32u) {
         NoteNativeWin32uCall();   // installs the callback trampolines once the guest's user32 has its table in
         NativeWin32uBefore(e->name);   // native_d3d.cpp: last picture before NtUserDestroyWindow
@@ -1007,7 +1101,12 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
     } else
     switch (e->policy) {
     case Policy::PassThrough:
-        status = e->host_fn ? CallWithArgs(e->host_fn, f->args, e->nargs) : st::NotImplemented;
+        if (win32u && e->host_fn) {   // d3dkmt_host: the NtGdiDdDDI* of the host's win32u
+            result64 = CallWithArgs64(e->host_fn, f->args, e->nargs);
+            status = static_cast<NTSTATUS>(result64);
+        } else {
+            status = e->host_fn ? CallWithArgs(e->host_fn, f->args, e->nargs) : st::NotImplemented;
+        }
         if (!e->host_fn) FIXME(dispatch, "%s: no host export", e->name);
         break;
     case Policy::Translate:
