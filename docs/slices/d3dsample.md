@@ -27,7 +27,7 @@ compiled from the fetched tree, never copied into the repository.
 * `kernelbase!NlsGetCacheUpdateCount` (wine-pe patch 0034): Windows returns the NLS cache update counter that changes on a locale change; the genuine gdi32full (`GdiGetCharDimensions`) compares it with the value it cached. Wine loads its locale data once and never updates it, so the export returns a constant 0. The native control (round 2 log) shows the stub fault only; no other unresolved import was raised on the MessageBox path.
 * Registry (core/registry/registry.cpp `ApplyDefaultSoftwareKeys`, only where a hive lacks them): `Cryptography\Defaults\Provider Types\Type 001/024` (Name, TypeName) and `Defaults\Provider\<name>` (Image Path `rsaenh.dll`, SigInFile 0, Type) for the Strong, Base v1.0, Enhanced v1.0 and Enhanced RSA and AES providers; `Time Zones\UTC` (Display, Dlt, Std, MUI_*, TZI = 44 zero bytes); empty `Microsoft\Direct3D` and `Direct3D\Direct3D12`. The `Signature` blobs of the providers are not reproduced.
 * `rsaenh` joins `wine-pe/dlls.txt`: Wine's advapi32 loads the provider DLL named by Image Path.
-* Diagnostics: `tests/guest/d3dsample_shim.h` (force-included into the unmodified sample) logs D3DCompileFromFile's HRESULT and error blob; the layer traces every OutputDebugStringA of the guest (`trace:process:Xl_NtRaiseException OutputDebugString: ...`).
+* Diagnostics: `tests/guest/d3dsample_shim.h` (force-included into the unmodified sample) probes CryptAcquireContext(PROV_RSA_AES)+MD5 and logs D3DCompileFromFile's HRESULT, last error and error blob as failed registry opens `Software\win10xbox-diag\<text>` (the guest's OutputDebugStringA stays inside the guest ntdll and never reaches the layer; the trace shows failed registry opens).
 
 ## What was added
 
