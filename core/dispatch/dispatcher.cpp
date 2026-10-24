@@ -5,6 +5,8 @@
 #include "nt_spawn.h"
 #include "win10xbox/config.h"
 #include "win10xbox/probe.h"
+#include "win10xbox/user.h"
+#include <vector>
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -401,34 +403,40 @@ HostD3dModules g_d3d_mods;   // trivially initialised; set once before the guest
 
 const HostD3dModules& HostD3dMods() { return g_d3d_mods; }
 
+// core/user owns the guest's display (NtUserQueryDisplayConfig & co answer from display::Mode) but the native dxgi has
+// just enumerated the HOST's adapters (NtGdiDdDDIEnumAdapters2), so the adapter LUID / source id / target id in core/user's
+// one path must be the host's primary display path. Asked once, here, from the host win32u.
+void QueryHostDisplayTopology(HMODULE win32u) {
+    using GetSizes = LONG(WINAPI*)(UINT32, UINT32*, UINT32*);
+    using Query = LONG(WINAPI*)(UINT32, UINT32*, DISPLAYCONFIG_PATH_INFO*, UINT32*, DISPLAYCONFIG_MODE_INFO*, void*);
+    auto get_sizes = reinterpret_cast<GetSizes>(GetProcAddress(win32u, "NtUserGetDisplayConfigBufferSizes"));
+    auto query = reinterpret_cast<Query>(GetProcAddress(win32u, "NtUserQueryDisplayConfig"));
+    if (!get_sizes || !query) { ERR(dispatch, "display topology: host win32u has no display-config exports"); return; }
+    HostModeScope host;
+    UINT32 np = 0, nm = 0;
+    LONG r = get_sizes(QDC_ONLY_ACTIVE_PATHS, &np, &nm);
+    if (r || !np) { ERR(dispatch, "display topology: host GetDisplayConfigBufferSizes -> %ld (%u paths)", r, np); return; }
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths(np);
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes(nm ? nm : 1);
+    r = query(QDC_ONLY_ACTIVE_PATHS, &np, paths.data(), &nm, modes.data(), nullptr);
+    if (r || !np) { ERR(dispatch, "display topology: host QueryDisplayConfig -> %ld (%u paths)", r, np); return; }
+    const DISPLAYCONFIG_PATH_INFO& p = paths[0];
+    user::SetHostDisplayTopology(p.sourceInfo.adapterId.LowPart, p.sourceInfo.adapterId.HighPart, p.sourceInfo.id, p.targetInfo.id);
+    TRACE(dispatch, "display topology: host primary path adapter LUID %08lx:%08lx source %u target %u", 
+          static_cast<unsigned long>(p.sourceInfo.adapterId.HighPart), static_cast<unsigned long>(p.sourceInfo.adapterId.LowPart),
+          p.sourceInfo.id, p.targetInfo.id);
+}
+
 NTSTATUS UseHostD3dkmt(HMODULE win32u, HMODULE user32, HMODULE gdi32, HMODULE gdi32full) {
     g_d3d_mods = HostD3dModules{win32u, user32, gdi32, gdi32full};
     State& s = S();
     if (!s.initialized || !win32u) return st::Unsuccessful;
+    QueryHostDisplayTopology(win32u);
     AcquireSRWLockExclusive(&s.lock);
-    std::size_t pass = 0, todo = 0, display = 0;
-    // The display topology the native dxgi reads next to the adapters: adapter LUIDs and target ids in
-    // QueryDisplayConfig / DisplayConfigGetDeviceInfo must be the ones D3DKMTEnumAdapters2 returned, i.e. the host's
-    // (core/user answers with its own fixed LUID {1,0}, so dxgi's DisplayConfigGetDeviceInfo failed with
-    // STATUS_INVALID_PARAMETER and CreateDXGIFactory1 with E_INVALIDARG, ci 40059462263).
-    static const char* const kDisplayConfig[] = {"NtUserGetDisplayConfigBufferSizes", "NtUserQueryDisplayConfig",
-                                                 "NtUserDisplayConfigGetDeviceInfo"};
+    std::size_t pass = 0, todo = 0;
     for (Entry& e : s.entries) {
-        if (e.id < kWin32uFirstId) continue;
-        bool dc = false;
-        for (const char* n : kDisplayConfig) dc = dc || !std::strcmp(e.name, n);
-        if (!dc && std::strncmp(e.name, "NtGdiDdDDI", 10) != 0 && std::strncmp(e.name, "NtDxgk", 6) != 0) continue;
-        void* fn = reinterpret_cast<void*>(GetProcAddress(win32u, e.name));
-        if (dc) {
-            if (!fn) continue;   // keep core/user's answer
-            e.host_fn = fn;
-            e.policy = Policy::PassThrough;
-            e.note = "win32u (host display topology)";
-            e.nargs = kMaxArgs;
-            ++display;
-            continue;
-        }
-        e.host_fn = fn;
+        if (e.id < kWin32uFirstId || (std::strncmp(e.name, "NtGdiDdDDI", 10) != 0 && std::strncmp(e.name, "NtDxgk", 6) != 0)) continue;
+        e.host_fn = reinterpret_cast<void*>(GetProcAddress(win32u, e.name));
         e.policy = e.host_fn ? Policy::PassThrough : Policy::Todo;
         e.note = e.host_fn ? "win32u (host dxgkrnl)" : "win32u (no host export)";
         e.nargs = kMaxArgs;
@@ -437,7 +445,7 @@ NTSTATUS UseHostD3dkmt(HMODULE win32u, HMODULE user32, HMODULE gdi32, HMODULE gd
     s.d3dkmt_host = true;
     ReleaseSRWLockExclusive(&s.lock);
     TRACE(dispatch, "d3d native: %zu NtGdiDdDDI* (D3DKMT) syscalls pass through to the host's win32u.dll %p, %zu have no "
-                    "host export (Todo); %zu display-config syscalls too", pass, win32u, todo, display);
+                    "host export (Todo)", pass, win32u, todo);
     return st::Success;
 }
 

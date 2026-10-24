@@ -75,6 +75,10 @@ bool NotifyClientFrame(void* hwnd, const std::uint32_t* bgra, std::int32_t width
 // True when `hwnd` is a window of this module's own window manager (the emulated GUI: a swap chain for it is virtual,
 // NotifyClientFrame composes its frames at the window's client rectangle). False in route B and for any other value.
 bool IsEmulatedWindow(void* hwnd);
+
+// The adapter LUID and the source / target ids of the host's primary display path (machine-emu-d3d: the native dxgi
+// enumerated the host's adapters, so the display-config syscalls answer with that adapter). Default {1,0} / 0 / 0.
+void SetHostDisplayTopology(std::uint32_t luid_low, std::int32_t luid_high, std::uint32_t source_id, std::uint32_t target_id);
 // The client size of an emulated window (what a swap chain with a 0x0 description takes); false when it is not one.
 bool GetEmulatedClientSize(void* hwnd, std::int32_t* width, std::int32_t* height);
 
