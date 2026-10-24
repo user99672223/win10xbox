@@ -33,6 +33,15 @@ endif()
 target_link_libraries(guest_identity PRIVATE ole32 oleaut32 advapi32)
 win10xbox_add_guest(guest_identity)
 
+# A guest activation context frame while the layer calls the host's loader: integration.guest_actctx_stack.
+if(MSVC)
+  add_executable(guest_actctx_stack actctx_stack.c actctx_stack.manifest)
+else()
+  enable_language(RC)
+  add_executable(guest_actctx_stack actctx_stack.c actctx_stack.rc)
+endif()
+win10xbox_add_guest(guest_actctx_stack)
+
 # RDRAND through the layer's #UD emulation (D18): integration.guest_rdrand, with WIN10XBOX_TEST_FORCE_RDRAND_TRAP=1.
 add_executable(guest_rdrand rdrand.c)
 win10xbox_add_guest(guest_rdrand)

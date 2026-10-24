@@ -126,6 +126,21 @@ vcruntime140
 vcruntime140_1
 dhcpcsvc
 
+# --- laptop programs (docs/slices/laptop-programs.md): DLLs whose absence stopped installed programs (a static import:
+# c0000135 at start; a LoadLibrary: the program's own error) ---
+uxtheme          # WinRAR
+oleacc           # HxD
+shfolder         # MediaInfo, WizTree
+odbc32           # iTunes (the unix side is absent: the PE part loads Windows ODBC drivers only)
+userenv          # Node.js
+bcryptprimitives # GitHub CLI (Go runtime: ProcessPrng); Firefox's xul.dll
+mswsock          # wsock32 import
+wsock32          # Firefox's xul.dll (without it: "Couldn't load XPCOM.")
+authz            # Wireshark
+msvcp140_2       # YUView (like msvcp140 / msvcp140_1 above: no version_strings.txt line)
+comctl32_v6      # Common-Controls 6.0, the assembly most manifests depend on: tests/integration/prepare_machine.cmake
+                 # installs it in Windows\WinSxS as comctl32.dll (Chrome, Edge, Brave: their activation context needs it)
+
 # --- console programs (wine-pe/programs/*.sh, ctest integration.wineprog_*) --
 programs/xcopy
 programs/findstr

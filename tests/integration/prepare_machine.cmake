@@ -31,6 +31,24 @@ if(DEFAULT_JSON AND EXISTS "${DEFAULT_JSON}" AND NOT EXISTS "${MACHINE}/machine.
   file(COPY_FILE "${DEFAULT_JSON}" "${MACHINE}/machine.json")
 endif()
 
+# <dir>\Windows\WinSxS: the side-by-side assembly a program's manifest nearly always depends on, Common-Controls 6.0
+# (Wine's comctl32_v6 builtin), laid out as wineboot installs it: WinSxS\manifests\<assembly>.manifest (machine/winsxs/,
+# Wine's dlls/comctl32_v6/comctl32.manifest with the architecture filled in) and WinSxS\<assembly>\comctl32.dll. Wine's
+# ntdll looks only there; without it every manifest naming Common-Controls failed the program's whole activation
+# context, and with it any private assembly the program ships (Chrome's chrome_elf.dll; docs/slices/laptop-programs.md).
+# Skipped while the builtins lack comctl32_v6.dll (a wine-pe artifact older than the slice).
+set(_sxs_cc6 "amd64_microsoft.windows.common-controls_6595b64144ccf1df_6.0.2600.2982_none_deadbeef")
+set(_sxs_manifest "${CMAKE_CURRENT_LIST_DIR}/../../machine/winsxs/${_sxs_cc6}.manifest")
+function(stage_winsxs dir)
+  if(NOT EXISTS "${MACHINE}/Windows/builtin/comctl32_v6.dll" OR NOT EXISTS "${_sxs_manifest}")
+    return()
+  endif()
+  file(MAKE_DIRECTORY "${dir}/Windows/WinSxS/manifests" "${dir}/Windows/WinSxS/${_sxs_cc6}")
+  file(COPY_FILE "${_sxs_manifest}" "${dir}/Windows/WinSxS/manifests/${_sxs_cc6}.manifest" ONLY_IF_DIFFERENT)
+  file(COPY_FILE "${MACHINE}/Windows/builtin/comctl32_v6.dll" "${dir}/Windows/WinSxS/${_sxs_cc6}/comctl32.dll"
+       ONLY_IF_DIFFERENT)
+endfunction()
+
 set(_builtins 0)
 if(BUILTIN_DIR AND IS_DIRECTORY "${BUILTIN_DIR}")
   file(GLOB _files "${BUILTIN_DIR}/*.dll" "${BUILTIN_DIR}/*.exe" "${BUILTIN_DIR}/*.drv")
@@ -50,6 +68,7 @@ if(GUEST_DLL_DIR AND IS_DIRECTORY "${GUEST_DLL_DIR}")
     math(EXPR _builtins "${_builtins} + 1")
   endforeach()
 endif()
+stage_winsxs("${MACHINE}")
 
 set(_guests 0)
 if(GUEST_DIR AND IS_DIRECTORY "${GUEST_DIR}")
@@ -131,6 +150,7 @@ if(BUILTIN_ONLY_MACHINE)
     endif()
     file(CONFIGURE OUTPUT "${BUILTIN_ONLY_MACHINE}/machine.json" CONTENT "${_json}" @ONLY)
   endif()
+  stage_winsxs("${BUILTIN_ONLY_MACHINE}")
   message(STATUS "prepare_machine: ${BUILTIN_ONLY_MACHINE}: builtin-only machine, ${_copied} files")
 endif()
 
@@ -180,6 +200,7 @@ if(NATIVE_GUI_MACHINE)
     endif()
     file(CONFIGURE OUTPUT "${NATIVE_GUI_MACHINE}/machine.json" CONTENT "${_json}" @ONLY)
   endif()
+  stage_winsxs("${NATIVE_GUI_MACHINE}")
   message(STATUS "prepare_machine: ${NATIVE_GUI_MACHINE}: native-GUI machine, ${_copied} files")
 endif()
 
@@ -289,5 +310,6 @@ foreach(_variant ${_d3d_variants})
     endif()
     file(CONFIGURE OUTPUT "${_d3d_dir}/machine.json" CONTENT "${_json}" @ONLY)
   endif()
+  stage_winsxs("${_d3d_dir}")
   message(STATUS "prepare_machine: ${_d3d_dir}: ${_d3d_mode} Direct3D 11 machine, ${_copied} files")
 endforeach()

@@ -76,6 +76,10 @@ constexpr std::uint32_t FlsData                   = 0x17C8;
 // it is the one per-thread surface the guest's TlsAlloc and our ThreadState
 // slot share. See "The TLS slot we hold" in docs/DISPATCHER.md.
 constexpr std::uint32_t TlsSlotCount              = 64;
+// TEB.ActivationContextStackPointer (wine-src/include/winternl.h, x64: 0x2c8). Wine's PE ntdll never sets it (its
+// unix side would), so the guest's frames go onto the stack the host's ntdll made for the thread; swapped per view
+// like TLS/FLS (ActCtxToHost below).
+constexpr std::uint32_t ActivationContextStackPointer = 0x2C8;
 // TEB.Win32ClientInfo[62]: user32 reads `struct ntuser_thread_info` at its start (ntuser.h NtUserGetThreadInfo);
 // core/user keeps its own per-thread pointer in the LAST slot.
 constexpr std::uint32_t Win32ClientInfo           = 0x800;
@@ -146,6 +150,20 @@ struct ThreadState {
     // The start address the guest asked for (the EXE entry for the main thread, NtCreateThreadEx's StartRoutine
     // otherwise): what ThreadQuerySetWin32StartAddress reports. The host thread itself starts in GuestThreadProc.
     void*         win32_start;
+    // The host view's activation context stack (ACTIVATION_CONTEXT_STACK, wine-src/include/winternl.h), empty: the
+    // host's ntdll pushes and pops its own frames here, and never sees the guest's, whose ActivationContext is a Wine
+    // ACTIVATION_CONTEXT. Reading one of those as its own made the host's loader raise
+    // STATUS_SXS_CORRUPT_ACTIVATION_STACK (0xc0150014) in GetProcAddress while a guest DLL with a manifest was
+    // loading (docs/slices/laptop-programs.md). guest_actctx holds the guest's pointer while this one is installed.
+    struct ActCtxStack {
+        void*         active_frame;
+        LIST_ENTRY    frame_list_cache;
+        std::uint32_t flags;
+        std::uint32_t next_cookie_sequence_number;
+        std::uint32_t stack_id;
+    } host_actctx;
+    std::uint64_t guest_actctx;
+    std::uint32_t actctx_host;   // 1 while TEB.ActivationContextStackPointer is &host_actctx
 };
 static_assert(offsetof(ThreadState, host_tls) == 0x00);
 static_assert(offsetof(ThreadState, host_fls) == 0x08);
@@ -173,6 +191,11 @@ void DetachThreadState();
 // depth to restore with ReenterHostView if the call does return.
 std::uint32_t LeaveToGuestView();
 void ReenterHostView(std::uint32_t depth);
+// TEB.ActivationContextStackPointer to the host view's stack (ThreadState::host_actctx) and back. SwapIn/SwapOut call
+// them; so does win10xbox_dispatch, whose TLS/FLS switch is the one in core/asm. ActCtxToHost returns false when the
+// host stack was already installed (nothing for the caller to undo). TLS-free.
+bool ActCtxToHost(ThreadState* st);
+void ActCtxToGuest(ThreadState* st);
 std::vector<ThreadState*> GuestThreads();   // snapshot
 // See ThreadState::syscall_error. Host view only (from inside a syscall).
 void SetSyscallLastError(std::uint32_t error);
@@ -192,7 +215,7 @@ void SetSyscallLastError(std::uint32_t error);
 // window. Everything a transfer needs is resolved BEFORE the swap, which
 // CallInGuestView makes the compiler guarantee rather than the author remember.
 // TLS-free, and required to stay so: CurrentThreadState, SwapIn/SwapOut,
-// LeaveToGuestView, ReenterHostView, GuestViewActive, core/asm.
+// ActCtxToHost/ActCtxToGuest, LeaveToGuestView, ReenterHostView, GuestViewActive, core/asm.
 bool GuestViewActive();
 // Records that host state was reached inside the window; `what` must be a
 // literal. Cannot log (logging is itself unsafe there): it counts, and the next

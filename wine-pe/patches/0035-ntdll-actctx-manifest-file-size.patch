@@ -1,0 +1,34 @@
+Read the size of a manifest file with FileStandardInformation.
+
+get_manifest_in_manifest_file asked NtQueryInformationFile for
+FileEndOfFileInformation, a class Wine's server answers but Windows only
+accepts in NtSetInformationFile: on the layer's NT (the host's) the query fails
+with STATUS_INVALID_INFO_CLASS, so no .manifest file ever parsed. A dependency
+found in winsxs\manifests or a private assembly next to the program
+(Chrome's <version>\<version>.manifest, which lists chrome_elf.dll) then failed,
+and with it the whole activation context of the program
+(docs/slices/laptop-programs.md). FileStandardInformation carries the same
+EndOfFile on both.
+
+diff --git a/dlls/ntdll/actctx.c b/dlls/ntdll/actctx.c
+index 47464d4..9c14cfc 100644
+--- a/dlls/ntdll/actctx.c
++++ b/dlls/ntdll/actctx.c
+@@ -3055,7 +3055,7 @@ static NTSTATUS get_manifest_in_pe_file( struct actctx_loader* acl, struct assem
+ static NTSTATUS get_manifest_in_manifest_file( struct actctx_loader* acl, struct assembly_identity* ai,
+                                                LPCWSTR filename, LPCWSTR directory, BOOL shared, HANDLE file )
+ {
+-    FILE_END_OF_FILE_INFORMATION info;
++    FILE_STANDARD_INFORMATION info;
+     IO_STATUS_BLOCK io;
+     HANDLE              mapping;
+     OBJECT_ATTRIBUTES   attr;
+@@ -3081,7 +3081,7 @@ static NTSTATUS get_manifest_in_manifest_file( struct actctx_loader* acl, struct
+     NtClose( mapping );
+     if (status != STATUS_SUCCESS) return status;
+ 
+-    status = NtQueryInformationFile( file, &io, &info, sizeof(info), FileEndOfFileInformation );
++    status = NtQueryInformationFile( file, &io, &info, sizeof(info), FileStandardInformation );
+     if (status == STATUS_SUCCESS)
+         status = parse_manifest(acl, ai, filename, NULL, directory, shared, base, info.EndOfFile.QuadPart);
+ 

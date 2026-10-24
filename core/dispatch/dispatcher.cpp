@@ -186,12 +186,14 @@ void SwapIn(ThreadState* st) {
     __writegsqword(teb::ThreadLocalStoragePointer, st->host_tls);
     st->guest_fls = __readgsqword(teb::FlsData);
     __writegsqword(teb::FlsData, st->host_fls);
+    ActCtxToHost(st);
 }
 void SwapOut(ThreadState* st) {
     st->host_tls = __readgsqword(teb::ThreadLocalStoragePointer);
     __writegsqword(teb::ThreadLocalStoragePointer, st->guest_tls);
     st->host_fls = __readgsqword(teb::FlsData);
     __writegsqword(teb::FlsData, st->guest_fls);
+    ActCtxToGuest(st);
 }
 
 // TEB.TlsSlots index for our ThreadState. Both allocators hand out the lowest
@@ -660,6 +662,9 @@ ThreadState* AttachThreadState(std::uint32_t flags) {
     st->host_fls = st->guest_fls = __readgsqword(teb::FlsData);
     st->flags = flags;
     st->tid = GetCurrentThreadId();
+    st->host_actctx.frame_list_cache.Flink = st->host_actctx.frame_list_cache.Blink = &st->host_actctx.frame_list_cache;
+    st->host_actctx.next_cookie_sequence_number = 1;
+    st->host_actctx.stack_id = st->tid;
     st->magic = kThreadStateMagic;   // before the TEB slot points at it
     DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &st->thread, 0, FALSE,
                     DUPLICATE_SAME_ACCESS);
@@ -721,6 +726,19 @@ std::vector<ThreadState*> GuestThreads() {
         if (t->flags & kThreadGuest) out.push_back(t);
     ReleaseSRWLockShared(&g_threads_lock);
     return out;
+}
+
+bool ActCtxToHost(ThreadState* st) {
+    if (st->actctx_host) return false;
+    st->guest_actctx = __readgsqword(teb::ActivationContextStackPointer);
+    __writegsqword(teb::ActivationContextStackPointer, reinterpret_cast<std::uint64_t>(&st->host_actctx));
+    st->actctx_host = 1;
+    return true;
+}
+void ActCtxToGuest(ThreadState* st) {
+    if (!st->actctx_host) return;
+    __writegsqword(teb::ActivationContextStackPointer, st->guest_actctx);
+    st->actctx_host = 0;
 }
 
 // TLS-free, and must stay so: both run with the guest TLS array installed for
@@ -1026,6 +1044,14 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
     // guest shares, so put them back.
     const unsigned long last_error = __readgsdword(teb::LastErrorValue);
     const unsigned long last_status = __readgsdword(teb::LastStatusValue);
+    ThreadState* const self = CurrentThreadState();
+    // core/asm switched TLS/FLS to the host view; the activation context stack goes with them, for the whole syscall
+    // (a guest callback in between switches it back through SwapOut/SwapIn).
+    struct ActCtxGuard {
+        ThreadState* st;
+        bool swapped;
+        ~ActCtxGuard() { if (swapped) ActCtxToGuest(st); }
+    } actctx{self, self && self->depth && ActCtxToHost(self)};
     State& s = S();
     // The guest's loader_init installs its own PEB.TlsBitmap before it makes
     // its first syscall, so this is the earliest point at which our slot can be
@@ -1057,7 +1083,6 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
                 fixed ? "restored it" : "could not restore it, TEB view switching is off on this thread");
     }
     // Nested syscalls (a window procedure called back from inside one) keep their own override.
-    ThreadState* const self = CurrentThreadState();
     const std::uint32_t outer_error = self ? self->syscall_error : 0;
     const std::uint32_t outer_error_set = self ? self->syscall_error_set : 0;
     if (self) self->syscall_error_set = 0;

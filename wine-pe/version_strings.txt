@@ -8,6 +8,8 @@
 # compare while this was written, so a wrong character is possible.
 # status "module": the Windows string is not known, the module's file name is
 # used (what Explorer shows for a file without a description).
+# status "host": read from the FileDescription of the file in a Windows 11
+# 24H2 (build 26100) System32 (docs/slices/laptop-programs.md), not Windows 10's.
 #
 # FileVersion and ProductVersion (10.0.19045.3803), ProductName ("Microsoft
 # (R) Windows (R) Operating System"), CompanyName and LegalCopyright are the
@@ -99,6 +101,16 @@ wintrust.dll     | recalled | Microsoft Trust Verification APIs
 cryptnet.dll     | recalled | Crypto Network Related API
 cryptui.dll      | recalled | Microsoft Trust UI Provider
 imagehlp.dll     | recalled | Windows NT Image Helper
+uxtheme.dll      | host     | Microsoft UxTheme Library
+oleacc.dll       | host     | Active Accessibility Core Component
+shfolder.dll     | host     | Shell Folder Service
+odbc32.dll       | host     | ODBC Driver Manager
+userenv.dll      | host     | Userenv
+bcryptprimitives.dll | host | Windows Cryptographic Primitives Library
+comctl32_v6.dll  | host     | Common Controls Library
+mswsock.dll      | host     | Microsoft Windows Sockets 2.0 Service Provider
+wsock32.dll      | host     | Windows Socket 32-Bit DLL
+authz.dll        | host     | Authorization Framework
 chcp.exe         | recalled | Change CodePage Utility
 more.exe         | recalled | More Utility
 cmd.exe          | recalled | Windows Command Processor

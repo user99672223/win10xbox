@@ -1,0 +1,164 @@
+# Programs of the laptop sweep (docs/slices/laptop-programs.md): classic x64 Win32 executables installed under
+# C:\Program Files and C:\Program Files (x86) of the Windows 11 24H2 (build 26100) laptop the sweep ran on.
+# Selection: PE machine x64, not UWP, not a service/installer/updater/uninstaller/crash reporter, nothing named like
+# anti-cheat, DRM, a driver installer or a security product; one executable per program, well-known ones first.
+# Per program: id | name | version (FileVersion, else ProductVersion) | kind | executable, then its static import
+# table (DLL names, lower case, from the PE import directory; delay-loads not listed). Names and versions only: no
+# file of a program enters the repository.
+
+7zfm | 7-Zip File Manager | 26.02 | archiver | C:\Program Files\7-Zip\7zFM.exe
+    imports: advapi32.dll comctl32.dll comdlg32.dll gdi32.dll kernel32.dll msvcrt.dll ole32.dll oleaut32.dll
+             shell32.dll user32.dll
+winrar | WinRAR | 7.23.0 | archiver | C:\Program Files\WinRAR\WinRAR.exe
+    imports: comctl32.dll comdlg32.dll dwmapi.dll gdi32.dll gdiplus.dll kernel32.dll msimg32.dll ole32.dll
+             oleaut32.dll powrprof.dll shell32.dll shlwapi.dll user32.dll uxtheme.dll
+audacity | Audacity | 4.0.1 | audio editor | C:\Program Files\Audacity 4\bin\Audacity4.exe
+    imports: advapi32.dll api-ms-win-core-com-l1-1-0.dll api-ms-win-core-debug-l1-1-0.dll
+             api-ms-win-core-errorhandling-l1-1-0.dll api-ms-win-core-errorhandling-l1-1-1.dll
+             api-ms-win-core-file-l1-1-0.dll api-ms-win-core-file-l1-2-0.dll api-ms-win-core-file-l1-2-2.dll
+             api-ms-win-core-file-l2-1-0.dll api-ms-win-core-handle-l1-1-0.dll api-ms-win-core-heap-l1-1-0.dll
+             api-ms-win-core-heap-l2-1-0.dll api-ms-win-core-interlocked-l1-1-0.dll
+             api-ms-win-core-kernel32-legacy-l1-1-1.dll api-ms-win-core-libraryloader-l1-2-0.dll
+             api-ms-win-core-libraryloader-l1-2-1.dll api-ms-win-core-localization-l1-2-0.dll
+             api-ms-win-core-memory-l1-1-0.dll api-ms-win-core-namedpipe-l1-1-0.dll
+             api-ms-win-core-processenvironment-l1-1-0.dll api-ms-win-core-processthreads-l1-1-0.dll
+             api-ms-win-core-processthreads-l1-1-1.dll api-ms-win-core-profile-l1-1-0.dll
+             api-ms-win-core-registry-l1-1-0.dll api-ms-win-core-registry-l2-1-0.dll
+             api-ms-win-core-rtlsupport-l1-1-0.dll api-ms-win-core-string-l1-1-0.dll api-ms-win-core-synch-l1-1-0.dll
+             api-ms-win-core-synch-l1-2-0.dll api-ms-win-core-sysinfo-l1-1-0.dll api-ms-win-core-sysinfo-l1-2-0.dll
+             api-ms-win-core-timezone-l1-1-0.dll api-ms-win-core-winrt-error-l1-1-1.dll
+             api-ms-win-core-winrt-l1-1-0.dll api-ms-win-crt-conio-l1-1-0.dll api-ms-win-crt-convert-l1-1-0.dll
+             api-ms-win-crt-environment-l1-1-0.dll api-ms-win-crt-filesystem-l1-1-0.dll api-ms-win-crt-heap-l1-1-0.dll
+             api-ms-win-crt-locale-l1-1-0.dll api-ms-win-crt-math-l1-1-0.dll api-ms-win-crt-runtime-l1-1-0.dll
+             api-ms-win-crt-stdio-l1-1-0.dll api-ms-win-crt-string-l1-1-0.dll api-ms-win-crt-time-l1-1-0.dll
+             api-ms-win-crt-utility-l1-1-0.dll api-ms-win-ntuser-sysparams-l1-1-0.dll
+             api-ms-win-security-sddl-l1-1-0.dll api-ms-win-security-systemfunctions-l1-1-0.dll
+             api-ms-win-shcore-obsolete-l1-1-0.dll dwmapi.dll flac++.dll flac.dll freetype.dll gdi32.dll harfbuzz.dll
+             kernel32.dll mpg123.dll msvcp140.dll msvcp140_codecvt_ids.dll ogg.dll ole32.dll oleaut32.dll opus.dll
+             portaudio_x64.dll qt6concurrent.dll qt6core.dll qt6core5compat.dll qt6gui.dll qt6network.dll
+             qt6networkauth.dll qt6qml.dll qt6quick.dll qt6svg.dll qt6widgets.dll shell32.dll sndfile.dll user32.dll
+             vcruntime140.dll vcruntime140_1.dll vorbis.dll vorbisfile.dll wavpackdll.dll winmm.dll
+             wxbase32u_vc_x64_custom.dll zlib1.dll
+brave | Brave Browser | 156.1.98.60 | browser | C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe
+    imports: chrome_elf.dll kernel32.dll ntdll.dll version.dll
+chrome | Google Chrome | 155.0.8059.86 | browser | C:\Program Files\Google\Chrome\Application\chrome.exe
+    imports: chrome_elf.dll kernel32.dll ntdll.dll version.dll
+firefox | Mozilla Firefox | 158.0.1 | browser | C:\Program Files\Mozilla Firefox\firefox.exe
+    imports: api-ms-win-core-winrt-l1-1-0.dll api-ms-win-core-winrt-string-l1-1-0.dll
+             api-ms-win-crt-convert-l1-1-0.dll api-ms-win-crt-environment-l1-1-0.dll
+             api-ms-win-crt-filesystem-l1-1-0.dll api-ms-win-crt-heap-l1-1-0.dll api-ms-win-crt-locale-l1-1-0.dll
+             api-ms-win-crt-math-l1-1-0.dll api-ms-win-crt-runtime-l1-1-0.dll api-ms-win-crt-stdio-l1-1-0.dll
+             api-ms-win-crt-string-l1-1-0.dll api-ms-win-crt-utility-l1-1-0.dll kernel32.dll mozglue.dll msvcp140.dll
+             ntdll.dll shlwapi.dll vcruntime140.dll vcruntime140_1.dll
+edge | Microsoft Edge | 156.0.4314.42 | browser | C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
+    imports: kernel32.dll msedge_elf.dll ntdll.dll
+iexplore | Internet Explorer | 11.00.26100.9168 | browser (Edge stub) | C:\Program Files\Internet Explorer\iexplore.exe
+    imports: advapi32.dll api-ms-win-downlevel-advapi32-l1-1-0.dll api-ms-win-downlevel-ole32-l1-1-0.dll
+             api-ms-win-downlevel-shell32-l1-1-0.dll api-ms-win-downlevel-shlwapi-l1-1-0.dll iertutil.dll kernel32.dll
+             msvcrt.dll user32.dll
+cmakegui | CMake GUI | 4.4.3 | tool | C:\Program Files\CMake\bin\cmake-gui.exe
+    imports: advapi32.dll api-ms-win-core-synch-l1-2-0.dll api-ms-win-core-winrt-error-l1-1-1.dll
+             api-ms-win-core-winrt-l1-1-0.dll api-ms-win-core-winrt-string-l1-1-0.dll
+             api-ms-win-shcore-scaling-l1-1-1.dll authz.dll bcrypt.dll comdlg32.dll crypt32.dll d3d11.dll d3d12.dll
+             dbghelp.dll dwmapi.dll dwrite.dll dxgi.dll gdi32.dll icuuc.dll imm32.dll iphlpapi.dll kernel32.dll
+             netapi32.dll ntdll.dll ole32.dll oleaut32.dll powrprof.dll secur32.dll setupapi.dll shell32.dll
+             shlwapi.dll user32.dll userenv.dll uxtheme.dll version.dll winmm.dll ws2_32.dll wtsapi32.dll
+hxd | HxD Hex Editor | 2.5.0.0 | editor | C:\Program Files\HxD\HxD.exe
+    imports: advapi32.dll comctl32.dll comdlg32.dll gdi32.dll kernel32.dll msvcrt.dll ntdll.dll ole32.dll oleacc.dll
+             oleaut32.dll shell32.dll shlwapi.dll user32.dll version.dll wininet.dll winmm.dll winspool.drv
+mediainfo | MediaInfo | 26.05.0.0 | media tool | C:\Program Files\MediaInfo\MediaInfo.exe
+    imports: advapi32.dll api-ms-win-core-winrt-l1-1-0.dll api-ms-win-core-winrt-string-l1-1-0.dll bluetoothapis.dll
+             bthprops.cpl comctl32.dll comdlg32.dll crypt32.dll dwmapi.dll gdi32.dll imm32.dll kernel32.dll
+             msacm32.dll msimg32.dll msvfw32.dll ole32.dll oleaut32.dll setupapi.dll shcore.dll shell32.dll
+             shfolder.dll shlwapi.dll user32.dll uxtheme.dll version.dll windowscodecs.dll winhttp.dll wininet.dll
+             winspool.drv ws2_32.dll wtsapi32.dll
+wireshark | Wireshark | 4.6.9 | tool | C:\Program Files\Wireshark\Wireshark.exe
+    imports: advapi32.dll api-ms-win-crt-convert-l1-1-0.dll api-ms-win-crt-environment-l1-1-0.dll
+             api-ms-win-crt-filesystem-l1-1-0.dll api-ms-win-crt-heap-l1-1-0.dll api-ms-win-crt-locale-l1-1-0.dll
+             api-ms-win-crt-math-l1-1-0.dll api-ms-win-crt-process-l1-1-0.dll api-ms-win-crt-runtime-l1-1-0.dll
+             api-ms-win-crt-stdio-l1-1-0.dll api-ms-win-crt-string-l1-1-0.dll api-ms-win-crt-time-l1-1-0.dll
+             bcrypt.dll bz2.dll glib-2.0-0.dll gmodule-2.0-0.dll iphlpapi.dll kernel32.dll libgcrypt-20.dll
+             liblzma.dll libspeexdsp.dll libwireshark.dll libwiretap.dll libwsutil.dll msvcp140.dll qt6core.dll
+             qt6core5compat.dll qt6gui.dll qt6multimedia.dll qt6printsupport.dll qt6widgets.dll shell32.dll user32.dll
+             vcruntime140.dll vcruntime140_1.dll winsparkle.dll zlib1.dll zstd.dll
+wiztree | WizTree | 4.32.0.0 | tool | C:\Program Files\WizTree\WizTree64.exe
+    imports: advapi32.dll api-ms-win-crt-string-l1-1-0.dll comctl32.dll comdlg32.dll gdi32.dll kernel32.dll mpr.dll
+             ntdll.dll ole32.dll oleacc.dll oleaut32.dll shell32.dll shfolder.dll user32.dll version.dll winhttp.dll
+             winmm.dll winspool.drv wtsapi32.dll
+yuview | YUView | (no version resource) | media tool | C:\Program Files\YUView\YUView.exe
+    imports: api-ms-win-crt-convert-l1-1-0.dll api-ms-win-crt-filesystem-l1-1-0.dll api-ms-win-crt-heap-l1-1-0.dll
+             api-ms-win-crt-locale-l1-1-0.dll api-ms-win-crt-math-l1-1-0.dll api-ms-win-crt-runtime-l1-1-0.dll
+             api-ms-win-crt-stdio-l1-1-0.dll api-ms-win-crt-string-l1-1-0.dll kernel32.dll msvcp140.dll qt6core.dll
+             qt6gui.dll qt6network.dll qt6widgets.dll qt6xml.dll shell32.dll vcruntime140.dll vcruntime140_1.dll
+itunes | iTunes | 12.13.10.3 | media player | C:\Program Files\iTunes\iTunes.exe
+    imports: advapi32.dll api-ms-win-core-path-l1-1-0.dll api-ms-win-crt-convert-l1-1-0.dll
+             api-ms-win-crt-filesystem-l1-1-0.dll api-ms-win-crt-heap-l1-1-0.dll api-ms-win-crt-locale-l1-1-0.dll
+             api-ms-win-crt-math-l1-1-0.dll api-ms-win-crt-runtime-l1-1-0.dll api-ms-win-crt-stdio-l1-1-0.dll
+             api-ms-win-crt-string-l1-1-0.dll api-ms-win-crt-time-l1-1-0.dll api-ms-win-crt-utility-l1-1-0.dll
+             applepushdirect.dll asl.dll avfoundationcf.dll bcrypt.dll cfnetwork.dll comctl32.dll comdlg32.dll
+             coreaudiotoolbox.dll corefoundation.dll coregraphics.dll coremedia.dll coretext.dll corevideo.dll
+             crypt32.dll d2d1.dll d3d11.dll dwmapi.dll dwrite.dll dxgi.dll dxva2.dll gdi32.dll gdiplus.dll
+             gnsdk_dsp.dll gnsdk_manager.dll gnsdk_musicid.dll gnsdk_submit.dll imm32.dll iphlpapi.dll
+             javascriptcore.dll kernel32.dll libcache.dll libdispatch.dll libicuin.dll libicuuc.dll
+             mediaaccessibility.dll msi.dll msimg32.dll msvcp140.dll odbc32.dll ole32.dll oleaut32.dll quartzcore.dll
+             rpcrt4.dll setupapi.dll shell32.dll shlwapi.dll uiautomationcore.dll user32.dll userenv.dll uxtheme.dll
+             vcruntime140.dll vcruntime140_1.dll version.dll webkit.dll wininet.dll winmm.dll wintrust.dll ws2_32.dll
+             zlib1.dll
+wmplayer | Windows Media Player | 12.0.26100.8457 | media player | C:\Program Files\Windows Media Player\wmplayer.exe
+    imports: advapi32.dll kernel32.dll ntdll.dll user32.dll ws2_32.dll
+virtualbox | Oracle VirtualBox Manager | 7.2.16.174877 | tool | C:\Program Files\Oracle\VirtualBox\VirtualBox.exe
+    imports: api-ms-win-crt-heap-l1-1-0.dll api-ms-win-crt-locale-l1-1-0.dll api-ms-win-crt-math-l1-1-0.dll
+             api-ms-win-crt-runtime-l1-1-0.dll api-ms-win-crt-stdio-l1-1-0.dll api-ms-win-crt-string-l1-1-0.dll
+             kernel32.dll msvcp140.dll ole32.dll qt6corevbox.dll qt6guivbox.dll qt6printsupportvbox.dll
+             qt6statemachinevbox.dll qt6widgetsvbox.dll shell32.dll uicommon.dll user32.dll vboxrt.dll
+             vcruntime140.dll vcruntime140_1.dll winmm.dll
+localsend | LocalSend | 1.17.0+58 | tool (Flutter) | C:\Program Files\LocalSend\localsend_app.exe
+    imports: advapi32.dll api-ms-win-crt-heap-l1-1-0.dll api-ms-win-crt-locale-l1-1-0.dll
+             api-ms-win-crt-math-l1-1-0.dll api-ms-win-crt-runtime-l1-1-0.dll api-ms-win-crt-stdio-l1-1-0.dll
+             connectivity_plus_plugin.dll desktop_drop_plugin.dll dwmapi.dll dynamic_color_plugin.dll
+             file_selector_windows_plugin.dll flutter_windows.dll gal_plugin.dll kernel32.dll msvcp140.dll ole32.dll
+             open_dir_windows_plugin.dll pasteboard_plugin.dll permission_handler_windows_plugin.dll
+             screen_retriever_windows_plugin.dll shell32.dll tray_manager_plugin.dll uri_content_plugin.dll
+             url_launcher_windows_plugin.dll user32.dll vcruntime140.dll vcruntime140_1.dll window_manager_plugin.dll
+             windows_taskbar_plugin.dll
+flutterflow | FlutterFlow | 6.5.3 | editor (Flutter) | C:\Program Files\FlutterFlow\flutterflow.exe
+    imports: advapi32.dll api-ms-win-crt-convert-l1-1-0.dll api-ms-win-crt-environment-l1-1-0.dll
+             api-ms-win-crt-filesystem-l1-1-0.dll api-ms-win-crt-heap-l1-1-0.dll api-ms-win-crt-locale-l1-1-0.dll
+             api-ms-win-crt-math-l1-1-0.dll api-ms-win-crt-multibyte-l1-1-0.dll api-ms-win-crt-runtime-l1-1-0.dll
+             api-ms-win-crt-stdio-l1-1-0.dll api-ms-win-crt-string-l1-1-0.dll api-ms-win-crt-time-l1-1-0.dll
+             api-ms-win-crt-utility-l1-1-0.dll auto_updater_windows_plugin.dll bcrypt.dll crypt32.dll dbghelp.dll
+             desktop_webview_auth_plugin.dll dwmapi.dll flutter_inappwebview_windows_plugin.dll flutter_windows.dll
+             irondash_engine_context_plugin.dll kernel32.dll msvcp140.dll ole32.dll pdfx_plugin.dll
+             rive_common_plugin.dll rpcrt4.dll shell32.dll super_native_extensions_plugin.dll
+             url_launcher_windows_plugin.dll user32.dll vcruntime140.dll vcruntime140_1.dll window_size_plugin.dll
+             ws2_32.dll
+musehub | MuseHub | 3.4.3.2360 | launcher | C:\Program Files\MuseHub\current\MuseHub.exe
+    imports: advapi32.dll api-ms-win-core-synch-l1-2-0.dll api-ms-win-crt-convert-l1-1-0.dll
+             api-ms-win-crt-environment-l1-1-0.dll api-ms-win-crt-filesystem-l1-1-0.dll api-ms-win-crt-heap-l1-1-0.dll
+             api-ms-win-crt-locale-l1-1-0.dll api-ms-win-crt-math-l1-1-0.dll api-ms-win-crt-runtime-l1-1-0.dll
+             api-ms-win-crt-stdio-l1-1-0.dll api-ms-win-crt-string-l1-1-0.dll api-ms-win-crt-time-l1-1-0.dll
+             api-ms-win-crt-utility-l1-1-0.dll bcrypt.dll crypt32.dll dbghelp.dll gdi32.dll iphlpapi.dll kernel32.dll
+             ncrypt.dll ole32.dll oleaut32.dll secur32.dll user32.dll version.dll ws2_32.dll
+epic | Epic Games Launcher | 20.3.6-0+UE5 | launcher | C:\Program Files\Epic Games\Launcher\Portal\Binaries\Win64\EpicGamesLauncher.exe
+    imports: advapi32.dll api-ms-win-core-synch-l1-2-0.dll api-ms-win-core-version-l1-1-0.dll
+             api-ms-win-core-version-l1-1-1.dll api-ms-win-core-winrt-l1-1-0.dll
+             api-ms-win-core-winrt-string-l1-1-0.dll api-ms-win-crt-conio-l1-1-0.dll api-ms-win-crt-convert-l1-1-0.dll
+             api-ms-win-crt-environment-l1-1-0.dll api-ms-win-crt-filesystem-l1-1-0.dll api-ms-win-crt-heap-l1-1-0.dll
+             api-ms-win-crt-locale-l1-1-0.dll api-ms-win-crt-math-l1-1-0.dll api-ms-win-crt-multibyte-l1-1-0.dll
+             api-ms-win-crt-runtime-l1-1-0.dll api-ms-win-crt-stdio-l1-1-0.dll api-ms-win-crt-string-l1-1-0.dll
+             api-ms-win-crt-time-l1-1-0.dll api-ms-win-crt-utility-l1-1-0.dll api-ms-win-power-base-l1-1-0.dll
+             comdlg32.dll crypt32.dll dwmapi.dll dxgi.dll gdi32.dll imm32.dll iphlpapi.dll kernel32.dll msi.dll
+             msvcp140.dll ncrypt.dll ole32.dll oleaut32.dll opengl32.dll rstrtmgr.dll setupapi.dll shell32.dll
+             shlwapi.dll uiautomationcore.dll user32.dll uxtheme.dll vcruntime140.dll vcruntime140_1.dll version.dll
+             winhttp.dll winmm.dll wintrust.dll ws2_32.dll
+node | Node.js | 24.19.0 | console runtime | C:\Program Files\nodejs\node.exe
+    imports: advapi32.dll crypt32.dll dbghelp.dll iphlpapi.dll kernel32.dll ole32.dll shell32.dll user32.dll
+             userenv.dll winmm.dll ws2_32.dll
+java | OpenJDK (Eclipse Adoptium) | 25.0.4.1 | console runtime | C:\Program Files\Eclipse Adoptium\jdk-25.0.4.101-hotspot\bin\java.exe
+    imports: api-ms-win-crt-environment-l1-1-0.dll api-ms-win-crt-heap-l1-1-0.dll api-ms-win-crt-locale-l1-1-0.dll
+             api-ms-win-crt-math-l1-1-0.dll api-ms-win-crt-runtime-l1-1-0.dll api-ms-win-crt-stdio-l1-1-0.dll jli.dll
+             kernel32.dll vcruntime140.dll
+git | Git for Windows | 2.55.0.windows.5 | console tool | C:\Program Files\Git\cmd\git.exe
+    imports: kernel32.dll msvcrt.dll shell32.dll shlwapi.dll user32.dll
+gh | GitHub CLI | 2.103.1 | console tool | C:\Program Files\GitHub CLI\gh.exe
+    imports: kernel32.dll

@@ -44,7 +44,7 @@ if(TARGET guest_hello)
                    guest_dialog guest_comctl guest_seh guest_window_scroll guest_clipboard guest_net msctf_stub
                    guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput xinput1_4 gdi32full_stub guest_identity
                    guest_cursor guest_regpersist guest_wasapi guest_xaudio2 guest_tebframe guest_rdrand
-                   stage_guest_dirtree guest_xaudio2_play guest_net2 guest_display_mode)
+                   stage_guest_dirtree guest_xaudio2_play guest_net2 guest_display_mode guest_actctx_stack)
   if(TARGET guest_d3d11_tri)
     add_dependencies(prepare_machine guest_d3d11_tri)
   endif()
@@ -1102,6 +1102,32 @@ set_tests_properties(integration.guest_imgui_d3d11 PROPERTIES
   LABELS "guest_e2e"
   TIMEOUT 240
   ENVIRONMENT "WIN10XBOX_IMGUI_FRAMES=60;WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_imgui_d3d11.bmp;WIN10XBOX_EXPECT_SCREENSHOT_VARIED=110,140,1010,760,40,3,ff738c99")
+endif()
+
+# A guest activation context frame while the layer resolves host exports (docs/slices/laptop-programs.md): on
+# machine-emu-d3d, mapping Wine's gdi32 makes core/dispatch/native_imports.cpp call the host's GetProcAddress, whose
+# loader walks TEB.ActivationContextStackPointer. With the guest's frame there (a Wine ACTIVATION_CONTEXT) the host
+# raised STATUS_SXS_CORRUPT_ACTIVATION_STACK; the host view now has a stack of its own (dispatcher.cpp ActCtxToHost).
+if(NOT CMAKE_CROSSCOMPILING AND TARGET guest_actctx_stack)
+add_test(NAME integration.guest_actctx_stack
+  COMMAND ${CMAKE_COMMAND}
+    -DHOST=$<TARGET_FILE:win10xbox>
+    -DMACHINE=${WIN10XBOX_EMU_D3D_MACHINE_DIR}
+    -DPROGRAM=C:\\guest\\guest_actctx_stack.exe
+    -DEXPECT_EXIT=42
+    "-DEXPECT_REGEX=actctx: activated;actctx: gdi32 loaded;actctx: done"
+    "-DEXPECT_TRACE_REGEX=d3d native: guest gdi32: [0-9]+ D3DKMT export"
+    "-DFORBID_TRACE_REGEX=c0150014;host state reached under the guest TLS view"
+    -DDEBUG_SPEC=+dispatch,+modules,+process
+    -DREQUIRE=Windows/System32/d3d11.dll
+    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
+set_tests_properties(integration.guest_actctx_stack PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "guest_e2e"
+  TIMEOUT 120)
 endif()
 
 # The same two guests on machine-emu-d3d (docs/slices/uwpswap.md): Wine's builtin user32/gdi32/win32u over core/user (the
