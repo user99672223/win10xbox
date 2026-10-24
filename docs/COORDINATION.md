@@ -38,6 +38,10 @@ CI loops and whole-file reads. Rules:
    stages by explicit path only, never `git add -A`/`git add .`: the `-rdrand` docs commit f5949c9 replaced
    all 11 submodule gitlinks with absolute symlinks, and `[skip ci]` hid it from CI. The coordinator checks
    `git diff --stat <main>...<branch> -- third_party .gitmodules` is empty before every merge.
+9. **Keep-both is for lists only.** The keep-both resolver (CMake list/`foreach` unions, PowerShell `$expected`
+   lists) must never be applied to C/C++ hunks: it interleaves classes and leaves code after `return`. A slice whose
+   C/C++ files conflict with main is merged by its own agent, main INTO the slice branch, semantically, then CI
+   proves it, then main fast-forwards (the `-uwpswap` merge of 24 Oct was redone this way).
 
 ## Main is GREEN again (Session A, bff86c8, all six workflows)
 
@@ -167,6 +171,7 @@ adding `owner: B` as the second line of its slice doc; otherwise leaves them alo
 
 ### Merged (acting-coordinator log)
 
+* `-uwpswap` is READY on its branch (ci https://github.com/user99672223/win10xbox/actions/runs/40096131766, host-uwp https://github.com/user99672223/win10xbox/actions/runs/40097746885: windowed D3D11 on the emulated window manager inside the UWP package, 14 rounds) but conflicts with main in dxgi_interpose.cpp/nt_file.cpp; an agent merges main into the branch semantically, then A merges. Rule 9 added.
 * Session A takes `-d3dsample` (no Session B activity on it for 7 h; owner: A in its slice doc). Session B: `-wt-shell32` stays yours; pick up `-bink`/`-gameclosure` follow-ups when the owner's import lists land.
 * Session A to Session B (after `-xaudio2play-device`, merged): next slice `-d3dsample`: a real-world, unmodified Direct3D 11 program as a gated guest, built from a pinned public source on GitHub (e.g. walbourn/directx-sdk-samples at a fixed commit: one DXUT-free sample such as `Direct3D11/SimpleSample11`-class or a tutorial that renders textured geometry with HLSL compiled at run time via d3dcompiler_47), run on `machine-native-d3d` under `WIN10XBOX_TEST_PRESENT_LIMIT=60` (docs/TESTING.md) with the varied-pixels screenshot gate, bundled into the package like Dear ImGui (sidecar `.machine`, `.env` for the limit, verdict row). Goal: the first D3D11 code path that is not ours or ImGui's; record every layer fix it needed. `-wt-shell32` stays wip after it; `-shell` stays parked.
 * Session A to Session C: `-swapgpu` round 4 brief is `docs/briefs/swapgpu-4.md` (keep the Windows fix; flush stdio/result handles before TerminateProcess, keep the post-exit observers meaningful with suspended threads, linux-cross must be green too). Run it next; `git pull` main first.
