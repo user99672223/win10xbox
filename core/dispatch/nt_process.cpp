@@ -464,6 +464,19 @@ static NTSTATUS NTAPI Xl_NtRaiseException(PEXCEPTION_RECORD rec, PCONTEXT ctx, B
     // docs/slices/uwpswap.md round 11: RaiseFailFastException (0xC0000602) ends the process in the kernel without running a
     // handler or WER, so print the record and the code addresses on the stack (module+RVA) before asking the host.
     if (rec && (rec->ExceptionCode == 0xC0000602 || rec->ExceptionCode == 0xC0000409)) DumpFailFastRaise(rec, ctx);
+    // OutputDebugStringA (DBG_PRINTEXCEPTION_C: length with NUL, ANSI text): the guest's own diagnostics reach the trace
+    // (docs/slices/d3dsample.md round 3: the sample's shader error blob). The host's trace lines also end in here through the
+    // host's OutputDebugString, but those do not pass this syscall.
+    if (rec && rec->ExceptionCode == 0x40010006 && rec->NumberParameters >= 2) {
+        char text[256];
+        std::size_t n = static_cast<std::size_t>(rec->ExceptionInformation[0]);
+        if (n > sizeof text) n = sizeof text;
+        if (n && probe::CopyFromUser(text, reinterpret_cast<const void*>(rec->ExceptionInformation[1]), n) == 0) {
+            text[n - 1] = 0;
+            for (char* c = text; *c; ++c) if (*c == '\n' || *c == '\r') *c = ' ';
+            TRACE(process, "OutputDebugString: %s", text);
+        }
+    }
     return CallInGuestView(Host().NtRaiseException, rec, ctx, first);
 }
 

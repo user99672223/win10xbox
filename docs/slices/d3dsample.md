@@ -22,6 +22,13 @@ compiled from the fetched tree, never copied into the repository.
 * The scanner now logs one line per planned site (RVA, kind, inline/trap/skip, function start, nearby data range) and the bytes around it under `+scan`.
 * Open (budget of two code pushes used): the Debug configuration of the sample. Its `D3DCompileFromFile` fails after reading Tutorial07.fxh, opening guest_d3dsample.exe, probing `Software\Microsoft\Direct3D\Direct3D12`, `Time Zones\UTC` and `Cryptography\Provider Type 024` (all c0000034) and starting two threads; the HRESULT is not logged. Next step: trace the compile's HRESULT (the sample sends the error blob to OutputDebugStringA; log it) and look for which of those lookups the debug-info path needs (time zone / crypto provider keys missing from the machine folder's registry, or a thread/event API). Separately `kernelbase.dll!NlsGetCacheUpdateCount` is an unresolved import of the Wine gdi32full used by any MessageBox on these machine folders.
 
+## Round 3 (code push 1)
+
+* `kernelbase!NlsGetCacheUpdateCount` (wine-pe patch 0034): Windows returns the NLS cache update counter that changes on a locale change; the genuine gdi32full (`GdiGetCharDimensions`) compares it with the value it cached. Wine loads its locale data once and never updates it, so the export returns a constant 0. The native control (round 2 log) shows the stub fault only; no other unresolved import was raised on the MessageBox path.
+* Registry (core/registry/registry.cpp `ApplyDefaultSoftwareKeys`, only where a hive lacks them): `Cryptography\Defaults\Provider Types\Type 001/024` (Name, TypeName) and `Defaults\Provider\<name>` (Image Path `rsaenh.dll`, SigInFile 0, Type) for the Strong, Base v1.0, Enhanced v1.0 and Enhanced RSA and AES providers; `Time Zones\UTC` (Display, Dlt, Std, MUI_*, TZI = 44 zero bytes); empty `Microsoft\Direct3D` and `Direct3D\Direct3D12`. The `Signature` blobs of the providers are not reproduced.
+* `rsaenh` joins `wine-pe/dlls.txt`: Wine's advapi32 loads the provider DLL named by Image Path.
+* Diagnostics: `tests/guest/d3dsample_shim.h` (force-included into the unmodified sample) logs D3DCompileFromFile's HRESULT and error blob; the layer traces every OutputDebugStringA of the guest (`trace:process:Xl_NtRaiseException OutputDebugString: ...`).
+
 ## What was added
 
 * `tools/ci/fetch_d3dsample.ps1`: shallow fetch of the pinned SHA, verifies HEAD, exports `WIN10XBOX_D3DSAMPLE_DIR`. ci.yml and

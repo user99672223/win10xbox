@@ -1033,6 +1033,49 @@ void ApplyComClasses(State& st, Node* sw) {
     }
 }
 
+// Keys every Windows install has and Windows components look up with the values Windows ships (docs/slices/d3dsample.md
+// round 3, the D3DCOMPILE_DEBUG path of d3dcompiler_47): the default CryptoAPI providers (CryptAcquireContext finds the
+// provider of a type under Defaults\Provider Types\Type NNN, then its DLL under Defaults\Provider), the UTC time zone
+// (the zone Wine's ntdll falls back to when SYSTEM names none; GetDynamicTimeZoneInformation reads it) and the settings keys of Direct3D
+// (they hold only per-machine settings and are empty on a default install). Used only where the hive has no such key.
+void ApplyDefaultSoftwareKeys(State& st, Node* sw) {
+    struct Provider { ULONG type; const wchar_t* type_name; const wchar_t* name; };
+    // rsaenh.dll serves all four; the DSS / Diffie-Hellman providers (dssenh.dll) are not among the builtins.
+    const Provider kProviders[] = {
+        {1, L"RSA Full (Signature and Key Exchange)", L"Microsoft Strong Cryptographic Provider"},
+        {1, nullptr, L"Microsoft Base Cryptographic Provider v1.0"},
+        {1, nullptr, L"Microsoft Enhanced Cryptographic Provider v1.0"},
+        {24, L"RSA Full and AES", L"Microsoft Enhanced RSA and AES Cryptographic Provider"},
+    };
+    const std::wstring defaults = L"Microsoft\\Cryptography\\Defaults\\";
+    Val v;
+    for (const Provider& p : kProviders) {
+        const std::wstring prov = defaults + L"Provider\\" + p.name;
+        if (Node* k = EnsureKey(st, sw, prov); k && FindValue(k, L"Image Path", &v)) continue;
+        SetStr(st, sw, prov, L"Image Path", L"rsaenh.dll");
+        SetDword(st, sw, prov, L"SigInFile", 0);
+        SetDword(st, sw, prov, L"Type", p.type);
+        if (!p.type_name) continue;   // the type's default provider is the one that has a type name (Strong for 1)
+        const std::wstring type_key =
+            defaults + L"Provider Types\\Type " + (p.type < 10 ? L"00" : L"0") + std::to_wstring(p.type);
+        SetStr(st, sw, type_key, L"Name", p.name);
+        SetStr(st, sw, type_key, L"TypeName", p.type_name);
+    }
+    const std::wstring utc = L"Microsoft\\Windows NT\\CurrentVersion\\Time Zones\\UTC";
+    if (Node* k = EnsureKey(st, sw, utc); k && !FindValue(k, L"TZI", &v)) {
+        SetStr(st, sw, utc, L"Display", L"(UTC) Coordinated Universal Time");
+        SetStr(st, sw, utc, L"Dlt", L"Coordinated Universal Time");
+        SetStr(st, sw, utc, L"Std", L"Coordinated Universal Time");
+        SetStr(st, sw, utc, L"MUI_Display", L"@tzres.dll,-1832");
+        SetStr(st, sw, utc, L"MUI_Dlt", L"@tzres.dll,-1831");
+        SetStr(st, sw, utc, L"MUI_Std", L"@tzres.dll,-1830");
+        const std::uint8_t tzi[44] = {};   // Bias 0, StandardBias 0, DaylightBias 0, no transition dates
+        StoreValue(st, k, L"TZI", 3, tzi, sizeof tzi);
+    }
+    EnsureKey(st, sw, L"Microsoft\\Direct3D");
+    EnsureKey(st, sw, L"Microsoft\\Direct3D\\Direct3D12");
+}
+
 void ApplySystemFidelity(State& st, Node* sys, bool hive_missing) {
     const Fidelity& f = st.fid;
     if (hive_missing) {
@@ -1201,6 +1244,7 @@ NTSTATUS Initialize(const std::wstring& machine_root) {
     if (sw_missing) ApplySoftwareSkeleton(st, sw);
     if (sw_missing || st.fid.has_windows) ApplySoftwareFidelity(st, sw);
     ApplyComClasses(st, sw);
+    ApplyDefaultSoftwareKeys(st, sw);
     if (sys_missing || st.fid.has_identity) ApplySystemFidelity(st, st.system, sys_missing);
     ApplyAudioRegistration(st, sw, user_hive);
     if (sys_missing) {

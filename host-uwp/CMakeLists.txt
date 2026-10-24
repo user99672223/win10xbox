@@ -264,6 +264,7 @@ if(WIN10XBOX_D3DSAMPLE_DIR AND EXISTS "${_ds}/Tutorial07.cpp")
   target_include_directories(guest_d3dsample PRIVATE ${_ds})
   target_compile_definitions(guest_d3dsample PRIVATE UNICODE _UNICODE)
   target_compile_options(guest_d3dsample PRIVATE /W3)
+  target_compile_options(guest_d3dsample PRIVATE /FI${CMAKE_CURRENT_LIST_DIR}/../tests/guest/d3dsample_shim.h)   # logs D3DCompileFromFile's HRESULT and error blob
   target_link_libraries(guest_d3dsample PRIVATE d3d11 d3dcompiler dxguid comctl32 user32 gdi32)
   set(WIN10XBOX_D3DSAMPLE_DATA "${_ds}/Tutorial07.fxh,${_ds}/seafloor.dds")
   message(STATUS "guest_d3dsample: directx-sdk-samples Tutorial07 from ${_ds}")
