@@ -96,6 +96,8 @@ def main():
     ap.add_argument("--sha", required=True)
     ap.add_argument("--artifact", action="append", required=True, help="NAME=DEST")
     ap.add_argument("--wait-minutes", type=float, default=45)
+    ap.add_argument("--main-branch", default="claude/youthful-cerf-l7xxsb",
+                    help="fallback source of builtins for a branch without its own wine-pe run")
     a = ap.parse_args()
     wanted = dict(s.split("=", 1) for s in a.artifact)
 
@@ -128,7 +130,10 @@ def main():
     # 2. Newest successful run (branch, then repository) that still has every artifact.
     if not chosen:
         seen = set()
+        # The main branch comes before "any branch": another slice's artifact may carry that slice's wine-pe
+        # patches, and a slice without its own wine-pe run must get main's builtins, not a sibling's.
         for scope, query in (("branch " + a.branch, f"branch={a.branch}&status=success&per_page=20"),
+                             ("main branch " + a.main_branch, f"branch={a.main_branch}&status=success&per_page=20"),
                              ("repository", "status=success&per_page=30")):
             for run in sorted(runs(a.repo, query), key=lambda r: r["run_number"], reverse=True):
                 if run["id"] in seen:
