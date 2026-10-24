@@ -374,6 +374,24 @@ static NTSTATUS TranslateCaptured(const OBJECT_ATTRIBUTES* in, TranslatedOA* out
 
 // ---- Translators ------------------------------------------------------------
 
+// Round 12: Wine's builtin rpcrt4 has no trace (WINE_NO_TRACE_MSGS), so the endpoint of an RPC the guest tries is read
+// here: every open of a named pipe or of an RPC Control object, with the status.
+static void TracePipeOpen(const char* api, const OBJECT_ATTRIBUTES* oa, NTSTATUS s) {
+    std::wstring_view n = OAName(oa);
+    if (n.empty()) return;
+    auto has = [&](const wchar_t* w) {
+        const size_t l = wcslen(w);
+        for (size_t i = 0; i + l <= n.size(); ++i) {
+            size_t k = 0;
+            while (k < l && towlower(n[i + k]) == towlower(w[k])) ++k;
+            if (k == l) return true;
+        }
+        return false;
+    };
+    if (has(L"pipe") || has(L"rpc control") || has(L"lrpc") || has(L"epmapper"))
+        TRACE(dispatch, "ipc: %s '%.*ls' -> %08lx", api, static_cast<int>(n.size()), n.data(), static_cast<unsigned long>(s));
+}
+
 NTSTATUS NTAPI Xl_NtCreateFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr, PIO_STATUS_BLOCK io,
                                PLARGE_INTEGER alloc_size, ULONG attributes, ULONG sharing, ULONG disposition,
                                ULONG options, PVOID ea, ULONG ea_length) {
@@ -381,15 +399,16 @@ NTSTATUS NTAPI Xl_NtCreateFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRI
     // FILE_OPEN_BY_FILE_ID: the "name" is a binary file ID (relative to a directory or volume handle), not a path.
     if (!(options & kFileOpenByFileId))
         if (NTSTATUS s = TranslateOA(attr, &t, options)) return s;
-    NTSTATUS r = Host().NtCreateFile(handle, access, t.Get(attr), io, alloc_size, attributes, sharing, disposition,
-                                     options, ea, ea_length);
+    NTSTATUS rs = Host().NtCreateFile(handle, access, t.Get(attr), io, alloc_size, attributes, sharing, disposition, options,
+                                      ea, ea_length);
     // FILE_CREATE on a name that already exists is STATUS_OBJECT_NAME_COLLISION on Windows, directory or not (the
     // host answers FILE_IS_A_DIRECTORY for a directory). Wine's GetTempFileNameW stops on any other error and
     // would hand back the directory's name as a fresh file.
     constexpr ULONG kFileCreate = 2, kFileNonDirectoryFile = 0x40;
-    if (r == static_cast<NTSTATUS>(0xC00000BA) && disposition == kFileCreate && (options & kFileNonDirectoryFile))
-        r = static_cast<NTSTATUS>(0xC0000035);
-    return r;
+    if (rs == static_cast<NTSTATUS>(0xC00000BA) && disposition == kFileCreate && (options & kFileNonDirectoryFile))
+        rs = static_cast<NTSTATUS>(0xC0000035);
+    TracePipeOpen("NtCreateFile", attr, rs);
+    return rs;
 }
 
 static NTSTATUS OpenFileImpl(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr, PIO_STATUS_BLOCK io,
@@ -406,10 +425,11 @@ static NTSTATUS OpenFileImpl(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBU
     if (access == SYNCHRONIZE) {
         constexpr ACCESS_MASK kFileWriteAttributes = 0x100;
         NTSTATUS s = Host().NtOpenFile(handle, access | kFileWriteAttributes, t.Get(attr), io, sharing, options);
-        if (s != st::AccessDenied) return s;
+        if (s != st::AccessDenied) { TracePipeOpen("NtOpenFile", attr, s); return s; }
     }
-    NTSTATUS r = Host().NtOpenFile(handle, access, t.Get(attr), io, sharing, options);
-    return r;
+    NTSTATUS rs = Host().NtOpenFile(handle, access, t.Get(attr), io, sharing, options);
+    TracePipeOpen("NtOpenFile", attr, rs);
+    return rs;
 }
 
 // A library that cannot be opened is how a missing import surfaces: Wine's loader walks the import table and opens each

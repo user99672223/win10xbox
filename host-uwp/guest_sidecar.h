@@ -49,6 +49,10 @@ namespace w10x_uwp
     // D3D_MACHINE) and the System32 DLLs the host copies BY NAME into it from the console (the same set).
     constexpr const char* kD3dMachineName = "machine-native-d3d";
     const std::vector<std::string>& D3dMachineNativeDlls();
+    // machine-emu-d3d (docs/slices/uwpswap.md): Wine's builtin user32/gdi32/win32u over core/user plus the native Direct3D 11
+    // runtime (tests/integration/prepare_machine.cmake EMU_D3D_MACHINE); swap chains on its windows are virtual.
+    constexpr const char* kEmuD3dMachineName = "machine-emu-d3d";
+    const std::vector<std::string>& EmuD3dMachineNativeDlls();
     // A relative path of leaf names joined by '\\' or '/' ("Binaries\\Win64\\App.exe"); "." is allowed only when
     // allow_dot (cwd=.). No drive, no leading separator, no "..", no empty component. *out gets backslashes.
     bool NormalizeRelativePath(std::string_view in, bool allow_dot, std::string* out);

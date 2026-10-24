@@ -329,6 +329,54 @@ ULONG WINAPI NtUserGetSystemDpiForProcess(HANDLE process) {
     return 96;
 }
 
+// NtUserGetWindowCompositionAttribute(hwnd, WINCOMPATTRDATA*) -> BOOL (user32!GetWindowCompositionAttribute, resolved by the
+// native dxgi and dwmapi). The windows of this layer have no DWM-side composition attributes: an invalid window is
+// ERROR_INVALID_WINDOW_HANDLE, a NULL data block ERROR_INVALID_PARAMETER, anything else FALSE with ERROR_NOT_SUPPORTED.
+BOOL WINAPI NtUserGetWindowCompositionAttribute(HWND hwnd, void* data) {
+    if (!data) {
+        SetLastErr(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    {
+        LockGuard lock;
+        if (!WinChecked(hwnd)) return FALSE;   // sets ERROR_INVALID_WINDOW_HANDLE
+    }
+    SetLastErr(ERROR_NOT_SUPPORTED);
+    return FALSE;
+}
+
+// NtIsOneCoreTransformMode() -> BOOL (user32!IsOneCoreTransformMode): FALSE on a desktop SKU, which is what this layer is.
+BOOL WINAPI NtIsOneCoreTransformMode(void) { return FALSE; }
+
+// NtUserGetProcessUIContextInformation(process, PROCESS_UICONTEXT_INFORMATION*) -> BOOL: which kind of UI the process runs
+// (user32!GetProcessUIContextInformation is the same function; the native dxgi.dll imports it to learn whether it is in
+// an immersive/UWP context). { ULONG ProcessUIContext (0 DESKTOP, 1 IMMERSIVE, 2 IMMERSIVE_BROKER, 3 IMMERSIVE_BROWSER);
+// ULONG Flags }. Measured on the CI runner (ci.yml probe, docs/slices/uwpswap.md): for the current process
+// (pseudo-handle -1) the native function returns TRUE with { 0, 0 }; for a NULL process it returns FALSE with
+// ERROR_INVALID_PARAMETER and leaves the buffer untouched. Every window of this layer is a plain desktop window, so the
+// answer for this process is the measured one. A handle to another process was not measured: FALSE with
+// ERROR_NOT_SUPPORTED (that process's UI context is not tracked), an invalid handle ERROR_INVALID_HANDLE.
+BOOL WINAPI NtUserGetProcessUIContextInformation(HANDLE process, ULONG* info) {
+    if (!process || !info) {
+        SetLastErr(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    if (process != reinterpret_cast<HANDLE>(~static_cast<ULONG_PTR>(0))) {
+        const DWORD pid = GetProcessId(process);
+        if (!pid) {
+            SetLastErr(ERROR_INVALID_HANDLE);
+            return FALSE;
+        }
+        if (pid != GetCurrentProcessId()) {
+            SetLastErr(ERROR_NOT_SUPPORTED);
+            return FALSE;
+        }
+    }
+    info[0] = 0;   // PROCESS_UICONTEXT_DESKTOP
+    info[1] = 0;   // no flags
+    return TRUE;
+}
+
 ULONG WINAPI NtUserGetProcessDpiAwarenessContext(HANDLE process) {
     LockGuard lock;
     (void)process;
@@ -463,15 +511,24 @@ LONG WINAPI NtUserGetDisplayConfigBufferSizes(UINT32 flags, UINT32* num_path_inf
 // The one adapter and its one monitor, as win32u's sysparams.c reports them: source 0 / target 0 on a fixed adapter LUID,
 // the current mode of the display driver (the same mode EnumDisplaySettings answers).
 namespace {
-constexpr LUID kAdapterLuid = {1, 0};
-constexpr UINT32 kSourceId = 0, kTargetId = 0;
+// Default {1,0}/0/0; SetHostDisplayTopology (below) replaces them with the host's primary display path before the
+// guest starts, because the native dxgi has enumerated the host's adapters and looks the same LUID up here.
+LUID kAdapterLuid = {1, 0};
+UINT32 kSourceId = 0, kTargetId = 0;
+
+// Packet layouts of win32u/wingdi.h that the SDK headers in use do not carry.
+struct TargetPreferredMode { DISPLAYCONFIG_DEVICE_INFO_HEADER header; UINT32 width, height; DISPLAYCONFIG_TARGET_MODE targetMode; };
+struct TargetBaseType { DISPLAYCONFIG_DEVICE_INFO_HEADER header; DISPLAYCONFIG_VIDEO_OUTPUT_TECHNOLOGY baseOutputTechnology; };
+struct SdrWhiteLevel { DISPLAYCONFIG_DEVICE_INFO_HEADER header; ULONG SDRWhiteLevel; };   // 1000 = 80 nits
+struct AdvancedColorInfo { DISPLAYCONFIG_DEVICE_INFO_HEADER header; UINT32 value; UINT32 colorEncoding; UINT32 bitsPerColorChannel; };
 }  // namespace
 
 LONG WINAPI NtUserQueryDisplayConfig(UINT32 flags, UINT32* paths_count, DISPLAYCONFIG_PATH_INFO* paths, UINT32* modes_count,
                                      DISPLAYCONFIG_MODE_INFO* modes, DISPLAYCONFIG_TOPOLOGY_ID* topology_id) {
     constexpr UINT32 kRetrieveMask = QDC_ALL_PATHS | QDC_ONLY_ACTIVE_PATHS | QDC_DATABASE_CURRENT;
     const UINT32 retrieve = flags & kRetrieveMask;
-    if (!paths_count || !modes_count || !*paths_count || !*modes_count) return ERROR_INVALID_PARAMETER;
+    if (!paths_count || !*paths_count) return ERROR_INVALID_PARAMETER;
+    if (modes && (!modes_count || !*modes_count)) return ERROR_INVALID_PARAMETER;   // modes (and modes_count) may be NULL
     if (retrieve != QDC_ALL_PATHS && retrieve != QDC_ONLY_ACTIVE_PATHS && retrieve != QDC_DATABASE_CURRENT)
         return ERROR_INVALID_PARAMETER;
     if ((retrieve == QDC_DATABASE_CURRENT) != (topology_id != nullptr)) return ERROR_INVALID_PARAMETER;
@@ -480,8 +537,8 @@ LONG WINAPI NtUserQueryDisplayConfig(UINT32 flags, UINT32* paths_count, DISPLAYC
         return ERROR_INVALID_PARAMETER;
     }
     const UINT32 need_modes = 2;   // source, target
-    if (!paths || !modes) return ERROR_INVALID_PARAMETER;
-    if (*paths_count < 1 || *modes_count < need_modes) return ERROR_INSUFFICIENT_BUFFER;
+    if (!paths) return ERROR_INVALID_PARAMETER;
+    if (*paths_count < 1 || (modes && *modes_count < need_modes)) return ERROR_INSUFFICIENT_BUFFER;
 
     winexbox::DisplayMode m;
     {
@@ -493,8 +550,10 @@ LONG WINAPI NtUserQueryDisplayConfig(UINT32 flags, UINT32* paths_count, DISPLAYC
     const UINT32 bpp = m.bits_per_pixel ? m.bits_per_pixel : 32;
 
     std::memset(paths, 0, sizeof(paths[0]));
-    std::memset(modes, 0, sizeof(modes[0]) * need_modes);
-    DISPLAYCONFIG_MODE_INFO& src = modes[0];
+    DISPLAYCONFIG_MODE_INFO scratch[2]{};   // without a modes buffer the same values are built and dropped
+    DISPLAYCONFIG_MODE_INFO* mi = modes ? modes : scratch;
+    std::memset(mi, 0, sizeof(mi[0]) * need_modes);
+    DISPLAYCONFIG_MODE_INFO& src = mi[0];
     src.infoType = DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE;
     src.adapterId = kAdapterLuid;
     src.id = kSourceId;
@@ -507,7 +566,7 @@ LONG WINAPI NtUserQueryDisplayConfig(UINT32 flags, UINT32* paths_count, DISPLAYC
                                              : DISPLAYCONFIG_PIXELFORMAT_NONGDI;
     src.sourceMode.position = POINTL{0, 0};
 
-    DISPLAYCONFIG_MODE_INFO& tgt = modes[1];
+    DISPLAYCONFIG_MODE_INFO& tgt = mi[1];
     tgt.infoType = DISPLAYCONFIG_MODE_INFO_TYPE_TARGET;
     tgt.adapterId = kAdapterLuid;
     tgt.id = kTargetId;
@@ -535,14 +594,29 @@ LONG WINAPI NtUserQueryDisplayConfig(UINT32 flags, UINT32* paths_count, DISPLAYC
     path.targetInfo.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
     path.targetInfo.targetAvailable = TRUE;
     path.targetInfo.statusFlags = DISPLAYCONFIG_TARGET_IN_USE;
-    path.sourceInfo.modeInfoIdx = 0;
-    path.targetInfo.modeInfoIdx = 1;
+    path.sourceInfo.modeInfoIdx = modes ? 0 : DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+    path.targetInfo.modeInfoIdx = modes ? 1 : DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
     *paths_count = 1;
-    *modes_count = need_modes;
+    if (modes_count) *modes_count = need_modes;
     return ERROR_SUCCESS;
 }
 
+static HostDisplayInfoFn g_host_display_info = nullptr;
+
+static NTSTATUS DisplayConfigGetDeviceInfoImpl(DISPLAYCONFIG_DEVICE_INFO_HEADER* packet, bool* forwarded);
+
 NTSTATUS WINAPI NtUserDisplayConfigGetDeviceInfo(DISPLAYCONFIG_DEVICE_INFO_HEADER* packet) {
+    bool forwarded = false;
+    NTSTATUS r = DisplayConfigGetDeviceInfoImpl(packet, &forwarded);
+    if (packet)
+        TRACE(user, "DisplayConfigGetDeviceInfo type %d size %u adapter %08lx:%08lx id %u -> %#lx%s", static_cast<int>(packet->type),
+              static_cast<unsigned>(packet->size), static_cast<unsigned long>(packet->adapterId.HighPart),
+              static_cast<unsigned long>(packet->adapterId.LowPart), static_cast<unsigned>(packet->id), static_cast<unsigned long>(r),
+              forwarded ? " (forwarded to host)" : "");
+    return r;
+}
+
+static NTSTATUS DisplayConfigGetDeviceInfoImpl(DISPLAYCONFIG_DEVICE_INFO_HEADER* packet, bool* forwarded) {
     namespace st = dispatch::detail::st;
     constexpr NTSTATUS kInvalidParameter = static_cast<NTSTATUS>(0xC000000D), kUnsuccessful = static_cast<NTSTATUS>(0xC0000001);
     if (!packet || packet->size < sizeof(*packet)) return kUnsuccessful;
@@ -572,8 +646,57 @@ NTSTATUS WINAPI NtUserDisplayConfigGetDeviceInfo(DISPLAYCONFIG_DEVICE_INFO_HEADE
         wcscpy(p->adapterDevicePath, L"\\\\?\\PCI#VEN_1414&DEV_008C#0#{5b45201d-f2f2-4f3b-85bb-30ff1f953599}");
         return st::Success;
     }
+    case DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_PREFERRED_MODE: {
+        auto* p = reinterpret_cast<TargetPreferredMode*>(packet);
+        if (packet->size < sizeof(*p)) return kInvalidParameter;
+        if (!our_adapter() || packet->id != kTargetId) return kUnsuccessful;
+        winexbox::DisplayMode m;
+        {
+            LockGuard lock;
+            m = CurrentMode();
+        }
+        const UINT32 freq = m.refresh_hz ? m.refresh_hz : 60;
+        std::memset(&p->width, 0, sizeof(*p) - offsetof(TargetPreferredMode, width));
+        p->width = m.width;
+        p->height = m.height;
+        DISPLAYCONFIG_VIDEO_SIGNAL_INFO& sig = p->targetMode.targetVideoSignalInfo;
+        sig.pixelRate = static_cast<UINT64>(freq) * m.width * m.height;
+        sig.hSyncFreq = DISPLAYCONFIG_RATIONAL{freq * static_cast<UINT32>(m.width), 1};
+        sig.vSyncFreq = DISPLAYCONFIG_RATIONAL{freq, 1};
+        sig.activeSize = DISPLAYCONFIG_2DREGION{static_cast<UINT32>(m.width), static_cast<UINT32>(m.height)};
+        sig.totalSize = sig.activeSize;
+        sig.videoStandard = static_cast<decltype(sig.videoStandard)>(255);
+        sig.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
+        return st::Success;
+    }
+    case DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_BASE_TYPE: {
+        auto* p = reinterpret_cast<TargetBaseType*>(packet);
+        if (packet->size < sizeof(*p)) return kInvalidParameter;
+        if (!our_adapter() || packet->id != kTargetId) return kUnsuccessful;
+        p->baseOutputTechnology = DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EXTERNAL;
+        return st::Success;
+    }
+    case DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL: {
+        auto* p = reinterpret_cast<SdrWhiteLevel*>(packet);
+        if (packet->size < sizeof(*p)) return kInvalidParameter;
+        if (!our_adapter() || packet->id != kTargetId) return kUnsuccessful;
+        p->SDRWhiteLevel = 1000;   // 80 nits
+        return st::Success;
+    }
+    case DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO: {
+        auto* p = reinterpret_cast<AdvancedColorInfo*>(packet);
+        if (packet->size < sizeof(*p)) return kInvalidParameter;
+        if (!our_adapter() || packet->id != kTargetId) return kUnsuccessful;
+        p->value = 0;                 // advanced colour not supported, not enabled: plain SDR
+        p->colorEncoding = 0;         // DISPLAYCONFIG_COLOR_ENCODING_RGB
+        p->bitsPerColorChannel = 8;
+        return st::Success;
+    }
     default:
-        return kInvalidParameter;   // the other packet types (preferred mode, colour, white level, ...) are not answered
+        if (!g_host_display_info) return kInvalidParameter;
+        *forwarded = true;
+        const LONG hr = g_host_display_info(packet);   // the host's answer is the truth for its own LUID / source / target
+        return hr == 0 ? st::Success : hr == ERROR_INVALID_PARAMETER ? kInvalidParameter : kUnsuccessful;
     }
 }
 
@@ -598,4 +721,14 @@ BOOL WINAPI NtUserSetSysColors(INT count, const INT* colors, const COLORREF* val
 BOOL WINAPI NtUserIsMouseInPointerEnabled() { return FALSE; }
 
 }  // namespace sys
+
+void SetHostDisplayInfoForwarder(HostDisplayInfoFn fn) { sys::g_host_display_info = fn; }
+
+void SetHostDisplayTopology(std::uint32_t luid_low, std::int32_t luid_high, std::uint32_t source_id, std::uint32_t target_id) {
+    sys::kAdapterLuid.LowPart = luid_low;
+    sys::kAdapterLuid.HighPart = luid_high;
+    sys::kSourceId = source_id;
+    sys::kTargetId = target_id;
+}
+
 }  // namespace win10xbox::user

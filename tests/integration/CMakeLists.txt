@@ -18,16 +18,20 @@ set(WIN10XBOX_BUILTIN_MACHINE_DIR ${CMAKE_BINARY_DIR}/bin/machine-builtin)
 set(WIN10XBOX_NATIVE_GUI_MACHINE_DIR ${CMAKE_BINARY_DIR}/bin/machine-native-gui)
 # Route B + Direct3D 11: the native-GUI set plus the native D3D runtime (prepare_machine.cmake D3D_MACHINE).
 set(WIN10XBOX_D3D_MACHINE_DIR ${CMAKE_BINARY_DIR}/bin/machine-native-d3d)
+# The emulated GUI + native Direct3D 11 (prepare_machine.cmake EMU_D3D_MACHINE, docs/slices/uwpswap.md).
+set(WIN10XBOX_EMU_D3D_MACHINE_DIR ${CMAKE_BINARY_DIR}/bin/machine-emu-d3d)
 set(_default_json ${CMAKE_SOURCE_DIR}/machine/machine.default.json)
 set(_prepare_args
   -DMACHINE=${WIN10XBOX_MACHINE_DIR}
   -DBUILTIN_ONLY_MACHINE=${WIN10XBOX_BUILTIN_MACHINE_DIR}
   -DNATIVE_GUI_MACHINE=${WIN10XBOX_NATIVE_GUI_MACHINE_DIR}
   -DD3D_MACHINE=${WIN10XBOX_D3D_MACHINE_DIR}
+  -DEMU_D3D_MACHINE=${WIN10XBOX_EMU_D3D_MACHINE_DIR}
   -DD3D_EXTRA_DIR=${CMAKE_BINARY_DIR}/bin/machine-d3d-extra
   -DBUILTIN_DIR=${WIN10XBOX_BUILTIN_DIR}
   -DGUEST_DIR=${CMAKE_BINARY_DIR}/bin/guest
   -DMSCTF_STUB=${CMAKE_BINARY_DIR}/bin/native-gui-stubs/msctf.dll
+  -DGDI32FULL_STUB=${CMAKE_BINARY_DIR}/bin/native-gui-stubs/gdi32full.dll
   -DGUEST_DLL_DIR=${WIN10XBOX_GUEST_DLL_DIR}
   -DDEFAULT_JSON=${_default_json}
   -P ${CMAKE_CURRENT_SOURCE_DIR}/prepare_machine.cmake)
@@ -38,7 +42,7 @@ if(TARGET guest_hello)
   add_dependencies(prepare_machine guest_hello guest_cpuid guest_sleep guest_nowine guest_spawn guest_named_objects
                    guest_window guest_window2 guest_window_input guest_window_input2 guest_window_text guest_window_nc
                    guest_dialog guest_comctl guest_seh guest_window_scroll guest_clipboard guest_net msctf_stub
-                   guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput xinput1_4 guest_identity
+                   guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput xinput1_4 gdi32full_stub guest_identity
                    guest_cursor guest_regpersist guest_wasapi guest_xaudio2 guest_tebframe guest_rdrand
                    stage_guest_dirtree guest_xaudio2_play guest_net2 guest_display_mode)
   if(TARGET guest_d3d11_tri)
@@ -46,6 +50,9 @@ if(TARGET guest_hello)
   endif()
   if(TARGET guest_d3d11_swap)
     add_dependencies(prepare_machine guest_d3d11_swap)
+  endif()
+  if(TARGET guest_gamelike)
+    add_dependencies(prepare_machine guest_gamelike)
   endif()
 endif()
 # Import lists of the guests that run on the machine folders (tools/game/dump_imports.py), written into the guest folder
@@ -1097,6 +1104,111 @@ set_tests_properties(integration.guest_imgui_d3d11 PROPERTIES
   ENVIRONMENT "WIN10XBOX_IMGUI_FRAMES=60;WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_imgui_d3d11.bmp;WIN10XBOX_EXPECT_SCREENSHOT_VARIED=110,140,1010,760,40,3,ff738c99")
 endif()
 
+# The same two guests on machine-emu-d3d (docs/slices/uwpswap.md): Wine's builtin user32/gdi32/win32u over core/user (the
+# window path that exists inside the UWP host), the NATIVE d3d11/dxgi/d3dcompiler_47/d3d10warp with their D3DKMT calls
+# passed through to the host's dxgkrnl ("d3d": "native"), and a VIRTUAL swap chain for the emulated window
+# (dxgi_interpose.cpp VirtSwap): the back buffer is a render-target texture on the guest's device, Present copies it
+# to core/user, which composes it at the window's client rectangle. Same exit codes and screenshot checks as above.
+if(NOT CMAKE_CROSSCOMPILING AND TARGET guest_d3d11_swap)
+add_test(NAME integration.guest_d3d11_swap_emu
+  COMMAND ${CMAKE_COMMAND}
+    -DHOST=$<TARGET_FILE:win10xbox>
+    -DMACHINE=${WIN10XBOX_EMU_D3D_MACHINE_DIR}
+    -DPROGRAM=C:\\guest\\guest_d3d11_swap.exe
+    -DEXPECT_EXIT=42
+    -DSAVE_STDOUT=${CMAKE_BINARY_DIR}/bin/guest_d3d11_swap_emu.log
+    "-DEXPECT_REGEX=swap: window hwnd=;swap: CreateDXGIFactory1 -> 00000000;swap: CreateSwapChain -> 00000000;swap: readback centre=ffff0000 corner=ff0000ff;swap: presented 60 frames;swap: done"
+    "-DEXPECT_TRACE_REGEX=d3d native: [0-9]+ NtGdiDdDDI\\* \\(D3DKMT\\) syscalls pass through;dxgi: dxgi.dll: 3 export\\(s\\) interposed;dxgi: IDXGIFactory::CreateSwapChain\\(window [0-9a-fA-Fx]+, 256x256[^)]*\\) virtual -> 00000000;dxgi: virtual IDXGISwapChain::Present\\(1, 0x0\\) #1 -> 00000000 \\(back buffer composed\\)"
+    "-DFORBID_TRACE_REGEX=host state reached under the guest TLS view;NOT handed to the compositor"
+    -DDEBUG_SPEC=+dispatch,+modules,+process,+user
+    -DREQUIRE=Windows/System32/d3d11.dll
+    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
+set_tests_properties(integration.guest_d3d11_swap_emu PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "guest_e2e"
+  TIMEOUT 240
+  ENVIRONMENT "WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_d3d11_swap_emu.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=228,228,ffff0000|101,101,ff0000ff")
+endif()
+
+# docs/slices/gamelike.md: the frame loop of a game (tests/guest/gamelike.c: window, D3D11 swap chain, XAudio2 tone on the
+# layer's null endpoint, XInput polling, HLSL quad) on machine-native-d3d. WIN10XBOX_TEST_PRESENT_LIMIT=90 ends it with exit 42
+# after the 90th Present; the composed frame (window at 100,100, 640x360) must be non-uniform.
+if(NOT CMAKE_CROSSCOMPILING AND TARGET guest_gamelike)
+add_test(NAME integration.guest_gamelike_native
+  COMMAND ${CMAKE_COMMAND}
+    -DHOST=$<TARGET_FILE:win10xbox>
+    -DMACHINE=${WIN10XBOX_D3D_MACHINE_DIR}
+    -DPROGRAM=C:\\guest\\guest_gamelike.exe
+    -DEXPECT_EXIT=42
+    -DSAVE_STDOUT=${CMAKE_BINARY_DIR}/bin/guest_gamelike_native.log
+    "-DEXPECT_REGEX=gamelike: D3D11 ready;gamelike: audio started;gamelike: frame 60, pad=none, audio=playing, present ok;present-limit: 90 frames presented"
+    "-DFORBID_TRACE_REGEX=host state reached under the guest TLS view"
+    -DDEBUG_SPEC=+dispatch,+modules,+process,+user
+    -DREQUIRE=Windows/System32/d3d11.dll
+    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
+set_tests_properties(integration.guest_gamelike_native PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  FAIL_REGULAR_EXPRESSION "gamelike: FAILED"
+  LABELS "guest_e2e"
+  TIMEOUT 240
+  ENVIRONMENT "WIN10XBOX_TEST_PRESENT_LIMIT=90;WIN10XBOX_AUDIO_NULL_ENDPOINT=1;WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_gamelike_native.bmp;WIN10XBOX_EXPECT_SCREENSHOT_VARIED=100,100,740,460,16,3")
+endif()
+
+# docs/slices/gamelike.md: the frame loop of a game (tests/guest/gamelike.c: window, D3D11 swap chain, XAudio2 tone on the
+# layer's null endpoint, XInput polling, HLSL quad) on machine-emu-d3d. WIN10XBOX_TEST_PRESENT_LIMIT=90 ends it with exit 42
+# after the 90th Present; the composed frame (window at 100,100, 640x360) must be non-uniform.
+if(NOT CMAKE_CROSSCOMPILING AND TARGET guest_gamelike)
+add_test(NAME integration.guest_gamelike_emu
+  COMMAND ${CMAKE_COMMAND}
+    -DHOST=$<TARGET_FILE:win10xbox>
+    -DMACHINE=${WIN10XBOX_EMU_D3D_MACHINE_DIR}
+    -DPROGRAM=C:\\guest\\guest_gamelike.exe
+    -DEXPECT_EXIT=42
+    -DSAVE_STDOUT=${CMAKE_BINARY_DIR}/bin/guest_gamelike_emu.log
+    "-DEXPECT_REGEX=gamelike: D3D11 ready;gamelike: audio started;gamelike: frame 60, pad=none, audio=playing, present ok;present-limit: 90 frames presented"
+    "-DFORBID_TRACE_REGEX=host state reached under the guest TLS view"
+    -DDEBUG_SPEC=+dispatch,+modules,+process,+user
+    -DREQUIRE=Windows/System32/d3d11.dll
+    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
+set_tests_properties(integration.guest_gamelike_emu PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  FAIL_REGULAR_EXPRESSION "gamelike: FAILED"
+  LABELS "guest_e2e"
+  TIMEOUT 240
+  ENVIRONMENT "WIN10XBOX_TEST_PRESENT_LIMIT=90;WIN10XBOX_AUDIO_NULL_ENDPOINT=1;WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_gamelike_emu.bmp;WIN10XBOX_EXPECT_SCREENSHOT_VARIED=100,100,740,460,16,3")
+endif()
+
+if(NOT CMAKE_CROSSCOMPILING AND WIN10XBOX_HAVE_IMGUI_GUEST)
+add_test(NAME integration.guest_imgui_d3d11_emu
+  COMMAND ${CMAKE_COMMAND}
+    -DHOST=$<TARGET_FILE:win10xbox>
+    -DMACHINE=${WIN10XBOX_EMU_D3D_MACHINE_DIR}
+    -DPROGRAM=C:\\guest\\guest_imgui_d3d11.exe
+    -DEXPECT_EXIT=0
+    "-DEXPECT_REGEX=imgui: D3D11CreateDeviceAndSwapChain\\(driver type [0-9]\\) -> 00000000;imgui: adapter ;imgui: frame 1 presented;imgui: done frames=60"
+    "-DEXPECT_TRACE_REGEX=d3d native: [0-9]+ NtGdiDdDDI\\* \\(D3DKMT\\) syscalls pass through;dxgi: IDXGIFactory::CreateSwapChain\\(window [0-9a-fA-Fx]+, [0-9]+x[0-9]+[^)]*\\) virtual -> 00000000;dxgi: virtual IDXGISwapChain::Present\\([01], 0x0\\) #1 -> 00000000 \\(back buffer composed\\)"
+    "-DFORBID_TRACE_REGEX=host state reached under the guest TLS view;NOT handed to the compositor"
+    -DDEBUG_SPEC=+dispatch,+modules,+process,+user
+    -DREQUIRE=Windows/System32/d3d11.dll
+    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
+set_tests_properties(integration.guest_imgui_d3d11_emu PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "guest_e2e"
+  TIMEOUT 240
+  ENVIRONMENT "WIN10XBOX_IMGUI_FRAMES=60;WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_imgui_d3d11_emu.bmp;WIN10XBOX_EXPECT_SCREENSHOT_VARIED=110,140,1010,760,40,3,ff738c99")
+
 # The first Direct3D 11 program that is neither ours nor Dear ImGui's (docs/slices/d3dsample.md): directx-sdk-samples
 # Tutorial07, unmodified, on machine-native-d3d. It creates its own window, compiles Tutorial07.fxh at run time with the
 # native d3dcompiler_47, loads seafloor.dds and renders a lit textured cube until closed; WIN10XBOX_TEST_PRESENT_LIMIT=60
@@ -1127,6 +1239,39 @@ set_tests_properties(integration.guest_d3dsample PROPERTIES
   LABELS "guest_e2e"
   TIMEOUT 240
   ENVIRONMENT "WIN10XBOX_TEST_PRESENT_LIMIT=60;WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_d3dsample.bmp;WIN10XBOX_EXPECT_SCREENSHOT_VARIED=150,150,650,450,40,3")
+endif()
+
+# The first Direct3D 11 program that is neither ours nor Dear ImGui's (docs/slices/d3dsample.md): directx-sdk-samples
+# Tutorial07, unmodified, on machine-native-d3d. It creates its own window, compiles Tutorial07.fxh at run time with the
+# native d3dcompiler_47, loads seafloor.dds and renders a lit textured cube until closed; WIN10XBOX_TEST_PRESENT_LIMIT=60
+# ends it after the 60th presented frame with exit 42 (the "present-limit:" line). The working directory is C:\guest
+# (the program opens its shader and texture by relative name). The screenshot (composed from the real window) must show
+# the cube: at least 3 colours on a 40-pixel grid inside the 800x600 client area, whose clear colour is midnight blue.
+if(NOT CMAKE_CROSSCOMPILING AND WIN10XBOX_HAVE_D3DSAMPLE_GUEST)
+add_test(NAME integration.guest_d3dsample_emu
+  COMMAND ${CMAKE_COMMAND}
+    -DHOST=$<TARGET_FILE:win10xbox>
+    -DMACHINE=${WIN10XBOX_EMU_D3D_MACHINE_DIR}
+    -DPROGRAM=C:\\guest\\guest_d3dsample.exe
+    -DCWD=C:\\guest
+    -DEXPECT_EXIT=42
+    -DSAVE_STDOUT=${CMAKE_BINARY_DIR}/bin/guest_d3dsample_emu.log
+    "-DEXPECT_REGEX=present-limit: 60 frames presented, "
+    "-DEXPECT_TRACE_REGEX=d3d native: [0-9]+ NtGdiDdDDI\\* \\(D3DKMT\\) syscalls pass through;dxgi: IDXGIFactory2::CreateSwapChainForHwnd\\(window [0-9a-fA-Fx]+, [0-9]+x[0-9]+[^)]*\\) virtual -> 00000000;dxgi: virtual IDXGISwapChain::Present\\(0, 0x0\\) #1 -> 00000000 \\(back buffer composed\\);present-limit: 60 frames presented"
+    "-DFORBID_TRACE_REGEX=host state reached under the guest TLS view;NOT handed to the compositor"
+    -DDEBUG_SPEC=+dispatch,+modules,+process,+user,+scan
+    -DREQUIRE=Windows/System32/d3d11.dll
+    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
+set_tests_properties(integration.guest_d3dsample_emu PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "guest_e2e"
+  TIMEOUT 240
+  ENVIRONMENT "WIN10XBOX_TEST_PRESENT_LIMIT=60;WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_d3dsample_emu.bmp;WIN10XBOX_EXPECT_SCREENSHOT_VARIED=150,150,650,450,40,3")
+endif()
+
 endif()
 
 # The DLL/import closure (docs/slices/gameclosure.md): tests/guest/closure.c LoadLibrary's and GetProcAddress's every import of the

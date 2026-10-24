@@ -117,6 +117,14 @@ set_target_properties(msctf_stub PROPERTIES OUTPUT_NAME msctf PREFIX ""
   LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/native-gui-stubs
   ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib/guest)
 
+# gdi32full.dll stand-in for machine-emu-d3d (tests/guest/gdi32full_stub.c): its export table is completed at load by
+# core/dispatch/native_imports.cpp; staged by prepare_machine.cmake into that folder's Windows/System32 only.
+add_library(gdi32full_stub SHARED gdi32full_stub.c)
+set_target_properties(gdi32full_stub PROPERTIES OUTPUT_NAME gdi32full PREFIX ""
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/native-gui-stubs
+  LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/native-gui-stubs
+  ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib/guest)
+
 # GDI bitmap operations (tests/guest/gdi_bitmap.c): DIB sections, BitBlt/StretchBlt between memory and window DCs,
 # AlphaBlend/TransparentBlt through msimg32, LoadImage of the BITMAP resources of gdi_bitmap.rc (a generated copy of
 # gdi_bitmap.rc.in whose .bmp paths are absolute: windres and rc.exe resolve relative names differently).
@@ -290,6 +298,11 @@ if(MSVC)
   add_executable(guest_d3d11_swap d3d11_swap.c)
   target_link_libraries(guest_d3d11_swap PRIVATE dxguid)
   win10xbox_add_guest(guest_d3d11_swap)
+  # The frame loop of a game in one program (tests/guest/gamelike.c, docs/slices/gamelike.md): window, D3D11 swap chain,
+  # XAudio2 tone, XInput polling. Everything loads at run time, nothing to link but dxguid for the IIDs.
+  add_executable(guest_gamelike gamelike.c)
+  target_link_libraries(guest_gamelike PRIVATE dxguid)
+  win10xbox_add_guest(guest_gamelike)
   # The control: the same program run natively on the runner, outside the layer (exit 42 = it renders). Not for the
   # emulator build; its stdout also lists the runner's modules, i.e. the DLL closure of d3d11 (docs/slices/d3d.md).
   if(NOT CMAKE_CROSSCOMPILING_EMULATOR)

@@ -1395,6 +1395,15 @@ HWND WINAPI NtUserGetAncestor(HWND hwnd, UINT type) {
     return nullptr;
 }
 
+// NtUserIsTopLevelWindow(hwnd) -> BOOL: user32!IsTopLevelWindow, which the native dwmapi imports. TRUE for a window whose parent
+// is the desktop (child windows and message-only windows are not top-level); FALSE with no error for the desktop itself.
+BOOL WINAPI NtUserIsTopLevelWindow(HWND hwnd) {
+    LockGuard lock;
+    WindowObj* w = WinChecked(hwnd);
+    if (!w || (w->flags & kWinIsDesktop)) return FALSE;
+    return w->parent == DesktopWindow();
+}
+
 HWND WINAPI NtUserSetParent(HWND hwnd, HWND parent) {
     LockGuard lock;
     WindowObj* w = WinChecked(hwnd);

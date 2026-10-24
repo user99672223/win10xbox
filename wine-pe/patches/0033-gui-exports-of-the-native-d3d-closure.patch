@@ -1,0 +1,236 @@
+win10xbox: user32/gdi32 exports the native dxgi, d3d11, d3d10warp and dwmapi look up and Wine's builtins lack
+
+Found by the CI probe tools/ci/probe_delay_imports.ps1 (docs/slices/uwpswap.md round 13) and by the loader's lookup log
+(0032): after CreateDXGIFactory1 the native dxgi resolves the D3DKMT entry points of the real gdi32 by name inside
+IDXGIFactory::EnumAdapters and fail-fasts when one is missing (gdi32!D3DKMTSetVidPnSourceOwner1 STATUS_PROCEDURE_NOT_FOUND).
+
+gdi32: D3DKMTSetVidPnSourceOwner1/2, RegisterTrimNotification, UnregisterTrimNotification, PinDirectFlipResources,
+UnpinDirectFlipResources, SetDisplayPrivateDriverFormat, SignalSynchronizationObject2, WaitForSynchronizationObject2 (C
+functions: Wine's win32u has no syscall for them), ScaleRgn and ScaleValues (dwmapi imports them).
+user32: IsTopLevelWindow, GetWindowCompositionAttribute, IsOneCoreTransformMode (spec forwards to the win32u syscalls, which
+core/user implements; they were spec stubs), DwmGetDxSharedSurface, IsThreadDesktopComposited,
+SetWindowCompositionTransition, UpdateDefaultDesktopThumbnail (C functions).
+
+diff --git a/dlls/gdi32/dc.c b/dlls/gdi32/dc.c
+index adfcd51..37cf36a 100644
+--- a/dlls/gdi32/dc.c
++++ b/dlls/gdi32/dc.c
+@@ -2908,3 +2908,65 @@ BOOL WINAPI GdiGetDevmodeForPage( HANDLE h, DWORD page, DEVMODEW **cur, DEVMODEW
+             return FALSE;
+     }
+ }
++
++/* D3DKMT entry points of the real gdi32 that have no win32u syscall in this tree (the native dxgi / d3d11 resolve them by
++ * name when the factory enumerates adapters). The guest has one emulated display and no kernel-mode driver: video-present
++ * source ownership is always granted, trim notifications are accepted and never fire, DirectFlip and the display private
++ * format are not supported, and the second-generation sync-object calls are not supported. */
++LONG WINAPI D3DKMTSetVidPnSourceOwner1( void *desc )
++{
++    return desc ? 0 : 0xC000000D; /* STATUS_SUCCESS, STATUS_INVALID_PARAMETER */
++}
++
++LONG WINAPI D3DKMTSetVidPnSourceOwner2( void *desc )
++{
++    return desc ? 0 : 0xC000000D;
++}
++
++LONG WINAPI D3DKMTRegisterTrimNotification( void **desc ) /* { callback, context, handle (out) } */
++{
++    if (!desc) return 0xC000000D;
++    desc[2] = (void *)(ULONG_PTR)1;
++    return 0;
++}
++
++LONG WINAPI D3DKMTUnregisterTrimNotification( void *desc )
++{
++    return desc ? 0 : 0xC000000D;
++}
++
++LONG WINAPI D3DKMTPinDirectFlipResources( void *desc )
++{
++    return 0xC00000BB; /* STATUS_NOT_SUPPORTED */
++}
++
++LONG WINAPI D3DKMTUnpinDirectFlipResources( void *desc )
++{
++    return 0xC00000BB;
++}
++
++LONG WINAPI D3DKMTSetDisplayPrivateDriverFormat( void *desc )
++{
++    return 0xC00000BB;
++}
++
++LONG WINAPI D3DKMTSignalSynchronizationObject2( void *desc )
++{
++    return 0xC00000BB;
++}
++
++LONG WINAPI D3DKMTWaitForSynchronizationObject2( void *desc )
++{
++    return 0xC00000BB;
++}
++
++/* DPI scaling helpers dwmapi imports: the scale of the emulated display is 1:1, so nothing changes. */
++BOOL WINAPI ScaleRgn( void *rgn, void *scale )
++{
++    return TRUE;
++}
++
++BOOL WINAPI ScaleValues( void *values, LONG count )
++{
++    return TRUE;
++}
+diff --git a/dlls/gdi32/gdi32.spec b/dlls/gdi32/gdi32.spec
+index 207549f..856879f 100644
+--- a/dlls/gdi32/gdi32.spec
++++ b/dlls/gdi32/gdi32.spec
+@@ -145,6 +145,15 @@
+ @ stdcall D3DKMTReleaseKeyedMutex2(ptr) win32u.NtGdiDdDDIReleaseKeyedMutex2
+ @ stdcall D3DKMTSetQueuedLimit(ptr) win32u.NtGdiDdDDISetQueuedLimit
+ @ stdcall D3DKMTSetVidPnSourceOwner(ptr) win32u.NtGdiDdDDISetVidPnSourceOwner
++@ stdcall D3DKMTSetVidPnSourceOwner1(ptr)
++@ stdcall D3DKMTSetVidPnSourceOwner2(ptr)
++@ stdcall D3DKMTRegisterTrimNotification(ptr)
++@ stdcall D3DKMTUnregisterTrimNotification(ptr)
++@ stdcall D3DKMTPinDirectFlipResources(ptr)
++@ stdcall D3DKMTUnpinDirectFlipResources(ptr)
++@ stdcall D3DKMTSetDisplayPrivateDriverFormat(ptr)
++@ stdcall D3DKMTSignalSynchronizationObject2(ptr)
++@ stdcall D3DKMTWaitForSynchronizationObject2(ptr)
+ @ stdcall D3DKMTShareObjects(long ptr ptr long ptr) win32u.NtGdiDdDDIShareObjects
+ @ stdcall D3DKMTSignalSynchronizationObjectFromCpu(ptr) win32u.NtGdiDdDDISignalSynchronizationObjectFromCpu
+ @ stdcall D3DKMTWaitForSynchronizationObjectFromCpu(ptr) win32u.NtGdiDdDDIWaitForSynchronizationObjectFromCpu
+@@ -529,8 +538,8 @@
+ @ stdcall RestoreDC(long long)
+ @ stdcall RoundRect(long long long long long long long)
+ @ stdcall SaveDC(long)
+-# @ stub ScaleRgn
+-# @ stub ScaleValues
++@ stdcall ScaleRgn(ptr ptr)
++@ stdcall ScaleValues(ptr long)
+ @ stdcall ScaleViewportExtEx(long long long long long ptr)
+ @ stdcall ScaleWindowExtEx(long long long long long ptr)
+ @ stdcall ScriptApplyDigitSubstitution(ptr ptr ptr)
+diff --git a/dlls/user32/misc.c b/dlls/user32/misc.c
+index 6333fcb..903f6b9 100644
+--- a/dlls/user32/misc.c
++++ b/dlls/user32/misc.c
+@@ -543,3 +543,28 @@ LRESULT WINAPI ImeWndProcW( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam )
+     if (!imm_ime_wnd_proc) return DefWindowProcW(hwnd, msg, wParam, lParam);
+     return imm_ime_wnd_proc( hwnd, msg, wParam, lParam, FALSE );
+ }
++
++/* The names below are looked up by the native dxgi / dwmapi (Direct3D machines); the answers are those of a desktop session
++ * without a compositor-side service: no shared DWM surfaces, no composition transitions, one desktop composition. */
++BOOL WINAPI DwmGetDxSharedSurface( HWND hwnd, HANDLE *surface, LUID *adapter, ULONG *format, ULONG *flags, ULONGLONG *token )
++{
++    SetLastError( ERROR_NOT_SUPPORTED );
++    return FALSE;
++}
++
++BOOL WINAPI IsThreadDesktopComposited(void)
++{
++    return TRUE;
++}
++
++BOOL WINAPI SetWindowCompositionTransition( DWORD a, DWORD b, DWORD c, DWORD d )
++{
++    SetLastError( ERROR_NOT_SUPPORTED );
++    return FALSE;
++}
++
++BOOL WINAPI UpdateDefaultDesktopThumbnail( HWND hwnd, HANDLE a, HANDLE b, DWORD c )
++{
++    SetLastError( ERROR_NOT_SUPPORTED );
++    return FALSE;
++}
+diff --git a/dlls/user32/user32.spec b/dlls/user32/user32.spec
+index 40e80c6..c5c3930 100644
+--- a/dlls/user32/user32.spec
++++ b/dlls/user32/user32.spec
+@@ -442,7 +442,7 @@
+ @ stdcall DrawTextExA(long str long ptr long ptr)
+ @ stdcall DrawTextExW(long wstr long ptr long ptr)
+ @ stdcall DrawTextW(long wstr long ptr long)
+-# @ stub DwmGetDxSharedSurface
++@ stdcall DwmGetDxSharedSurface(long ptr ptr ptr ptr ptr)
+ # @ stub DwmGetRemoteSessionOcclusionEvent
+ # @ stub DwmGetRemoteSessionOcclusionState
+ # @ stub DwmKernelShutdown
+@@ -697,7 +697,7 @@
+ # @ stub GetWinStationInfo
+ @ stdcall GetWindow(long long)
+ # @ stub GetWindowBand
+-# @ stub GetWindowCompositionAttribute
++@ stdcall GetWindowCompositionAttribute(long ptr) win32u.NtUserGetWindowCompositionAttribute
+ # @ stub GetWindowCompositionInfo
+ @ stdcall GetWindowContextHelpId(long) NtUserGetWindowContextHelpId
+ @ stdcall GetWindowDC(long) NtUserGetWindowDC
+@@ -790,14 +790,14 @@
+ @ stdcall IsMenu(long)
+ @ stdcall IsMouseInPointerEnabled() NtUserIsMouseInPointerEnabled
+ # @ stub SetThreadCursorCreationScaling
+-# @ stub IsOneCoreTransformMode
++@ stdcall IsOneCoreTransformMode() win32u.NtIsOneCoreTransformMode
+ @ stdcall IsProcessDPIAware()
+ @ stdcall IsRectEmpty(ptr)
+ # @ stub IsSETEnabled
+ # @ stub IsServerSideWindow
+-# @ stub IsThreadDesktopComposited
++@ stdcall IsThreadDesktopComposited()
+ # @ stub IsThreadTSFEventAware
+-# @ stub IsTopLevelWindow
++@ stdcall IsTopLevelWindow(long) win32u.NtUserIsTopLevelWindow
+ @ stdcall IsTouchWindow(long ptr)
+ @ stdcall IsValidDpiAwarenessContext(long)
+ @ stdcall IsWinEventHookInstalled(long)
+@@ -1105,7 +1105,7 @@
+ @ stdcall SetWinEventHook(long long long ptr long long long)
+ # @ stub SetWindowBand
+ @ stdcall SetWindowCompositionAttribute(ptr ptr)
+-# @ stub SetWindowCompositionTransition
++@ stdcall SetWindowCompositionTransition(long long long long)
+ @ stdcall SetWindowContextHelpId(long long) NtUserSetWindowContextHelpId
+ @ stdcall SetWindowDisplayAffinity(long long)
+ # @ stub SetWindowFeedbackSetting
+@@ -1186,7 +1186,7 @@
+ @ stdcall UnregisterSuspendResumeNotification(ptr)
+ @ stdcall UnregisterTouchWindow(long)
+ @ stdcall UnregisterUserApiHook()
+-# @ stub UpdateDefaultDesktopThumbnail
++@ stdcall UpdateDefaultDesktopThumbnail(long long long long)
+ @ stdcall UpdateLayeredWindow(long long ptr ptr long ptr long ptr long)
+ @ stdcall UpdateLayeredWindowIndirect(long ptr)
+ @ stub UpdatePerUserSystemParameters
+diff --git a/dlls/win32u/win32u.spec b/dlls/win32u/win32u.spec
+index 49e8b4a..8192c00 100644
+--- a/dlls/win32u/win32u.spec
++++ b/dlls/win32u/win32u.spec
+@@ -676,7 +676,7 @@
+ @ stub -syscall NtGdiXLATEOBJ_iXlate
+ @ stub -syscall NtHWCursorUpdatePointer
+ @ stub -syscall NtInputSpaceRegionFromPoint
+-@ stub -syscall NtIsOneCoreTransformMode
++@ stdcall -syscall NtIsOneCoreTransformMode()
+ @ stub -syscall NtKSTInitialize
+ @ stub -syscall NtKSTWait
+ @ stub -syscall NtMITAccessibilityTimerNotification
+@@ -1114,7 +1114,7 @@
+ @ stub -syscall NtUserGetWOWClass
+ @ stub -syscall NtUserGetWinStationInfo
+ @ stub -syscall NtUserGetWindowBand
+-@ stub -syscall NtUserGetWindowCompositionAttribute
++@ stdcall -syscall NtUserGetWindowCompositionAttribute(long ptr)
+ @ stub -syscall NtUserGetWindowCompositionInfo
+ @ stdcall -syscall NtUserGetWindowContextHelpId(long)
+ @ stdcall -syscall NtUserGetWindowDC(long)
+@@ -1172,7 +1172,7 @@
+ @ stub -syscall NtUserIsNonClientDpiScalingEnabled
+ @ stub -syscall NtUserIsQueueAttached
+ @ stub -syscall NtUserIsResizeLayoutSynchronizationEnabled
+-@ stub -syscall NtUserIsTopLevelWindow
++@ stdcall -syscall NtUserIsTopLevelWindow(long)
+ @ stub -syscall NtUserIsTouchWindow
+ @ stub -syscall NtUserIsWindowBroadcastingDpiToChildren
+ @ stub -syscall NtUserIsWindowDisplayChangeSuppressed

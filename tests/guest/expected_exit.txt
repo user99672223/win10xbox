@@ -61,11 +61,13 @@ guest_display_mode.exe 42=matches
 
 # Off-screen D3D11 on machine-native-d3d (guest_d3d11_tri.machine); 10 = d3d11.dll did not load (no D3D machine)
 guest_d3d11_tri.exe 42=d3d11 10=no-d3d11
-# Dear ImGui's example on machine-native-d3d (guest_imgui_d3d11.machine): 60 frames, then its normal shutdown returns 0.
-guest_imgui_d3d11.exe 0=frames KNOWNFAIL=-2147483392:uwp-no-hwnd-swapchain(-uwpswap)
-# The swap-chain guest on machine-native-d3d (guest_d3d11_swap.machine): 60 frames presented through the DXGI interposition.
-guest_d3d11_swap.exe 42=presented KNOWNFAIL=2:uwp-no-hwnd(-uwpswap)
-# An unmodified SDK sample (walbourn/directx-sdk-samples Tutorial07, docs/slices/d3dsample.md) on machine-native-d3d: WIN10XBOX_TEST_PRESENT_LIMIT=60
+# Dear ImGui's example on machine-emu-d3d (guest_imgui_d3d11.machine): 60 frames, then its normal shutdown returns 0.
+guest_imgui_d3d11.exe 0=frames
+# The swap-chain guest on machine-emu-d3d (guest_d3d11_swap.machine): 60 frames presented through the virtual swap chain.
+guest_d3d11_swap.exe 42=presented
+# The game-like frame loop on machine-emu-d3d (guest_gamelike.machine): window, D3D11, XAudio2, XInput; 42 = ran to the frame limit
+guest_gamelike.exe 42=frames
+# An unmodified SDK sample (walbourn/directx-sdk-samples Tutorial07, docs/slices/d3dsample.md) on machine-emu-d3d: WIN10XBOX_TEST_PRESENT_LIMIT=60
 # (guest_d3dsample.env) ends it after the 60th presented frame.
 guest_d3dsample.exe 42=frames
 

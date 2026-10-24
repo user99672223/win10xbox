@@ -1,2 +1,2 @@
-# Needs the native D3D11 runtime: route B + Direct3D 11 machine folder (docs/slices/uwpd3d.md).
-machine-native-d3d
+# Swap chain on an emulated window: the emulated GUI + native D3D11 runtime, virtual swap chain (docs/slices/uwpswap.md).
+machine-emu-d3d

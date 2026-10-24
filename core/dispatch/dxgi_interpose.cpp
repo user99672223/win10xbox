@@ -28,6 +28,7 @@
 // Every wrapper call is traced at +dispatch with its HRESULT. No function-local statics on these guest-reachable paths.
 #include "internal.h"
 
+#include "win10xbox/probe.h"
 #include "win10xbox/user.h"
 
 #include <d3d11.h>
@@ -95,6 +96,178 @@ std::atomic<unsigned> g_presents{0};
         W10X_TR( "dxgi: " name " -> %08lx", static_cast<unsigned long>(w10x_hr_)); \
         return w10x_hr_;                                                                \
     } while (0)
+
+// ---- Exceptions raised while the native dxgi/d3d11 run (diagnostic) -------------------------------------------
+// The native runtimes guard their API entry points with catch(...), which turns an SEH exception (EXCEPTION_WINE_STUB
+// from a Wine stub or an unresolved import, an access violation) into E_UNEXPECTED without a trace. A first-position
+// vectored handler records the last exceptions of the process in a ring (plain globals: it runs on whatever thread
+// raised, under whichever TLS view); a failing factory/device call prints the ring.
+struct ExcRec {
+    DWORD code, nparams;
+    std::uintptr_t addr, p[3];
+    char s0[48], s1[64];   // EXCEPTION_WINE_STUB: the dll and function names of the stub
+    unsigned nstk;         // 0x6ba / C++ throw: the code-looking words on the stack at the raise (who called)
+    std::uintptr_t stk[24];
+    std::uintptr_t obj[16];   // C++ throw: the first 128 bytes of the thrown object (a wil ResultException carries the HRESULT)
+    bool has_obj;
+};
+constexpr unsigned kExcRing = 24;
+ExcRec g_exc[kExcRing];
+volatile LONG g_exc_n = 0;
+volatile LONG g_exc_hook = 0;
+
+void CopyName(char* to, std::size_t cap, std::uintptr_t from) {
+    if (!from || probe::CopyFromUser(to, reinterpret_cast<const void*>(from), cap - 1) != 0) {
+        // a short string at the end of a page: byte by byte
+        std::size_t i = 0;
+        for (; from && i + 1 < cap; ++i)
+            if (probe::CopyFromUser(to + i, reinterpret_cast<const void*>(from + i), 1) != 0 || !to[i]) break;
+        to[i] = 0;
+        return;
+    }
+    to[cap - 1] = 0;
+}
+
+// OutputDebugString text of the native runtimes (DBG_PRINTEXCEPTION_C / _WIDE_C): the last few lines, kept apart so
+// that they do not push the real exceptions out of the ring.
+constexpr unsigned kDbgRing = 12;
+char g_dbg[kDbgRing][160];
+volatile LONG g_dbg_n = 0;
+
+void DumpExceptions(const char* what, HRESULT hr);
+const char* Where(std::uintptr_t a, char* buf, std::size_t cap);
+
+// A fail-fast (RaiseFailFastException 0xC0000602 / __fastfail 0xC0000409) ends the process at once, so the ring would
+// never be printed: dump it here with the faulting rip and the code-looking words on the stack (round 10).
+void DumpFailFast(PEXCEPTION_POINTERS info) {
+    const EXCEPTION_RECORD* r = info->ExceptionRecord;
+    char w[48];
+    const std::uintptr_t rip = info->ContextRecord->Rip, rsp = info->ContextRecord->Rsp;
+    W10X_TR("dxgi: fail-fast exception %08lx at %s rsp %p, %lu parameter(s) %p %p", static_cast<unsigned long>(r->ExceptionCode),
+            Where(rip, w, sizeof w), reinterpret_cast<void*>(rsp), static_cast<unsigned long>(r->NumberParameters),
+            r->NumberParameters > 0 ? reinterpret_cast<void*>(r->ExceptionInformation[0]) : nullptr,
+            r->NumberParameters > 1 ? reinterpret_cast<void*>(r->ExceptionInformation[1]) : nullptr);
+    DumpExceptions("fail-fast", static_cast<HRESULT>(r->ExceptionCode));
+    unsigned shown = 0;
+    for (unsigned i = 0; i < 640 && shown < 32; ++i) {
+        std::uintptr_t v = 0;
+        if (probe::CopyFromUser(&v, reinterpret_cast<const void*>(rsp + 8u * i), sizeof v) != 0) break;
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (v < 0x10000 || !VirtualQuery(reinterpret_cast<void*>(v), &mbi, sizeof mbi)) continue;
+        if (!(mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) continue;
+        W10X_TR("dxgi:   stack[%u] code %s (image base %p)", i, Where(v, w, sizeof w), mbi.AllocationBase);
+        ++shown;
+    }
+}
+
+LONG CALLBACK ExcRecorder(PEXCEPTION_POINTERS info) {
+    const EXCEPTION_RECORD* r = info->ExceptionRecord;
+    if (r->ExceptionCode == 0xC0000602 || r->ExceptionCode == 0xC0000409) DumpFailFast(info);
+    if (r->ExceptionCode == 0x40010006 && r->NumberParameters >= 2) {   // DBG_PRINTEXCEPTION_C: (length with NUL, ANSI text)
+        char* line = g_dbg[static_cast<unsigned>(InterlockedIncrement(&g_dbg_n) - 1) % kDbgRing];
+        CopyName(line, sizeof g_dbg[0], r->ExceptionInformation[1]);
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (r->ExceptionCode == 0x4001000A) return EXCEPTION_CONTINUE_SEARCH;   // _WIDE_C: the same text, raised first
+    ExcRec& e = g_exc[static_cast<unsigned>(InterlockedIncrement(&g_exc_n) - 1) % kExcRing];
+    e = ExcRec{};
+    e.code = r->ExceptionCode;
+    e.nparams = r->NumberParameters;
+    e.addr = reinterpret_cast<std::uintptr_t>(r->ExceptionAddress);
+    for (DWORD i = 0; i < 3 && i < r->NumberParameters; ++i) e.p[i] = r->ExceptionInformation[i];
+    if (r->ExceptionCode == 0x000006ba || r->ExceptionCode == 0xe06d7363) {
+        const std::uintptr_t rsp = info->ContextRecord->Rsp;
+        if (r->ExceptionCode == 0xe06d7363 && r->NumberParameters >= 2 &&
+            probe::CopyFromUser(e.obj, reinterpret_cast<const void*>(r->ExceptionInformation[1]), sizeof e.obj) == 0)
+            e.has_obj = true;
+        for (unsigned i = 0; i < 900 && e.nstk < 24; ++i) {
+            std::uintptr_t v = 0;
+            if (probe::CopyFromUser(&v, reinterpret_cast<const void*>(rsp + 8u * i), sizeof v) != 0) break;
+            MEMORY_BASIC_INFORMATION mbi{};
+            if (v < 0x10000 || !VirtualQuery(reinterpret_cast<void*>(v), &mbi, sizeof mbi)) continue;
+            if (!(mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) continue;
+            e.stk[e.nstk++] = v;
+        }
+    }
+    if (r->ExceptionCode == 0x80000100 && r->NumberParameters >= 2) {
+        CopyName(e.s0, sizeof e.s0, r->ExceptionInformation[0]);
+        CopyName(e.s1, sizeof e.s1, r->ExceptionInformation[1]);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+void InstallExcRecorder() {
+    if (InterlockedCompareExchange(&g_exc_hook, 1, 0) == 0) AddVectoredExceptionHandler(1, ExcRecorder);
+}
+
+// "dxgi+0x1234" for an address inside the native dxgi/d3d11, else the raw address.
+const char* Where(std::uintptr_t a, char* buf, std::size_t cap) {
+    const char* const kName[2] = {"dxgi", "d3d11"};
+    for (int i = 0; i < 2; ++i)
+        if (g_internal[i].base && a >= g_internal[i].base && a - g_internal[i].base < g_internal[i].size) {
+            std::snprintf(buf, cap, "%s.dll+0x%llx", kName[i], static_cast<unsigned long long>(a - g_internal[i].base));
+            return buf;
+        }
+    MEMORY_BASIC_INFORMATION mbi{};
+    // the image's own name from its export directory (the layer's loader keeps no list the handler may read); the
+    // guest's modules are mapped by the layer and are not MEM_IMAGE, so any region with a PE header at its base counts
+    std::uint16_t mz = 0;
+    if (VirtualQuery(reinterpret_cast<void*>(a), &mbi, sizeof mbi) && mbi.AllocationBase &&
+        probe::CopyFromUser(&mz, mbi.AllocationBase, 2) == 0 && mz == 0x5a4d) {
+        char nm[32] = "exe";
+        const auto base = reinterpret_cast<std::uintptr_t>(mbi.AllocationBase);
+        std::uint32_t lfa = 0, exp_rva = 0, name_rva = 0;
+        if (probe::CopyFromUser(&lfa, reinterpret_cast<const void*>(base + 0x3c), 4) == 0 && lfa < 0x1000 &&
+            probe::CopyFromUser(&exp_rva, reinterpret_cast<const void*>(base + lfa + 0x88), 4) == 0 && exp_rva &&
+            probe::CopyFromUser(&name_rva, reinterpret_cast<const void*>(base + exp_rva + 12), 4) == 0 && name_rva)
+            CopyName(nm, sizeof nm, base + name_rva);
+        std::snprintf(buf, cap, "%s@%llx+0x%llx", nm, static_cast<unsigned long long>(base), static_cast<unsigned long long>(a - base));
+    }
+    else
+        std::snprintf(buf, cap, "0x%llx", static_cast<unsigned long long>(a));
+    return buf;
+}
+
+void DumpExceptions(const char* what, HRESULT hr) {
+    const auto* teb = reinterpret_cast<const std::uint8_t*>(NtCurrentTeb());
+    const DWORD last_status = *reinterpret_cast<const DWORD*>(teb + 0x1250), last_error = *reinterpret_cast<const DWORD*>(teb + 0x68);
+    const LONG n = g_exc_n;
+    W10X_TR("dxgi: %s failed %08lx: TEB.LastStatusValue %08lx LastErrorValue %lu; %ld exception(s) raised in the process, last %u:",
+            what, static_cast<unsigned long>(hr), static_cast<unsigned long>(last_status), static_cast<unsigned long>(last_error),
+            static_cast<long>(n), n < static_cast<LONG>(kExcRing) ? static_cast<unsigned>(n) : kExcRing);
+    const LONG nd = g_dbg_n;
+    for (LONG i = nd > static_cast<LONG>(kDbgRing) ? nd - static_cast<LONG>(kDbgRing) : 0; i < nd; ++i)
+        W10X_TR("dxgi:   debug string #%ld: %.150s", static_cast<long>(i), g_dbg[static_cast<unsigned>(i) % kDbgRing]);
+    for (LONG i = n > static_cast<LONG>(kExcRing) ? n - static_cast<LONG>(kExcRing) : 0; i < n; ++i) {
+        const ExcRec e = g_exc[static_cast<unsigned>(i) % kExcRing];
+        char w[48], w2[48];
+        if (e.code == 0x80000100)
+            W10X_TR("dxgi:   exc #%ld %08lx at %s: Wine stub %s!%s called from %s", static_cast<long>(i), static_cast<unsigned long>(e.code),
+                    Where(e.addr, w, sizeof w), e.s0, e.s1, Where(e.p[2], w2, sizeof w2));
+        else
+            W10X_TR("dxgi:   exc #%ld %08lx at %s params %llx %llx %llx", static_cast<long>(i), static_cast<unsigned long>(e.code),
+                    Where(e.addr, w, sizeof w), static_cast<unsigned long long>(e.p[0]), static_cast<unsigned long long>(e.p[1]),
+                    static_cast<unsigned long long>(e.p[2]));
+        for (unsigned k = 0; k < e.nstk; ++k) W10X_TR("dxgi:   exc #%ld stk[%u] %s", static_cast<long>(i), k, Where(e.stk[k], w2, sizeof w2));
+        if (e.has_obj)
+            for (unsigned k = 0; k < 16; ++k) {
+                char str[72] = "";   // a readable string behind the word (ANSI or UTF-16), for wil's file / function / code text
+                if (e.obj[k] > 0x10000) {
+                    char tmp[72] = {};
+                    CopyName(tmp, sizeof tmp, e.obj[k]);
+                    unsigned n = 0;
+                    while (n < sizeof tmp - 1 && tmp[n] >= 0x20 && tmp[n] < 0x7f) ++n;
+                    if (n >= 4) { std::memcpy(str, tmp, n); str[n] = 0; }
+                    else if (n == 1 && tmp[1] == 0) {   // UTF-16 text: every second byte is 0
+                        unsigned m = 0;
+                        while (m < 34 && tmp[2 * m] >= 0x20 && tmp[2 * m] < 0x7f && tmp[2 * m + 1] == 0) { str[m] = tmp[2 * m]; ++m; }
+                        str[m] = 0;
+                    }
+                }
+                W10X_TR("dxgi:   exc #%ld obj[%u] = %016llx %s", static_cast<long>(i), k, static_cast<unsigned long long>(e.obj[k]), str);
+            }
+    }
+}
 
 bool IsIid(REFIID a, REFIID b) { return IsEqualGUID(a, b) != FALSE; }
 
@@ -493,6 +666,302 @@ IDXGIAdapter* UnwrapAdapter(IDXGIAdapter* a, IDXGIAdapter** owned) {
     return a;
 }
 
+// ---- Virtual swap chain (emulated windows, docs/slices/uwpswap.md) -----------------------------------------
+// A window of core/user's own window manager cannot be the target of a real HWND swap chain (the native dxgi would
+// need a window of the host's win32k, which a UWP process cannot create). The swap chain is then ordinary: ONE
+// render-target texture on the guest's device is the back buffer (D3D11 keeps buffer 0 the current back buffer
+// across a flip-model Present, so one texture serves every effect and buffer count), and Present copies it to a
+// staging texture and hands the pixels to user::NotifyClientFrame, which core/user composes at the window's client
+// rectangle. GetContainingOutput is a stub, SetFullscreenState is only recorded.
+class VirtSwap final : public IDXGISwapChain1 {
+public:
+    W10X_HOST_NEW_DELETE
+    static HRESULT Create(IUnknown* dev_unk, HWND hwnd, const DXGI_SWAP_CHAIN_DESC1& d, BOOL windowed, IDXGIFactory* parent,
+                          IDXGISwapChain1** out) {
+        ID3D11Device* dev = nullptr;
+        if (!dev_unk || FAILED(dev_unk->QueryInterface(__uuidof(ID3D11Device), reinterpret_cast<void**>(&dev))) || !dev)
+            return DXGI_ERROR_UNSUPPORTED;
+        auto* v = new VirtSwap(dev, hwnd, d, windowed, parent);
+        const HRESULT hr = v->MakeBuffer();
+        if (FAILED(hr)) { v->Release(); return hr; }
+        *out = v;
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** pp) override {
+        if (!pp) return E_POINTER;
+        if (IsIid(riid, __uuidof(IUnknown)) || IsIid(riid, __uuidof(IDXGIObject)) ||
+            IsIid(riid, __uuidof(IDXGIDeviceSubObject)) || IsIid(riid, __uuidof(IDXGISwapChain)) ||
+            IsIid(riid, __uuidof(IDXGISwapChain1))) {
+            *pp = static_cast<IDXGISwapChain1*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *pp = nullptr;
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return static_cast<ULONG>(InterlockedIncrement(&ref_)); }
+    ULONG STDMETHODCALLTYPE Release() override {
+        const LONG r = InterlockedDecrement(&ref_);
+        if (r == 0) delete this;
+        return static_cast<ULONG>(r);
+    }
+    HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID, UINT, const void*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID, const IUnknown*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID, UINT* s, void*) override { if (s) *s = 0; return DXGI_ERROR_NOT_FOUND; }
+    HRESULT STDMETHODCALLTYPE GetParent(REFIID r, void** pp) override {
+        return parent_ ? parent_->QueryInterface(r, pp) : E_NOINTERFACE;
+    }
+    HRESULT STDMETHODCALLTYPE GetDevice(REFIID r, void** pp) override { return dev_->QueryInterface(r, pp); }
+
+    HRESULT STDMETHODCALLTYPE Present(UINT sync, UINT flags) override { return DoPresent("IDXGISwapChain::Present", sync, flags); }
+    HRESULT STDMETHODCALLTYPE Present1(UINT sync, UINT flags, const DXGI_PRESENT_PARAMETERS*) override {
+        return DoPresent("IDXGISwapChain1::Present1", sync, flags);
+    }
+    HRESULT STDMETHODCALLTYPE GetBuffer(UINT i, REFIID r, void** pp) override {
+        if (!pp) return E_POINTER;
+        *pp = nullptr;
+        const HRESULT hr = (i == 0 && tex_) ? tex_->QueryInterface(r, pp) : DXGI_ERROR_INVALID_CALL;
+        W10X_TRACE_HR("virtual IDXGISwapChain::GetBuffer", hr);
+    }
+    HRESULT STDMETHODCALLTYPE SetFullscreenState(BOOL fs, IDXGIOutput*) override {
+        fullscreen_ = fs;
+        W10X_TR("dxgi: virtual IDXGISwapChain::SetFullscreenState(%d) recorded only", static_cast<int>(fs));
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetFullscreenState(BOOL* fs, IDXGIOutput** o) override {
+        if (fs) *fs = fullscreen_;
+        if (o) *o = nullptr;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetDesc(DXGI_SWAP_CHAIN_DESC* d) override {
+        if (!d) return E_POINTER;
+        *d = {};
+        d->BufferDesc.Width = d1_.Width;
+        d->BufferDesc.Height = d1_.Height;
+        d->BufferDesc.Format = d1_.Format;
+        d->BufferDesc.RefreshRate = {60, 1};
+        d->SampleDesc = d1_.SampleDesc;
+        d->BufferUsage = d1_.BufferUsage;
+        d->BufferCount = d1_.BufferCount;
+        d->OutputWindow = hwnd_;
+        d->Windowed = windowed_;
+        d->SwapEffect = d1_.SwapEffect;
+        d->Flags = d1_.Flags;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE ResizeBuffers(UINT n, UINT w, UINT h, DXGI_FORMAT f, UINT fl) override {
+        if (n) d1_.BufferCount = n;
+        if (f != DXGI_FORMAT_UNKNOWN) d1_.Format = f;
+        d1_.Width = w;
+        d1_.Height = h;
+        d1_.Flags = fl;
+        if (tex_) { tex_->Release(); tex_ = nullptr; }
+        if (resolve_) { resolve_->Release(); resolve_ = nullptr; }
+        if (staging_) { staging_->Release(); staging_ = nullptr; }
+        W10X_TRACE_HR("virtual IDXGISwapChain::ResizeBuffers", MakeBuffer());
+    }
+    HRESULT STDMETHODCALLTYPE ResizeTarget(const DXGI_MODE_DESC*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE GetContainingOutput(IDXGIOutput** o) override {
+        if (o) *o = nullptr;
+        W10X_TRACE_HR("virtual IDXGISwapChain::GetContainingOutput (stub)", DXGI_ERROR_UNSUPPORTED);
+    }
+    HRESULT STDMETHODCALLTYPE GetFrameStatistics(DXGI_FRAME_STATISTICS* s) override {
+        if (s) *s = {};
+        return DXGI_ERROR_FRAME_STATISTICS_DISJOINT;
+    }
+    HRESULT STDMETHODCALLTYPE GetLastPresentCount(UINT* c) override { if (c) *c = presents_; return S_OK; }
+    HRESULT STDMETHODCALLTYPE GetDesc1(DXGI_SWAP_CHAIN_DESC1* d) override { if (!d) return E_POINTER; *d = d1_; return S_OK; }
+    HRESULT STDMETHODCALLTYPE GetFullscreenDesc(DXGI_SWAP_CHAIN_FULLSCREEN_DESC* d) override {
+        if (!d) return E_POINTER;
+        *d = {};
+        d->RefreshRate = {60, 1};
+        d->Windowed = windowed_;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetHwnd(HWND* h) override { if (!h) return E_POINTER; *h = hwnd_; return S_OK; }
+    HRESULT STDMETHODCALLTYPE GetCoreWindow(REFIID, void** pp) override { if (pp) *pp = nullptr; return DXGI_ERROR_INVALID_CALL; }
+    BOOL STDMETHODCALLTYPE IsTemporaryMonoSupported() override { return FALSE; }
+    HRESULT STDMETHODCALLTYPE GetRestrictToOutput(IDXGIOutput** o) override { if (o) *o = nullptr; return S_OK; }
+    HRESULT STDMETHODCALLTYPE SetBackgroundColor(const DXGI_RGBA*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE GetBackgroundColor(DXGI_RGBA* c) override { if (c) *c = {}; return S_OK; }
+    HRESULT STDMETHODCALLTYPE SetRotation(DXGI_MODE_ROTATION) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE GetRotation(DXGI_MODE_ROTATION* r) override { if (r) *r = DXGI_MODE_ROTATION_IDENTITY; return S_OK; }
+
+private:
+    VirtSwap(ID3D11Device* dev, HWND hwnd, const DXGI_SWAP_CHAIN_DESC1& d, BOOL windowed, IDXGIFactory* parent)
+        : dev_(dev), hwnd_(hwnd), d1_(d), windowed_(windowed), parent_(parent) {
+        if (parent_) parent_->AddRef();
+        if (d1_.BufferCount == 0) d1_.BufferCount = 1;
+    }
+    ~VirtSwap() {
+        if (staging_) staging_->Release();
+        if (resolve_) resolve_->Release();
+        if (tex_) tex_->Release();
+        if (parent_) parent_->Release();
+        if (dev_) dev_->Release();
+    }
+
+    HRESULT MakeBuffer() {
+        if (!d1_.Width || !d1_.Height) {
+            std::int32_t w = 0, h = 0;
+            { HostModeScope w10x_host_; user::GetEmulatedClientSize(hwnd_, &w, &h); }
+            if (!d1_.Width) d1_.Width = w > 0 ? static_cast<UINT>(w) : 1;
+            if (!d1_.Height) d1_.Height = h > 0 ? static_cast<UINT>(h) : 1;
+        }
+        if (d1_.Format == DXGI_FORMAT_UNKNOWN) d1_.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        D3D11_TEXTURE2D_DESC td{};
+        td.Width = d1_.Width;
+        td.Height = d1_.Height;
+        td.MipLevels = 1;
+        td.ArraySize = 1;
+        td.Format = d1_.Format;
+        td.SampleDesc = d1_.SampleDesc;
+        if (td.SampleDesc.Count == 0) td.SampleDesc.Count = 1;
+        td.Usage = D3D11_USAGE_DEFAULT;
+        td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        if (d1_.BufferUsage & DXGI_USAGE_UNORDERED_ACCESS) td.BindFlags |= D3D11_BIND_UNORDERED_ACCESS;
+        HRESULT hr = dev_->CreateTexture2D(&td, nullptr, &tex_);
+        if (FAILED(hr) && (td.BindFlags & D3D11_BIND_UNORDERED_ACCESS)) {
+            td.BindFlags &= ~static_cast<UINT>(D3D11_BIND_UNORDERED_ACCESS);
+            hr = dev_->CreateTexture2D(&td, nullptr, &tex_);
+        }
+        W10X_TR("dxgi: virtual swap chain back buffer %ux%u fmt %u samples %u -> %08lx", d1_.Width, d1_.Height,
+                static_cast<unsigned>(d1_.Format), td.SampleDesc.Count, static_cast<unsigned long>(hr));
+        if (FAILED(hr)) tex_ = nullptr;
+        return hr;
+    }
+
+    // Copies the (resolved) back buffer into pix_ as top-down BGRA. False when it cannot be read.
+    bool Grab() {
+        bool swap_rb = false;
+        switch (d1_.Format) {
+            case DXGI_FORMAT_B8G8R8A8_UNORM: case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: case DXGI_FORMAT_B8G8R8X8_UNORM: break;
+            case DXGI_FORMAT_R8G8B8A8_UNORM: case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: swap_rb = true; break;
+            default:
+                if (!warned_) { warned_ = true; W10X_WN("dxgi: virtual swap chain format %u is not captured", static_cast<unsigned>(d1_.Format)); }
+                return false;
+        }
+        ID3D11DeviceContext* ctx = nullptr;
+        dev_->GetImmediateContext(&ctx);
+        if (!ctx) return false;
+        ID3D11Texture2D* src = tex_;
+        D3D11_TEXTURE2D_DESC td{};
+        tex_->GetDesc(&td);
+        if (td.SampleDesc.Count > 1) {
+            if (!resolve_) {
+                D3D11_TEXTURE2D_DESC rd = td;
+                rd.SampleDesc = {1, 0};
+                rd.BindFlags = 0;
+                if (FAILED(dev_->CreateTexture2D(&rd, nullptr, &resolve_))) resolve_ = nullptr;
+            }
+            if (!resolve_) { ctx->Release(); return false; }
+            ctx->ResolveSubresource(resolve_, 0, tex_, 0, td.Format);
+            src = resolve_;
+        }
+        if (!staging_) {
+            D3D11_TEXTURE2D_DESC sd = td;
+            sd.SampleDesc = {1, 0};
+            sd.Usage = D3D11_USAGE_STAGING;
+            sd.BindFlags = 0;
+            sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            sd.MiscFlags = 0;
+            if (FAILED(dev_->CreateTexture2D(&sd, nullptr, &staging_))) staging_ = nullptr;
+        }
+        bool ok = false;
+        D3D11_MAPPED_SUBRESOURCE m{};
+        if (staging_) {
+            ctx->CopyResource(staging_, src);
+            if (SUCCEEDED(ctx->Map(staging_, 0, D3D11_MAP_READ, 0, &m)) && m.pData) {
+                pix_w_ = static_cast<std::int32_t>(td.Width);
+                pix_h_ = static_cast<std::int32_t>(td.Height);
+                { HostModeScope w10x_host_; pix_.resize(static_cast<std::size_t>(pix_w_) * pix_h_); }
+                for (std::int32_t y = 0; y < pix_h_; ++y) {
+                    const auto* row = reinterpret_cast<const std::uint32_t*>(static_cast<const std::uint8_t*>(m.pData) +
+                                                                            static_cast<std::size_t>(y) * m.RowPitch);
+                    std::uint32_t* dst = pix_.data() + static_cast<std::size_t>(y) * pix_w_;
+                    for (std::int32_t x = 0; x < pix_w_; ++x) {
+                        std::uint32_t v = row[x];
+                        if (swap_rb) v = (v & 0xFF00FF00u) | ((v & 0xFFu) << 16) | ((v >> 16) & 0xFFu);
+                        dst[x] = v | 0xFF000000u;
+                    }
+                }
+                ctx->Unmap(staging_, 0);
+                ok = true;
+            }
+        }
+        ctx->Release();
+        return ok;
+    }
+
+    HRESULT DoPresent(const char* what, UINT sync, UINT flags) {
+        if (flags & DXGI_PRESENT_TEST) return S_OK;
+        if (!tex_) return DXGI_ERROR_INVALID_CALL;
+        const bool got = Grab();
+        bool sent = false;
+        {
+            HostModeScope w10x_host_;
+            if (got) sent = user::NotifyClientFrame(hwnd_, pix_.data(), pix_w_, pix_h_, pix_w_ * 4);
+            // vsync: one refresh (16 ms) per sync interval, so a loop that presents every frame runs at ~60 fps
+            if (sync) {
+                const ULONGLONG now = GetTickCount64(), due = last_present_ + 16ull * (sync > 4 ? 4 : sync);
+                if (last_present_ && now < due) Sleep(static_cast<DWORD>(due - now));
+            }
+            last_present_ = GetTickCount64();
+            ++presents_;
+            if (presents_ == 1 || presents_ % 600 == 0)
+                TRACE(dispatch, "dxgi: virtual %s(%u, 0x%x) #%u -> 00000000 %s", what, sync, flags, presents_,
+                      sent ? "(back buffer composed)" : "(NOT handed to the compositor)");
+        }
+        CountPresent();
+        return S_OK;
+    }
+
+    // WIN10XBOX_TEST_PRESENT_LIMIT on the virtual swap chain (as WrapSwap::CountPresent): the limit-th presented frame is
+    // already composed; log one line and end the guest like ExitProcess(42).
+    void CountPresent() {
+        const unsigned lim = g_present_limit.load();
+        if (!lim || g_presents.fetch_add(1) + 1 != lim) return;
+        char adapter[128] = "unknown";
+        IDXGIDevice* dxdev = nullptr;
+        if (SUCCEEDED(dev_->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(&dxdev))) && dxdev) {
+            IDXGIAdapter* ad = nullptr;
+            DXGI_ADAPTER_DESC add{};
+            if (SUCCEEDED(dxdev->GetAdapter(&ad)) && ad) {
+                if (SUCCEEDED(ad->GetDesc(&add))) std::snprintf(adapter, sizeof adapter, "%ls", add.Description);
+                ad->Release();
+            }
+            dxdev->Release();
+        }
+        W10X_TR( "present-limit: %u frames presented, %ux%u, %s", lim, d1_.Width, d1_.Height, adapter);
+        { HostModeScope w10x_host_; std::printf("present-limit: %u frames presented, %ux%u, %s\n", lim,
+                                              d1_.Width, d1_.Height, adapter); std::fflush(stdout); }
+        HostModeScope w10x_host_;   // GuestExit does not return
+        process::GuestExit(42);
+    }
+
+    LONG ref_ = 1;
+    ID3D11Device* dev_;
+    HWND hwnd_;
+    DXGI_SWAP_CHAIN_DESC1 d1_;
+    BOOL windowed_;
+    IDXGIFactory* parent_;
+    ID3D11Texture2D* tex_ = nullptr;
+    ID3D11Texture2D* resolve_ = nullptr;
+    ID3D11Texture2D* staging_ = nullptr;
+    BOOL fullscreen_ = FALSE;
+    bool warned_ = false;
+    UINT presents_ = 0;
+    ULONGLONG last_present_ = 0;
+    std::vector<std::uint32_t> pix_;
+    std::int32_t pix_w_ = 0, pix_h_ = 0;
+};
+
+bool IsVirtualWindow(HWND hwnd) {
+    HostModeScope w10x_host_;
+    return user::IsEmulatedWindow(hwnd);
+}
+
 // ---- Wrapper factory ----------------------------------------------------------------------------------------
 
 class WrapFactory final : public IDXGIFactory2 {
@@ -537,15 +1006,40 @@ public:
     // IDXGIFactory
     HRESULT STDMETHODCALLTYPE EnumAdapters(UINT i, IDXGIAdapter** a) override {
         IDXGIAdapter* real = nullptr;
+        const LONG n0 = g_exc_n;
         const HRESULT hr = f0_->EnumAdapters(i, a ? &real : nullptr);
+        W10X_TR("dxgi: EnumAdapters(%u) -> %08lx, %ld exception(s) during the call", i, static_cast<unsigned long>(hr), static_cast<long>(g_exc_n - n0));
+        if (g_exc_n != n0) DumpExceptions("EnumAdapters", hr);
         if (FAILED(hr) || !real || !a) return hr;
         *a = user::GetSwapChainTarget(nullptr) ? static_cast<IDXGIAdapter*>(new WrapAdapter(real)) : real;
         return hr;
     }
-    HRESULT STDMETHODCALLTYPE MakeWindowAssociation(HWND h, UINT fl) override { W10X_TRACE_HR("IDXGIFactory::MakeWindowAssociation", f0_->MakeWindowAssociation(h, fl)); }
+    HRESULT STDMETHODCALLTYPE MakeWindowAssociation(HWND h, UINT fl) override {
+        if (h && IsVirtualWindow(h)) return S_OK;   // nothing to hook in an emulated window
+        W10X_TRACE_HR("IDXGIFactory::MakeWindowAssociation", f0_->MakeWindowAssociation(h, fl));
+    }
     HRESULT STDMETHODCALLTYPE GetWindowAssociation(HWND* h) override { return f0_->GetWindowAssociation(h); }
     HRESULT STDMETHODCALLTYPE CreateSwapChain(IUnknown* dev, DXGI_SWAP_CHAIN_DESC* d, IDXGISwapChain** out) override {
         if (!d || !out) return f0_->CreateSwapChain(dev, d, out);
+        if (IsVirtualWindow(d->OutputWindow)) {   // an emulated window: a virtual swap chain (VirtSwap)
+            DXGI_SWAP_CHAIN_DESC1 v{};
+            v.Width = d->BufferDesc.Width;
+            v.Height = d->BufferDesc.Height;
+            v.Format = d->BufferDesc.Format;
+            v.SampleDesc = d->SampleDesc;
+            v.BufferUsage = d->BufferUsage;
+            v.BufferCount = d->BufferCount;
+            v.SwapEffect = d->SwapEffect;
+            v.Flags = d->Flags;
+            IDXGISwapChain1* vs = nullptr;
+            const HRESULT vhr = VirtSwap::Create(dev, d->OutputWindow, v, d->Windowed, f0_, &vs);
+            if (SUCCEEDED(vhr)) *out = vs;
+            W10X_TR("dxgi: IDXGIFactory::CreateSwapChain(window %p, %ux%u fmt %u, %u buffers, effect %u) virtual -> %08lx",
+                    static_cast<void*>(d->OutputWindow), d->BufferDesc.Width, d->BufferDesc.Height,
+                    static_cast<unsigned>(d->BufferDesc.Format), d->BufferCount, static_cast<unsigned>(d->SwapEffect),
+                    static_cast<unsigned long>(vhr));
+            return vhr;
+        }
         void* ctx = nullptr;
         const user::SwapChainTargetFn target = user::GetSwapChainTarget(&ctx);
         IDXGISwapChain* real = nullptr;
@@ -597,6 +1091,13 @@ public:
                                                      IDXGISwapChain1** out) override {
         if (!f2_) return DXGI_ERROR_UNSUPPORTED;
         if (!d || !out) return f2_->CreateSwapChainForHwnd(dev, hwnd, d, fs, restrict_out, out);
+        if (IsVirtualWindow(hwnd)) {   // an emulated window: a virtual swap chain (VirtSwap)
+            const HRESULT vhr = VirtSwap::Create(dev, hwnd, *d, fs ? fs->Windowed : TRUE, f0_, out);
+            W10X_TR("dxgi: IDXGIFactory2::CreateSwapChainForHwnd(window %p, %ux%u fmt %u, %u buffers, effect %u) virtual -> %08lx",
+                    static_cast<void*>(hwnd), d->Width, d->Height, static_cast<unsigned>(d->Format), d->BufferCount,
+                    static_cast<unsigned>(d->SwapEffect), static_cast<unsigned long>(vhr));
+            return vhr;
+        }
         void* ctx = nullptr;
         const user::SwapChainTargetFn target = user::GetSwapChainTarget(&ctx);
         IDXGISwapChain1* real = nullptr;
@@ -764,6 +1265,7 @@ HRESULT WINAPI W10x_CreateDXGIFactory(REFIID riid, void** pp) {
     IUnknown* u = nullptr;
     const HRESULT real_hr = g_real_create_factory(__uuidof(IDXGIFactory), reinterpret_cast<void**>(&u));
     const HRESULT hr = CreateWrappedFactory(real_hr, u, riid, pp);
+    if (FAILED(hr)) DumpExceptions(FAILED(real_hr) ? "dxgi!CreateDXGIFactory" : "CreateDXGIFactory (wrapping)", hr);
     W10X_TRACE_HR("CreateDXGIFactory", hr);
 }
 
@@ -774,6 +1276,8 @@ HRESULT WINAPI W10x_CreateDXGIFactory1(REFIID riid, void** pp) {
     IUnknown* u = nullptr;
     const HRESULT real_hr = g_real_create_factory1(__uuidof(IDXGIFactory), reinterpret_cast<void**>(&u));
     const HRESULT hr = CreateWrappedFactory(real_hr, u, riid, pp);
+    if (FAILED(hr)) DumpExceptions(FAILED(real_hr) ? "dxgi!CreateDXGIFactory1" : "CreateDXGIFactory1 (wrapping)", hr);
+    else if (g_exc_n) DumpExceptions("CreateDXGIFactory1 succeeded; exceptions raised inside it (round 12 comparison, both machines)", hr);
     W10X_TRACE_HR("CreateDXGIFactory1", hr);
 }
 
@@ -784,6 +1288,7 @@ HRESULT WINAPI W10x_CreateDXGIFactory2(UINT flags, REFIID riid, void** pp) {
     IUnknown* u = nullptr;
     const HRESULT real_hr = g_real_create_factory2(flags, __uuidof(IDXGIFactory), reinterpret_cast<void**>(&u));
     const HRESULT hr = CreateWrappedFactory(real_hr, u, riid, pp);
+    if (FAILED(hr)) DumpExceptions(FAILED(real_hr) ? "dxgi!CreateDXGIFactory2" : "CreateDXGIFactory2 (wrapping)", hr);
     W10X_TRACE_HR("CreateDXGIFactory2", hr);
 }
 
@@ -824,7 +1329,10 @@ HRESULT WINAPI W10x_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* adapter_in, D3D_
     HRESULT hr = g_real_create_device(adapter, type, sw, flags, levels, n_levels, sdk, &dev, &level, &ctx);
     W10X_TR( "dxgi: D3D11CreateDevice (for D3D11CreateDeviceAndSwapChain, driver type %d) -> %08lx feature level 0x%x",
           static_cast<int>(type), static_cast<unsigned long>(hr), static_cast<unsigned>(level));
-    if (FAILED(hr) || !dev) return FAILED(hr) ? hr : E_FAIL;
+    if (FAILED(hr) || !dev) {
+        DumpExceptions("d3d11!D3D11CreateDevice", FAILED(hr) ? hr : E_FAIL);
+        return FAILED(hr) ? hr : E_FAIL;
+    }
     HookDeviceAdapter(dev);
     IDXGIFactory* real_factory = nullptr;
     IDXGIDevice* dxgi_dev = nullptr;
@@ -837,6 +1345,7 @@ HRESULT WINAPI W10x_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* adapter_in, D3D_
     if (FAILED(hr) || !real_factory) {
         dev->Release();
         if (ctx) ctx->Release();
+        DumpExceptions("D3D11CreateDeviceAndSwapChain (device -> factory)", FAILED(hr) ? hr : E_FAIL);
         W10X_TRACE_HR("D3D11CreateDeviceAndSwapChain (device -> factory)", FAILED(hr) ? hr : E_FAIL);
     }
     auto* wf = new WrapFactory(real_factory);
@@ -847,6 +1356,7 @@ HRESULT WINAPI W10x_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* adapter_in, D3D_
     if (FAILED(hr) || !sc) {
         dev->Release();
         if (ctx) ctx->Release();
+        DumpExceptions("D3D11CreateDeviceAndSwapChain (CreateSwapChain)", FAILED(hr) ? hr : E_FAIL);
         W10X_TRACE_HR("D3D11CreateDeviceAndSwapChain", FAILED(hr) ? hr : E_FAIL);
     }
     *swap = sc;
@@ -928,6 +1438,7 @@ std::size_t ReplaceExports(const loader::MappedImage& img, const Replace* list, 
 
 bool InterposeDxgiImage(const loader::MappedImage& img, const std::wstring& id) {
     if (IsModule(id, L"dxgi.dll")) {
+        InstallExcRecorder();
         g_internal[0] = {reinterpret_cast<std::uintptr_t>(img.base), static_cast<std::uintptr_t>(img.size)};
         const Replace list[] = {
             {"CreateDXGIFactory", reinterpret_cast<const void*>(&W10x_CreateDXGIFactory), reinterpret_cast<void**>(&g_real_create_factory)},
@@ -973,6 +1484,15 @@ void SetPresentLimitImpl(unsigned n) { g_present_limit.store(n); g_presents.stor
 
 bool IsDxgiInterposedModule(const std::wstring& id) { return IsModule(id, L"dxgi.dll") || IsModule(id, L"d3d11.dll"); }
 
+}  // namespace win10xbox::dispatch::detail
+
+namespace win10xbox::dispatch::detail {
+// Called by NtRaiseException before the host kernel is asked to raise a fail-fast record (it bypasses every handler).
+void DumpFailFastRaise(const EXCEPTION_RECORD* rec, const CONTEXT* ctx) {
+    if (!rec || !ctx) return;
+    EXCEPTION_POINTERS ep{const_cast<EXCEPTION_RECORD*>(rec), const_cast<CONTEXT*>(ctx)};
+    DumpFailFast(&ep);
+}
 }  // namespace win10xbox::dispatch::detail
 
 namespace win10xbox::dispatch {

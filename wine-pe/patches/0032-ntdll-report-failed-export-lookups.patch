@@ -1,0 +1,61 @@
+Report every failed export lookup of the loader to the host layer.
+
+LdrGetProcedureAddress (GetProcAddress, delay-load resolution through
+LdrResolveDelayLoadedAPI) and the DLL load of a delay-load import now pass
+"lookup|<module>|<name or #ordinal>|<status>" to NtDisplayString when they
+fail. The layer (core/dispatch, nt_privileged.cpp) logs the line at WARN on the
+modules channel and does not forward it to the host. The builtins are built
+without TRACE/WARN, so this is the only way a failed lookup of a native image
+becomes visible. Behaviour is unchanged otherwise.
+
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 57da3d4..444963b 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -2059,6 +2059,30 @@ NTSTATUS WINAPI LdrUnlockLoaderLock( ULONG flags, ULONG_PTR magic )
+ }
+ 
+ 
++/* Report a failed export lookup to the host layer (NtDisplayString is a diagnostic channel there). */
++static void report_failed_lookup( const UNICODE_STRING *mod, const char *name, ULONG ord, NTSTATUS status )
++{
++    static const char hex[] = "0123456789abcdef";
++    WCHAR buf[300];
++    UNICODE_STRING str;
++    WCHAR *p = buf, *end = buf + ARRAY_SIZE(buf) - 1;
++    const char *tag = "lookup|";
++    unsigned int i;
++
++    while (*tag) *p++ = *tag++;
++    if (mod && mod->Buffer)
++        for (i = 0; i < mod->Length / sizeof(WCHAR) && p < end - 64; i++) *p++ = mod->Buffer[i];
++    *p++ = '|';
++    if (name) while (*name && p < end - 24) *p++ = (unsigned char)*name++;
++    else { *p++ = '#'; for (i = 0; i < 5; i++) *p++ = '0' + (ord / (i == 0 ? 10000 : i == 1 ? 1000 : i == 2 ? 100 : i == 3 ? 10 : 1)) % 10; }
++    *p++ = '|';
++    for (i = 0; i < 8; i++) *p++ = hex[((ULONG)status >> (28 - 4 * i)) & 15];
++    str.Buffer = buf;
++    str.Length = (p - buf) * sizeof(WCHAR);
++    str.MaximumLength = sizeof(buf);
++    NtDisplayString( &str );
++}
++
+ /******************************************************************
+  *		LdrGetProcedureAddress  (NTDLL.@)
+  */
+@@ -2088,6 +2112,7 @@ NTSTATUS WINAPI LdrGetProcedureAddress(HMODULE module, const ANSI_STRING *name,
+         {
+             WARN( "%s (ordinal %lu) not found in %s\n", debugstr_a(name ? name->Buffer : NULL),
+                   ord, debugstr_us(&wm->ldr.FullDllName) );
++            report_failed_lookup( &wm->ldr.FullDllName, name ? name->Buffer : NULL, ord, ret );
+         }
+     }
+ 
+@@ -3850,6 +3875,7 @@ void* WINAPI LdrResolveDelayLoadedAPI( void* base, const IMAGE_DELAYLOAD_DESCRIP
+             goto fail;
+         }
+         nts = LdrLoadDll(NULL, 0, &mod, phmod);
++        if (nts) report_failed_lookup( &mod, NULL, 0xffff, nts );
+         RtlFreeUnicodeString(&mod);
+         if (nts) goto fail;
+     }

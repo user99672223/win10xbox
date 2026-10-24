@@ -269,6 +269,7 @@ jobs:
                         'guest_d3d11_tri.exe', 'guest_imgui_d3d11.exe', 'guest_d3d11_tri.machine', 'guest_imgui_d3d11.machine',
                         'guest_d3d11_swap.exe', 'guest_d3d11_swap.machine',
                         'guest_d3dsample.exe', 'guest_d3dsample.machine', 'guest_d3dsample.env', 'guest_d3dsample.cwd', 'Tutorial07.fxh', 'seafloor.dds',
+                        'guest_gamelike.exe', 'guest_gamelike.machine', 'guest_gamelike.env', 'guest_gamelike.title',
                         'guest_tebframe.exe', 'guest_net2.exe', 'guest_closure.exe', 'guest_display_mode.exe')
           $missing = @($expected | Where-Object { -not (Test-Path "$stage/payload/guest/$_") })
           Write-Host ("bundled guests: " + (@(Get-ChildItem "$stage/payload/guest" -File | ForEach-Object { $_.Name }) -join ', '))
@@ -294,6 +295,11 @@ jobs:
           $d3dMachine = @('machine.json', 'msctf.dll') | Where-Object { -not (Test-Path "$stage/payload/machine-native-d3d/$_") }
           if ($d3dMachine) {
             Write-Host "::error::the package is missing payload/machine-native-d3d file(s): $($d3dMachine -join ', ')"
+            exit 1
+          }
+          # The third machine folder (emulated GUI + native Direct3D 11, LocalState\machine-emu-d3d, docs/slices/uwpswap.md).
+          if (-not ((Test-Path "$stage/payload/machine-emu-d3d/machine.json") -and (Test-Path "$stage/payload/machine-emu-d3d/gdi32full.dll"))) {
+            Write-Host '::error::the package is missing payload/machine-emu-d3d/machine.json or gdi32full.dll'
             exit 1
           }
           # Our own builtin DLLs (guest-dlls/): the XInput DLL under its three names.
@@ -325,7 +331,7 @@ jobs:
           $groups | Sort-Object MB -Descending | Format-Table -AutoSize | Out-String | Write-Host
           $want = @(Get-Content build-uwp/AppX/payload/guests.txt | Where-Object { $_ })
           foreach ($c in Get-ChildItem tests/guest -Filter *.c) {
-            if ($c.BaseName -eq 'msctf_stub') { continue }   # a msctf.dll stand-in for the native-GUI machine folder, not a guest
+            if ($c.BaseName -eq 'msctf_stub' -or $c.BaseName -eq 'gdi32full_stub') { continue }   # a msctf.dll / gdi32full.dll stand-in for the native-GUI machine folders, not a guest
             if ($c.BaseName -eq 'dirtree') { continue }      # a directory install (payload/guest/dirtree/), checked below
             $n = if ($c.BaseName -eq 'dll') { 'guest_dll.dll' } elseif ($c.BaseName -eq 'window') { 'window.exe' } else { "guest_$($c.BaseName).exe" }
             if ($want -notcontains $n) { $want += $n }
@@ -349,6 +355,7 @@ jobs:
           if ($missing.Count -gt 0) { Write-Host "::error::guest(s) missing from the .msix: $($missing -join ', ')"; exit 1 }
           $d3dMissing = @('payload/machine-native-d3d/machine.json', 'payload/machine-native-d3d/msctf.dll',
                           'payload/guest/guest_d3d11_tri.machine', 'payload/guest/guest_imgui_d3d11.machine',
+                          'payload/guest/guest_d3d11_swap.machine', 'payload/machine-emu-d3d/machine.json', 'payload/machine-emu-d3d/gdi32full.dll',
                           'payload/guest/guest_d3dsample.machine', 'payload/guest/guest_d3dsample.env', 'payload/guest/guest_d3dsample.cwd',
                           'payload/guest/Tutorial07.fxh', 'payload/guest/seafloor.dds') | Where-Object { $entries -notcontains $_ }
           if ($d3dMissing) { Write-Host "::error::machine-native-d3d file(s) missing from the .msix: $($d3dMissing -join ', ')"; exit 1 }
@@ -621,6 +628,42 @@ jobs:
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           if ($fail.Count -gt 0) { exit 1 }
 
+      # Third pinned run on the same install: guest_d3d11_swap.exe on LocalState\machine-emu-d3d (docs/slices/uwpswap.md): the
+      # emulated window manager (the window path that exists on the console), the native d3d11/dxgi, a virtual swap chain whose
+      # frames core/user composes and the presenter shows. Expect exit 42 and the readback line; the screenshot is screen.bmp.
+      - name: Run guest_d3d11_swap.exe on machine-emu-d3d (pinned, same install)
+        id: swap
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        shell: powershell
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $pkg = Get-AppxPackage -Name win10xbox.uwp
+          $ls = Join-Path $env:LOCALAPPDATA ("Packages\" + $pkg.PackageFamilyName + "\LocalState")
+          Get-Process -Name 'win10xbox*' -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 3
+          foreach ($f in 'status.txt', 'stdout.txt', 'crash.txt', 'entry-reached.txt', 'trace.log') { Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $ls $f) }
+          $json = '{ "guest": "guest_d3d11_swap.exe", "machine": "machine-emu-d3d", "expect_exit_code": 42, "trace": "+dispatch,+user,+modules", "exit_when_done": true, "timeout_sec": 240 }'
+          Set-Content -Path (Join-Path $ls 'launch.json') -Value $json -Encoding ascii
+          & .\uwp_activate.exe "$($pkg.PackageFamilyName)!App" --package-full-name $pkg.PackageFullName --timeout 300
+          Write-Host "uwp_activate exit status: $LASTEXITCODE"
+          New-Item -ItemType Directory -Force -Path uwp-evidence-swap | Out-Null
+          foreach ($f in 'status.txt', 'stdout.txt', 'trace.log', 'crash.txt', 'screen.bmp') { $p = Join-Path $ls $f; if (Test-Path $p) { Copy-Item $p uwp-evidence-swap -Force } }
+          $status = Join-Path $ls 'status.txt'
+          $first = if (Test-Path $status) { Get-Content -Path $status -TotalCount 1 } else { '(no status.txt)' }
+          $out = if (Test-Path (Join-Path $ls 'stdout.txt')) { Get-Content -Path (Join-Path $ls 'stdout.txt') -Raw } else { '' }
+          Write-Host '--- status.txt ---'; if (Test-Path $status) { Get-Content $status | ForEach-Object { Write-Host $_ } }
+          Write-Host '--- stdout.txt ---'; Write-Host $out
+          $tl = Join-Path $ls 'trace.log'
+          if (Test-Path $tl) { Write-Host '--- trace.log: machine / d3d native / dxgi / error lines ---'; Select-String -Path $tl -Pattern 'machine folder|d3d native|dxgi:|error' | Select-Object -First 60 | ForEach-Object { Write-Host $_.Line } }
+          $fail = @()
+          if ($first -notlike 'RESULT: PASS*') { $fail += "status.txt: $first" }
+          if ($out -notmatch 'swap: readback centre=ffff0000 corner=ff0000ff') { $fail += 'no "swap: readback centre=ffff0000 corner=ff0000ff" line in stdout.txt' }
+          $lines = @('### host-uwp: guest_d3d11_swap.exe on machine-emu-d3d (pinned run, same install)', "- verdict: ``$first``")
+          if ($fail.Count -eq 0) { $lines += '- PASS' } else { $fail | ForEach-Object { $lines += "- FAIL: $_"; Write-Host "::error::$_" } }
+          $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($fail.Count -gt 0) { exit 1 }
+
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
@@ -628,6 +671,7 @@ jobs:
           path: |
             uwp-evidence
             uwp-evidence-d3d
+            uwp-evidence-swap
             uwp-activate.rc
           if-no-files-found: ignore
           retention-days: 7
@@ -787,11 +831,19 @@ jobs:
           $report = Join-Path $ls 'report.txt'
           # Up to 40 min: Chocolate Doom (interactive, bundled by -doompkg) and any guest that waits for input run
           # to the 60 s limit each, plus one restart per program.
+          # Wait for the header whose programs= equals the number of chain entries (or chain=done / chain=aborted), not for any header.
+          $dirw = Join-Path $pkg.InstallLocation 'payload\guest'
+          $want = @(Get-ChildItem -Path $dirw -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '\.(exe|launch)$' }).Count + @(Get-ChildItem -Path $dirw -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.FullName ($_.Name + '.launch')) }).Count
+          Write-Host "chain entries expected: $want"
+          $finished = $false
           for ($i = 0; $i -lt 1200; $i++) {
-            if ((Test-Path $report) -and (Select-String -Path $report -Pattern '^programs=' -Quiet)) { break }
+            if (Test-Path $report) {
+              $rt = Get-Content -Path $report -Raw -ErrorAction SilentlyContinue
+              if ($rt -match '(?m)^chain=(done|aborted)\s*$' -or ($rt -match '(?m)^programs=(\d+)\s*$' -and [int]$Matches[1] -eq $want)) { $finished = $true; break }
+            }
             Start-Sleep -Seconds 2
           }
-          Write-Host ("report.txt finished: " + ((Test-Path $report) -and (Select-String -Path $report -Pattern '^programs=' -Quiet)))
+          Write-Host ("report.txt finished: " + $finished)
           exit 0
 
       - name: Assert on report.txt
