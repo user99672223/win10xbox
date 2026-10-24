@@ -212,6 +212,9 @@ INT WINAPI NtUserScrollWindowEx(HWND hwnd, INT dx, INT dy, const RECT* rect, con
 // ---- win_sysparams.cpp ----
 ULONG WINAPI NtUserGetSystemDpiForProcess(HANDLE process);
 BOOL WINAPI NtUserGetProcessUIContextInformation(HANDLE process, ULONG* info);
+BOOL WINAPI NtUserIsTopLevelWindow(HWND hwnd);
+BOOL WINAPI NtUserGetWindowCompositionAttribute(HWND hwnd, void* data);
+BOOL WINAPI NtIsOneCoreTransformMode(void);
 ULONG WINAPI NtUserGetProcessDpiAwarenessContext(HANDLE process);
 BOOL WINAPI NtUserSetProcessDpiAwarenessContext(ULONG awareness, ULONG unknown);
 BOOL WINAPI NtUserSystemParametersInfo(UINT action, UINT val, void* ptr, UINT winini);
@@ -408,7 +411,7 @@ BOOL WINAPI NtGdiTransparentBlt(HDC hdc, INT x_dst, INT y_dst, INT width_dst, IN
     X(NtUserGetUpdateRect) X(NtUserGetUpdateRgn) X(NtUserExcludeUpdateRgn) X(NtUserWindowFromDC) \
     X(NtUserLockWindowUpdate) X(NtUserScrollWindowEx) \
     X(NtUserSetScrollInfo) X(NtUserShowScrollBar) X(NtUserEnableScrollBar) X(NtUserGetScrollBarInfo) X(NtUserScrollDC) \
-    X(NtUserGetSystemDpiForProcess) X(NtUserGetProcessUIContextInformation) X(NtUserGetProcessDpiAwarenessContext) X(NtUserSetProcessDpiAwarenessContext) \
+    X(NtUserGetSystemDpiForProcess) X(NtUserGetProcessUIContextInformation) X(NtUserIsTopLevelWindow) X(NtUserGetWindowCompositionAttribute) X(NtIsOneCoreTransformMode) X(NtUserGetProcessDpiAwarenessContext) X(NtUserSetProcessDpiAwarenessContext) \
     X(NtUserSystemParametersInfo) X(NtUserSystemParametersInfoForDpi) X(NtUserEnumDisplayMonitors) \
     X(NtUserGetDpiForMonitor) X(NtUserEnumDisplaySettings) X(NtUserEnumDisplayDevices) \
     X(NtUserGetDisplayConfigBufferSizes) X(NtUserQueryDisplayConfig) X(NtUserDisplayConfigGetDeviceInfo) \

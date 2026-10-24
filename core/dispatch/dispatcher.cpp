@@ -470,6 +470,7 @@ std::uint32_t NargsOverride(const char* name) {
         {"NtMapUserPhysicalPagesScatter", 3}, {"NtWaitForMultipleObjects32", 5}, {"NtApphelpCacheControl", 2},
         {"NtCreateProcessEx", 9}, {"NtTraceEvent", 4},
         {"NtUserGetProcessUIContextInformation", 2},   // a Wine `stub` syscall: the table says 0
+        {"NtUserIsTopLevelWindow", 1}, {"NtUserGetWindowCompositionAttribute", 2},   // likewise (wine-pe/patches/0033)
     };
     for (auto& f : kFix)
         if (!std::strcmp(f.name, name)) return f.nargs;

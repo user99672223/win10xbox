@@ -329,6 +329,25 @@ ULONG WINAPI NtUserGetSystemDpiForProcess(HANDLE process) {
     return 96;
 }
 
+// NtUserGetWindowCompositionAttribute(hwnd, WINCOMPATTRDATA*) -> BOOL (user32!GetWindowCompositionAttribute, resolved by the
+// native dxgi and dwmapi). The windows of this layer have no DWM-side composition attributes: an invalid window is
+// ERROR_INVALID_WINDOW_HANDLE, a NULL data block ERROR_INVALID_PARAMETER, anything else FALSE with ERROR_NOT_SUPPORTED.
+BOOL WINAPI NtUserGetWindowCompositionAttribute(HWND hwnd, void* data) {
+    if (!data) {
+        SetLastErr(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    {
+        LockGuard lock;
+        if (!WinChecked(hwnd)) return FALSE;   // sets ERROR_INVALID_WINDOW_HANDLE
+    }
+    SetLastErr(ERROR_NOT_SUPPORTED);
+    return FALSE;
+}
+
+// NtIsOneCoreTransformMode() -> BOOL (user32!IsOneCoreTransformMode): FALSE on a desktop SKU, which is what this layer is.
+BOOL WINAPI NtIsOneCoreTransformMode(void) { return FALSE; }
+
 // NtUserGetProcessUIContextInformation(process, PROCESS_UICONTEXT_INFORMATION*) -> BOOL: which kind of UI the process runs
 // (user32!GetProcessUIContextInformation is the same function; the native dxgi.dll imports it to learn whether it is in
 // an immersive/UWP context). { ULONG ProcessUIContext (0 DESKTOP, 1 IMMERSIVE, 2 IMMERSIVE_BROKER, 3 IMMERSIVE_BROWSER);
