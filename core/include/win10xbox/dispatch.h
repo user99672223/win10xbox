@@ -194,6 +194,10 @@ int WaitForGuest(DWORD timeout_ms = INFINITE);
 // From a host thread: ends a guest that is still running (all its threads) and gives the process its own PEB view
 // back (as after a normal exit). The launcher's watchdog uses it before asking for an app restart.
 void AbortGuest(std::uint32_t exit_code);
+// Process-level teardown (host-win32): a guest exit only suspends the other guest threads (no TerminateThread, no PEB
+// write-back) and the host then ends the whole process with the guest's exit code. Set before Launch.
+void SetProcessTeardown(bool on);
+void SuspendOtherThreadsForTeardown(DWORD self);   // core use: freezes the guest and its helper threads, once
 // True while the guest's PEB view (ProcessParameters, ActivationContextData, ...) is installed instead of the host's.
 bool GuestOwnsPeb();
 // Guest path of the main image ("C:\\..."), empty before Launch.

@@ -314,6 +314,15 @@ bool EnvFlag(const wchar_t* name) {
 std::wstring g_shot_path;   // WIN10XBOX_SCREENSHOT, for the inject script's `shot`
 bool g_guest_ran = false;   // a guest was launched: EndProcess says how the process ends (stderr; stdout stays the guest's)
 
+HANDLE g_teardown_event = nullptr;   // set once the guest has exited and the host is finishing up
+volatile LONG g_teardown_rc = 0;
+DWORD WINAPI TeardownWatchdog(void*) {
+    WaitForSingleObject(g_teardown_event, INFINITE);
+    Sleep(20000);   // the screenshot and result files take milliseconds; this only fires on a deadlock
+    TerminateProcess(GetCurrentProcess(), static_cast<UINT>(g_teardown_rc));
+    return 0;
+}
+
 // Leaves without running ExitProcess's DLL detach. TerminateProcess on the current process ends every thread at once and
 // does not return; the exit code is exactly `rc`, the same value the CRT would have handed to ExitProcess. C stdio is
 // flushed by hand first (the CRT's exit() would have done it): stdout may be a pipe or a file that a test harness reads.
@@ -708,6 +717,13 @@ static int HostMain(int argc, wchar_t** argv) {
         for (DWORD i = 0; i < inject_len; ++i) script[i] = static_cast<char>(inject_env[i]);
         inject = StartInjectThread(display, script);
     }
+    // Guest exit is process exit: the guest's threads are frozen, never terminated one by one; this thread takes the
+    // screenshot and EndProcess ends everything at once (docs/DECISIONS.md). The watchdog covers a frozen thread that
+    // holds a lock this thread needs. Started before Launch: a thread started later would run its loader init on the
+    // guest's PEB.
+    win10xbox::process::SetProcessTeardown(true);
+    g_teardown_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (HANDLE wd = CreateThread(nullptr, 0, &TeardownWatchdog, nullptr, 0, nullptr)) CloseHandle(wd);
     crash.BeforeLaunch();   // the host's module table, while PEB->Ldr is still the host's
     ActctxProbe actctx;     // test switch, off by default
     g_guest_ran = true;
@@ -716,6 +732,8 @@ static int HostMain(int argc, wchar_t** argv) {
         if (inject) SetEvent(inject->go);
         rc = win10xbox::process::WaitForGuest(INFINITE);   // the second half of Launch(wait = true)
     }
+    g_teardown_rc = rc;
+    SetEvent(g_teardown_event);
     actctx.Check();
     {
         // WIN10XBOX_OUTPUT_MODE=<W>x<H>[@<Hz>]: the console output a host-uwp presenter would scale the guest's screen to.

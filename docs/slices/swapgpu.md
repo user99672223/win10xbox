@@ -30,3 +30,12 @@ mapped) would not remove this crash and was not applied. The TEMP edits are reve
 
 Environment note: a bash shell lacks the VS environment; building works with
 `env INCLUDE=... LIB=... PATH=...` using forward-slash paths (MSVC 14.44.35207, Windows Kit 10.0.26100.0).
+
+## Fix (process-level teardown, DECISIONS E9)
+The crash thread is a host thread-pool worker running a native dxcore wait callback while the guest exits (guest PEB
+still installed; dbghelp's minidump fails with 0x800736b2 for the same reason). Killing guest threads one by one was
+not the (only) cause: suspending them instead and parking the exiting thread still crashed (3 runs). Freezing every
+thread created after the launch (guest threads and the pool workers) before the guest's DLL detach, then screenshot,
+then TerminateProcess from the host's main thread: 30/30 passes of `ctest -R '^integration.guest_d3d11_swap$' --repeat until-fail:30`.
+Other failures on this machine are the same with and without the change: ninja_build, guest_d3d11_swap_limit
+(Present -> DXGI_STATUS_OCCLUDED), winetest_ntdll (timeout).
