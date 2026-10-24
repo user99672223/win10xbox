@@ -37,6 +37,8 @@ volatile LONG64 g_to_guest = 0, g_to_host = 0;
 bool g_d3d_cb = false;
 KernelCallbackFn* volatile g_emu_callbacks = nullptr;
 const char* volatile g_inflight = "";
+using NtCallbackReturnFn = NTSTATUS(NTAPI*)(void*, ULONG, NTSTATUS);
+NtCallbackReturnFn g_nt_callback_return = nullptr;
 struct CbName { const void* addr; const char* name; };
 CbName g_cb_names[2048];
 unsigned g_cb_name_count = 0;
@@ -64,6 +66,12 @@ NTSTATUS RouteCallback(unsigned index, void* args, ULONG len) {
                                "thread %lu)", index, CallbackName(reinterpret_cast<void*>(g_host_callbacks[index])),
                      reinterpret_cast<void*>(g_host_callbacks[index]), g_inflight, args, len, GetCurrentThreadId());
         }
+        // Evidence of ci 40052340566: the host user32's callback #84 (the thread's GUI-conversion setup, raised by the
+        // first win32k syscall of a thread) run on a thread that user32 never initialised calls a pointer holding the
+        // thread id (rip == tid). The guest thread owes the kernel nothing but the return: leave through
+        // NtCallbackReturn(NULL, 0, STATUS_SUCCESS) without entering host user32 code.
+        if (g_d3d_cb && st && (st->flags & kThreadGuest) && g_nt_callback_return)
+            return g_nt_callback_return(nullptr, 0, 0);
         return g_host_callbacks[index](args, len);
     }
     const auto n = static_cast<unsigned long long>(InterlockedIncrement64(&g_to_guest));
@@ -278,6 +286,7 @@ NTSTATUS ConfigureD3dCallbacks(HMODULE user32) {
             g_cb_names[g_cb_name_count++] = {base + rva, reinterpret_cast<const char*>(base + names[i])};
         }
     }
+    g_nt_callback_return = reinterpret_cast<NtCallbackReturnFn>(HostExport("NtCallbackReturn"));
     g_d3d_cb = true;
     TRACE(dispatch, "d3d native: host user32 %p KernelCallbackTable %p (%u named exports)", static_cast<void*>(user32),
           static_cast<void*>(g_host_callbacks), g_cb_name_count);
