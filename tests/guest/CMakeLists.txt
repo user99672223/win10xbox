@@ -298,6 +298,11 @@ if(MSVC)
   add_executable(guest_d3d11_swap d3d11_swap.c)
   target_link_libraries(guest_d3d11_swap PRIVATE dxguid)
   win10xbox_add_guest(guest_d3d11_swap)
+  # The frame loop of a game in one program (tests/guest/gamelike.c, docs/slices/gamelike.md): window, D3D11 swap chain,
+  # XAudio2 tone, XInput polling. Everything loads at run time, nothing to link but dxguid for the IIDs.
+  add_executable(guest_gamelike gamelike.c)
+  target_link_libraries(guest_gamelike PRIVATE dxguid)
+  win10xbox_add_guest(guest_gamelike)
   # The control: the same program run natively on the runner, outside the layer (exit 42 = it renders). Not for the
   # emulator build; its stdout also lists the runner's modules, i.e. the DLL closure of d3d11 (docs/slices/d3d.md).
   if(NOT CMAKE_CROSSCOMPILING_EMULATOR)

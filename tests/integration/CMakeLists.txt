@@ -51,6 +51,9 @@ if(TARGET guest_hello)
   if(TARGET guest_d3d11_swap)
     add_dependencies(prepare_machine guest_d3d11_swap)
   endif()
+  if(TARGET guest_gamelike)
+    add_dependencies(prepare_machine guest_gamelike)
+  endif()
 endif()
 # Import lists of the guests that run on the machine folders (tools/game/dump_imports.py), written into the guest folder
 # (<bin>/guest/<guest>.exe_imports.txt, staged with the guests as C:\guest): the input of integration.guest_closure*.
@@ -1128,6 +1131,60 @@ set_tests_properties(integration.guest_d3d11_swap_emu PROPERTIES
   LABELS "guest_e2e"
   TIMEOUT 240
   ENVIRONMENT "WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_d3d11_swap_emu.bmp;WIN10XBOX_EXPECT_SCREENSHOT_PIXELS=228,228,ffff0000|101,101,ff0000ff")
+endif()
+
+# docs/slices/gamelike.md: the frame loop of a game (tests/guest/gamelike.c: window, D3D11 swap chain, XAudio2 tone on the
+# layer's null endpoint, XInput polling, HLSL quad) on machine-native-d3d. WIN10XBOX_TEST_PRESENT_LIMIT=90 ends it with exit 42
+# after the 90th Present; the composed frame (window at 100,100, 640x360) must be non-uniform.
+if(NOT CMAKE_CROSSCOMPILING AND TARGET guest_gamelike)
+add_test(NAME integration.guest_gamelike_native
+  COMMAND ${CMAKE_COMMAND}
+    -DHOST=$<TARGET_FILE:win10xbox>
+    -DMACHINE=${WIN10XBOX_D3D_MACHINE_DIR}
+    -DPROGRAM=C:\\guest\\guest_gamelike.exe
+    -DEXPECT_EXIT=42
+    -DSAVE_STDOUT=${CMAKE_BINARY_DIR}/bin/guest_gamelike_native.log
+    "-DEXPECT_REGEX=gamelike: D3D11 ready;gamelike: audio started;gamelike: frame 60, pad=none, audio=playing, present ok;present-limit: 90 frames presented"
+    "-DFORBID_TRACE_REGEX=host state reached under the guest TLS view"
+    -DDEBUG_SPEC=+dispatch,+modules,+process,+user
+    -DREQUIRE=Windows/System32/d3d11.dll
+    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
+set_tests_properties(integration.guest_gamelike_native PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  FAIL_REGULAR_EXPRESSION "gamelike: FAILED"
+  LABELS "guest_e2e"
+  TIMEOUT 240
+  ENVIRONMENT "WIN10XBOX_TEST_PRESENT_LIMIT=90;WIN10XBOX_AUDIO_NULL_ENDPOINT=1;WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_gamelike_native.bmp;WIN10XBOX_EXPECT_SCREENSHOT_VARIED=100,100,740,460,16,3")
+endif()
+
+# docs/slices/gamelike.md: the frame loop of a game (tests/guest/gamelike.c: window, D3D11 swap chain, XAudio2 tone on the
+# layer's null endpoint, XInput polling, HLSL quad) on machine-emu-d3d. WIN10XBOX_TEST_PRESENT_LIMIT=90 ends it with exit 42
+# after the 90th Present; the composed frame (window at 100,100, 640x360) must be non-uniform.
+if(NOT CMAKE_CROSSCOMPILING AND TARGET guest_gamelike)
+add_test(NAME integration.guest_gamelike_emu
+  COMMAND ${CMAKE_COMMAND}
+    -DHOST=$<TARGET_FILE:win10xbox>
+    -DMACHINE=${WIN10XBOX_EMU_D3D_MACHINE_DIR}
+    -DPROGRAM=C:\\guest\\guest_gamelike.exe
+    -DEXPECT_EXIT=42
+    -DSAVE_STDOUT=${CMAKE_BINARY_DIR}/bin/guest_gamelike_emu.log
+    "-DEXPECT_REGEX=gamelike: D3D11 ready;gamelike: audio started;gamelike: frame 60, pad=none, audio=playing, present ok;present-limit: 90 frames presented"
+    "-DFORBID_TRACE_REGEX=host state reached under the guest TLS view"
+    -DDEBUG_SPEC=+dispatch,+modules,+process,+user
+    -DREQUIRE=Windows/System32/d3d11.dll
+    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
+set_tests_properties(integration.guest_gamelike_emu PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  FAIL_REGULAR_EXPRESSION "gamelike: FAILED"
+  LABELS "guest_e2e"
+  TIMEOUT 240
+  ENVIRONMENT "WIN10XBOX_TEST_PRESENT_LIMIT=90;WIN10XBOX_AUDIO_NULL_ENDPOINT=1;WIN10XBOX_WINEDEBUG=+loaddll,warn+module;WIN10XBOX_SCREENSHOT=${CMAKE_BINARY_DIR}/bin/guest_gamelike_emu.bmp;WIN10XBOX_EXPECT_SCREENSHOT_VARIED=100,100,740,460,16,3")
 endif()
 
 if(NOT CMAKE_CROSSCOMPILING AND WIN10XBOX_HAVE_IMGUI_GUEST)

@@ -65,6 +65,8 @@ guest_d3d11_tri.exe 42=d3d11 10=no-d3d11
 guest_imgui_d3d11.exe 0=frames
 # The swap-chain guest on machine-emu-d3d (guest_d3d11_swap.machine): 60 frames presented through the virtual swap chain.
 guest_d3d11_swap.exe 42=presented
+# The game-like frame loop on machine-emu-d3d (guest_gamelike.machine): window, D3D11, XAudio2, XInput; 42 = ran to the frame limit
+guest_gamelike.exe 42=frames
 
 # UDP + TLS (tests/guest/net2.c): the TLS half needs the test server (integration.net2_tls_server); standalone the connect fails = 20
 guest_net2.exe 42=udp+tls 20=no-tls-server

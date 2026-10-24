@@ -234,6 +234,9 @@ target_link_libraries(guest_d3d11_tri PRIVATE dxguid)
 # The swap-chain guest (tests/guest/d3d11_swap.c): 60 presented frames through the layer's DXGI interposition.
 add_executable(guest_d3d11_swap "${WIN10XBOX_ROOT}/tests/guest/d3d11_swap.c")
 target_link_libraries(guest_d3d11_swap PRIVATE dxguid)
+# The game-like frame loop (tests/guest/gamelike.c, docs/slices/gamelike.md): window + D3D11 + XAudio2 + XInput on machine-emu-d3d.
+add_executable(guest_gamelike "${WIN10XBOX_ROOT}/tests/guest/gamelike.c")
+target_link_libraries(guest_gamelike PRIVATE dxguid)
 # Dear ImGui's example_win32_directx11 (tests/guest/imgui_d3d11.cpp), the Rocket-League-class D3D11 + swap-chain guest. The
 # release source is not vendored: host-uwp.yml clones it and passes its root as WIN10XBOX_IMGUI_DIR (environment or cache);
 # without it the target does not exist (docs/slices/uwpd3d.md). Both D3D11 guests run on machine-native-d3d (their .machine).
@@ -326,7 +329,7 @@ set(HOST_UWP_GUESTS window_guest hello_guest hello_guest_cui guest_hello guest_c
     guest_spawn guest_window_nc guest_dialog guest_comctl guest_seh guest_seh_dll guest_window_scroll guest_clipboard
     guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput guest_identity guest_net guest_cursor
     guest_regpersist guest_wasapi guest_xaudio2 guest_xaudio2_play guest_nowine guest_named_objects guest_tebframe
-    guest_d3d11_tri guest_d3d11_swap guest_rdrand guest_net2 guest_closure guest_display_mode)
+    guest_d3d11_tri guest_d3d11_swap guest_rdrand guest_net2 guest_closure guest_display_mode guest_gamelike)
 if(TARGET guest_imgui_d3d11)
   list(APPEND HOST_UWP_GUESTS guest_imgui_d3d11)
 endif()
