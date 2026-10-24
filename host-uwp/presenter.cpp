@@ -8,10 +8,11 @@
 #include "blit.h"
 #include "host_util.h"
 
+#include "win10xbox/frame_scale.h"
 #include "win10xbox/user.h"
 
 #include <d3d11.h>
-#include <dxgi1_2.h>
+#include <dxgi1_5.h>
 #include <wrl/client.h>
 
 #include <atomic>
@@ -130,6 +131,14 @@ struct Presenter::Impl
 
     ComPtr<IUnknown> window;
     int win_w = 0, win_h = 0, scr_w = 0, scr_h = 0;
+    int out_w = 0, out_h = 0;         // the output mode: swap chain and GPU texture size
+    std::vector<std::uint32_t> scaled;   // out_w x out_h, only when the guest's screen differs
+    bool scale_noted = false;
+    bool system_scaling = true;          // back buffers at the guest's size; false: at the output size + our scaler
+    std::string scaling_result = "system";
+    int target_w() const { return system_scaling ? scr_w : out_w; }
+    int target_h() const { return system_scaling ? scr_h : out_h; }
+    bool nearest = false;
 
     std::shared_ptr<DeviceSlot> slot = std::make_shared<DeviceSlot>();
     bool device_reported = false;
@@ -137,6 +146,8 @@ struct Presenter::Impl
     ComPtr<ID3D11DeviceContext> context;
     std::string kind;
     ComPtr<IDXGISwapChain1> swap;
+    bool tearing = false;             // IDXGIFactory5 PRESENT_ALLOW_TEARING: the swap chain has the flag (VRR / FreeSync)
+    bool tearing_known = false;
     FrameBlitter blit;
     bool swap_failed = false;
     bool dead = false;                // device removed / Present keeps failing: headless from here on
@@ -157,6 +168,14 @@ struct Presenter::Impl
     FrameSource* source = nullptr;    // launcher screens, see SetFrameSource
 
     std::vector<std::string> notes;
+
+    // A route-B guest's swap chain on the CoreWindow (user::SetSwapChainTarget, core/dispatch/dxgi_interpose.cpp):
+    // a CoreWindow takes one swap chain, so the presenter's own is released and the guest's frames are what is on
+    // screen from then on. The request comes from a guest thread, the release happens in Tick (UI thread).
+    std::atomic<int> guest_request{0};   // 1: a guest asked for the CoreWindow
+    std::atomic<int> guest_owns{0};      // 1: the presenter's swap chain is gone
+    std::atomic<long> guest_hr{1};       // 1 = not created yet, else the HRESULT of the guest's CreateSwapChainForCoreWindow
+    bool guest_noted = false;
 };
 
 void Presenter::Impl::TakeDevice()
@@ -173,7 +192,7 @@ void Presenter::Impl::TakeDevice()
         Note(slot->note);
     }
     if (!device) return;
-    const HRESULT hr = blit.Init(device.Get(), context.Get(), scr_w, scr_h, frame.data());
+    const HRESULT hr = blit.Init(device.Get(), context.Get(), target_w(), target_h(), nullptr);
     if (FAILED(hr))
     {
         Note(Fmt("cannot create the %dx%d BGRA screen texture (%s): running headless", scr_w, scr_h, Hr(hr).c_str()));
@@ -185,8 +204,9 @@ void Presenter::Impl::TakeDevice()
 
 void Presenter::Impl::CreateSwapChain()
 {
-    const int w = win_w > 0 ? win_w : scr_w;
-    const int h = win_h > 0 ? win_h : scr_h;
+    // The swap chain is the real output mode (HostInfo.display), not the CoreWindow's size and not the guest's screen.
+    const int w = target_w() > 0 ? target_w() : (win_w > 0 ? win_w : scr_w);
+    const int h = target_h() > 0 ? target_h() : (win_h > 0 ? win_h : scr_h);
     ComPtr<IDXGIDevice> dxgi;
     ComPtr<IDXGIAdapter> adapter;
     ComPtr<IDXGIFactory2> factory;
@@ -198,6 +218,17 @@ void Presenter::Impl::CreateSwapChain()
         swap_failed = true;
         Note("no IDXGIFactory2 from the D3D11 device (" + Hr(hr) + "): running headless");
         return;
+    }
+    if (!tearing_known)
+    {
+        tearing_known = true;
+        ComPtr<IDXGIFactory5> f5;
+        BOOL allow = FALSE;
+        if (SUCCEEDED(factory.As(&f5)) &&
+            SUCCEEDED(f5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allow, sizeof allow)))
+            tearing = allow != FALSE;
+        Note(Fmt("tearing (DXGI_FEATURE_PRESENT_ALLOW_TEARING): %s; presents use sync interval %s", tearing ? "supported" : "not supported",
+                 tearing ? "0 + ALLOW_TEARING while the guest's last Present used interval 0, else 1" : "1"));
     }
     DXGI_SWAP_CHAIN_DESC1 d = {};
     d.Width = static_cast<UINT>(w);
@@ -211,8 +242,17 @@ void Presenter::Impl::CreateSwapChain()
     d.Scaling = DXGI_SCALING_STRETCH;
     d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
     d.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-    d.Flags = 0;
+    d.Flags = tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
     hr = factory->CreateSwapChainForCoreWindow(device.Get(), window.Get(), &d, nullptr, swap.ReleaseAndGetAddressOf());
+    if (FAILED(hr) && system_scaling && (scr_w != out_w || scr_h != out_h))
+    {
+        // The console refused a back buffer of the guest's size: scale in the layer instead.
+        swap.Reset();
+        system_scaling = false;
+        scaling_result = "layer (system refused: " + Hr(hr) + ")";
+        Note("output_scaling=" + scaling_result + ": the swap chain is created at the output size");
+        if (device && blit.Init(device.Get(), context.Get(), out_w, out_h, nullptr) == S_OK) { uploaded = false; CreateSwapChain(); return; }
+    }
     if (FAILED(hr))
     {
         swap_failed = true;
@@ -222,8 +262,8 @@ void Presenter::Impl::CreateSwapChain()
                  w, h, Hr(hr).c_str()));
         return;
     }
-    Note(Fmt("swap chain on the CoreWindow: %dx%d B8G8R8A8 flip-sequential, 2 buffers; screen %dx%d%s", w, h, scr_w, scr_h,
-             (w != scr_w || h != scr_h) ? " (sizes differ: the overlapping region is copied)" : ""));
+    Note(Fmt("swap chain on the CoreWindow: %dx%d B8G8R8A8 flip-sequential, 2 buffers%s; guest screen %dx%d (CoreWindow %dx%d)", w, h,
+             tearing ? ", ALLOW_TEARING" : "", scr_w, scr_h, win_w, win_h));
 }
 
 void Presenter::Impl::Present(ULONGLONG now)
@@ -231,7 +271,21 @@ void Presenter::Impl::Present(ULONGLONG now)
     last_present = now;
     if (!uploaded)
     {
-        blit.Upload(frame.data(), scr_w * 4);
+        if (!system_scaling && (scr_w != out_w || scr_h != out_h))
+        {
+            scaled.resize(static_cast<std::size_t>(out_w) * static_cast<std::size_t>(out_h));
+            nearest = win10xbox::ScaleFrame(frame.data(), scr_w, scr_h, scaled.data(), out_w, out_h);
+            if (!scale_noted)
+            {
+                scale_noted = true;
+                Note(Fmt("scale=%dx%d->%dx%d (%s filter)", scr_w, scr_h, out_w, out_h, nearest ? "nearest" : "linear"));
+            }
+            blit.Upload(scaled.data(), out_w * 4);
+        }
+        else
+        {
+            blit.Upload(frame.data(), scr_w * 4);
+        }
         uploaded = true;
     }
     ComPtr<ID3D11Texture2D> back;
@@ -240,7 +294,9 @@ void Presenter::Impl::Present(ULONGLONG now)
     {
         blit.CopyTo(back.Get());
         back.Reset();
-        hr = swap->Present(1, 0);
+        // VRR / FreeSync: a guest that presents with sync interval 0 gets tearing presents; otherwise vsync.
+        const bool tear = tearing && win10xbox::user::LastGuestSyncInterval() == 0;
+        hr = tear ? swap->Present(0, DXGI_PRESENT_ALLOW_TEARING) : swap->Present(1, 0);
     }
     if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
     {
@@ -266,6 +322,32 @@ void Presenter::Impl::Present(ULONGLONG now)
 }
 
 // ----------------------------------------------------------------------
+namespace
+{
+    // user::SwapChainTargetFn: runs on the guest's thread.
+    long GuestSwapChainTarget(void* factory, void* device, const void* desc1, void** out, void* ctx)
+    {
+        auto* m = static_cast<Presenter::Impl*>(ctx);
+        m->guest_request = 1;
+        for (int i = 0; i < 300 && !m->guest_owns; ++i) Sleep(10);   // the UI thread releases its swap chain in Tick
+        if (!m->guest_owns || !m->window) return E_FAIL;
+        // The guest's swap chain gets the tearing flag too when the system supports it (flip model is forced by the
+        // interposer); the wrapper then presents interval-0 frames with DXGI_PRESENT_ALLOW_TEARING.
+        DXGI_SWAP_CHAIN_DESC1 gd = *static_cast<const DXGI_SWAP_CHAIN_DESC1*>(desc1);
+        {
+            ComPtr<IDXGIFactory5> f5;
+            BOOL allow = FALSE;
+            if (SUCCEEDED(static_cast<IDXGIFactory2*>(factory)->QueryInterface(IID_PPV_ARGS(&f5))) &&
+                SUCCEEDED(f5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allow, sizeof allow)) && allow)
+                gd.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+        }
+        const HRESULT hr = static_cast<IDXGIFactory2*>(factory)->CreateSwapChainForCoreWindow(
+            static_cast<IUnknown*>(device), m->window.Get(), &gd, nullptr, reinterpret_cast<IDXGISwapChain1**>(out));
+        m->guest_hr = static_cast<long>(hr);
+        return static_cast<long>(hr);
+    }
+}  // namespace
+
 Presenter::Presenter() : impl_(new Impl) {}
 
 Presenter::~Presenter()
@@ -273,7 +355,10 @@ Presenter::~Presenter()
     if (impl_->shot != INVALID_HANDLE_VALUE) CloseHandle(impl_->shot);
 }
 
-void Presenter::Configure(IUnknown* core_window, int window_width, int window_height, int screen_width, int screen_height)
+std::string Presenter::OutputScaling() const { return impl_->scaling_result; }
+
+void Presenter::Configure(IUnknown* core_window, int window_width, int window_height, int screen_width, int screen_height,
+                          int output_width, int output_height, bool system_scaling)
 {
     Impl& m = *impl_;
     m.window = core_window;
@@ -281,7 +366,12 @@ void Presenter::Configure(IUnknown* core_window, int window_width, int window_he
     m.win_h = window_height;
     m.scr_w = screen_width > 0 ? screen_width : (window_width > 0 ? window_width : 1920);
     m.scr_h = screen_height > 0 ? screen_height : (window_height > 0 ? window_height : 1080);
+    m.system_scaling = system_scaling;
+    m.scaling_result = system_scaling ? "system" : "layer";
+    m.out_w = output_width > 0 ? output_width : m.scr_w;
+    m.out_h = output_height > 0 ? output_height : m.scr_h;
     m.frame.assign(static_cast<std::size_t>(m.scr_w) * static_cast<std::size_t>(m.scr_h), kBackground);
+    win10xbox::user::SetSwapChainTarget(&GuestSwapChainTarget, impl_.get());
 }
 
 void Presenter::OpenScreenshot(const std::wstring& path)
@@ -325,6 +415,7 @@ Presenter::Device Presenter::DeviceState() const
 
 bool Presenter::Presenting() const
 {
+    if (impl_->guest_owns) return SUCCEEDED(impl_->guest_hr.load());   // the guest's swap chain is on the CoreWindow
     return impl_->swap && !impl_->dead && impl_->presents != 0 && SUCCEEDED(impl_->last_present_hr);
 }
 
@@ -332,6 +423,58 @@ void Presenter::Tick(bool live)
 {
     Impl& m = *impl_;
     m.TakeDevice();
+    {
+        // A program's own guest display (.display / display=) changes the driver's mode at its launch: follow it.
+        std::uint32_t gw = 0, gh = 0, ghz = 0, gbpp = 0;
+        if (win10xbox::user::CurrentDisplayMode(&gw, &gh, &ghz, &gbpp) && gw > 0 && gh > 0 &&
+            (static_cast<int>(gw) != m.scr_w || static_cast<int>(gh) != m.scr_h))
+        {
+            m.scr_w = static_cast<int>(gw);
+            m.scr_h = static_cast<int>(gh);
+            m.frame.assign(static_cast<std::size_t>(m.scr_w) * static_cast<std::size_t>(m.scr_h), kBackground);
+            m.uploaded = false;
+            m.composed = false;
+            m.last_serial = ~0ull;
+            m.scale_noted = false;
+            if (m.system_scaling)
+            {
+                // The swap chain follows the guest's screen: a new one (and texture) at the new size.
+                if (m.context)
+                {
+                    m.context->ClearState();
+                    m.context->Flush();
+                }
+                m.swap.Reset();
+                if (m.device) m.blit.Init(m.device.Get(), m.context.Get(), m.target_w(), m.target_h(), nullptr);
+            }
+            else if (m.device)
+            {
+                m.blit.Init(m.device.Get(), m.context.Get(), m.out_w, m.out_h, nullptr);
+            }
+            m.Note(Fmt("guest screen is now %dx%d@%u (output %dx%d)", m.scr_w, m.scr_h, static_cast<unsigned>(ghz), m.out_w, m.out_h));
+        }
+    }
+    if (m.guest_request && !m.guest_owns)
+    {
+        if (m.context)
+        {
+            m.context->ClearState();
+            m.context->Flush();
+        }
+        m.swap.Reset();
+        m.guest_owns = 1;
+        m.Note("a guest asked for a swap chain on the CoreWindow: the presenter's own swap chain is released");
+    }
+    if (m.guest_owns)
+    {
+        if (!m.guest_noted && m.guest_hr.load() != 1)
+        {
+            m.guest_noted = true;
+            m.Note(Fmt("guest swap chain on the CoreWindow: CreateSwapChainForCoreWindow -> %s; its Present is on screen",
+                       Hr(static_cast<HRESULT>(m.guest_hr.load())).c_str()));
+        }
+        return;   // the guest presents; nothing of the composed desktop is drawn over it
+    }
     if (m.device && !m.dead && !m.swap && !m.swap_failed && m.window) m.CreateSwapChain();
 
     const ULONGLONG now = GetTickCount64();
@@ -425,7 +568,10 @@ std::string Presenter::Describe() const
         else s = "D3D11 " + m.kind + " device, no swap chain yet";
         break;
     }
-    return s + Fmt("; screen %dx%d, window %dx%d px; presents=%llu composed=%llu screenshots=%llu", m.scr_w, m.scr_h,
-                   m.win_w, m.win_h, m.presents, m.composes, m.shots);
+    if (m.scr_w != m.out_w || m.scr_h != m.out_h)
+        s += Fmt("; scale=%dx%d->%dx%d (%s)", m.scr_w, m.scr_h, m.out_w, m.out_h, m.system_scaling ? "by the console" : "by the layer");
+    s += "; output_scaling=" + m.scaling_result;
+    return s + Fmt("; screen %dx%d, output %dx%d, window %dx%d px; presents=%llu composed=%llu screenshots=%llu", m.scr_w, m.scr_h,
+                   m.out_w, m.out_h, m.win_w, m.win_h, m.presents, m.composes, m.shots);
 }
 }  // namespace w10x_uwp

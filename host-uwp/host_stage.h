@@ -58,7 +58,10 @@ namespace w10x_uwp
 
     // Phase A, before the core is initialised: machine.json from the package if there is none yet.
     // Creates `machine_root` as needed. Returns true if machine.json exists afterwards.
-    bool StageMachineJson(const std::wstring& machine_root, const std::wstring& payload_dir);
+    // `json_rel`: the package file relative to payload_dir (a machine folder with its own derived machine.json uses
+    // <folder>\machine.json).
+    bool StageMachineJson(const std::wstring& machine_root, const std::wstring& payload_dir,
+                          const std::wstring& json_rel = L"machine.json");
 
     struct StagePlan
     {
@@ -69,11 +72,12 @@ namespace w10x_uwp
         std::wstring profile_rel;      // guest profile relative to C:, e.g. L"Users\\User"
         std::wstring stamp;            // package full name ("" = no package identity: only copy what is missing)
         std::vector<std::wstring> native_names;   // launch.json stage_native (validated leaf names)
+        std::wstring profile_dir;      // payload\<profile_dir>\*.dll are copied into System32 (the msctf.dll stand-in); "" = none
     };
 
     struct StageResult
     {
-        GroupStats builtin, guest, nls, native;
+        GroupStats builtin, guest, nls, native, stubs;
         bool have_ntdll = false;                   // <C:>\Windows\builtin\ntdll.dll present
         bool refreshed = false;                    // package files were re-copied (new package version)
         std::vector<std::string> required_missing; // required NLS data that could not be staged

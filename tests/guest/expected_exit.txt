@@ -1,7 +1,10 @@
 # Expected exit codes of the bundled guest programs under host-uwp (launcher verdict, CI "Assert on report.txt").
-# Format:  <program> <code>[=<label>] [<code>=<label> ...]     (# starts a comment; <code> is an integer or TIMEOUT)
+# Format:  <program> <code>[=<label>] [<code>=<label> ...] [KNOWNFAIL=<code>:<label> ...]     (# starts a comment; <code> is an integer or TIMEOUT)
 # Every listed outcome is a PASS and the verdict names its label: "PASS (exit code 3 = no-input)". A listed program that
 # ends with another code is FAIL; one with no row is EXITED/CRASH. TIMEOUT is allowed only where a row lists it.
+# KNOWNFAIL=<code>:<label> (a third kind, several allowed) records a failure that is understood and has its own slice: the
+# verdict is "KNOWN-FAIL (exit code 2 = label)", counted in the report's knownfail= line, shown in its own colour, never PASS.
+# CI allows KNOWN-FAIL only where a row lists it and prints the known-fail programs in the step summary. Any other code is FAIL.
 # Codes were observed on the windows-latest runner (host-uwp run 40009489508) and standalone; labels other than the
 # first say why the runner/console cannot take the first path.
 
@@ -14,6 +17,7 @@ smoke_cui.exe 42
 guest_hello.exe 42
 guest_cpuid.exe 0
 guest_sleep.exe 7
+dirtree 42=directory-install
 drv_client.exe 2
 guest_clipboard.exe 42
 guest_comctl.exe 42
@@ -45,12 +49,25 @@ guest_named_objects.exe 42=child-ran 1=no-child-processes
 # Audio: the runner has no endpoint (hr 0x80070490), the console has one
 guest_wasapi.exe 42=endpoint 43=no-endpoint
 guest_xaudio2.exe 42=endpoint 43=no-endpoint
+guest_xaudio2_play.exe 42=played 43=no-endpoint
 
-# Gamepad: 42 with a pad, 1 after the 30 s wait without one
+# Gamepad: 42 with a pad, 1 after the 10 s wait without one
 guest_xinput.exe 42=pad 1=no-pad
 
-# d3d11.dll does not load under the launcher (error 126): separate slice
+# Every display answer equals the host's one mode (no argument: the picker run only checks the four answers agree)
+guest_display_mode.exe 42=matches
+
+# Off-screen D3D11 on machine-native-d3d (guest_d3d11_tri.machine); 10 = d3d11.dll did not load (no D3D machine)
 guest_d3d11_tri.exe 42=d3d11 10=no-d3d11
+# Dear ImGui's example on machine-native-d3d (guest_imgui_d3d11.machine): 60 frames, then its normal shutdown returns 0.
+guest_imgui_d3d11.exe 0=frames KNOWNFAIL=-2147483392:uwp-no-hwnd-swapchain(-uwpswap)
+# The swap-chain guest on machine-native-d3d (guest_d3d11_swap.machine): 60 frames presented through the DXGI interposition.
+guest_d3d11_swap.exe 42=presented KNOWNFAIL=2:uwp-no-hwnd(-uwpswap)
+
+# UDP + TLS (tests/guest/net2.c): the TLS half needs the test server (integration.net2_tls_server); standalone the connect fails = 20
+guest_net2.exe 42=udp+tls 20=no-tls-server
+# DLL/import closure (tests/guest/closure.c): 42 when every listed import resolves, 43 when some are missing or no *_imports.txt is bundled
+guest_closure.exe 42=closed 43=open-or-no-lists
 
 # Chocolate Doom (fetched, not in tests/guest): interactive; the timedemo ends through I_Error, which exits with -1
 chocolate-doom.exe TIMEOUT=interactive

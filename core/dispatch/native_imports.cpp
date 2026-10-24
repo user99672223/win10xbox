@@ -230,6 +230,12 @@ void NoteNativeGuestImage(const loader::MappedImage& img, const std::wstring& ho
     // (the host path is empty) and the image's own export-directory name is all there is.
     const std::wstring& id = host_path.empty() ? export_name : host_path;
     if (id.empty()) return;
+    // The native dxgi / d3d11 (not Wine's builtins): the layer sits between them and the guest (dxgi_interpose.cpp).
+    if (IsDxgiInterposedModule(id) && (host_path.empty() || (host_path.find(L"\\builtin\\") == std::wstring::npos &&
+                                                             host_path.find(L"/builtin/") == std::wstring::npos))) {
+        InterposeDxgiImage(img, id);
+        return;
+    }
     if (!host_path.empty() && host_path.find(L"\\builtin\\") == std::wstring::npos &&
         host_path.find(L"/builtin/") == std::wstring::npos)
         return;

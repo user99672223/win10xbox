@@ -1,6 +1,7 @@
 // launch_config.cpp - launch.json parser. Portable C++20, see launch_config.h.
 #include "launch_config.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstddef>
 #include <cstdint>
@@ -619,7 +620,16 @@ bool NormalizeGuestPath(std::string_view in, bool allow_bare_name, std::string* 
     return true;
 }
 
-bool ParseLaunchConfig(std::string_view text, LaunchConfig* out, std::string* error)
+bool IsDisplayModeText(const std::string& text)
+    {
+        if (text == "auto") return true;
+        unsigned w = 0, h = 0, hz = 60;
+        char tail = 0;
+        const int n = std::sscanf(text.c_str(), "%ux%u@%u%c", &w, &h, &hz, &tail);
+        return (n == 2 || n == 3) && w && h && hz;
+    }
+
+    bool ParseLaunchConfig(std::string_view text, LaunchConfig* out, std::string* error)
 {
     std::string scratch;
     if (!error) error = &scratch;
@@ -726,6 +736,27 @@ bool ParseLaunchConfig(std::string_view text, LaunchConfig* out, std::string* er
                 c.stage_native.push_back(a.str);
             }
         }
+        else if (k == "machine")
+        {
+            if (v.type != Value::Type::String)
+                return Fail(error, v.line, std::string("\"machine\" must be a string, found ") + TypeName(v.type));
+            if (!IsLeafNameUtf8(v.str) || v.str[0] == '.')
+                return Fail(error, v.line, "\"machine\" must be a folder name under LocalState (like \"machine-native-d3d\"), not \"" + v.str + "\"");
+            c.machine = v.str;
+        }
+        else if (k == "output_scaling")
+        {
+            if (!WantString(v, k, &c.output_scaling, error)) return false;
+            if (c.output_scaling != "system" && c.output_scaling != "layer")
+                return Fail(error, v.line, "\"output_scaling\" must be \"system\" or \"layer\", not \"" + c.output_scaling + "\"");
+        }
+        else if (k == "display_mode" || k == "guest_display")
+        {
+            std::string& dst = k == "display_mode" ? c.display_mode : c.guest_display;
+            if (!WantString(v, k, &dst, error)) return false;
+            if (!IsDisplayModeText(dst))
+                return Fail(error, v.line, "\"" + k + "\" must be \"auto\" or \"WxH@Hz\" like \"2560x1440@120\", not \"" + dst + "\"");
+        }
         else if (k == "input_pump")
         {
             if (!WantBool(v, k, &c.input_pump, error)) return false;
@@ -772,7 +803,7 @@ bool ParseLaunchConfig(std::string_view text, LaunchConfig* out, std::string* er
             return Fail(error, kl,
                         "unknown key \"" + k +
                             "\" (known: guest, args, cwd, trace, winedebug, trace_log_max_mb, timeout_sec, exit_when_done, "
-                            "expect_exit_code, stage_native, input_pump, picker, autoselect, autoselect_timeout_sec)");
+                            "expect_exit_code, stage_native, machine, display_mode, guest_display, output_scaling, input_pump, picker, autoselect, autoselect_timeout_sec)");
         }
     }
 
@@ -798,6 +829,10 @@ std::string DescribeLaunchConfig(const LaunchConfig& c)
     std::string names;
     for (const std::string& n : c.stage_native) names += (names.empty() ? "" : ",") + n;
     s += "stage_native=" + (names.empty() ? std::string("(none)") : names) + "\n";
+    s += "machine=" + (c.machine.empty() ? std::string("machine") : c.machine) + "\n";
+    s += "display_mode=" + c.display_mode + "\n";
+    s += "guest_display=" + c.guest_display + "\n";
+    s += "output_scaling=" + c.output_scaling + "\n";
     s += std::string("input_pump=") + (c.input_pump ? "true" : "false") + "\n";
     if (c.has_picker) s += std::string("picker=") + (c.picker ? "true" : "false") + "\n";
     if (c.autoselect_all) s += "autoselect=all\nautoselect_timeout_sec=" + std::to_string(c.autoselect_timeout_sec) + "\n";
@@ -964,7 +999,23 @@ bool ParseExpectedTable(std::string_view text, ExpectedTable* out, std::string* 
         {
             ExpectedRow r;
             const std::size_t eq = w[i].find('=');
-            const std::string head = w[i].substr(0, eq);
+            std::string head = w[i].substr(0, eq);
+            if (head == "KNOWNFAIL")
+            {
+                // KNOWNFAIL=<code>:<label>
+                const std::string rest = eq == std::string::npos ? std::string() : w[i].substr(eq + 1);
+                const std::size_t colon = rest.find(':');
+                if (colon == std::string::npos || colon + 1 >= rest.size()) return fail("'" + w[i] + "' is not KNOWNFAIL=<code>:<label>");
+                char* kend = nullptr;
+                const std::string kc = rest.substr(0, colon);
+                const long kv = std::strtol(kc.c_str(), &kend, 10);
+                if (kc.empty() || *kend != '\0') return fail("'" + w[i] + "' has a bad KNOWNFAIL code");
+                r.known_fail = true;
+                r.code = static_cast<int>(kv);
+                r.label = rest.substr(colon + 1);
+                rows.push_back(r);
+                continue;
+            }
             if (eq != std::string::npos)
             {
                 r.label = w[i].substr(eq + 1);
@@ -1016,8 +1067,11 @@ std::string ReportVerdict(bool timed_out, long exit_code, const std::vector<Expe
         for (const ExpectedRow& r : *rows)
         {
             if (r.timeout) continue;
+            if (r.code == code && r.known_fail)
+                return "KNOWN-FAIL (exit code " + std::to_string(code) + " = " + r.label + ")";
             if (r.code == code)
                 return "PASS (exit code " + std::to_string(code) + (r.label.empty() ? std::string() : " = " + r.label) + ")";
+            if (r.known_fail) continue;
             want += (want.empty() ? "" : " or ") + std::to_string(r.code);
         }
         return "FAIL (exit code " + std::to_string(code) + ", expected " + (want.empty() ? std::string("a timeout") : want) + ")";

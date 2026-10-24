@@ -61,9 +61,36 @@ std::uint64_t FrameSerial();
 // monitor). Zero before the first NtUser call.
 void ScreenSize(std::int32_t* width, std::int32_t* height);
 
+// The one display mode every display answer of the layer comes from (EnumDisplaySettings, GetDeviceCaps
+// HORZRES/VERTRES/VREFRESH/BITSPIXEL, GetSystemMetrics SM_CXSCREEN, the monitor rect, and the DXGI output of the
+// emulated windows): the current mode of the driver's primary monitor, set by the host when it creates the driver.
+// False (all zero) before a driver exists.
+bool CurrentDisplayMode(std::uint32_t* width, std::uint32_t* height, std::uint32_t* refresh_hz,
+                        std::uint32_t* bits_per_pixel);
+
+// The sync interval of the guest's most recent IDXGISwapChain::Present (1 until it presents). The host-uwp presenter
+// presents with tearing (VRR) whenever this is 0. Any thread.
+void NoteGuestPresent(unsigned sync_interval);
+unsigned LastGuestSyncInterval();
+
 // Writes ComposeLastPaintedFrame() as a 32-bit BMP. Used by host-win32 (WIN10XBOX_SCREENSHOT=
 // <path>, written when the guest has exited) and by host-uwp (LocalState\screen.bmp).
 bool WriteScreenshot(const std::wstring& path);
+
+// ---- Direct3D swap chains of a route-B guest (core/dispatch/dxgi_interpose.cpp) -----------------------------
+// host-win32: after each successful Present of a swap chain on window `hwnd` the layer hands the pixels of the
+// back buffer it presented (top-down BGRA, `stride_bytes` per row) here; ComposeFrame / the screenshot then
+// show them in the window's client rectangle. Any thread; the pixels are copied.
+bool NotifyClientFrame(void* hwnd, const std::uint32_t* bgra, std::int32_t width, std::int32_t height,
+                       std::int32_t stride_bytes);
+
+// host-uwp: creates the real swap chain for the guest on the presenter's CoreWindow instead of on the guest's
+// window. `factory` is the real IDXGIFactory2*, `device` the guest's IUnknown* device, `desc1` a
+// const DXGI_SWAP_CHAIN_DESC1*; *swap_chain receives an IDXGISwapChain1* (one reference). Returns an HRESULT.
+// Null (the default): swap chains are made on the guest's own window. Set once by the host before Launch.
+using SwapChainTargetFn = long (*)(void* factory, void* device, const void* desc1, void** swap_chain, void* ctx);
+void SetSwapChainTarget(SwapChainTargetFn fn, void* ctx);
+SwapChainTargetFn GetSwapChainTarget(void** ctx);
 
 // Counters for tests and status files.
 struct Stats {

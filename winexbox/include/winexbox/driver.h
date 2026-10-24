@@ -31,6 +31,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <string>
 #include <vector>
@@ -83,6 +84,18 @@ struct DisplayMode {                // DEVMODEW subset
                a.bits_per_pixel == b.bits_per_pixel && a.refresh_hz == b.refresh_hz;
     }
 };
+
+// "WxH@Hz" (Hz optional, default 60), e.g. "2560x1440@120". False when it is not that form or a number is 0.
+inline bool ParseDisplayMode(const std::string& text, DisplayMode* out) {
+    unsigned w = 0, h = 0, hz = 60;
+    char c = 0;
+    const int n = std::sscanf(text.c_str(), "%ux%u@%u%c", &w, &h, &hz, &c);
+    if (n == 2) hz = 60;
+    else if (n != 3) return false;
+    if (!w || !h || !hz) return false;
+    if (out) { out->width = w; out->height = h; out->refresh_hz = hz; out->bits_per_pixel = 32; }
+    return true;
+}
 
 struct GpuInfo {                    // gdi_device_manager::add_gpu
     std::string   name;
@@ -414,6 +427,9 @@ struct HeadlessStats {
     std::uint64_t dcs_outstanding = 0;  // GetDC minus ReleaseDC
 };
 HeadlessStats GetHeadlessStats(const IWinexboxDriver& drv);
+// Makes `mode` the primary monitor's current mode, adding it to the supported list when it is new (the host decides
+// the guest's screen, launch.json "guest_display"). False for a non-headless driver.
+bool SetHeadlessMode(IWinexboxDriver& drv, const DisplayMode& mode);
 
 struct HeadlessWindowInfo {
     WindowId      parent = 0;

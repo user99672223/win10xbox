@@ -65,6 +65,15 @@ folder, no host-System32 fallback). The package assert fails when `l_intl.nls`, 
 or `sortdefault.nls` is missing. Host System32 NLS is only a fallback in StageMachineFiles (log group `stage[nls]`, the
 package's own is `stage[nls-pkg]`; the run job prints both). Gap: tests/guest/lua is not bundled.
 
+### Second machine folder: `LocalState\machine-native-d3d` (docs/slices/uwpd3d.md)
+
+D3D11 guests (Rocket League class) need the route-B + D3D machine of `prepare_machine.cmake` (D3D_MACHINE): native
+user32/gdi32/win32u forwarded to the host win32u, native d3d11/dxgi/d3dcompiler_47/d3d10warp visible to the guest,
+`NtGdiDdDDI*` forwarded. The package carries only `payload\machine-native-d3d\machine.json` (derived by stage.cmake like
+prepare_machine) and the `msctf.dll` stand-in; the builtins, guests and NLS are the same package files, and the native DLLs
+(`D3dMachineNativeDlls()` in guest_sidecar.cpp, the prepare_machine set) are copied BY NAME from the console's System32
+at first use of the folder (host_stage.cpp). Package size is unchanged to within the stand-in (a few KB).
+
 ## Install the package on the console
 
 1. Artifact `host-uwp-msix` from the latest green `host-uwp.yml` run on main. Latest green as of this
@@ -136,10 +145,18 @@ if no pad is ever seen) and keyboard (arrows, Enter/Space, Esc/Backspace).
   * `<name>.env`: `KEY=VALUE` per line. Set in the host's environment (the guest inherits it) for that launch
     only, then the previous values are restored. A malformed file is ignored (logged).
   * `<name>.title`: first non-blank line is shown in the list instead of `<name>.exe`.
+  * `<name>.machine`: first non-blank line = the machine folder under `LocalState` the guest runs on (default
+    `machine`). `machine-native-d3d` = route B + native Direct3D 11 (see "Second machine folder" below). A `.launch`
+    file takes `machine=<folder>`; `launch.json` takes `"machine"`; the picked entry's value wins. Bundled:
+    `guest_d3d11_tri.machine`, `guest_imgui_d3d11.machine`.
   * `<name>.launch`: an extra list entry that runs another guest with its own settings, no copy of the exe.
     Keys, one per line: `exe=<leaf name>` (required, must be in the list), `title=<text>`, `args=<words>`
     (whitespace separated, `"double quotes"` group a word; repeatable, appended), `env=KEY=VALUE` (repeatable).
     An entry whose `exe` is not present is not offered. `autoselect` matches the entry name (`doom-timedemo.launch`).
+  * **Directory install** (docs/slices/dirlaunch.md): a subdirectory `<dir>\` of `payload\guest` or `LocalState\guests` holding
+    `<dir>.launch` is ONE entry named `<dir>`. The whole tree is copied to `C:\guest\<dir>\`; `exe=` is a relative path
+    inside it (`bin\App.exe`, no `..`, no drive) and `cwd=` the working directory relative to it (`.` = the directory;
+    default the directory). `cwd=` also works in a flat `.launch` (relative to `C:\guest`). Bundled: `dirtree`.
 * **Doom.** The `msix` job runs `tools/ci/fetch_doom.ps1` (pinned) into `payload\guest\` (flat: `chocolate-doom.exe`,
   the SDL2 DLLs, `doom1.wad`, about 10 MB; `stage.cmake` `EXTRA_GUEST_DIR` / CMake `HOST_UWP_EXTRA_GUEST_DIR`).
   Shipped sidecars (`host-uwp/payload/guest/`): `chocolate-doom.args` = `-iwad doom1.wad -fullscreen -nomouse`,

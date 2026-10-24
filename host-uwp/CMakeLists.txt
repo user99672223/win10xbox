@@ -225,12 +225,36 @@ set_target_properties(window_guest PROPERTIES OUTPUT_NAME "window")
 
 # Every other guest of the repo, so the package carries them all to the console (HANDOFF.md
 # "Standing testing rule"). Console programs; output names as in the main tree.
-foreach(_g hello cpuid sleep spawn named_objects xinput identity regpersist tebframe rdrand)
+foreach(_g hello cpuid sleep spawn named_objects xinput identity regpersist tebframe rdrand net2 closure)
   add_executable(guest_${_g} "${WIN10XBOX_ROOT}/tests/guest/${_g}.c")
 endforeach()
 # The Direct3D 11 off-screen guest (tests/guest/d3d11_tri.c): native d3d11/dxgi loaded at run time, dxguid for the IIDs.
 add_executable(guest_d3d11_tri "${WIN10XBOX_ROOT}/tests/guest/d3d11_tri.c")
 target_link_libraries(guest_d3d11_tri PRIVATE dxguid)
+# The swap-chain guest (tests/guest/d3d11_swap.c): 60 presented frames through the layer's DXGI interposition.
+add_executable(guest_d3d11_swap "${WIN10XBOX_ROOT}/tests/guest/d3d11_swap.c")
+target_link_libraries(guest_d3d11_swap PRIVATE dxguid)
+# Dear ImGui's example_win32_directx11 (tests/guest/imgui_d3d11.cpp), the Rocket-League-class D3D11 + swap-chain guest. The
+# release source is not vendored: host-uwp.yml clones it and passes its root as WIN10XBOX_IMGUI_DIR (environment or cache);
+# without it the target does not exist (docs/slices/uwpd3d.md). Both D3D11 guests run on machine-native-d3d (their .machine).
+set(WIN10XBOX_IMGUI_DIR "$ENV{WIN10XBOX_IMGUI_DIR}" CACHE PATH "Dear ImGui release source root (guest_imgui_d3d11)")
+if(WIN10XBOX_IMGUI_DIR AND EXISTS "${WIN10XBOX_IMGUI_DIR}/examples/example_win32_directx11/main.cpp")
+  set(_im "${WIN10XBOX_IMGUI_DIR}")
+  add_executable(guest_imgui_d3d11 "${WIN10XBOX_ROOT}/tests/guest/imgui_d3d11.cpp"
+    ${_im}/imgui.cpp ${_im}/imgui_demo.cpp ${_im}/imgui_draw.cpp ${_im}/imgui_tables.cpp ${_im}/imgui_widgets.cpp
+    ${_im}/backends/imgui_impl_dx11.cpp ${_im}/backends/imgui_impl_win32.cpp)
+  target_include_directories(guest_imgui_d3d11 PRIVATE ${_im} ${_im}/backends)
+  target_compile_definitions(guest_imgui_d3d11 PRIVATE UNICODE _UNICODE)
+  target_compile_options(guest_imgui_d3d11 PRIVATE /W3)
+  target_link_libraries(guest_imgui_d3d11 PRIVATE d3d11 dxgi d3dcompiler user32 gdi32 imm32)
+  message(STATUS "guest_imgui_d3d11: Dear ImGui from ${_im}")
+endif()
+# The msctf.dll stand-in of the machine-native-d3d folder (imm32 delay-loads msctf; tests/guest/msctf_stub.c), staged into
+# payload\machine-native-d3d by stage.cmake. Not a guest.
+add_library(msctf_stub SHARED "${WIN10XBOX_ROOT}/tests/guest/msctf_stub.c")
+set_target_properties(msctf_stub PROPERTIES OUTPUT_NAME msctf PREFIX ""
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/native-gui-stubs
+  LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/native-gui-stubs)
 # Our own builtin DLLs (guest-dlls/: xinput1_4.dll and its copies xinput1_3.dll / xinput9_1_0.dll, staged into
 # payload\builtin next to Wine's) and the XInput guest that imports one.
 set(WIN10XBOX_GUEST_DLL_DIR ${CMAKE_BINARY_DIR}/bin/guest-dlls)
@@ -240,6 +264,7 @@ target_link_libraries(guest_xinput PRIVATE xinput1_4 user32)
 target_sources(guest_identity PRIVATE "${WIN10XBOX_ROOT}/tests/guest/identity.manifest")
 target_link_libraries(guest_identity PRIVATE ole32 oleaut32 advapi32)
 target_link_libraries(guest_regpersist PRIVATE advapi32)   # the registry API
+target_link_libraries(guest_net2 PRIVATE ws2_32 secur32 crypt32)   # UDP + SChannel TLS (tests/guest/net2.c)
 add_library(guest_dll SHARED "${WIN10XBOX_ROOT}/tests/guest/dll.c")
 set_target_properties(guest_dll PROPERTIES PREFIX "")
 add_executable(smoke_guest_cui "${WIN10XBOX_ROOT}/host-uwp-lite/smoke_guest.c")
@@ -252,7 +277,7 @@ target_include_directories(drv_client PRIVATE "${WIN10XBOX_ROOT}/tests/drivers")
 
 # The remaining GUI guests of tests/guest (same output names as ci.yml's bin/guest), and the GUI
 # smoke variant, so the package carries every guest ci.yml builds (HANDOFF.md "Package contents").
-foreach(_g window2 window_input window_input2 window_text window_hooks window_nc window_scroll clipboard window_menu cursor)
+foreach(_g window2 window_input window_input2 window_text window_hooks window_nc window_scroll clipboard window_menu cursor display_mode)
   add_executable(guest_${_g} "${WIN10XBOX_ROOT}/tests/guest/${_g}.c")
   target_link_libraries(guest_${_g} PRIVATE user32 gdi32)
 endforeach()
@@ -280,8 +305,13 @@ target_link_libraries(guest_net PRIVATE ws2_32)
 foreach(_g wasapi xaudio2 nowine)
   add_executable(guest_${_g} "${WIN10XBOX_ROOT}/tests/guest/${_g}.c")
 endforeach()
+# guest_dirtree is a directory install (docs/slices/dirlaunch.md), not a flat guest: it is not in HOST_UWP_GUESTS; stage.cmake
+# (-DDIRTREE_EXE) puts it into payload\guest\dirtree\bin with tests/guest/dirtree/ (data\file.pak, dirtree.launch).
+add_executable(guest_dirtree "${WIN10XBOX_ROOT}/tests/guest/dirtree.c")
 target_link_libraries(guest_wasapi PRIVATE ole32)
 target_link_libraries(guest_xaudio2 PRIVATE ole32)
+add_executable(guest_xaudio2_play "${WIN10XBOX_ROOT}/tests/guest/xaudio2_play.c")
+target_link_libraries(guest_xaudio2_play PRIVATE ole32)
 add_executable(smoke_guest WIN32 "${WIN10XBOX_ROOT}/host-uwp-lite/smoke_guest.c")
 target_compile_definitions(smoke_guest PRIVATE SMOKE_GUI=1)
 set_target_properties(smoke_guest PROPERTIES OUTPUT_NAME "smoke")
@@ -290,8 +320,11 @@ set(HOST_UWP_GUESTS window_guest hello_guest hello_guest_cui guest_hello guest_c
     smoke_guest_cui drv_client guest_window2 guest_window_input guest_window_input2 guest_window_text smoke_guest
     guest_spawn guest_window_nc guest_dialog guest_comctl guest_seh guest_seh_dll guest_window_scroll guest_clipboard
     guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput guest_identity guest_net guest_cursor
-    guest_regpersist guest_wasapi guest_xaudio2 guest_nowine guest_named_objects guest_tebframe guest_d3d11_tri
-    guest_rdrand)
+    guest_regpersist guest_wasapi guest_xaudio2 guest_xaudio2_play guest_nowine guest_named_objects guest_tebframe
+    guest_d3d11_tri guest_d3d11_swap guest_rdrand guest_net2 guest_closure guest_display_mode)
+if(TARGET guest_imgui_d3d11)
+  list(APPEND HOST_UWP_GUESTS guest_imgui_d3d11)
+endif()
 
 # ---------------------------------------------------------------------------
 # The selftest: the launch.json parser (launch_config.cpp has no Windows or layer
@@ -378,6 +411,7 @@ endif()
 #   payload\launch.json             host-uwp/payload: the packaged default launch configuration
 #   payload\launch.example.json     host-uwp/payload: every key documented (published to LocalState)
 #   payload\guest\*                 every guest of HOST_UWP_GUESTS (window.exe is the default)
+#   payload\guest\dirtree\          a directory install: dirtree.launch, bin\guest_dirtree.exe, data\file.pak (docs/slices/dirlaunch.md)
 #   payload\builtin\*.dll           Wine PE builtins (optional, see HOST_UWP_BUILTIN_DIR) + our own (guest-dlls/)
 # resources.pri is made by package.cmd (makepri).
 # ---------------------------------------------------------------------------
@@ -406,13 +440,16 @@ add_custom_target(stage_appx ALL
           "-DPAYLOAD_DIR=${CMAKE_CURRENT_SOURCE_DIR}/payload"
           "-DBUILTIN_DIR=${HOST_UWP_BUILTIN_DIR}"
           "-DEXTRA_GUEST_DIR=${HOST_UWP_EXTRA_GUEST_DIR}"
+          "-DDIRTREE_EXE=$<TARGET_FILE:guest_dirtree>"
+          "-DDIRTREE_SRC=${WIN10XBOX_ROOT}/tests/guest/dirtree"
           "-DNLS_DIR=${HOST_UWP_NLS_DIR}"
           "-DGUEST_DLL_DIR=${WIN10XBOX_GUEST_DLL_DIR}"
           "-DMACHINE_JSON=${WIN10XBOX_ROOT}/machine/machine.default.json"
+          "-DMSCTF_STUB=$<TARGET_FILE:msctf_stub>"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/stage.cmake"
   COMMENT "Staging the AppX layout in ${HOST_UWP_STAGE_DIR}"
   VERBATIM)
-add_dependencies(stage_appx host_uwp xinput1_4 ${HOST_UWP_GUESTS})
+add_dependencies(stage_appx host_uwp xinput1_4 msctf_stub guest_dirtree ${HOST_UWP_GUESTS})
 if(HOST_UWP_WINMD_TARGET)
   add_dependencies(stage_appx ${HOST_UWP_WINMD_TARGET})
 endif()

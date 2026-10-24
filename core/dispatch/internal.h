@@ -398,6 +398,7 @@ struct HostGui {
     decltype(&::IsWindowVisible) IsWindowVisible;
     decltype(&::IsIconic) IsIconic;
     decltype(&::GetWindowRect) GetWindowRect;
+    decltype(&::ClientToScreen) ClientToScreen;
     decltype(&::GetWindowDC) GetWindowDC;
     decltype(&::PrintWindow) PrintWindow;   // optional: a D3D swap chain's content (core/user/native_compose.cpp)
     decltype(&::ReleaseDC) ReleaseDC;
@@ -574,9 +575,16 @@ NTSTATUS WINAPI Ws2UnixGetAddrInfo(void* args);
 NTSTATUS WINAPI Ws2UnixGetHostByAddr(void* args);
 NTSTATUS WINAPI Ws2UnixGetHostByName(void* args);
 NTSTATUS WINAPI Ws2UnixGetNameInfo(void* args);
+// secur32's unix calls on the host's SSPI SChannel (unix_schannel.cpp); the table is registered in unix_calls.cpp.
+extern const UnixCallFn kSchannelFuncs[];
+extern const std::size_t kSchannelFuncCount;
+void PrimeSchannelHost();   // before the PEB take-over, like afd::PrimeHost
+void SwapHostPebFields();   // exchange the PEB fields the take-over replaced with the host's (twice = back); process.cpp
 // mmdevapi's driver on the host's WASAPI (unix_mmdevapi.cpp). PrimeAudio starts the host audio thread and loads the
 // host stack; call it before the PEB take-over. RegisterMmdevapiUnixLib registers the "winewasapi" unix library.
 void PrimeAudio(const std::wstring& machine_root);
+// WIN10XBOX_AUDIO_NULL_ENDPOINT=1 (latched in process::Launch before PrimeAudio): one fake render endpoint, no host COM.
+void SetAudioNullEndpoint(bool on);
 void RegisterMmdevapiUnixLib();
 std::uint64_t UnixLibHandleByName(std::wstring_view module_name);   // 0 if none
 // Replacements patched over the guest ntdll's __wine_dbg_* exports.
@@ -621,6 +629,10 @@ std::size_t ExtendGuestNtdllExports(const loader::MappedImage& guest_ntdll);
 // guest (Wine) kernelbase's export table with what native DLLs import from it and Wine lacks (jumps to Wine's
 // kernel32 export of the name, else to the host kernelbase's). Remembers the guest kernel32 for that.
 void NoteNativeGuestImage(const loader::MappedImage& img, const std::wstring& host_path, const std::wstring& export_name);
+// core/dispatch/dxgi_interpose.cpp: rewrites the exports of a guest's NATIVE dxgi.dll (CreateDXGIFactory*) and d3d11.dll
+// (D3D11CreateDeviceAndSwapChain) to the layer's wrappers; true when something was interposed.
+bool InterposeDxgiImage(const loader::MappedImage& img, const std::wstring& id);
+bool IsDxgiInterposedModule(const std::wstring& id);
 // native_d3d.cpp. Route B + Direct3D: called by win10xbox_dispatch around every win32u pass-through (host view).
 // Before NtUserDestroyWindow: compose the guest's windows (NativeGuestPainted). After a NtGdiDdDDI* (D3DKMT) call:
 // trace each name the first time, and compose after present-type calls (throttled).

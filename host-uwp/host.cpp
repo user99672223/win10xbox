@@ -237,7 +237,10 @@ namespace
 // ----------------------------------------------------------------------
 struct Host::Impl
 {
-    explicit Impl(const HostInfo& i) : info(i), report(i.local_state + L"\\status.txt") {}
+    explicit Impl(const HostInfo& i) : info(i), report(i.local_state + L"\\status.txt") { output_scaling = i.display.output_scaling; }
+    std::mutex osc_mu;
+    std::string output_scaling;   // under osc_mu
+    std::string OutputScaling() { std::lock_guard<std::mutex> g(osc_mu); return output_scaling; }
 
     void RunWorker();
     void RunImpl();
@@ -390,12 +393,13 @@ void Host::Impl::FinishAllChain()
     std::string body;
     ReadTextFile(path, &body);
     const std::vector<ReportBlock> blocks = ParseReport(body);
-    unsigned pass = 0, fail = 0, exited = 0, timeout = 0, crash = 0, skipped = 0;
+    unsigned pass = 0, knownfail = 0, fail = 0, exited = 0, timeout = 0, crash = 0, skipped = 0;
     std::vector<std::string> rows;
     for (const ReportBlock& b : blocks)
     {
         const std::string w = VerdictWord(b.verdict);
         if (w == "PASS") ++pass;
+        else if (w == "KNOWN-FAIL") ++knownfail;
         else if (w == "FAIL") ++fail;
         else if (w == "EXITED") ++exited;
         else if (w == "TIMEOUT") ++timeout;
@@ -403,8 +407,8 @@ void Host::Impl::FinishAllChain()
         else if (w == "SKIPPED") ++skipped;
         rows.push_back(b.program + "  " + w + "  exit " + std::to_string(b.exit_code));
     }
-    const std::string counts = Fmt("%u programs: %u PASS, %u FAIL, %u EXITED, %u TIMEOUT, %u CRASH, %u SKIPPED",
-                                   static_cast<unsigned>(blocks.size()), pass, fail, exited, timeout, crash, skipped);
+    const std::string counts = Fmt("%u programs: %u PASS, %u KNOWN-FAIL, %u FAIL, %u EXITED, %u TIMEOUT, %u CRASH, %u SKIPPED",
+                                   static_cast<unsigned>(blocks.size()), pass, knownfail, fail, exited, timeout, crash, skipped);
     if (body.rfind("# win10xbox report", 0) != 0)
     {
         const std::string os = OsBuildString();
@@ -412,9 +416,12 @@ void Host::Impl::FinishAllChain()
         head += "os_build=" + os + "\n";
         head += "package=" + info.package_full_name + "\n";
         head += "package_version=" + info.package_version + "\n";
+        head += "display=" + DescribeDisplay(info.display) + "\n";
+        head += "guest_display=" + DescribeGuestDisplay(info.display) + "\n";
+        head += "output_scaling=" + OutputScaling() + "\n";
         head += "date_utc=" + TimestampUtc() + "\n";
         head += "programs=" + std::to_string(blocks.size()) + "\n";
-        head += Fmt("pass=%u\nfail=%u\nexited=%u\ntimeout=%u\ncrash=%u\nskipped=%u\n\n", pass, fail, exited, timeout, crash, skipped);
+        head += Fmt("pass=%u\nknownfail=%u\nfail=%u\nexited=%u\ntimeout=%u\ncrash=%u\nskipped=%u\n\n", pass, knownfail, fail, exited, timeout, crash, skipped);
         if (!WriteTextFile(path, head + body, false)) diag::Line("launcher: cannot write the report.txt header (error %lu)", GetLastError());
     }
     diag::Line("report: %s", counts.c_str());
@@ -553,7 +560,8 @@ void Host::Impl::RunWorker()
 void Host::Impl::RunImpl()
 {
     const std::wstring ls = info.local_state;
-    const std::wstring machine = ls + L"\\machine";
+    std::wstring machine = ls + L"\\machine";   // re-pointed below when launch.json / the picked entry names another folder
+    std::string machine_name = "machine";
     const std::wstring payload = info.package_dir + L"\\payload";
 
     // ---- 0. the evidence trail first, so everything below is captured -------
@@ -566,6 +574,9 @@ void Host::Impl::RunImpl()
     diag::Line("local_state=%s", Narrow(ls).c_str());
     diag::Line("package_dir=%s", Narrow(info.package_dir).c_str());
     diag::Line("display: %s", display_desc.c_str());
+    diag::Line("display=%s (source %s)", DescribeDisplay(info.display).c_str(), info.display.source.c_str());
+    diag::Line("guest_display=%s", DescribeGuestDisplay(info.display).c_str());
+    for (const std::string& n : info.display.notes) diag::Line("display: %s", n.c_str());
 
     report.Set("tool", "win10xbox host-uwp (M5 shell, headless display backend, D3D11 presenter)");
     report.Set("started_utc", TimestampUtc());
@@ -573,7 +584,11 @@ void Host::Impl::RunImpl()
     report.Set("core", Fmt("%d.%d.%d (%s)", ver.major, ver.minor, ver.patch, ver.git ? ver.git : "?"));
     report.Set("package", info.package_full_name);
     report.Set("local_state", Narrow(ls));
-    report.Set("display", display_desc);
+    report.Set("display", DescribeDisplay(info.display));
+    report.Set("guest_display", DescribeGuestDisplay(info.display));
+    report.Set("output_scaling", OutputScaling());
+    report.Set("display.source", info.display.source);
+    report.Set("display.virtual", display_desc);
     report.SetVerdict("INCOMPLETE (still starting, or the process died: see 'phase' below and trace.log)");
     report.Set("phase", "start");
     report.Flush();
@@ -633,6 +648,7 @@ void Host::Impl::RunImpl()
     // launch.json at all. The list is the guests bundled in the package plus any .exe in LocalState\guests.
     LauncherEntry chosen;
     std::vector<std::pair<std::string, std::string>> launch_env;   // chosen entry's env, applied by EnvScope below
+    std::string entry_display;                                     // chosen entry's .display / display= ("" = none)
     autoselected = false;
     chain_all = chain_auto = chain_more = false;
     all_k = 0;
@@ -669,9 +685,24 @@ void Host::Impl::RunImpl()
                     return;
                 }
                 e.exe = gl.exe;
+                e.cwd = gl.cwd;
                 e.title = gl.title;
                 e.args = gl.args;
                 e.env = gl.env;
+                e.machine = gl.machine;
+                e.display = gl.display;
+                bool mok = true;
+                if (e.display.empty() && read(stem + L".display", &text))
+                {
+                    e.display = ParseDisplayFile(text, &mok);
+                    if (!mok) diag::Line("launcher: %s.display ignored (not auto or WxH@Hz)", Narrow(stem).c_str());
+                    mok = true;
+                }
+                if (e.machine.empty() && read(stem + L".machine", &text))
+                {
+                    e.machine = ParseMachineFile(text, &mok);
+                    if (!mok) diag::Line("launcher: %s.machine ignored (not a folder name)", Narrow(stem).c_str());
+                }
             }
             else
             {
@@ -683,21 +714,69 @@ void Host::Impl::RunImpl()
                     e.env.clear();
                 }
                 if (read(stem + L".title", &text)) e.title = ParseTitleFile(text);
+                if (read(stem + L".display", &text))
+                {
+                    bool dok = true;
+                    e.display = ParseDisplayFile(text, &dok);
+                    if (!dok) diag::Line("launcher: %s.display ignored (not auto or WxH@Hz)", Narrow(stem).c_str());
+                }
+                if (read(stem + L".machine", &text))
+                {
+                    bool mok = true;
+                    e.machine = ParseMachineFile(text, &mok);
+                    if (!mok) diag::Line("launcher: %s.machine ignored (not a folder name)", Narrow(stem).c_str());
+                }
             }
+            for (LauncherEntry& o : entries)
+                if (_stricmp(o.name.c_str(), e.name.c_str()) == 0) return;   // the bundled one wins
+            entries.push_back(std::move(e));
+        };
+        // A subdirectory holding <dirname>.launch is ONE entry (a directory install): mapped as C:\guest\<dirname>,
+        // exe= and cwd= relative to it. The entry is not offered when the program is not in the directory.
+        auto add_dir_entry = [&](const std::wstring& parent, const std::wstring& d, bool from_ls) {
+            const std::wstring dir = parent + L"\\" + d;
+            std::string text, why;
+            DWORD err = 0;
+            if (!IsLeafName(d) || !ReadSmallFile(dir + L"\\" + d + L".launch", 64 * 1024, &text, &err)) return;
+            GuestLaunch gl;
+            if (!ParseLaunchFile(text, &gl, &why))
+            {
+                diag::Line("launcher: ignoring %s\\%s.launch (%s)", Narrow(d).c_str(), Narrow(d).c_str(), why.c_str());
+                return;
+            }
+            if (GetFileAttributesW((dir + L"\\" + Widen(gl.exe)).c_str()) == INVALID_FILE_ATTRIBUTES)
+            {
+                diag::Line("launcher: %s needs %s, which is not in the directory", Narrow(d).c_str(), gl.exe.c_str());
+                return;
+            }
+            LauncherEntry e;
+            e.name = Narrow(d);
+            e.path = dir + L"\\" + d + L".launch";
+            e.from_localstate = from_ls;
+            e.is_dir = true;
+            e.dir_path = dir;
+            e.exe = gl.exe;
+            e.cwd = gl.cwd;
+            e.title = gl.title;
+            e.args = gl.args;
+            e.env = gl.env;
+            e.machine = gl.machine;
             for (LauncherEntry& o : entries)
                 if (_stricmp(o.name.c_str(), e.name.c_str()) == 0) return;   // the bundled one wins
             entries.push_back(std::move(e));
         };
         for (const std::wstring& f : ListFiles(payload + L"\\guest"))
             if (has_ext(f, L".exe") || has_ext(f, L".launch")) add_entry(payload + L"\\guest", f, false);
+        for (const std::wstring& d : ListDirs(payload + L"\\guest")) add_dir_entry(payload + L"\\guest", d, false);
         for (const std::wstring& f : ListFiles(ls + L"\\guests"))
             if (has_ext(f, L".exe") || has_ext(f, L".launch")) add_entry(ls + L"\\guests", f, true);
+        for (const std::wstring& d : ListDirs(ls + L"\\guests")) add_dir_entry(ls + L"\\guests", d, true);
         // A .launch entry whose program is not in the package (or in LocalState\guests) is not offered.
         {
             std::vector<LauncherEntry> kept;
             for (const LauncherEntry& e : entries)
             {
-                bool ok = e.exe == e.name;
+                bool ok = e.is_dir || e.exe == e.name;
                 for (const LauncherEntry& o : entries)
                     if (!ok && _stricmp(o.name.c_str(), e.exe.c_str()) == 0) ok = true;
                 if (ok) kept.push_back(e);
@@ -807,14 +886,23 @@ void Host::Impl::RunImpl()
             lc.args.clear();
             lc.args_raw.clear();
             lc.has_expect_exit_code = false;
+            lc.machine.clear();
         }
-        lc.guest = "C:\\guest\\" + chosen.exe;
+        if (!chosen.machine.empty()) lc.machine = chosen.machine;   // the entry's .machine / machine= wins
+        {
+            // A directory entry lives in C:\guest\<dir>\; cwd= is relative to the entry's directory.
+            const std::string base = chosen.is_dir ? "C:\\guest\\" + chosen.name : std::string("C:\\guest");
+            lc.guest = base + "\\" + chosen.exe;
+            if (!chosen.cwd.empty()) lc.cwd = chosen.cwd == "." ? base : base + "\\" + chosen.cwd;
+            else if (chosen.is_dir) lc.cwd = base;
+        }
         if (!chosen.args.empty())
         {
             lc.args = chosen.args;   // the sidecar's arguments replace launch.json's for this launch
             lc.args_raw.clear();
         }
         launch_env = chosen.env;
+        entry_display = chosen.display;
         report.Set("launch.guest", lc.guest);
         report.Set("launcher.picked", chosen.name + (chosen.from_localstate ? " (LocalState\\guests)" : " (bundled)") +
                                           (chain_all ? " by the all-programs run" : autoselected ? " by autoselect" : ""));
@@ -830,10 +918,17 @@ void Host::Impl::RunImpl()
     // The picked entry's .env/env= pairs: in the host's environment (the guest inherits it) for this launch only.
     EnvScope launch_env_scope(launch_env);
 
+    // The machine folder: launch.json "machine" / the picked entry's .machine, default "machine".
+    if (!lc.machine.empty()) machine_name = lc.machine;
+    machine = ls + L"\\" + Widen(machine_name);
+    const bool d3d_machine = _stricmp(machine_name.c_str(), kD3dMachineName) == 0;
+    report.Set("machine.folder", machine_name);
+    diag::Line("machine folder: %s", machine_name.c_str());
+
     // ---- 2. machine.json, then the layer ------------------------------------------
     report.Set("phase", "machine.json");
     report.Flush();
-    if (!StageMachineJson(machine, payload))
+    if (!StageMachineJson(machine, payload, d3d_machine ? Widen(machine_name) + L"\\machine.json" : std::wstring(L"machine.json")))
         diag::Line("warning: no machine.json in the package payload and none in the machine folder: the layer uses its defaults");
 
     // stdout/stderr -> LocalState\stdout.txt, stdin -> an empty file.
@@ -875,7 +970,7 @@ void Host::Impl::RunImpl()
     if (vfs_rc != 0)
     {
         Fail("machine.json is malformed or its machine root is unusable (vfs::Initialize " + Hex32(vfs_rc) + ")",
-             "fix LocalState\\machine\\machine.json (schema: machine/machine.schema.json) or delete it to restore the "
+             "fix LocalState\\<machine folder>\\machine.json (schema: machine/machine.schema.json) or delete it to restore the "
              "packaged default; the 'err:vfs' line in trace.log names the problem");
         return;
     }
@@ -904,10 +999,18 @@ void Host::Impl::RunImpl()
     plan.profile_rel = profile_rel;
     plan.stamp = Widen(info.package_full_name);
     for (const std::string& n : lc.stage_native) plan.native_names.push_back(Widen(n));
+    if (d3d_machine)
+    {
+        // Route B + Direct3D 11: the native GUI and D3D runtime, read BY NAME from the console's System32
+        // (tests/integration/prepare_machine.cmake D3D_MACHINE), plus the package's msctf.dll stand-in.
+        for (const std::string& n : D3dMachineNativeDlls()) plan.native_names.push_back(Widen(n));
+        plan.profile_dir = Widen(machine_name);
+    }
     const StageResult st = StageMachineFiles(plan);
     report.Set("stage.builtin", st.builtin.Summary());
     report.Set("stage.guest", st.guest.Summary());
     report.Set("stage.nls", st.nls.Summary());
+    if (d3d_machine) report.Set("stage.stubs", st.stubs.Summary());
     if (!lc.stage_native.empty()) report.Set("stage.native", st.native.Summary());
     if (!st.builtin.bad.empty()) report.Set("stage.builtin.not_staged", st.builtin.BadList());
     if (!st.nls.bad.empty()) report.Set("stage.nls.not_staged", st.nls.BadList());
@@ -936,7 +1039,13 @@ void Host::Impl::RunImpl()
         diag::Line("warning: required NLS data could not be staged from the console's System32 (%s): Wine's locale "
                    "initialisation is likely to fail",
                    st.nls.BadList().c_str());
-    if (picked && chosen.from_localstate)
+    if (picked && chosen.is_dir)
+    {
+        // A directory install (bundled or from LocalState\guests) is copied whole into C:\guest\<dir>.
+        if (!CopyTree(chosen.dir_path, c_root + L"\\guest\\" + Widen(chosen.name)))
+            diag::Line("launcher: copying %s into C:\\guest failed (error %lu)", chosen.name.c_str(), GetLastError());
+    }
+    else if (picked && chosen.from_localstate)
     {
         // A guest from LocalState\guests runs from C:\guest: copy it (and the DLLs next to it) there.
         const std::wstring src_dir = ls + L"\\guests";
@@ -986,6 +1095,23 @@ void Host::Impl::RunImpl()
         }
         diag::Line("display backend '%s' (%s), input pump %s", display->Name(), dc.gpu.name.c_str(),
                    lc.input_pump ? "on" : "off");
+        // The guest's screen for THIS program: the entry's .display / display=, else launch.json guest_display. "auto" is
+        // the output mode. The backend was created with launch.json's choice; a program's own choice changes it here
+        // (the presenter follows the new size on its next tick).
+        const std::string want = !entry_display.empty() ? entry_display : lc.guest_display;
+        winexbox::DisplayMode gm;
+        gm.width = info.display.width;
+        gm.height = info.display.height;
+        gm.refresh_hz = info.display.refresh_hz;
+        if (want != "auto" && winexbox::ParseDisplayMode(want, &gm))
+        {
+            if (!winexbox::SetHeadlessMode(*display, gm)) diag::Line("display: cannot set the guest display %s", want.c_str());
+        }
+        else if (want == "auto" && !entry_display.empty())
+        {
+            winexbox::SetHeadlessMode(*display, gm);   // the entry asks for the output mode explicitly
+        }
+        report.Set("guest_display", Fmt("%ux%u@%u requested=%s", gm.width, gm.height, gm.refresh_hz, want.c_str()));
     }
 
     // ---- 6. launch ---------------------------------------------------------------------------------------------
@@ -1153,20 +1279,34 @@ void Host::Impl::RunImpl()
 // ----------------------------------------------------------------------
 // Host
 // ----------------------------------------------------------------------
+void ReadDisplaySettings(const std::wstring& local_state, const std::wstring& package_dir, std::string* display_mode,
+                         std::string* guest_display, std::string* scaling)
+{
+    LaunchConfig lc;
+    std::string source, error;
+    *display_mode = *guest_display = "auto";
+    if (scaling) *scaling = "system";
+    if (!LoadLaunchConfig(local_state, package_dir + L"\\payload", &lc, &source, &error)) return;
+    if (!lc.display_mode.empty()) *display_mode = lc.display_mode;
+    if (scaling) *scaling = lc.output_scaling.empty() ? std::string("system") : lc.output_scaling;
+    if (!lc.guest_display.empty()) *guest_display = lc.guest_display;
+}
+
 Host::Host(const HostInfo& info) : impl_(new Impl(info))
 {
     winexbox::BackendConfig bc;
     bc.backend = win10xbox::config::DisplayBackend::Headless;   // D8: the D3D12 / CoreWindow backend is M6
-    bc.width = Clamp(info.display.width, 640, 7680);
-    bc.height = Clamp(info.display.height, 360, 4320);
-    bc.refresh_hz = Clamp(info.display.refresh_hz, 24, 240);
+    // The backend's monitor is the GUEST's screen (guest_display); the output mode is the presenter's swap chain.
+    bc.width = Clamp(info.display.guest_width, 640, 7680);
+    bc.height = Clamp(info.display.guest_height, 360, 4320);
+    bc.refresh_hz = Clamp(info.display.guest_refresh_hz, 24, 240);
     impl_->display = winexbox::SelectBackend(bc);
     impl_->display->SetEventSink(&impl_->sink);
     // core/user allocates window surfaces from this backend and composes the frame the shell's
     // presenter shows; it must be set before process::Launch (the worker does not exist yet).
     win10xbox::user::SetDisplayDriver(impl_->display.get());
-    impl_->display_desc = Fmt("%s backend, virtual monitor %ux%u@%u (CoreWindow reported %ux%u)", impl_->display->Name(),
-                              bc.width, bc.height, bc.refresh_hz, info.display.width, info.display.height);
+    impl_->display_desc = Fmt("%s backend, virtual monitor %ux%u@%u (output %ux%u@%u)", impl_->display->Name(),
+                              bc.width, bc.height, bc.refresh_hz, info.display.width, info.display.height, info.display.refresh_hz);
 }
 
 Host::~Host()
@@ -1262,6 +1402,16 @@ void Host::PumpDisplay()
 void Host::NoteLifecycle(const char* what)
 {
     diag::Line("shell: %s", what);
+}
+
+void Host::NoteOutputScaling(const std::string& state)
+{
+    {
+        std::lock_guard<std::mutex> g(impl_->osc_mu);
+        impl_->output_scaling = state;
+    }
+    impl_->report.Set("output_scaling", state);
+    impl_->report.Flush();
 }
 
 void Host::NoteDisplay(const std::string& presenter_state)

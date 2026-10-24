@@ -405,6 +405,17 @@ public:
         return 0;
     }
 
+    bool SetMode(const DisplayMode& mode) {
+        std::lock_guard<std::mutex> g(mu_);
+        DisplayMode m = mode;
+        if (!m.bits_per_pixel) m.bits_per_pixel = 32;
+        if (std::find(monitor_.modes.begin(), monitor_.modes.end(), m) == monitor_.modes.end()) monitor_.modes.push_back(m);
+        ApplyModeLocked(monitor_, m);
+        auto d = windows_.find(desktop_);
+        if (d != windows_.end()) d->second.rects.window = d->second.rects.client = d->second.rects.visible = monitor_.monitor;
+        return true;
+    }
+
     // ---- introspection --------------------------------------------------------------
     HeadlessStats Stats() const {
         HeadlessStats s;
@@ -499,6 +510,11 @@ std::unique_ptr<IWinexboxDriver> CreateHeadlessDriver(const BackendConfig& cfg) 
 HeadlessStats GetHeadlessStats(const IWinexboxDriver& drv) {
     const HeadlessDriver* h = AsHeadless(drv);
     return h ? h->Stats() : HeadlessStats{};
+}
+
+bool SetHeadlessMode(IWinexboxDriver& drv, const DisplayMode& mode) {
+    HeadlessDriver* h = const_cast<HeadlessDriver*>(AsHeadless(drv));
+    return h && h->SetMode(mode);
 }
 
 bool GetHeadlessWindowInfo(const IWinexboxDriver& drv, WindowId hwnd, HeadlessWindowInfo* out) {

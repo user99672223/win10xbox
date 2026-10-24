@@ -65,6 +65,7 @@ namespace
     constexpr std::uint32_t kBar = 0xFF2A6FDBu;
     constexpr std::uint32_t kGood = 0xFF60D060u;
     constexpr std::uint32_t kBad = 0xFFFF6060u;
+    constexpr std::uint32_t kKnown = 0xFFFFB040u;   // KNOWN-FAIL: recorded, not yet fixed
 
     enum Pad : unsigned { kPadUp = 1, kPadDown = 2, kPadA = 4, kPadB = 8 };
 
@@ -452,7 +453,7 @@ void Launcher::Draw(std::uint32_t* bgra, int width, int height)
             {
                 if (y > footer - lh) break;
                 const bool bad = l.find(" PASS ") == std::string::npos && l.find(" EXITED ") == std::string::npos;
-                c.Text(margin, y, l, bad ? kBad : kGood);
+                c.Text(margin, y, l, l.find(" KNOWN-FAIL ") != std::string::npos ? kKnown : (bad ? kBad : kGood));
                 y += lh;
             }
             c.Text(margin, footer, "B or Esc or Enter: back to the list    (details: LocalState\\report.txt)", kDim);
@@ -460,11 +461,12 @@ void Launcher::Draw(std::uint32_t* bgra, int width, int height)
         }
         c.Text(margin, y, "Guest: " + result_.name, kText);
         y += lh;
+        const bool known = result_.verdict.compare(0, 10, "KNOWN-FAIL") == 0;
         const bool good = result_.ran && result_.verdict.compare(0, 4, "FAIL") != 0;
         c.Text(margin, y, result_.ran ? "Exit code: " + std::to_string(result_.exit_code) : std::string("The guest did not run"),
-               good ? kGood : kBad);
+               known ? kKnown : (good ? kGood : kBad));
         y += lh;
-        c.Text(margin, y, result_.verdict, good ? kGood : kBad);
+        c.Text(margin, y, result_.verdict, known ? kKnown : (good ? kGood : kBad));
         y += lh * 2;
         c.Text(margin, y, "Last " + std::to_string(result_.lines.size()) + " line(s) of stdout:", kTitle);
         y += lh;
