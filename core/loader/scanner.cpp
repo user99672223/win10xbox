@@ -20,7 +20,10 @@
 #include <Zydis/Zydis.h>
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <string>
 
 #include "win10xbox/trace.h"
 
@@ -579,6 +582,50 @@ bool InRange(const std::vector<Range>& rs, u64 a) {
     return false;
 }
 
+// Diagnostics: one line per planned site (RVA, kind, the decision) plus the bytes around it, so a site that is really
+// data (a jump table the heuristics missed) can be told from a real instruction in the log.
+std::string& ScanLabel() { static thread_local std::string l; return l; }
+
+void HexLine(const char* what, u64 rva, const u8* p, std::size_t n) {
+    char buf[1100];
+    std::size_t k = 0;
+    for (std::size_t i = 0; i < n && k + 3 < sizeof buf; ++i) k += static_cast<std::size_t>(std::snprintf(buf + k, sizeof buf - k, "%02x", p[i]));
+    buf[k] = 0;
+    TRACE(scan, "site-bytes %s rva %llx: %s", what, static_cast<unsigned long long>(rva), buf);
+}
+
+void LogSite(const Job& job, const SiteInfo& s, const char* mode, std::size_t region_len, u64 stub) {
+    const u64 sa = reinterpret_cast<u64>(s.addr);
+    const u64 rva = sa - job.reach_lo;
+    u64 fn = 0;
+    {
+        auto it = std::upper_bound(job.funcs.begin(), job.funcs.end(), sa);
+        if (it != job.funcs.begin()) fn = *(it - 1);
+    }
+    const Range* range = nullptr;
+    for (auto& r : job.exec)
+        if (sa >= reinterpret_cast<u64>(r.start) && sa < reinterpret_cast<u64>(r.start) + r.size) range = &r;
+    std::string nearest = "no data range near";
+    for (const Range& d : job.data) {
+        const u64 ds = reinterpret_cast<u64>(d.start);
+        if (ds + d.size + 0x100 >= sa && ds <= sa + 0x100) {
+            char t[96];
+            std::snprintf(t, sizeof t, "data range rva %llx+%zx", static_cast<unsigned long long>(ds - job.reach_lo), d.size);
+            nearest = t;
+            break;
+        }
+    }
+    TRACE(scan, "site %s rva %llx kind %d len %u -> %s (region %zu, thunk %llx), function start rva %llx, %s", ScanLabel().c_str(),
+          static_cast<unsigned long long>(rva), static_cast<int>(s.kind), static_cast<unsigned>(s.len), mode, region_len,
+          static_cast<unsigned long long>(stub), static_cast<unsigned long long>(fn ? fn - job.reach_lo : 0), nearest.c_str());
+    if (range) {
+        const u8* lo = std::max(range->start, s.addr - 96);
+        const u8* hi = std::min(range->start + range->size, s.addr + s.len + 32);
+        HexLine("before", rva - static_cast<u64>(s.addr - lo), lo, static_cast<std::size_t>(s.addr - lo));
+        HexLine("site+after", rva, s.addr, static_cast<std::size_t>(hi - s.addr));
+    }
+}
+
 NTSTATUS ScanCore(const Job& job, const ScanOptions& opts, ScanResult* result) {
     if (result) *result = ScanResult{};
     if (!opts.handler) return kStatusInvalidParameter;
@@ -723,6 +770,8 @@ NTSTATUS ScanCore(const Job& job, const ScanOptions& opts, ScanResult* result) {
     for (std::size_t i = 0; i < sites.size(); ++i) {
         const SiteInfo& s = sites[i];
         const Plan& pl = plans[i];
+        LogSite(job, s, pl.mode == Plan::Skip ? "skip" : pl.mode == Plan::Inline ? "inline" : pl.mode == Plan::Trap ? "trap" : "ud2",
+                pl.region_len, pl.stub);
         if (pl.mode == Plan::Skip) {
             if (result) ++result->skipped;
             continue;
@@ -976,6 +1025,22 @@ NTSTATUS ScanAndPatch(const MappedImage& img, const ScanOptions& opts, ScanResul
         return kStatusInvalidParameter;
     auto* base = static_cast<u8*>(img.base);
     const u32 image_size = static_cast<u32>(img.size ? img.size : nt->OptionalHeader.SizeOfImage);
+
+    // Diagnosis only (never set in the shipped configuration): WIN10XBOX_SCAN_SKIP_IMAGE=a.dll,b.dll leaves those images unscanned.
+    {
+        std::string name;
+        for (wchar_t c : img.path.substr(img.path.find_last_of(L"\\/") == std::wstring::npos ? 0 : img.path.find_last_of(L"\\/") + 1))
+            name += static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : (c < 128 ? c : '?'));
+        ScanLabel() = name;
+        if (const char* skip = std::getenv("WIN10XBOX_SCAN_SKIP_IMAGE")) {
+            std::string list = std::string(",") + skip + ",";
+            for (char& c : list) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+            if (list.find("," + name + ",") != std::string::npos) {
+                WARN(scan, "WIN10XBOX_SCAN_SKIP_IMAGE: %s left unscanned (diagnosis only)", name.c_str());
+                return kStatusSuccess;
+            }
+        }
+    }
 
     Job job;
     job.reach_lo = reinterpret_cast<u64>(base);
