@@ -125,8 +125,35 @@ constexpr unsigned kDbgRing = 12;
 char g_dbg[kDbgRing][160];
 volatile LONG g_dbg_n = 0;
 
+void DumpExceptions(const char* what, HRESULT hr);
+const char* Where(std::uintptr_t a, char* buf, std::size_t cap);
+
+// A fail-fast (RaiseFailFastException 0xC0000602 / __fastfail 0xC0000409) ends the process at once, so the ring would
+// never be printed: dump it here with the faulting rip and the code-looking words on the stack (round 10).
+void DumpFailFast(PEXCEPTION_POINTERS info) {
+    const EXCEPTION_RECORD* r = info->ExceptionRecord;
+    char w[48];
+    const std::uintptr_t rip = info->ContextRecord->Rip, rsp = info->ContextRecord->Rsp;
+    W10X_TR("dxgi: fail-fast exception %08lx at %s rsp %p, %lu parameter(s) %p %p", static_cast<unsigned long>(r->ExceptionCode),
+            Where(rip, w, sizeof w), reinterpret_cast<void*>(rsp), static_cast<unsigned long>(r->NumberParameters),
+            r->NumberParameters > 0 ? reinterpret_cast<void*>(r->ExceptionInformation[0]) : nullptr,
+            r->NumberParameters > 1 ? reinterpret_cast<void*>(r->ExceptionInformation[1]) : nullptr);
+    DumpExceptions("fail-fast", static_cast<HRESULT>(r->ExceptionCode));
+    unsigned shown = 0;
+    for (unsigned i = 0; i < 256 && shown < 24; ++i) {
+        std::uintptr_t v = 0;
+        if (probe::CopyFromUser(&v, reinterpret_cast<const void*>(rsp + 8u * i), sizeof v) != 0) break;
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (v < 0x10000 || !VirtualQuery(reinterpret_cast<void*>(v), &mbi, sizeof mbi)) continue;
+        if (!(mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) continue;
+        W10X_TR("dxgi:   stack[%u] code %s (image base %p)", i, Where(v, w, sizeof w), mbi.AllocationBase);
+        ++shown;
+    }
+}
+
 LONG CALLBACK ExcRecorder(PEXCEPTION_POINTERS info) {
     const EXCEPTION_RECORD* r = info->ExceptionRecord;
+    if (r->ExceptionCode == 0xC0000602 || r->ExceptionCode == 0xC0000409) DumpFailFast(info);
     if (r->ExceptionCode == 0x40010006 && r->NumberParameters >= 2) {   // DBG_PRINTEXCEPTION_C: (length with NUL, ANSI text)
         char* line = g_dbg[static_cast<unsigned>(InterlockedIncrement(&g_dbg_n) - 1) % kDbgRing];
         CopyName(line, sizeof g_dbg[0], r->ExceptionInformation[1]);
