@@ -381,8 +381,15 @@ NTSTATUS NTAPI Xl_NtCreateFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRI
     // FILE_OPEN_BY_FILE_ID: the "name" is a binary file ID (relative to a directory or volume handle), not a path.
     if (!(options & kFileOpenByFileId))
         if (NTSTATUS s = TranslateOA(attr, &t, options)) return s;
-    return Host().NtCreateFile(handle, access, t.Get(attr), io, alloc_size, attributes, sharing, disposition, options,
-                               ea, ea_length);
+    NTSTATUS r = Host().NtCreateFile(handle, access, t.Get(attr), io, alloc_size, attributes, sharing, disposition,
+                                     options, ea, ea_length);
+    // FILE_CREATE on a name that already exists is STATUS_OBJECT_NAME_COLLISION on Windows, directory or not (the
+    // host answers FILE_IS_A_DIRECTORY for a directory). Wine's GetTempFileNameW stops on any other error and
+    // would hand back the directory's name as a fresh file.
+    constexpr ULONG kFileCreate = 2, kFileNonDirectoryFile = 0x40;
+    if (r == static_cast<NTSTATUS>(0xC00000BA) && disposition == kFileCreate && (options & kFileNonDirectoryFile))
+        r = static_cast<NTSTATUS>(0xC0000035);
+    return r;
 }
 
 NTSTATUS NTAPI Xl_NtOpenFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr, PIO_STATUS_BLOCK io,
@@ -401,7 +408,8 @@ NTSTATUS NTAPI Xl_NtOpenFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBU
         NTSTATUS s = Host().NtOpenFile(handle, access | kFileWriteAttributes, t.Get(attr), io, sharing, options);
         if (s != st::AccessDenied) return s;
     }
-    return Host().NtOpenFile(handle, access, t.Get(attr), io, sharing, options);
+    NTSTATUS r = Host().NtOpenFile(handle, access, t.Get(attr), io, sharing, options);
+    return r;
 }
 
 // Pipes live in the host's own \\Device\\NamedPipe: the name is not a file-system path and passes unchanged. What is

@@ -1,0 +1,158 @@
+name: ntdllfile-loop
+
+# docs/slices/ntdllfile.md: runs Wine's ntdll `file` unit N times through the layer (the command of
+# tests/winetest/run_ntdll.cmake), after the units that precede it, with the relay trace, and natively; maps the RVAs of the
+# crash records to ntdll_test.exe functions; uploads every iteration that does not complete.
+on:
+  workflow_dispatch:
+    inputs:
+      n_file: { description: "file alone through the layer", default: "100" }
+      n_seq: { description: "file after the units that precede it", default: "100" }
+      n_trace: { description: "file with +relay,+dispatch (kept when it fails)", default: "60" }
+      n_native: { description: "file natively, no layer", default: "60" }
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ntdllfile-loop-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LLVM_MINGW_VER: "20250910"
+
+jobs:
+  loop:
+    runs-on: windows-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: true }
+      - name: Nested submodules we need (zycore only; speakeasy's test corpora are not needed)
+        run: git submodule update --init --recursive third_party/zydis
+      - uses: ilammy/msvc-dev-cmd@v1
+        with: { arch: x64 }
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+      # Wine builtin DLLs, MANDATORY (tools/ci/fetch_wine_pe.py: a wine-pe run of
+      # this commit if there is one, waited for; else the newest successful one
+      # that still has the artifact; every query retried). Without them every
+      # guest test skips: ci.yml run 39818491081's windows (Debug) job found no
+      # run ("no successful wine-pe run yet") while its RelWithDebInfo sibling
+      # did, and went green with all 14 end-to-end tests skipped. Downloads into
+      # the default WIN10XBOX_BUILTIN_DIR (wine-pe/out/builtin).
+      - name: Fetch wine-pe builtin DLLs (required)
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: >
+          python -I tools/ci/fetch_wine_pe.py --repo "${{ github.repository }}" --branch "${{ github.ref_name }}"
+          --sha "${{ github.sha }}" --artifact wine-pe-builtin=wine-pe/out/builtin
+      # Wine's own ntdll conformance tests (dlls/ntdll/tests) as ONE guest, ntdll_test.exe, run through the
+      # layer by integration.winetest_ntdll on the allowlist wine-pe/tests/ntdll.allowlist (docs/slices/wt-ntdll.md).
+      # MSVC cannot build them, so llvm-mingw's Windows build does (wine-pe/tests/ntdll.sh, from Git Bash), against
+      # Wine's headers from the pinned source tree (wine-pe/fetch-wine.sh: a shallow clone, patches applied). Before
+      # Configure: the test is registered where build/winetest/ntdll/ntdll_test.exe exists.
+      - name: Install llvm-mingw (Windows build, for the Wine ntdll test guest)
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP "llvm-mingw.zip"
+          $url = "https://github.com/mstorsjo/llvm-mingw/releases/download/$env:LLVM_MINGW_VER/llvm-mingw-$env:LLVM_MINGW_VER-ucrt-x86_64.zip"
+          for ($i = 1; $i -le 3; $i++) {
+            curl.exe -sSL --fail --retry 3 -o $zip $url
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Seconds 10
+          }
+          if ($LASTEXITCODE -ne 0) { throw "llvm-mingw download failed" }
+          $dir = Join-Path $env:RUNNER_TEMP "llvm-mingw-x"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          tar.exe -xf $zip -C $dir
+          if ($LASTEXITCODE -ne 0) { throw "llvm-mingw extract failed" }
+          $root = (Get-ChildItem $dir -Directory | Select-Object -First 1).FullName
+          Write-Host "llvm-mingw at $root"
+          "LLVM_MINGW_WIN=$root" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Build Wine's ntdll conformance guest (ntdll_test.exe)
+        shell: bash
+        env:
+          # Git for Windows would check Wine out with CRLF and translate its patches' context.
+          GIT_CONFIG_COUNT: "2"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+          GIT_CONFIG_KEY_1: core.longpaths
+          GIT_CONFIG_VALUE_1: "true"
+          # clang's mingw driver does not read these, but they point at MSVC's headers.
+          INCLUDE: ""
+          LIB: ""
+        run: |
+          export LLVM_MINGW="$(cygpath -u "$LLVM_MINGW_WIN")"
+          wine-pe/fetch-wine.sh
+          wine-pe/tests/ntdll.sh build --out build/winetest/ntdll
+          ls -l build/winetest/ntdll
+      # The WDK's km headers (ntddk.h), which this image does not have, from the
+      # pinned NuGet package (tools/ci/fetch_wdk_km.ps1): tests/drivers builds the
+      # KMDF driver, its client and drivers.layout against them with MSVC.
+      - name: Cache the WDK km headers
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/wdk
+          key: wdk-km-10.0.26100.6584
+      - name: Fetch the WDK km headers (required)
+        shell: pwsh
+        run: ./tools/ci/fetch_wdk_km.ps1
+      # Dear ImGui's release source for guest_imgui_d3d11 (tests/guest/imgui_d3d11.cpp wraps its unmodified
+      # example_win32_directx11; docs/DECISIONS.md G1). Not vendored; CMake reads WIN10XBOX_IMGUI_DIR at configure.
+      - name: Fetch Dear ImGui (guest_imgui_d3d11)
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'imgui'
+          for ($i = 1; $i -le 4; $i++) {
+            if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
+            git clone -q --depth 1 --branch v1.93.0 https://github.com/ocornut/imgui $dir
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Seconds (5 * $i)
+          }
+          if (-not (Test-Path "$dir/examples/example_win32_directx11/main.cpp")) { throw "Dear ImGui v1.93.0 not fetched" }
+          "WIN10XBOX_IMGUI_DIR=$dir" >> $env:GITHUB_ENV
+      - name: Configure
+        env: { SCCACHE_GHA_ENABLED: "true" }
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          -DWIN10XBOX_DDK_INCLUDE="$env:WDK_KM"
+      - name: Build
+        env: { SCCACHE_GHA_ENABLED: "true" }
+        run: cmake --build build -- -k 0   # keep going so all compile errors surface in one run
+      - name: Populate machine folder from the runner's System32 (never committed)
+        shell: pwsh
+        run: ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine -CI
+      # The natives only the Direct3D machine folder gets (machine/guest_dlls_d3d.txt), kept out of the shared machine folder.
+      - name: Stage the Direct3D machine's extra natives
+        shell: pwsh
+        run: ./machine/import_windows_dlls.ps1 -Source "$env:SystemRoot\System32" -Machine build/bin/machine-d3d-extra -CI -ListFile machine/guest_dlls_d3d.txt
+      - name: Prepare the machine folders (ctest fixture w10x_machine)
+        run: ctest --test-dir build -R integration.prepare_machine --output-on-failure
+      - name: Map the RVAs of the crash records to functions of ntdll_test.exe
+        shell: bash
+        run: |
+          export LLVM_MINGW="$(cygpath -u "$LLVM_MINGW_WIN")"
+          exe=build/winetest/ntdll/ntdll_test.exe
+          mkdir -p ntdllfile-loop
+          for rva in 0x27e09 0x8c5e1; do
+            va=$(printf '0x%x' $((0x140000000 + rva)))
+            echo "== ntdll_test.exe+$rva ($va)"
+            "$LLVM_MINGW/bin/llvm-nm" -n "$exe" | awk -v t=$((va)) '{ a=strtonum("0x"$1); if (a<=t) last=$0; else { print "function: " last; exit } }' || true
+            lo=$(printf '0x%x' $((va - 48))); hi=$(printf '0x%x' $((va + 24)))
+            "$LLVM_MINGW/bin/llvm-objdump" -d --no-show-raw-insn --start-address=$lo --stop-address=$hi "$exe" | tail -22
+          done 2>&1 | tee ntdllfile-loop/rva-map.txt
+      - name: Loop ntdll:file
+        shell: pwsh
+        run: >
+          ./tools/ci/ntdll_file_loop.ps1 -Bin build/bin -Exe build/winetest/ntdll/ntdll_test.exe -Out ntdllfile-loop
+          -N ${{ inputs.n_file || '100' }} -NSeq ${{ inputs.n_seq || '100' }} -NTrace ${{ inputs.n_trace || '60' }}
+          -NNative ${{ inputs.n_native || '60' }} -Gate
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ntdllfile-loop
+          path: ntdllfile-loop/
+          retention-days: 7
