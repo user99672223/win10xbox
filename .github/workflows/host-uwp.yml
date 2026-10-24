@@ -270,7 +270,7 @@ jobs:
                         'guest_d3d11_swap.exe', 'guest_d3d11_swap.machine',
                         'guest_d3dsample.exe', 'guest_d3dsample.machine', 'guest_d3dsample.env', 'guest_d3dsample.cwd', 'Tutorial07.fxh', 'seafloor.dds',
                         'guest_gamelike.exe', 'guest_gamelike.machine', 'guest_gamelike.env', 'guest_gamelike.title',
-                        'guest_tebframe.exe', 'guest_net2.exe', 'guest_closure.exe', 'guest_display_mode.exe')
+                        'guest_tebframe.exe', 'guest_net2.exe', 'guest_closure.exe', 'guest_display_mode.exe', 'guest_unload_cs.exe', 'guest_unload_cs_dll.dll')
           $missing = @($expected | Where-Object { -not (Test-Path "$stage/payload/guest/$_") })
           Write-Host ("bundled guests: " + (@(Get-ChildItem "$stage/payload/guest" -File | ForEach-Object { $_.Name }) -join ', '))
           if ($missing.Count -gt 0) {
@@ -333,7 +333,7 @@ jobs:
           foreach ($c in Get-ChildItem tests/guest -Filter *.c) {
             if ($c.BaseName -eq 'msctf_stub' -or $c.BaseName -eq 'gdi32full_stub') { continue }   # a msctf.dll / gdi32full.dll stand-in for the native-GUI machine folders, not a guest
             if ($c.BaseName -eq 'dirtree') { continue }      # a directory install (payload/guest/dirtree/), checked below
-            $n = if ($c.BaseName -eq 'dll') { 'guest_dll.dll' } elseif ($c.BaseName -eq 'window') { 'window.exe' } else { "guest_$($c.BaseName).exe" }
+            $n = if ($c.BaseName -eq 'dll') { 'guest_dll.dll' } elseif ($c.BaseName -eq 'unload_cs_dll') { 'guest_unload_cs_dll.dll' } elseif ($c.BaseName -eq 'window') { 'window.exe' } else { "guest_$($c.BaseName).exe" }
             if ($want -notcontains $n) { $want += $n }
           }
           $missing = @($want | Where-Object { $entries -notcontains "payload/guest/$_" })

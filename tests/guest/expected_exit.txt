@@ -29,6 +29,7 @@ guest_rdrand.exe 42
 guest_regpersist.exe 42
 guest_seh.exe 42
 guest_tebframe.exe 42
+guest_unload_cs.exe 42=unload
 guest_window2.exe 42
 guest_window_text.exe 42
 

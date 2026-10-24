@@ -43,7 +43,7 @@ if(TARGET guest_hello)
                    guest_window guest_window2 guest_window_input guest_window_input2 guest_window_text guest_window_nc
                    guest_dialog guest_comctl guest_seh guest_window_scroll guest_clipboard guest_net msctf_stub
                    guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput xinput1_4 gdi32full_stub guest_identity
-                   guest_cursor guest_regpersist guest_wasapi guest_xaudio2 guest_tebframe guest_rdrand
+                   guest_cursor guest_regpersist guest_wasapi guest_xaudio2 guest_tebframe guest_rdrand guest_unload_cs guest_unload_cs_dll
                    stage_guest_dirtree guest_xaudio2_play guest_net2 guest_display_mode)
   if(TARGET guest_d3d11_tri)
     add_dependencies(prepare_machine guest_d3d11_tri)
@@ -183,6 +183,8 @@ win10xbox_guest_test(guest_sleep "C:\\guest\\guest_sleep.exe" 7 "guest slept")
 # and that ntdll does not resolve the Wine version function. Builtin-only folder: every system DLL is one of ours.
 set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
 set(_guest_console ON)
+win10xbox_guest_test(guest_unload_cs "C:\\guest\\guest_unload_cs.exe" 42 "unload_cs: unloaded 50" "unload_cs: ok")
+set_tests_properties(integration.guest_unload_cs PROPERTIES FAIL_REGULAR_EXPRESSION "unload_cs: FAIL")
 win10xbox_guest_test(guest_rdrand "C:\\guest\\guest_rdrand.exe" 42 "rdrand: ok n=16")
 set_tests_properties(integration.guest_rdrand PROPERTIES FAIL_REGULAR_EXPRESSION "rdrand: FAIL"
   ENVIRONMENT "WIN10XBOX_TEST_FORCE_RDRAND_TRAP=1")

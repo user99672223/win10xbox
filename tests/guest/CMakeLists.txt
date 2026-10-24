@@ -71,6 +71,13 @@ win10xbox_add_guest(guest_regpersist)
 add_library(guest_dll SHARED dll.c)
 win10xbox_add_guest(guest_dll)
 
+# Critical sections leaked by an unloaded DLL (docs/slices/unload-slist.md): integration.guest_unload_cs.
+add_library(guest_unload_cs_dll SHARED unload_cs_dll.c)
+win10xbox_add_guest(guest_unload_cs_dll)
+add_executable(guest_unload_cs unload_cs.c)
+win10xbox_add_guest(guest_unload_cs)
+add_dependencies(guest_unload_cs guest_unload_cs_dll)
+
 # The first GUI guest: user32/gdi32 -> win32u syscalls -> core/user (docs/GUI.md).
 # A console-subsystem program on purpose: its stdout is the test's evidence.
 add_executable(guest_window window.c)
