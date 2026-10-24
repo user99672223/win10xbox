@@ -555,13 +555,19 @@ unset(_guest_debug)
 unset(_guest_no_user32)
 unset(_guest_machine)
 
-# CryptoAPI + CNG on the default machine (tests/guest/cryptapi.c, docs/slices/crypto-rsaaes.md); guest.cryptapi is the native control.
+# CryptoAPI + CNG (tests/guest/cryptapi.c, docs/slices/crypto-rsaaes.md); guest.cryptapi is the native control. On the builtin-only
+# folder: on the default machine of a Windows runner bcrypt.dll is the runner's native one, whose DllMain imports
+# api-ms-win-core-crt-l2-1-0!_initterm_e (EXCEPTION_WINE_STUB, docs/GUI.md rule 8), so the layer's crypto is only reachable there.
+set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
+set(_guest_console ON)
 win10xbox_guest_test(guest_cryptapi "C:\\guest\\guest_cryptapi.exe" 42
   "cryptapi: acquire PROV_RSA_AES verifycontext ok" "cryptapi: acquire PROV_RSA_FULL verifycontext ok"
   "cryptapi: container create ok" "cryptapi: container reopen ok" "cryptapi: container delete ok"
   "cryptapi: CryptGenRandom ok" "cryptapi: CryptGetHashParam ok" "cryptapi: CryptEncrypt AES-256 FIPS-197 vector ok" "cryptapi: BCryptEncrypt AES-256 ECB FIPS-197 vector ok" "cryptapi: CryptDecrypt AES-256 ok"
   "cryptapi: BCryptFinishHash ok" "cryptapi: BCryptDecrypt ok" "cryptapi: done failures=0")
 set_tests_properties(integration.guest_cryptapi PROPERTIES FAIL_REGULAR_EXPRESSION "cryptapi: [A-Za-z0-9_ -]+ FAILED" TIMEOUT 120)
+unset(_guest_console)
+unset(_guest_machine)
 
 # ---- Registry persistence (docs/DISPATCHER.md "Registry persistence") -------------------------------------------------
 # tests/guest/regpersist.c twice, each a new host process on the same machine folder: the first run writes a value of each
