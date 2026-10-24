@@ -43,7 +43,7 @@ if(TARGET guest_hello)
                    guest_window guest_window2 guest_window_input guest_window_input2 guest_window_text guest_window_nc
                    guest_dialog guest_comctl guest_seh guest_window_scroll guest_clipboard guest_net msctf_stub
                    guest_gdi_bitmap guest_window_hooks guest_window_menu guest_xinput xinput1_4 gdi32full_stub guest_identity
-                   guest_cursor guest_regpersist guest_wasapi guest_xaudio2 guest_tebframe guest_rdrand
+                   guest_cursor guest_regpersist guest_wasapi guest_xaudio2 guest_tebframe guest_rdrand guest_cryptapi
                    stage_guest_dirtree guest_xaudio2_play guest_net2 guest_display_mode)
   if(TARGET guest_d3d11_tri)
     add_dependencies(prepare_machine guest_d3d11_tri)
@@ -554,6 +554,14 @@ unset(_guest_args)
 unset(_guest_debug)
 unset(_guest_no_user32)
 unset(_guest_machine)
+
+# CryptoAPI + CNG on the default machine (tests/guest/cryptapi.c, docs/slices/crypto-rsaaes.md); guest.cryptapi is the native control.
+win10xbox_guest_test(guest_cryptapi "C:\\guest\\guest_cryptapi.exe" 42
+  "cryptapi: acquire PROV_RSA_AES verifycontext ok" "cryptapi: acquire PROV_RSA_FULL verifycontext ok"
+  "cryptapi: container create ok" "cryptapi: container reopen ok" "cryptapi: container delete ok"
+  "cryptapi: CryptGenRandom ok" "cryptapi: CryptGetHashParam ok" "cryptapi: CryptEncrypt AES-256 FIPS-197 vector ok" "cryptapi: BCryptEncrypt AES-256 ECB FIPS-197 vector ok" "cryptapi: CryptDecrypt AES-256 ok"
+  "cryptapi: BCryptFinishHash ok" "cryptapi: BCryptDecrypt ok" "cryptapi: done failures=0")
+set_tests_properties(integration.guest_cryptapi PROPERTIES FAIL_REGULAR_EXPRESSION "cryptapi: [A-Za-z0-9_ -]+ FAILED" TIMEOUT 120)
 
 # ---- Registry persistence (docs/DISPATCHER.md "Registry persistence") -------------------------------------------------
 # tests/guest/regpersist.c twice, each a new host process on the same machine folder: the first run writes a value of each
