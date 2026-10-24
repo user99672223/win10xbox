@@ -818,11 +818,19 @@ jobs:
           $report = Join-Path $ls 'report.txt'
           # Up to 40 min: Chocolate Doom (interactive, bundled by -doompkg) and any guest that waits for input run
           # to the 60 s limit each, plus one restart per program.
+          # Wait for the header whose programs= equals the number of chain entries (or chain=done / chain=aborted), not for any header.
+          $dirw = Join-Path $pkg.InstallLocation 'payload\guest'
+          $want = @(Get-ChildItem -Path $dirw -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '\.(exe|launch)$' }).Count + @(Get-ChildItem -Path $dirw -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.FullName ($_.Name + '.launch')) }).Count
+          Write-Host "chain entries expected: $want"
+          $finished = $false
           for ($i = 0; $i -lt 1200; $i++) {
-            if ((Test-Path $report) -and (Select-String -Path $report -Pattern '^programs=' -Quiet)) { break }
+            if (Test-Path $report) {
+              $rt = Get-Content -Path $report -Raw -ErrorAction SilentlyContinue
+              if ($rt -match '(?m)^chain=(done|aborted)\s*$' -or ($rt -match '(?m)^programs=(\d+)\s*$' -and [int]$Matches[1] -eq $want)) { $finished = $true; break }
+            }
             Start-Sleep -Seconds 2
           }
-          Write-Host ("report.txt finished: " + ((Test-Path $report) -and (Select-String -Path $report -Pattern '^programs=' -Quiet)))
+          Write-Host ("report.txt finished: " + $finished)
           exit 0
 
       - name: Assert on report.txt
