@@ -568,7 +568,14 @@ void BuildRecord(Out& o, EXCEPTION_POINTERS* ep, DWORD tid, const char* kind, bo
         o.Str("  unresolved import: dll ");
         ReadCString(o, er->ExceptionInformation[0]);
         o.Str(" function ");
-        ReadCString(o, er->ExceptionInformation[1]);
+        // An export without a name (gdi32 ordinals 1000..1016 in Wine) is raised with the ordinal itself, not a string.
+        if (er->ExceptionInformation[1] < 0x10000)
+        {
+            o.Str("#");
+            o.Dec(er->ExceptionInformation[1]);
+        }
+        else
+            ReadCString(o, er->ExceptionInformation[1]);
         o.Str("  (called from ");
         AnnotateAddress(o, reinterpret_cast<std::uintptr_t>(er->ExceptionAddress));
         o.Str(")\n");

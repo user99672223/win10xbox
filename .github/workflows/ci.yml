@@ -271,6 +271,10 @@ jobs:
           foreach ($c in 'uictx', 'devcaps') { pwsh -NoProfile -File ./tools/ci/probe_gui_imports.ps1 -Control $c 2>&1 | Out-String | Write-Host; Write-Host "control $c exit $LASTEXITCODE" }
       # docs/slices/uwpswap.md: the runner's real D3DKMT* exports (gdi32, gdi32full, win32u NtGdiDdDDI*) and the ones Wine's
       # gdi32 (patched, wine-pe/patches/0031) still lacks (informational).
+      - name: Probe - gdi32 ordinals 1000.. of the runner and who imports them by ordinal
+        shell: pwsh
+        continue-on-error: true
+        run: ./tools/ci/probe_ordinals.ps1 2>&1 | Out-String | Write-Host
       - name: Probe - D3DKMT exports of the runner's gdi32 against Wine's
         shell: pwsh
         continue-on-error: true
