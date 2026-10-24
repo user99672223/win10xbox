@@ -389,6 +389,9 @@ void NoteNativeUserPfn();
 // callback by thread (guest thread: the guest's user32 in the guest TLS view; any other thread: the host's
 // user32). Host view only.
 void NoteNativeWin32uCall();
+NTSTATUS ConfigureD3dCallbacks(HMODULE user32);   // machine-emu-d3d: remember the host user32's callback table
+void NoteD3dSyscall(const char* name);            // ... and keep it in the PEB, Wine's aside for core/user
+void* EmuCallbackTable();                         // the table core/user's UserModeCallback calls (Wine's user32)
 // User-mode callbacks routed to the guest's user32 / to the host's so far.
 std::uint64_t NativeCallbacksToGuest();
 std::uint64_t NativeCallbacksToHost();

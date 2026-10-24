@@ -67,9 +67,9 @@ jobs:
             wine-pe/wine-src
             wine-pe/build
             ~/.cache/ccache
-          key: wine-pe-v2-${{ env.WINE_TAG }}-${{ hashFiles('wine-pe/*.sh', 'wine-pe/dlls.txt', 'wine-pe/patches/*.patch') }}
-          restore-keys: |
-            wine-pe-v2-${{ env.WINE_TAG }}-
+          key: wine-pe-v4-${{ env.WINE_TAG }}-${{ hashFiles('wine-pe/*.sh', 'wine-pe/dlls.txt', 'wine-pe/patches/*') }}
+          # no restore-keys: a changed patch or module list must be a clean build (stale incremental builds left Wine
+          # strings in ntdll twice)
 
       - name: Fetch Wine and apply patches
         run: wine-pe/fetch-wine.sh

@@ -1029,6 +1029,7 @@ extern "C" std::int64_t win10xbox_dispatch(Frame* f) {
     // TEB.LastErrorValue itself, which the guest must see.
     const bool native_win32u = s.gui_native && win32u && e->policy == Policy::PassThrough && e->host_fn;
     unsigned long native_error = last_error;
+    if (win32u && s.d3dkmt_host) NoteD3dSyscall(e->name);
     if (native_win32u) {
         NoteNativeWin32uCall();   // installs the callback trampolines once the guest's user32 has its table in
         NativeWin32uBefore(e->name);   // native_d3d.cpp: last picture before NtUserDestroyWindow

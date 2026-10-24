@@ -31,6 +31,21 @@ constexpr unsigned kCallbackSlots = 512;
 KernelCallbackFn* volatile g_guest_callbacks = nullptr;   // the guest's user32 table (PEB, after its DllMain)
 KernelCallbackFn* g_host_callbacks = nullptr;             // the host's user32 table (PEB, after LoadLibrary)
 volatile LONG64 g_to_guest = 0, g_to_host = 0;
+// machine-emu-d3d (UseHostD3dkmt): PEB.KernelCallbackTable is the HOST user32's (through logging trampolines),
+// because the host kernel calls back into it for the D3DKMT/NtDxgk syscalls we pass through; Wine's user32 table
+// (what its DllMain wrote to the PEB) is kept here for core/user's UserModeCallback.
+bool g_d3d_cb = false;
+KernelCallbackFn* volatile g_emu_callbacks = nullptr;
+const char* volatile g_inflight = "";
+struct CbName { const void* addr; const char* name; };
+CbName g_cb_names[2048];
+unsigned g_cb_name_count = 0;
+volatile LONG g_cb_seen[512 / 32] = {};
+const char* CallbackName(const void* fn) {
+    for (unsigned i = 0; i < g_cb_name_count; ++i)
+        if (g_cb_names[i].addr == fn) return g_cb_names[i].name;
+    return "(no export)";
+}
 HostGui g_host_gui{};
 bool g_host_gui_ok = false;
 
@@ -40,6 +55,15 @@ NTSTATUS RouteCallback(unsigned index, void* args, ULONG len) {
     if (!st || !(st->flags & kThreadGuest) || !guest) {
         // Not a guest thread (or the guest has no table yet): the host's user32, as if we were not here.
         InterlockedIncrement64(&g_to_host);
+        if (g_d3d_cb && index < 512) {
+            // First time per index: name the callback and the syscall in flight (the host-view trace is safe only
+            // when the thread is inside the dispatcher).
+            const bool first = !(InterlockedOr(&g_cb_seen[index / 32], 1L << (index % 32)) & (1L << (index % 32)));
+            if (first && st && st->depth)
+                WARN(dispatch, "d3d native: host kernel callback #%u %s (host user32 %p) during %s (args %p, %lu bytes, "
+                               "thread %lu)", index, CallbackName(reinterpret_cast<void*>(g_host_callbacks[index])),
+                     reinterpret_cast<void*>(g_host_callbacks[index]), g_inflight, args, len, GetCurrentThreadId());
+        }
         return g_host_callbacks[index](args, len);
     }
     const auto n = static_cast<unsigned long long>(InterlockedIncrement64(&g_to_guest));
@@ -226,6 +250,57 @@ NTSTATUS ConfigureNativeGui() {
         return st::Unsuccessful;
     }
     return UseHostWin32u(win32u);
+}
+
+}  // namespace win10xbox::dispatch::detail
+
+namespace win10xbox::dispatch::detail {
+
+// machine-emu-d3d: remember the host user32's table (the process started with it; user32 is loaded here so it exists).
+NTSTATUS ConfigureD3dCallbacks(HMODULE user32) {
+    g_host_callbacks = PebField<KernelCallbackFn*>(peb::KernelCallbackTable);
+    if (!user32 || !g_host_callbacks) {
+        ERR(dispatch, "d3d native: the host user32 left PEB.KernelCallbackTable empty (%p)", static_cast<void*>(user32));
+        return st::Unsuccessful;
+    }
+    // Map table entries to user32's exports (__fnXXX / __ClientXXX) by address.
+    auto* base = reinterpret_cast<const std::uint8_t*>(user32);
+    auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + reinterpret_cast<const IMAGE_DOS_HEADER*>(base)->e_lfanew);
+    const IMAGE_DATA_DIRECTORY dd = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (dd.VirtualAddress) {
+        auto* ex = reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(base + dd.VirtualAddress);
+        auto* fns = reinterpret_cast<const DWORD*>(base + ex->AddressOfFunctions);
+        auto* names = reinterpret_cast<const DWORD*>(base + ex->AddressOfNames);
+        auto* ords = reinterpret_cast<const WORD*>(base + ex->AddressOfNameOrdinals);
+        for (DWORD i = 0; i < ex->NumberOfNames && g_cb_name_count < 2048; ++i) {
+            const DWORD rva = fns[ords[i]];
+            if (rva >= dd.VirtualAddress && rva < dd.VirtualAddress + dd.Size) continue;   // forwarder
+            g_cb_names[g_cb_name_count++] = {base + rva, reinterpret_cast<const char*>(base + names[i])};
+        }
+    }
+    g_d3d_cb = true;
+    TRACE(dispatch, "d3d native: host user32 %p KernelCallbackTable %p (%u named exports)", static_cast<void*>(user32),
+          static_cast<void*>(g_host_callbacks), g_cb_name_count);
+    return st::Success;
+}
+
+// Every win32u syscall of a d3d-native guest: note the syscall in flight, and once Wine's user32 has written its table
+// move it aside and put the trampolines (-> host table) in the PEB.
+void NoteD3dSyscall(const char* name) {
+    if (!g_d3d_cb) return;
+    g_inflight = name;
+    auto& slot = PebField<KernelCallbackFn*>(peb::KernelCallbackTable);
+    KernelCallbackFn* const cur = slot;
+    if (!cur || cur == TrampolineTable() || cur == g_host_callbacks) return;
+    g_emu_callbacks = cur;
+    slot = static_cast<KernelCallbackFn*>(TrampolineTable());
+    TRACE(dispatch, "d3d native: Wine's user32 table %p kept for core/user, PEB.KernelCallbackTable -> host user32 %p "
+                    "via trampolines", static_cast<void*>(cur), static_cast<void*>(g_host_callbacks));
+}
+
+void* EmuCallbackTable() {
+    if (g_d3d_cb) return g_emu_callbacks;
+    return PebField<void*>(peb::KernelCallbackTable);
 }
 
 }  // namespace win10xbox::dispatch::detail

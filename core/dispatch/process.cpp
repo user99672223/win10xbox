@@ -739,6 +739,11 @@ int Launch(const LaunchOptions& opts) {
             HMODULE hw32u = LoadLibraryW(L"win32u.dll");
             HMODULE hgdi32 = LoadLibraryW(L"gdi32.dll");
             HMODULE hgdi32full = LoadLibraryW(L"gdi32full.dll");
+            // The host kernel calls back into user mode for the passed-through D3DKMT/NtDxgk syscalls, through
+            // PEB.KernelCallbackTable: that must stay the host user32's (core/user uses Wine's own table).
+            HMODULE hu32 = LoadLibraryW(L"user32.dll");
+            if (hu32 && (s = ConfigureD3dCallbacks(hu32)))
+                WARN(process, "d3d native: host callback table not available: %08lx", static_cast<unsigned long>(s));
             if (!hw32u || !hgdi32 || !hgdi32full || (s = UseHostD3dkmt(hw32u, nullptr, hgdi32, hgdi32full))) {
                 ERR(process, "d3d native could not be configured (host win32u %p gdi32 %p)", static_cast<void*>(hw32u),
                     static_cast<void*>(hgdi32));
