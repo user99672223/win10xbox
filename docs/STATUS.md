@@ -1,6 +1,20 @@
 # Status
 
-## Trip-2 package: 1.0.0.352 = run 40009489508 (main 4332e9a, 2026-10-23)
+## Trip-2 package: 1.0.0.384 = run 40101558040 (main 0f1b39f, 2026-10-24)
+
+Supersedes 1.0.0.352 below. Everything merged on 23-24 Oct is in it: the verdict table (every bundled program has a
+known outcome), the display-mode work (`display_mode` 2560x1440@120 requested, `guest_display` 3840x2160@120,
+`output_scaling` system with layer fallback, tearing when the guest presents unsynchronised), UDP + TLS, the import
+closure test, XAudio2 playback (null endpoint on the runner, a real one on the console), directory installs under
+`LocalState\guests`, the full xinput1_4 export table, the ntdll:file status-code fix, and **windowed Direct3D 11 on
+the emulated window manager inside the UWP package** (`machine-emu-d3d`: `guest_d3d11_swap.exe` and
+`guest_imgui_d3d11.exe` present through the virtual swap chain; on the runner both PASS in the all-programs run).
+Runner result of "Run every program (report)": `programs=44 pass=43 fail=0 knownfail=0 timeout=1` (the timeout is
+interactive Doom). What only the console shows: the real GPU adapter name in the D3D11 guests' stdout, the 1440p120
+request result and the system-scaling path in the report header, an audible tone from `guest_xaudio2_play`, the
+controller rows with a pad, and `guest_imgui_d3d11`'s window on the TV.
+
+## Trip-2 package (previous): 1.0.0.352 = run 40009489508 (main 4332e9a, 2026-10-23)
 
 Everything the first console trip asked for is in this package and proven on the Windows runner (host-uwp
 launcher job, artifact `host-uwp-launcher-all-evidence`): Wine's NLS files bundled (`payload/nls`, 76 files),
