@@ -1,17 +1,11 @@
-status: wip
+status: blocked: two code pushes used; cause found and a 8-line fix written but not pushed or verified (below). Exact first error of the failing run: `file.c:1675: Test failed: io.Status expected STATUS_SUCCESS, got c0000035`, then `file: unhandled exception c0000005 at ntdll_test.exe+0x8c5e1`.
 
 # Slice -ntdllfile: intermittent crash of Wine's `ntdll:file` unit
 
-Evidence: ci run 40039768246 (main d4bd2c1, windows RelWithDebInfo): `ntdll:file parity FAIL: crashed`.
+Evidence run: ci 40039768246 (main d4bd2c1). Loop runs: 40042790878 (b5ecaed, 30 per mode, 0 crashes) and 40044435807 (4124346, 100/100/60/60).
 
-Finding before any fix (from that run's windows-RelWithDebInfo-logs, ntdll_test.exe rebuilt locally with the same pins):
-* `exception.crash.txt` is NOT the file unit's record. The host's crash.txt is only cleared before the diagnosed units
-  (exception, ...), so the record is the `exception` unit's deliberate first-chance fault: `ntdll_test.exe+0x27e09` is in
-  `func_exception` (the debug-register test: `xor eax,eax; pop [rax]` run from `code_mem`, a 0x10000 rwx VirtualAlloc, then
-  `dreg_handler`; the PRIV_INSTRUCTION record is the next sub-test). No APC is involved.
-* The `file` unit's own crash is `file: unhandled exception c0000005 at ntdll_test.exe+0x8c5e1`, in
-  `test_file_rename_information`: `fni->FileName[fni->FileNameLength / 2] = 0` after an NtQueryInformationFile that failed
-  (handle INVALID_HANDLE_VALUE) left `FileNameLength` uninitialised. The root is earlier: `file.c:1675` rename of a file to a
-  name that `DeleteFileW(newpath)` was supposed to have freed answers STATUS_OBJECT_NAME_COLLISION (c0000035); every later
-  sub-test then cascades (`RemoveDirectoryW failed with 32`, CreateFileW failed) until the write through the garbage length.
-* Loop: `.github/workflows/ntdllfile-loop.yml` (push on this branch, or workflow_dispatch) runs `tools/ci/ntdll_file_loop.ps1`.
+1. The hypothesis (APC / completion path) is wrong, and the crash record in the artifact is not the file unit's. `ntdll_test.exe+0x27e09` is in `func_exception` (the debug-register test: `xor eax,eax; pop [rax]` run from the 0x10000 rwx `code_mem`, a deliberate first-chance fault); host `crash.txt` is only cleared before the diagnosed units, so `exception.crash.txt` held the exception unit's record. The file unit's own crash is `+0x8c5e1` (`test_file_rename_information`, `fni->FileName[fni->FileNameLength/2] = 0` with an uninitialised length after a failed NtQueryInformationFile); other runs died at `+0x8a60a` and `+0x98334` (file.c:3077), the same cascade. RVAs verified on the CI runner (rva-map.txt in the ntdllfile-loop artifact).
+2. Root cause (confirmed by the dispatch trace of run 40044435807, layer-trace-006): Wine's `GetTempFileNameW` names files `foo<NtGetTickCount()&0xffff>.tmp` and stops its search when `CreateFileW(CREATE_NEW)` fails with anything but ERROR_FILE_EXISTS/SHARING_VIOLATION. The guest's Temp (`machine-builtin\Users\User\AppData\Local\Temp`) is a persistent host folder and the unit leaves one `foo*.tmp` DIRECTORY per run (trailing-separator test, RemoveDirectoryW gets c0000043). When a new name equals such a directory the host's NtCreateFile(FILE_CREATE|FILE_NON_DIRECTORY_FILE) answers c00000ba (FILE_IS_A_DIRECTORY, not NAME_COLLISION), GetTempFileNameW returns the directory's name as if it had created it, and every later rename/delete/CreateFileW of that sub-test fails until the garbage-length write. In the traced failure `fooc1ff.tmp` was in the "before" snapshot as a directory.
+3. Rates (file unit through the layer, ctest-equivalent command, --platform=windows): alone 0/100 (leftover dirs 1..98); after the units that precede it 2/100 crashed, 8/100 rename flake (dirs 99..186); +relay 1/60 crashed, 5/60 flake (dirs 187..216); native, no layer: 0/60. No flake occurred with fewer than 104 leftover directories: the rate follows the debris, so CI sees it when earlier tests in the job leave `foo*.tmp` directories in the same machine folder.
+4. Fix (layer, not pushed: budget): in `Xl_NtCreateFile` (core/dispatch/nt_file.cpp), after the host call, `if (r == 0xC00000BA && disposition == 2 /*FILE_CREATE*/ && (options & 0x40 /*FILE_NON_DIRECTORY_FILE*/)) r = 0xC0000035;` (FILE_CREATE of an existing name is STATUS_OBJECT_NAME_COLLISION; CreateFile(CREATE_NEW) documents ERROR_FILE_EXISTS), so GetTempFileNameW moves to the next name. No ntdll test expects c00000ba from FILE_CREATE. Verify with the existing loop: dispatch `workflow_dispatch` ntdllfile-loop (or push), require 0 crashes and 0 flakes in layer-seq (100) and layer-trace (60).
+5. What the two pushes added: `.github/workflows/ntdllfile-loop.yml` + `tools/ci/ntdll_file_loop.ps1` (RVA map, N runs, temp snapshots, relay traces kept on failure) and `TRACE(dispatch)` lines for NtCreateFile/NtOpenFile (name, access, disposition, options, result) in core/dispatch/nt_file.cpp.
