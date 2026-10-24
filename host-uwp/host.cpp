@@ -247,6 +247,7 @@ struct Host::Impl
     std::string CaptureScreen();
     void RecordAllRun(bool timed_out, long exit_code, const std::string& screen);
     void FinishAllChain();
+    void AwaitRestartKill();
     std::string NextRestartArg() const;
     void ShowLauncherResult(const std::string& verdict, bool ran, long exit_code);
     void Fail(const std::string& what, const std::string& hint = std::string());
@@ -387,6 +388,15 @@ static std::string OsBuildString()
     return os;
 }
 
+// After RequestRestartAsync returned a failure text: a granted restart ends this process a little later, so give it
+// time. Only a process that is still alive after that has a restart that really failed (the summary may then be written).
+void Host::Impl::AwaitRestartKill()
+{
+    diag::Line("launcher: restart reported a failure; waiting up to 45 s in case the process is ended anyway");
+    diag::FlushLog();
+    for (int i = 0; i < 450; ++i) Sleep(100);
+}
+
 void Host::Impl::FinishAllChain()
 {
     const std::wstring path = info.local_state + L"\\report.txt";
@@ -421,6 +431,7 @@ void Host::Impl::FinishAllChain()
         head += "output_scaling=" + OutputScaling() + "\n";
         head += "date_utc=" + TimestampUtc() + "\n";
         head += "programs=" + std::to_string(blocks.size()) + "\n";
+        head += std::string("chain=") + (chain_more ? "aborted" : "done") + "\n";
         head += Fmt("pass=%u\nknownfail=%u\nfail=%u\nexited=%u\ntimeout=%u\ncrash=%u\nskipped=%u\n\n", pass, knownfail, fail, exited, timeout, crash, skipped);
         if (!WriteTextFile(path, head + body, false)) diag::Line("launcher: cannot write the report.txt header (error %lu)", GetLastError());
     }
@@ -516,6 +527,7 @@ void Host::Impl::RunWorker()
                 diag::FlushLog();
                 why = restart_fn(arg);   // does not return when the restart is granted
                 if (why.empty()) why = "the restart was granted but the process did not end";
+                else if (chain_all) AwaitRestartKill();
             }
             diag::Line("launcher: restart failed: %s", why.c_str());
             report.Set("launcher.restart", "FAILED: " + why);
@@ -1206,6 +1218,10 @@ void Host::Impl::RunImpl()
                     const std::string why = restart_fn(arg);   // does not return when granted
                     diag::Line("ERR launcher: restart after the timeout failed: %s (PEB at the call: %s)", why.c_str(),
                                guest_peb ? "guest" : "host");
+                    // The restart may be granted although the call reports otherwise (RestartPending, or the 30 s poll
+                    // ran out): the next process then starts while this one is still alive. Writing the summary now
+                    // would put the header into report.txt under it, so wait to be ended first.
+                    AwaitRestartKill();
                     report.Set("launcher.restart", "FAILED after the timeout: " + why);
                     report.Flush();
                 }
