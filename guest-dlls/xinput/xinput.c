@@ -127,6 +127,17 @@ DWORD WINAPI XInputGetState(DWORD user, PadState *state) { return get_state(user
 /* ordinal 100: the undocumented variant that also reports the Guide button; the host has no such button */
 DWORD WINAPI XInputGetStateEx(DWORD user, PadState *state) { return get_state(user, state); }
 
+/* XInputGetAudioDeviceIds (ordinal 10): the layer has no pad headset; a connected pad has no audio device, none
+ * is ERROR_DEVICE_NOT_CONNECTED. */
+DWORD WINAPI XInputGetAudioDeviceIds(DWORD user, LPWSTR render, UINT *render_count, LPWSTR capture, UINT *capture_count) {
+    (void)render;
+    (void)capture;
+    if (user >= W10X_XINPUT_MAX_PADS) return ERROR_BAD_ARGUMENTS;
+    if (render_count) *render_count = 0;
+    if (capture_count) *capture_count = 0;
+    return ERROR_DEVICE_NOT_CONNECTED;
+}
+
 DWORD WINAPI XInputSetState(DWORD user, PadVibration *vibration) {
     W10xXInputSetState p;
     if (!vibration) return ERROR_BAD_ARGUMENTS;
@@ -152,6 +163,25 @@ DWORD WINAPI XInputGetCapabilities(DWORD user, DWORD flags, PadCapabilities *cap
     caps->Gamepad.bLeftTrigger = caps->Gamepad.bRightTrigger = 0xFF;
     caps->Gamepad.sThumbLX = caps->Gamepad.sThumbLY = caps->Gamepad.sThumbRX = caps->Gamepad.sThumbRY = (SHORT)-64;
     caps->Vibration.wLeftMotorSpeed = caps->Vibration.wRightMotorSpeed = 0xFF;
+    return ERROR_SUCCESS;
+}
+
+/* ordinal 108 (XINPUT_CAPABILITIES_EX: the capabilities, then vendor/product ids); version must be 1 */
+typedef struct {
+    PadCapabilities Capabilities;
+    WORD VendorId, ProductId, VersionNumber, unk1;
+    DWORD unk2;
+} PadCapabilitiesEx;
+DWORD WINAPI XInputGetCapabilitiesEx(DWORD version, DWORD user, DWORD flags, PadCapabilitiesEx *caps) {
+    DWORD err;
+    if (!caps || version != 1) return ERROR_BAD_ARGUMENTS;
+    err = XInputGetCapabilities(user, flags, &caps->Capabilities);
+    if (err) return err;
+    caps->VendorId = 0x045E; /* Microsoft */
+    caps->ProductId = 0x028E; /* Xbox 360 controller */
+    caps->VersionNumber = 0x0114;
+    caps->unk1 = 0;
+    caps->unk2 = 0;
     return ERROR_SUCCESS;
 }
 

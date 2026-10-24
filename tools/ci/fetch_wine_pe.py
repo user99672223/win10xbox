@@ -26,6 +26,7 @@ Needs `gh` with GH_TOKEN (actions: read). Prints the run id it used.
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -60,11 +61,27 @@ def live_artifacts(repo, run_id):
 
 
 def download(repo, run_id, name, dest):
+    # `gh run download` refuses to overwrite ("file exists"), so a rerun on a laptop (tools/dev/prepare-windows.ps1)
+    # failed after the first run: reuse the directory when it already holds this very run's artifact (marker file),
+    # otherwise start from an empty one.
+    marker = os.path.join(dest, ".wine-pe-run")
+    if os.path.isdir(dest) and os.listdir(dest):
+        try:
+            with open(marker) as f:
+                have = f.read().strip()
+        except OSError:
+            have = ""
+        if have == f"{run_id} {name}":
+            print(f"  {name} from run {run_id} already in {dest}", flush=True)
+            return
+        shutil.rmtree(dest)
     os.makedirs(dest, exist_ok=True)
     for i in range(1, 4):
         p = subprocess.run(["gh", "run", "download", str(run_id), "--repo", repo, "--name", name, "--dir", dest],
                            capture_output=True, text=True)
         if p.returncode == 0 and os.listdir(dest):
+            with open(marker, "w") as f:
+                f.write(f"{run_id} {name}\n")
             return
         print(f"  download {name} from run {run_id}: attempt {i} failed "
               f"(exit {p.returncode}: {(p.stderr or p.stdout).strip()[:300]}); retrying in {5 * i}s", flush=True)
