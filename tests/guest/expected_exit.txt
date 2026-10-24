@@ -46,7 +46,9 @@ guest_dialog.exe 42=clicked 1=no-click
 guest_spawn.exe 42=child-ran 1=no-child-processes
 guest_named_objects.exe 42=child-ran 1=no-child-processes
 
-# Audio: the runner has no endpoint (hr 0x80070490), the console has one
+# Audio: the console has HDMI audio, so its verdict is 42 (a buffer played, OnBufferEnd from the engine). 43 stays listed only
+# because host-uwp's own runner job has no endpoint (hr 0x80070490); on the console 43 would be a regression to look at, not
+# an expected answer (docs/slices/xaudio2play.md). The hosted CI runners now have a virtual endpoint and gate on 42.
 guest_wasapi.exe 42=endpoint 43=no-endpoint
 guest_xaudio2.exe 42=endpoint 43=no-endpoint
 guest_xaudio2_play.exe 42=played 43=no-endpoint

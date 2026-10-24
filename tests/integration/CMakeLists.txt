@@ -978,6 +978,35 @@ set_tests_properties(integration.guest_d3d11 PROPERTIES
   ENVIRONMENT "WIN10XBOX_WINEDEBUG=+loaddll,warn+module,+seh,+rpc,+service")
 endif()
 
+# XAudio2 2.9 as the game runs it (docs/slices/xaudio2play.md): the runner's NATIVE xaudio2_9.dll (guest code, "xaudio2_9":
+# "native" in machine-native-d3d's machine.json) on top of Wine's mmdevapi and the layer's WASAPI bridge, playing the 200 ms
+# buffer of tests/guest/xaudio2.c to the virtual render endpoint tools/ci/install_virtual_audio.ps1 installs on the
+# Windows runners. Exit 42 + "RESULT played" (OnBufferEnd from the engine, BuffersQueued seen); the trace must show the
+# native DLL mapped from the machine folder (not Wine's builtin). Runs where the workflow installed the device
+# (WIN10XBOX_CI_AUDIO_ENDPOINT=1); SKIPs elsewhere because a machine without an endpoint answers 43 by design.
+if(NOT CMAKE_CROSSCOMPILING AND TARGET guest_xaudio2)
+add_test(NAME integration.guest_xaudio2_native
+  COMMAND ${CMAKE_COMMAND}
+    -DHOST=$<TARGET_FILE:win10xbox>
+    -DMACHINE=${WIN10XBOX_D3D_MACHINE_DIR}
+    -DPROGRAM=C:\\guest\\guest_xaudio2.exe
+    -DEXPECT_EXIT=42
+    -DSAVE_STDOUT=${CMAKE_BINARY_DIR}/bin/guest_xaudio2_native.log   # the OnBufferEnd / BuffersQueued line, uploaded by CI
+    "-DEXPECT_REGEX=xaudio2: XAudio2Create ok;xaudio2: OnBufferEnd received after about [0-9]+ ms;BuffersQueued max [0-9]+;xaudio2: RESULT played;xaudio2: done"
+    "-DEXPECT_TRACE_REGEX=host path [^)]*[Ss]ystem32.[Xx][Aa]udio2_9.dll"
+    -DDEBUG_SPEC=+modules
+    -DREQUIRE=Windows/System32/xaudio2_9.dll
+    -DSKIP_UNLESS_ENV=WIN10XBOX_CI_AUDIO_ENDPOINT
+    -DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_guest.cmake)
+set_tests_properties(integration.guest_xaudio2_native PROPERTIES
+  FIXTURES_REQUIRED w10x_machine
+  SKIP_RETURN_CODE 77
+  SKIP_REGULAR_EXPRESSION "SKIP:"
+  LABELS "guest_e2e"
+  TIMEOUT 240)
+endif()
+
 # A swap chain on a window, route B (docs/slices/swapchain2.md): tests/guest/d3d11_swap.c on the same machine. The layer
 # interposes the guest's dxgi (CreateDXGIFactory*) and d3d11 (D3D11CreateDeviceAndSwapChain), so the swap chain is
 # a wrapper around the real one; after each Present the real back buffer is copied to a staging texture and handed

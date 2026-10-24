@@ -17,6 +17,8 @@
 # -DGUEST_FILE=<path under the machine folder, '/' separated> is deleted before the run and must exist after it.
 #   [-DREQUIRE=<path relative to the machine folder>]: SKIP (77) when that file is absent, e.g. the native
 #   Windows DLLs a test needs (machine/import_windows_dlls.ps1 stages them on a Windows host only).
+#   [-DSKIP_UNLESS_ENV=<name>]: SKIP (77) when that environment variable is not "1": a test that needs a device the
+#   workflow installs (WIN10XBOX_CI_AUDIO_ENDPOINT, tools/ci/install_virtual_audio.ps1); CI sets it, so there it runs.
 # -DREQUIRE_BUILTIN_DLLS=ON adds +modules to WIN10XBOX_DEBUG and fails unless every system DLL the guest
 # mapped (C:\Windows\System32\<x>.dll in the modules trace) came from <machine>\Windows\builtin, with
 # user32.dll among them (unless -DNO_USER32=ON: a console program that never loads it); the list is printed either way.
@@ -44,6 +46,13 @@ endif()
 if(REQUIRE AND NOT EXISTS "${MACHINE}/${REQUIRE}")
   message("SKIP: ${MACHINE}/${REQUIRE} missing: this test needs the native Windows DLLs in the machine folder "
           "(machine/import_windows_dlls.ps1 stages them from a Windows install; not available on Linux)")
+  if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.29)
+    cmake_language(EXIT 77)
+  endif()
+  return()
+endif()
+if(SKIP_UNLESS_ENV AND NOT "$ENV{${SKIP_UNLESS_ENV}}" STREQUAL "1")
+  message("SKIP: ${SKIP_UNLESS_ENV} is not 1: this test needs the device the CI workflow installs")
   if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.29)
     cmake_language(EXIT 77)
   endif()
