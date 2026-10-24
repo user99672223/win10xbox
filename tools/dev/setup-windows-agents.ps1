@@ -209,7 +209,12 @@ if (Test-Path $settings) {
     "allow": [
       "Read", "Edit", "Write", "Glob", "Grep",
       "Bash(git:*)", "Bash(gh:*)", "Bash(cmake:*)", "Bash(ctest:*)", "Bash(ninja:*)",
-      "Bash(python:*)", "Bash(pwsh:*)", "Bash(powershell:*)", "Bash(dumpbin:*)", "Bash(llvm-objdump:*)"
+      "Bash(python:*)", "Bash(pwsh:*)", "Bash(powershell:*)", "Bash(dumpbin:*)", "Bash(llvm-objdump:*)",
+      "Bash(cl:*)", "Bash(link:*)", "Bash(objdump:*)", "Bash(nm:*)",
+      "Bash(sleep:*)", "Bash(cd:*)", "Bash(ls:*)", "Bash(dir:*)", "Bash(cat:*)", "Bash(type:*)", "Bash(head:*)",
+      "Bash(tail:*)", "Bash(grep:*)", "Bash(findstr:*)", "Bash(find:*)", "Bash(where:*)", "Bash(wc:*)", "Bash(sort:*)",
+      "Bash(uniq:*)", "Bash(diff:*)", "Bash(sed:*)", "Bash(awk:*)", "Bash(echo:*)", "Bash(mkdir:*)", "Bash(cp:*)",
+      "Bash(mv:*)", "Bash(touch:*)", "Bash(true:*)", "Bash(test:*)", "Bash(date:*)", "Bash(env:*)", "Bash(xcopy:*)"
     ],
     "deny": [
       "Bash(git push * origin claude/youthful-cerf-l7xxsb)",
