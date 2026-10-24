@@ -102,7 +102,9 @@ struct ExcRec {
     std::uintptr_t addr, p[3];
     char s0[48], s1[64];   // EXCEPTION_WINE_STUB: the dll and function names of the stub
     unsigned nstk;         // 0x6ba / C++ throw: the code-looking words on the stack at the raise (who called)
-    std::uintptr_t stk[14];
+    std::uintptr_t stk[24];
+    std::uintptr_t obj[16];   // C++ throw: the first 128 bytes of the thrown object (a wil ResultException carries the HRESULT)
+    bool has_obj;
 };
 constexpr unsigned kExcRing = 24;
 ExcRec g_exc[kExcRing];
@@ -170,12 +172,15 @@ LONG CALLBACK ExcRecorder(PEXCEPTION_POINTERS info) {
     for (DWORD i = 0; i < 3 && i < r->NumberParameters; ++i) e.p[i] = r->ExceptionInformation[i];
     if (r->ExceptionCode == 0x000006ba || r->ExceptionCode == 0xe06d7363) {
         const std::uintptr_t rsp = info->ContextRecord->Rsp;
-        for (unsigned i = 0; i < 700 && e.nstk < 14; ++i) {
+        if (r->ExceptionCode == 0xe06d7363 && r->NumberParameters >= 2 &&
+            probe::CopyFromUser(e.obj, reinterpret_cast<const void*>(r->ExceptionInformation[1]), sizeof e.obj) == 0)
+            e.has_obj = true;
+        for (unsigned i = 0; i < 900 && e.nstk < 24; ++i) {
             std::uintptr_t v = 0;
             if (probe::CopyFromUser(&v, reinterpret_cast<const void*>(rsp + 8u * i), sizeof v) != 0) break;
             MEMORY_BASIC_INFORMATION mbi{};
             if (v < 0x10000 || !VirtualQuery(reinterpret_cast<void*>(v), &mbi, sizeof mbi)) continue;
-            if (mbi.Type != MEM_IMAGE || !(mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) continue;
+            if (!(mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) continue;
             e.stk[e.nstk++] = v;
         }
     }
@@ -199,9 +204,12 @@ const char* Where(std::uintptr_t a, char* buf, std::size_t cap) {
             return buf;
         }
     MEMORY_BASIC_INFORMATION mbi{};
-    if (VirtualQuery(reinterpret_cast<void*>(a), &mbi, sizeof mbi) && mbi.Type == MEM_IMAGE) {
-        // the image's own name from its export directory (the layer's loader keeps no list the handler may read)
-        char nm[32] = "?";
+    // the image's own name from its export directory (the layer's loader keeps no list the handler may read); the
+    // guest's modules are mapped by the layer and are not MEM_IMAGE, so any region with a PE header at its base counts
+    std::uint16_t mz = 0;
+    if (VirtualQuery(reinterpret_cast<void*>(a), &mbi, sizeof mbi) && mbi.AllocationBase &&
+        probe::CopyFromUser(&mz, mbi.AllocationBase, 2) == 0 && mz == 0x5a4d) {
+        char nm[32] = "exe";
         const auto base = reinterpret_cast<std::uintptr_t>(mbi.AllocationBase);
         std::uint32_t lfa = 0, exp_rva = 0, name_rva = 0;
         if (probe::CopyFromUser(&lfa, reinterpret_cast<const void*>(base + 0x3c), 4) == 0 && lfa < 0x1000 &&
@@ -236,6 +244,23 @@ void DumpExceptions(const char* what, HRESULT hr) {
                     Where(e.addr, w, sizeof w), static_cast<unsigned long long>(e.p[0]), static_cast<unsigned long long>(e.p[1]),
                     static_cast<unsigned long long>(e.p[2]));
         for (unsigned k = 0; k < e.nstk; ++k) W10X_TR("dxgi:   exc #%ld stk[%u] %s", static_cast<long>(i), k, Where(e.stk[k], w2, sizeof w2));
+        if (e.has_obj)
+            for (unsigned k = 0; k < 16; ++k) {
+                char str[72] = "";   // a readable string behind the word (ANSI or UTF-16), for wil's file / function / code text
+                if (e.obj[k] > 0x10000) {
+                    char tmp[72] = {};
+                    CopyName(tmp, sizeof tmp, e.obj[k]);
+                    unsigned n = 0;
+                    while (n < sizeof tmp - 1 && tmp[n] >= 0x20 && tmp[n] < 0x7f) ++n;
+                    if (n >= 4) { std::memcpy(str, tmp, n); str[n] = 0; }
+                    else if (n == 1 && tmp[1] == 0) {   // UTF-16 text: every second byte is 0
+                        unsigned m = 0;
+                        while (m < 34 && tmp[2 * m] >= 0x20 && tmp[2 * m] < 0x7f && tmp[2 * m + 1] == 0) { str[m] = tmp[2 * m]; ++m; }
+                        str[m] = 0;
+                    }
+                }
+                W10X_TR("dxgi:   exc #%ld obj[%u] = %016llx %s", static_cast<long>(i), k, static_cast<unsigned long long>(e.obj[k]), str);
+            }
     }
 }
 
@@ -958,6 +983,7 @@ HRESULT WINAPI W10x_CreateDXGIFactory1(REFIID riid, void** pp) {
     const HRESULT real_hr = g_real_create_factory1(__uuidof(IDXGIFactory), reinterpret_cast<void**>(&u));
     const HRESULT hr = CreateWrappedFactory(real_hr, u, riid, pp);
     if (FAILED(hr)) DumpExceptions(FAILED(real_hr) ? "dxgi!CreateDXGIFactory1" : "CreateDXGIFactory1 (wrapping)", hr);
+    else if (g_exc_n) DumpExceptions("CreateDXGIFactory1 succeeded; exceptions raised inside it (round 12 comparison, both machines)", hr);
     W10X_TRACE_HR("CreateDXGIFactory1", hr);
 }
 

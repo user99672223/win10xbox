@@ -29,6 +29,22 @@ foreach ($d in 'dxgi','d3d11','dxcore','powrprof','umpdc','d3d12','dwmapi','d3d1
   }
   Write-Host "  rpc-ish imports ($($names.Count)): $($names -join ' ')"
   $b = [IO.File]::ReadAllBytes($f)
+  if ($d -eq 'dxgi') {   # the whole import table, compact: who the native dxgi talks to
+    $cur2 = ''; $acc = [ordered]@{}
+    foreach ($l in $imp) {
+      if ($l -match 'DLL Name: (\S+)') { $cur2 = $Matches[1]; $acc[$cur2] = @(); continue }
+      if ($cur2 -and $l -match '^\s+[0-9a-fA-F]+\s+(\w+)\s*$') { $acc[$cur2] += $Matches[1] }
+    }
+    foreach ($k in $acc.Keys) { $v = $acc[$k]; if ($k -match '(?i)^(kernel32|msvcrt|ntdll|vcruntime|api-ms-win-crt)') { Write-Host "  import $k ($($v.Count))" } else { Write-Host "  import ${k}: $($v -join ' ')" } }
+  }
+  # UTF-16 strings within 160 bytes of each L"ncalrpc" (the binding's endpoint is usually next to it)
+  $uni = [Text.Encoding]::Unicode.GetBytes('ncalrpc')
+  foreach ($p in (Find-Bytes $b $uni 0 | Select-Object -First 4)) {
+    $lo = [Math]::Max(0, $p - 160); $hi = [Math]::Min($b.Length - 1, $p + 200)
+    $seg = [Text.Encoding]::Unicode.GetString($b[$lo..$hi])
+    $near = [regex]::Matches($seg, '[\x20-\x7e]{4,}') | ForEach-Object { $_.Value }
+    Write-Host ("  near L'ncalrpc' @file+0x{0:x}: {1}" -f $p, ($near -join ' | '))
+  }
   foreach ($syn in @(@('NDR', $ndr), @('NDR64', $ndr64))) {
     foreach ($p in (Find-Bytes $b $syn[1] 24)) {
       $o = $p - 0x18
@@ -59,6 +75,6 @@ foreach ($m in 'machine-native-d3d', 'machine-emu-d3d') {
   $all | Where-Object { $_ -match 'ipc: ' } | Select-Object -First 60 | ForEach-Object { Write-Host ("    " + $_.Substring(0, [Math]::Min(260, $_.Length))) }
   Write-Host "  EnumAdapters and the exceptions around it:"
   $all | Where-Object { $_ -match 'dxgi: EnumAdapters|dxgi:   exc|dxgi:   debug|dxgi: fail-fast|dxgi:   stack|dxgi: EnumAdapters failed' } |
-    Select-Object -First 120 | ForEach-Object { Write-Host ("    " + $_.Substring(0, [Math]::Min(260, $_.Length))) }
+    Select-Object -First 400 | ForEach-Object { Write-Host ("    " + $_.Substring(0, [Math]::Min(260, $_.Length))) }
 }
 exit 0
