@@ -27,6 +27,7 @@ guest_net.exe 42
 guest_nowine.exe 42
 guest_rdrand.exe 42
 guest_regpersist.exe 42
+guest_cryptapi.exe 42=crypto
 guest_seh.exe 42
 guest_tebframe.exe 42
 guest_window2.exe 42

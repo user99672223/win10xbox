@@ -44,6 +44,7 @@ target_sources(win10xbox_core PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/unix_calls.cpp
   ${CMAKE_CURRENT_LIST_DIR}/unix_ws2_32.cpp
   ${CMAKE_CURRENT_LIST_DIR}/unix_schannel.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/unix_bcrypt.cpp
   ${CMAKE_CURRENT_LIST_DIR}/unix_mmdevapi.cpp
   ${CMAKE_CURRENT_LIST_DIR}/rtl_forward.cpp
   ${CMAKE_CURRENT_LIST_DIR}/teb_frames.cpp

@@ -68,6 +68,17 @@ add_executable(guest_regpersist regpersist.c)
 target_link_libraries(guest_regpersist PRIVATE advapi32)
 win10xbox_add_guest(guest_regpersist)
 
+# CryptoAPI (advapi32) and CNG (bcrypt) through the layer: provider resolution, container, hash, AES round trips
+# (docs/slices/crypto-rsaaes.md). guest.cryptapi runs it directly on the Windows runners: Windows' answers are the reference.
+add_executable(guest_cryptapi cryptapi.c)
+target_link_libraries(guest_cryptapi PRIVATE advapi32 bcrypt crypt32)
+win10xbox_add_guest(guest_cryptapi)
+if(NOT CMAKE_CROSSCOMPILING_EMULATOR)
+  add_test(NAME guest.cryptapi COMMAND guest_cryptapi)
+  set_tests_properties(guest.cryptapi PROPERTIES PASS_REGULAR_EXPRESSION "cryptapi: done failures=0"
+                       FAIL_REGULAR_EXPRESSION "cryptapi: [A-Za-z0-9_ -]+ FAILED" TIMEOUT 60)
+endif()
+
 add_library(guest_dll SHARED dll.c)
 win10xbox_add_guest(guest_dll)
 

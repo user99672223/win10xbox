@@ -280,17 +280,20 @@ std::vector<std::wstring> DefaultEnvironment() {
     return env;
 }
 
-// Wine's advapi32 answers GetUserNameW from the WINEUSERNAME variable, which Wine's server puts into every process
-// environment, not from the token. Without it GetUserNameW fails and shell32's %USERPROFILE% expansion (SHGetFolderPath,
+// Wine's advapi32 answers GetUserNameA/W from one environment variable, which Wine's server puts into every process
+// environment, not from the token (WINEUSERNAME upstream; NTSYS_USERNAME since patch 0008-neutral-internal-names, which
+// renamed it and left this entry stale: rsaenh's CPAcquireContext calls GetUserNameA for an empty container name, so every
+// CRYPT_VERIFYCONTEXT acquire failed with ERROR_ENVVAR_NOT_FOUND, docs/slices/crypto-rsaaes.md). Without it GetUserNameW
+// fails and shell32's %USERPROFILE% expansion (SHGetFolderPath,
 // so SDL_GetPrefPath, so every program's %APPDATA% directory) builds a path with a garbage user name. A child's inherited guest
 // environment has no WINE* entry (nt_spawn.cpp keeps them host-owned), so the entry is added here for every process.
 void EnsureWineUserName(std::vector<std::wstring>* env) {
     for (const std::wstring& e : *env)
-        if (e.size() > 13 && _wcsnicmp(e.c_str(), L"WINEUSERNAME=", 13) == 0) return;
+        if (e.size() > 15 && _wcsnicmp(e.c_str(), L"NTSYS_USERNAME=", 15) == 0) return;
 #if WIN10XBOX_HAVE_TOKEN
-    env->push_back(L"WINEUSERNAME=" + token::UserName());
+    env->push_back(L"NTSYS_USERNAME=" + token::UserName());
 #else
-    env->push_back(L"WINEUSERNAME=User");
+    env->push_back(L"NTSYS_USERNAME=User");
 #endif
 }
 

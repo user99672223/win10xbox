@@ -586,6 +586,9 @@ NTSTATUS WINAPI Ws2UnixGetNameInfo(void* args);
 // secur32's unix calls on the host's SSPI SChannel (unix_schannel.cpp); the table is registered in unix_calls.cpp.
 extern const UnixCallFn kSchannelFuncs[];
 extern const std::size_t kSchannelFuncCount;
+// bcrypt's unix calls: AES in ECB/CBC/CFB8 (unix_bcrypt.cpp); registered in unix_calls.cpp.
+extern const UnixCallFn kBcryptFuncs[];
+extern const std::size_t kBcryptFuncCount;
 void PrimeSchannelHost();   // before the PEB take-over, like afd::PrimeHost
 void SwapHostPebFields();   // exchange the PEB fields the take-over replaced with the host's (twice = back); process.cpp
 // mmdevapi's driver on the host's WASAPI (unix_mmdevapi.cpp). PrimeAudio starts the host audio thread and loads the
