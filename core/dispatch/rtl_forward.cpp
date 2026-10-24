@@ -329,3 +329,24 @@ std::size_t ExtendGuestNtdllExports(const loader::MappedImage& img) {
 }
 
 }  // namespace win10xbox::dispatch::detail
+
+// Guest RtlDeleteCriticalSection (rtl_forward.inc). A section whose debug record lies inside one of our mapped images
+// (Wine's DEFINE_CRITICAL_SECTION) never entered the host's list or pool: tear it down here and keep the record out of
+// the host's free list. Anything else is the host's.
+extern "C" NTSTATUS NTAPI w10x_RtlDeleteCriticalSection(RTL_CRITICAL_SECTION* cs) {
+    using Fn = NTSTATUS(NTAPI*)(RTL_CRITICAL_SECTION*);
+    static Fn host = reinterpret_cast<Fn>(win10xbox::dispatch::HostExport("RtlDeleteCriticalSection"));
+    RTL_CRITICAL_SECTION_DEBUG* dbg = cs ? cs->DebugInfo : nullptr;
+    if (dbg && win10xbox::dispatch::detail::FindView(dbg, nullptr) &&
+        dbg->ProcessLocksList.Flink == &dbg->ProcessLocksList && dbg->ProcessLocksList.Blink == &dbg->ProcessLocksList) {
+        if (cs->LockSemaphore) CloseHandle(cs->LockSemaphore);
+        cs->DebugInfo = nullptr;
+        cs->LockSemaphore = nullptr;
+        cs->LockCount = -1;
+        cs->RecursionCount = 0;
+        cs->OwningThread = nullptr;
+        cs->SpinCount = 0;
+        return 0;
+    }
+    return host(cs);
+}

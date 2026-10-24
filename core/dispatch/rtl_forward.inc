@@ -55,7 +55,11 @@ RTL_FORWARD(RtlSetUserFlagsHeap)
 RTL_FORWARD(RtlInitializeCriticalSection)
 RTL_FORWARD(RtlInitializeCriticalSectionEx)
 RTL_FORWARD(RtlInitializeCriticalSectionAndSpinCount)
-RTL_FORWARD(RtlDeleteCriticalSection)
+// RtlDeleteCriticalSection goes through core: a Wine DLL's statically initialised section keeps its
+// RTL_CRITICAL_SECTION_DEBUG record in the image's data. The host's delete hands a record that is not in
+// its heap to its free list of debug records (an SList); the image is later unmapped and the next
+// RtlInitializeCriticalSectionEx pops an address inside freed memory (docs/slices/unload-slist.md).
+WINE_OVERRIDE(RtlDeleteCriticalSection, w10x_RtlDeleteCriticalSection)
 RTL_FORWARD(RtlEnterCriticalSection)
 RTL_FORWARD(RtlLeaveCriticalSection)
 RTL_FORWARD(RtlTryEnterCriticalSection)

@@ -606,6 +606,7 @@ extern "C" PVOID NTAPI w10x_RtlCreateHeap(ULONG flags, PVOID base, SIZE_T reserv
 
 // ---- Wine TEB-frame exceptions (teb_frames.cpp) --------------------------------
 // The guest ntdll's RtlUnwind: a target that is a __TRY frame on TEB.NtTib.ExceptionList is unwound here.
+extern "C" NTSTATUS NTAPI w10x_RtlDeleteCriticalSection(RTL_CRITICAL_SECTION* cs);
 extern "C" void NTAPI w10x_RtlUnwind(PVOID target_frame, PVOID target_ip, PEXCEPTION_RECORD record, PVOID retval);
 // Adds the vectored handler that dispatches those frames (once per process, before the guest runs).
 void InstallTebFrameDispatch();
