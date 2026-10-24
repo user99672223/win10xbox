@@ -36,6 +36,16 @@ compiled from the fetched tree, never copied into the repository.
 * Second defect found: after rsaenh/crypt32/ncrypt/bcrypt are unmapped, the next `InitializeCriticalSectionEx` (host ntdll `RtlInitializeCriticalSectionEx`) faults in `ExpInterlockedPopEntrySListFault` reading an address inside the unmapped crypt32 image (0x...ef94da0, crypt32 base 0x...ef30000 + 0x64da0). Likely cause (not proven): a Wine DLL's DllMain/DeleteCriticalSection pushes a static `RTL_CRITICAL_SECTION_DEBUG` that lives in the module's data onto the host ntdll's debug-info free list; unloading the module leaves the list pointing into unmapped memory. The layer has never unloaded a Wine builtin before.
 * Next (fresh agent): (1) in `W10xCompileFromFile` skip `W10xProbeCrypto()` first to get RelWithDebInfo green again; (2) find why rsaenh's load returns FALSE (a +loaddll/+ldr style trace of the LdrLoadDll of rsaenh, or `GetLastError` after `LoadLibraryW(L"rsaenh.dll")` in the shim) and keep builtins that were loaded for a provider from being unloaded (pin them with a `LdrAddRefDll`-style no-free flag in the layer's FreeLibrary path, or give the host ntdll's critical sections of Wine modules heap debug info); (3) then Debug prints the HRESULT.
 
+## Round 4 (code push 1)
+
+* The diagnostic shim is gone (`tests/guest/d3dsample_shim.h` removed with both `/FI` lines): its `W10xProbeCrypto()` call made RelWithDebInfo red.
+* The sample is a fixture, like the other fetched programs: it is built in Release configuration whatever the layer's configuration is
+  (`tests/guest/d3dsample/CMakeLists.txt`, `host-uwp/d3dsample/CMakeLists.txt`, flags in `tests/guest/d3dsample_release.cmake`:
+  Release flags and static /MT runtime for every configuration, directory-scoped). Games ship release-compiled shaders; both ci jobs and the
+  package now run the same sample binary, and the `D3DCOMPILE_DEBUG` path (crypto provider needed) is no longer exercised.
+* The two layer defects the Debug build exposed are recorded in `docs/slices/crypto-rsaaes.md` and `docs/slices/unload-slist.md`
+  (status wip). Rounds 1-3 layer fixes are kept.
+
 ## What was added
 
 * `tools/ci/fetch_d3dsample.ps1`: shallow fetch of the pinned SHA, verifies HEAD, exports `WIN10XBOX_D3DSAMPLE_DIR`. ci.yml and
