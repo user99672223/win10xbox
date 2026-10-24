@@ -1,5 +1,4 @@
 status: wip
-parked: owner's "Game first" instruction (docs/COORDINATION.md, 2026-10-23) stops this slice. Head 20c38b4 is the implement push: shell32 COM classes registered, user shell folders, allowlist + ratchet; its baseline numbers are from local Wine 9 and the ratchet expects the first runner measurement to differ. To resume: the CI loop re-measures wine-pe/tests/shell32.baseline and the allowlist from the linux-cross-bin artifact of the ci.yml run for 20c38b4, then pushes.
 
 # Handoff (resume: allowlist growth, COM classes, profile folders)
 
@@ -49,33 +48,33 @@ What runs through the layer: Wine's dlls/shell32/tests, 19 START_TEST units buil
 measured wine-pe/tests/shell32.baseline (a unit may not crash/time out where it ran, nor fail more assertions than
 recorded). Total 2072 assertions executed.
 
-Allowlist of units with 0 failures: string (5 executed), generated (0 executed, nothing to run).
+Allowlist of units with 0 failures (runner run 40049913500): string (5 executed), generated (0 executed), shellole (260 executed).
 
-| unit | status | executed | failures | first failing assertion / last line |
+Runner table, ci.yml run 40049913500 (head 1129c7e; replaces the older table, which was run 39888567531):
+
+| unit | status | executed | failures | first failing line |
 |---|---|---|---|---|
 | appbar | ok | 63 | 36 | appbar.c:226: SHAppBarMessage returned 0 |
-| assoc | ok | 2 | 2 | assoc.c:306: IQueryAssociations not supported, 0x80040154 |
-| autocomplete | crashed (exit 0, no assertions) | 0 | 0 | no output; process ended with exit code 0 |
+| assoc | ok | 62 | 8 | assoc.c:190: got 0x80070483 |
+| autocomplete | ok | 7 | 2 | autocomplete.c:59: CLSID_ACLMulti is not registered |
 | brsfolder | ok | 2 | 2 | brsfolder.c:211: SHGetDesktopFolder failed with hr 0x8000ffff |
-| ebrowser | ok | 2 | 1 | ebrowser.c:1769: No ExplorerBrowser control |
+| ebrowser | crashed | 0 | 0 | ebrowser.c:689: got (0x80004005); last line ebrowser.c:1010 EndDefer |
 | generated | ok | 0 | 0 | |
-| progman_dde | crashed | 0 | 0 | could not start shell32_test.exe: status c0000005 |
+| progman_dde | crashed | 0 | 0 | could not start shell32_test.exe |
 | recyclebin | ok | 10 | 6 | recyclebin.c:61: SHQueryRecycleBinA failed with error 0x80004005 |
-| shelldispatch | crashed | 0 | 0 | shelldispatch.c:121: Failed to create ShellDispatch object: 0x80040154 |
-| shelllink | crashed | 0 | 0 | shelllink.c:103: no IID_IShellLinkA (0x80040154) |
-| shellole | crashed | 0 | 0 | shellole.c:914: skipped (codepage 932), then status c0000005 |
-| shellpath | ok | 612 | 46 | shellpath.c:1389: got 0; shellpath.c:1457: SHGetFolderPathA(CSIDL_DESKTOP) failed 0x80070002 |
+| shelldispatch | crashed | 0 | 0 | shelldispatch.c:152: Failed to get folder for index 0, got 8000ffff; last line :230 NameSpace 8000ffff |
+| shelllink | ok | 911 | 12 | shelllink.c:200: GetIDList failed (0x00000001) |
+| shellole | ok | 260 | 0 | |
+| shellpath | ok | 1195 | 154 | shellpath.c:1389: got 0 |
 | shfldr_special | crashed | 0 | 0 | shfldr_special.c:50: SHGetDesktopFolder failed with error 0x8000ffff |
-| shlexec | timeout (30 s) | 0 | 0 | shelllink.c:2881: no IID_IShellLinkA (0x80040154); stuck at shlexec.c:1627 |
-| shlfileop | ok | 1366 | 101 | shlfileop.c:224: SHGetFileInfoA('' \| 0) should return 1, got 0x0 |
-| shlfolder | crashed | 0 | 0 | could not start shell32_test.exe: status c0000005 |
+| shlexec | timeout (30 s) | 0 | 0 | stuck at shlexec.c:1627 |
+| shlfileop | crashed | 0 | 0 | shlfileop.c:224: SHGetFileInfoA('' \| 0) should return 1; ends at :3034 (0x80070057), then c0000005 (was run, 101 failures, before 20c38b4) |
+| shlfolder | crashed | 0 | 0 | could not start shell32_test.exe: c0000005 |
 | shlview | crashed | 0 | 0 | shlview.c:627: Got hr 0x8000ffff |
 | string | ok | 5 | 0 | |
 | systray | ok | 10 | 8 | systray.c:49: NIM_ADD failed! |
 
-Common causes: COM classes not registered (0x80040154 REGDB_E_CLASSNOTREG: shell32's own CLSIDs, ShellLink,
-ShellDispatch, QueryAssociations), SHGetDesktopFolder failing with 0x8000ffff, no shell tray window or desktop
-folder, and c0000005 at start-up of the units that touch the desktop folder early. Fixing the registry/COM class
-registration of shell32 is the next step.
+Common causes still open: SHGetDesktopFolder returns 0x8000ffff on the runner (it does not under local Wine 9),
+CLSID_ACLMulti and the shell tray/appbar window are missing, and units that touch the desktop folder early end with c0000005.
 
 Syscalls added or changed: none. DLLs added to wine-pe/dlls.txt: none.

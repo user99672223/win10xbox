@@ -7,3 +7,4 @@
 # its floor. The list grows only: add a unit once the runner (linux-cross) measured 0 failures for it.
 string 5
 generated 0
+shellole 260
