@@ -8,6 +8,8 @@ else.
 
 ## Agent cost rules (both sessions, from now on)
 
+**Owner's rule (2026-10-24, all sessions and agents):** no attribution footer in commit messages (no `Co-Authored-By` or session lines); briefs and prompts stop asking for one.
+
 Measured: slices cost 160k to 570k tokens each; the cost is context accumulation over long lives,
 CI loops and whole-file reads. Rules:
 

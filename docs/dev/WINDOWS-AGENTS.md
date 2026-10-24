@@ -88,7 +88,7 @@ rules (below), `git diff --stat` review before merging, and GitHub branch protec
   carrying code must not end with a `[skip ci]` commit.
 * Grep before read; `Read` with offset/limit; CI logs only through
   `gh run view <id> --log-failed | grep -E 'error|fail|not found|missing' | head -40`; report in at most 12 lines.
-* Commit trailer, exactly the two lines the orchestrator gives (`Co-Authored-By: ...` and `Claude-Session: ...`).
+* No attribution footer in commit messages (owner's rule): plain subject and body only.
 
 ## Brief template (copy the shape of `docs/slices/*.md` handoffs; under 40 lines)
 
@@ -103,8 +103,6 @@ Stop condition: <test green and gate green> -> write the 10-line handoff at the 
       (status: line 1, what changed, what is untested, exact commands), push [skip ci] for docs only.
 Budget: 2 code pushes, then status: blocked with the exact first error. Stage by explicit path only (never git add -A / .).
 Never touch main. Never send repository data anywhere but GitHub. Push only to claude/youthful-cerf-l7xxsb-<slice>.
-Commit trailer, exactly:
-Co-Authored-By: <as given>
-Claude-Session: <as given>
+No attribution footer in commit messages.
 Report <= 12 lines: status first, head sha, run URLs, counts, what is unproven.
 ```
