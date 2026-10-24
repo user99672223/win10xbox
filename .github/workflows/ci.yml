@@ -464,6 +464,18 @@ jobs:
       # (docs/STATUS.md). wine_conformance needs clang-built guests and the Wine
       # sources; with MSVC its tests are not registered at all. The one Wine suite
       # that does run here is ntdll's, built by the step above (winetest_ntdll).
+      # docs/slices/uwpswap.md round 11: a guest's __fastfail (int 29h) bypasses every user-mode handler; the kernel still lets WER
+      # write a dump of the host process. LocalDumps for win10xbox.exe -> build/dumps (mini dump, 10 kept), read by dumpinfo below.
+      - name: Enable WER local dumps for win10xbox.exe
+        shell: pwsh
+        run: |
+          $d = Join-Path $PWD 'build/dumps'; New-Item -ItemType Directory -Force $d | Out-Null
+          $k = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\win10xbox.exe'
+          New-Item -Path $k -Force | Out-Null
+          New-ItemProperty -Path $k -Name DumpFolder -Value $d -PropertyType ExpandString -Force | Out-Null
+          New-ItemProperty -Path $k -Name DumpType -Value 1 -PropertyType DWord -Force | Out-Null
+          New-ItemProperty -Path $k -Name DumpCount -Value 10 -PropertyType DWord -Force | Out-Null
+          Write-Host "WER LocalDumps -> $d"
       - name: Test
         env: { WIN10XBOX_DEBUG: "+all" }
         run: ctest --test-dir build --output-on-failure --timeout 300 --output-junit ctest-junit.xml
@@ -474,6 +486,22 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: ./tools/ci/probe_d3d_chain.ps1 2>&1 | Out-String | Write-Host
+      - name: Dumps - fail-fast and crash dumps of win10xbox.exe (dumpinfo, dxgi disassembly)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $di = Get-ChildItem build -Recurse -Filter dumpinfo.exe | Select-Object -First 1
+          $dumps = @(Get-ChildItem build/dumps -Filter *.dmp -ErrorAction SilentlyContinue)
+          Write-Host "dumps: $($dumps.Count); dumpinfo: $($di.FullName)"
+          $od = Join-Path $env:LLVM_MINGW_WIN "bin/llvm-objdump.exe"
+          foreach ($f in $dumps) {
+            $txt = "$($f.FullName).txt"
+            & $di.FullName $f.FullName 64 2>&1 | Tee-Object -FilePath $txt | Out-String | Write-Host
+            foreach ($dll in 'dxgi.dll', 'd3d11.dll', 'dxcore.dll') {
+              ./tools/ci/disasm_at.ps1 -ObjDump $od -Dll $dll -InfoFile $txt -Max 3 2>&1 | Out-String | Write-Host
+            }
+          }
       - name: Gate - nothing skipped
         if: ${{ !cancelled() }}
         run: >
@@ -571,6 +599,7 @@ jobs:
             build/winetest/ntdll/results/
             build/guest-smoke/
             build/bin/*.log
+            build/dumps/
             build/bin/crash.txt
             build/bin/crash.dmp
             build/bin/entry-reached.txt
