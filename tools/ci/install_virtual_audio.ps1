@@ -1,4 +1,4 @@
-# Installs a virtual render endpoint on a hosted Windows runner (docs/slices/xaudio2play.md), so that guest_wasapi and
+# Installs a virtual render endpoint on a hosted Windows runner (docs/slices/xaudio2play-device.md), so that guest_wasapi and
 # guest_xaudio2 play a real buffer to a device the OS enumerates. Nothing is faked: the device is a signed kernel-mode
 # audio driver from an open release, hash-verified; the sound goes to its network / virtual sink (a null device).
 #
@@ -41,6 +41,21 @@ function Get-Pinned($pin, $dir) {
   return $x
 }
 
+# Runs a program with a time limit and returns its exit code (-1 on a timeout, after killing the process tree). A driver
+# install that waits for a prompt a headless runner cannot answer must fail with an error, never hang the job.
+function Invoke-Limited($exe, [string[]]$arguments, $dir, $seconds) {
+  $o = Join-Path $WorkDir ([guid]::NewGuid().ToString('N') + '.out'); $e = "$o.err"
+  $sp = @{ FilePath = $exe; WorkingDirectory = $dir; PassThru = $true; NoNewWindow = $true; RedirectStandardOutput = $o; RedirectStandardError = $e }
+  if ($arguments.Count -gt 0) { $sp.ArgumentList = $arguments }
+  $p = Start-Process @sp
+  $done = $p.WaitForExit($seconds * 1000)
+  if (-not $done) { & taskkill.exe /PID $p.Id /T /F 2>&1 | Out-Null }
+  Write-Host ("{0} {1}: {2}" -f (Split-Path $exe -Leaf), ($arguments -join ' '), $(if ($done) { "exit $($p.ExitCode)" } else { "TIMEOUT after ${seconds}s (killed)" }))
+  foreach ($f in $o, $e) { if (Test-Path $f) { Get-Content $f -Raw | Write-Host } }
+  if (-not $done) { return -1 }
+  return $p.ExitCode
+}
+
 # Trust the publisher of a driver catalog, so that the install does not stop at the "would you like to install this
 # device software" prompt (a headless runner cannot answer it).
 function Trust-CatalogSigner($cat) {
@@ -49,6 +64,9 @@ function Trust-CatalogSigner($cat) {
   Write-Host "$cat signed by: $($sig.SignerCertificate.Subject) (status $($sig.Status))"
   $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('TrustedPublisher', 'LocalMachine')
   $store.Open('ReadWrite'); $store.Add($sig.SignerCertificate); $store.Close()
+  # a signer whose chain does not end in a trusted root (status UnknownError) is also trusted as a root, on this throwaway runner
+  $root = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root', 'LocalMachine')
+  $root.Open('ReadWrite'); $root.Add($sig.SignerCertificate); $root.Close()
 }
 
 function Restart-Audio {
@@ -61,9 +79,8 @@ function Restart-Audio {
 # 42 = guest_wasapi played the sound on a device this host enumerates.
 function Test-Endpoint {
   for ($i = 1; $i -le 6; $i++) {
-    $out = & $Probe 2>&1 | Out-String
-    $rc = $LASTEXITCODE
-    Write-Host ("guest_wasapi run directly on the host (try {0}): exit {1}`n{2}" -f $i, $rc, $out)
+    Write-Host "guest_wasapi run directly on the host (try $i)"
+    $rc = Invoke-Limited (Resolve-Path $Probe).Path @() (Get-Location).Path 60
     if ($rc -eq 42) { return $true }
     Start-Sleep -Seconds 5
   }
@@ -84,19 +101,18 @@ function Install-Scream($dir) {
   $devcon = Join-Path $x 'Install\helpers\devcon-x64.exe'
   Push-Location $drv
   try {
-    & $devcon remove '*Scream' 2>&1 | Out-String | Write-Host
-    $o = & $devcon install Scream.inf '*Scream' 2>&1 | Out-String
-    Write-Host ("devcon install Scream.inf *Scream: exit {0}`n{1}" -f $LASTEXITCODE, $o)
+    $null = Invoke-Limited $devcon @('remove', '*Scream') $drv 60
+    $rc = Invoke-Limited $devcon @('install', 'Scream.inf', '*Scream') $drv 120
     # devcon: 0 = done, 1 = reboot needed (the device is usually usable anyway), anything else failed
-    if ($LASTEXITCODE -gt 1) { throw "devcon install exit $LASTEXITCODE" }
+    if ($rc -lt 0 -or $rc -gt 1) { throw "devcon install Scream.inf: exit $rc (-1 = timed out waiting for a prompt)" }
   } finally { Pop-Location }
 }
 
 function Install-VbCable($dir) {
   $x = Get-Pinned $VbCable $dir
   Trust-CatalogSigner (Join-Path $x 'vbaudio_cable64_win7.cat')
-  $p = Start-Process -FilePath (Join-Path $x 'VBCABLE_Setup_x64.exe') -ArgumentList '-i', '-h' -WorkingDirectory $x -PassThru -Wait
-  Write-Host "VBCABLE_Setup_x64.exe -i -h: exit $($p.ExitCode)"
+  $rc = Invoke-Limited (Join-Path $x 'VBCABLE_Setup_x64.exe') @('-i', '-h') $x 180
+  if ($rc -lt 0) { throw "VBCABLE_Setup_x64.exe -i -h timed out waiting for a prompt" }
 }
 
 if (-not (Test-Path $Probe)) { throw "probe $Probe not found" }

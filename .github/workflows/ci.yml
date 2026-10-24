@@ -410,6 +410,7 @@ jobs:
       # with the exact error of each attempt when no device can be installed.
       - name: Install a virtual audio render endpoint
         shell: pwsh
+        timeout-minutes: 12
         run: ./tools/ci/install_virtual_audio.ps1 -Probe build/bin/guest/guest_wasapi.exe
       # What audio the runner has (docs/slices/audio.md): the services, the endpoint devices, and the verdict of the two
       # audio guests run directly on the host (42 = a device played the sound, 43 = no render endpoint, with the
