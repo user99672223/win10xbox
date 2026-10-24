@@ -1,4 +1,13 @@
-status: blocked: two code pushes used; cause found and a 8-line fix written but not pushed or verified (below). Exact first error of the failing run: `file.c:1675: Test failed: io.Status expected STATUS_SUCCESS, got c0000035`, then `file: unhandled exception c0000005 at ntdll_test.exe+0x8c5e1`.
+status: blocked: the fix works (loop run 40047195373 on e53ade0: layer-file 100/100, layer-seq 100/100, layer-trace 60/60, native 60/60, 0 crashes, 0 rename flakes) but ci.yml is red for a reason outside the slice: guest_net2 `net2: FAILED AcquireCredentialsHandle (wsa error 126)` and guest_closure on e53ade0 (run 40047191999); on a5df0e1 (run 40049508155) also guest_nowine and guest_tebframe on the Windows jobs. Both runs fetched the wine-pe artifact from another branch's run (`using wine-pe run 40048076715 (repository, claude/youthful-cerf-l7xxsb-uwpswap@5e23d8d)`: this branch has no wine-pe run of its own sha). Two code pushes used.
+
+| file unit through the layer | before the fix (4124346) | after the fix (e53ade0, run 40047195373) |
+|---|---|---|
+| alone, 100 runs | 0 crashes | 0 crashes, 0 rename flakes |
+| after the preceding units, 100 runs | 2 crashes, 8 rename flakes | 0 crashes, 0 rename flakes |
+| +relay,+dispatch, 60 runs | 1 crash, 5 flakes | 0 crashes, 0 flakes |
+| native, 60 runs | 0 | 0 |
+
+The TRACE(dispatch) lines were dropped in a5df0e1 (they are not quiet under WIN10XBOX_DEBUG=+all); that did not change the ci result, so they were not the cause. Next step: a wine-pe run for this branch's sha (or rerun ci once the parent's wine-pe artifact is current), then ci.yml; if guest_net2/closure/nowine/tebframe stay red with a matching wine-pe artifact, bisect against origin/claude/youthful-cerf-l7xxsb@b03a727 (the parent's ci is green at 099ed49).
 
 # Slice -ntdllfile: intermittent crash of Wine's `ntdll:file` unit
 
