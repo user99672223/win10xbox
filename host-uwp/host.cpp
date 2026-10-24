@@ -262,6 +262,9 @@ struct Host::Impl
 
     std::thread worker;
     std::atomic<bool> finished{false};
+    std::atomic<bool> teardown_on{false};      // a guest ran under process-level teardown: the process ends, it never returns into WinRT
+    std::atomic<bool> final_shot_done{false};  // the shell has written the last frame after `finished`
+    std::atomic<int> guest_code{0};
     std::atomic<bool> stop{false};
     std::atomic<bool> guest_running{false};
     std::atomic<bool> exit_when_done{true};
@@ -567,6 +570,17 @@ void Host::Impl::RunWorker()
     guest_running.store(false);
     diag::FlushLog();
     finished.store(true);
+    if (teardown_on.load())
+    {
+        // The frozen guest threads must never be resumed into CoreApplication::Exit: let the shell write the last frame
+        // (it does so once `finished` is set), then end the process with the guest's code.
+        for (int i = 0; i < 50 && !final_shot_done.load(); ++i) Sleep(100);
+        diag::Line("terminating the process with the guest's exit code %d", guest_code.load());
+        diag::FlushLog();
+        const HANDLE out = stdout_handle.load();
+        if (out != INVALID_HANDLE_VALUE) FlushFileBuffers(out);
+        TerminateProcess(GetCurrentProcess(), static_cast<UINT>(guest_code.load()));
+    }
 }
 
 void Host::Impl::RunImpl()
@@ -1157,6 +1171,10 @@ void Host::Impl::RunImpl()
     report.Set("guest.started_utc", TimestampUtc());
     report.Flush();
     diag::Line("process::Launch(%s) cmdline=%s", Narrow(opts.image_path).c_str(), Narrow(opts.command_line).c_str());
+    // Process-level teardown (docs/DECISIONS.md E9), as in host-win32: a guest exit freezes the guest and pool threads
+    // (never TerminateThread) and the process ends with TerminateProcess after the report and the restart request.
+    // Before Launch: the baseline of host threads is taken there.
+    win10xbox::process::SetProcessTeardown(true);
     const int launch_rc = win10xbox::process::Launch(opts);
     diag::Line("process::Launch -> %d (%s)", launch_rc, Hex32(launch_rc).c_str());
     if (launch_rc != 0)
@@ -1171,6 +1189,7 @@ void Host::Impl::RunImpl()
         return;
     }
 
+    teardown_on.store(true);   // a guest is running: from here the process ends by TerminateProcess
     guest_running.store(true);
     guest_start_tick = GetTickCount64();
     report.Set("phase", "guest running");
@@ -1211,7 +1230,9 @@ void Host::Impl::RunImpl()
                 // PEB restored: with the guest's PEB (ActivationContextData) installed the WinRT activation behind
                 // RequestRestartAsync fails with 0x800736b2 (ERROR_SXS_INVALID_ACTCTXDATA_FORMAT). The verdict stays TIMEOUT.
                 RecordAllRun(true, 0, CaptureScreen());
-                win10xbox::process::AbortGuest(0x102);
+                win10xbox::process::AbortGuest(0x102);   // freezes the guest and pool threads, terminates nothing
+                guest_code.store(0x102);
+                win10xbox::process::RestoreHostPebAfterFreeze();   // all threads that could run guest code are frozen
                 guest_running.store(false);
                 diag::Line("launcher: guest ended after the timeout, PEB is %s",
                            win10xbox::process::GuestOwnsPeb() ? "still the guest's" : "the host's");
@@ -1244,6 +1265,10 @@ void Host::Impl::RunImpl()
     // ---- 7. wind down: the guest has exited, the PEB is the host's again ---------------------------------------
     const ULONGLONG runtime_ms = GetTickCount64() - guest_start_tick;
     guest_running.store(false);
+    guest_code.store(exit_code);
+    // The guest threads and the pool workers started meanwhile are frozen (core did it on the exit); only now does the
+    // host's PEB view come back, for the result screen and RequestRestartAsync.
+    win10xbox::process::RestoreHostPebAfterFreeze();
     diag::Line("guest exited with code %d (%s) after %llu ms", exit_code, Hex32(exit_code).c_str(),
                static_cast<unsigned long long>(runtime_ms));
     {
@@ -1374,6 +1399,7 @@ void Host::SetRestart(bool restarted, int run, const std::string& select, int al
 }
 
 bool Host::Finished() const { return impl_->finished.load(); }
+void Host::NoteFinalShot() { impl_->final_shot_done.store(true); }
 bool Host::ExitWhenDone() const { return impl_->exit_when_done.load(); }
 bool Host::GuestRunning() const { return impl_->guest_running.load(); }
 bool Host::StopRequested() const { return impl_->stop.load(); }

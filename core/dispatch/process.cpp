@@ -963,6 +963,17 @@ void SuspendOtherThreadsForTeardown(DWORD self) {
     }
 }
 
+// Host side of the teardown contract for a host that must call back into the OS before it ends the process (host-uwp's
+// RequestRestartAsync needs the host's activation context): freezes the guest and pool threads if the guest's own exit
+// path has not (a main thread that ended without ExitProcess), and only then puts the PEB view back. The write is never
+// done while a guest or pool thread can still run. No-op without process-level teardown.
+void RestoreHostPebAfterFreeze() {
+    Globals& g = G();
+    if (!g.process_teardown) return;
+    SuspendOtherThreadsForTeardown(GetCurrentThreadId());
+    RestorePebFields();
+}
+
 std::uint32_t GuestExitCode() { return static_cast<std::uint32_t>(G().exit_code); }
 
 bool IsGuestThread() {

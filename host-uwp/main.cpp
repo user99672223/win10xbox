@@ -677,6 +677,7 @@ namespace
                     {
                         final_shot = true;
                         presenter_.FinalScreenshot();
+                        host.NoteFinalShot();
                     }
                     ForwardPresenterNotes();
                 }

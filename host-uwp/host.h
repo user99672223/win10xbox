@@ -91,6 +91,7 @@ namespace w10x_uwp
 
         // ---- worker -------------------------------------------------------
         bool StartWorker();             // false if the thread cannot be created
+        void NoteFinalShot();           // the shell wrote the final frame after Finished(); lets the worker end the process
         bool Finished() const;          // the worker has ended (guest exited, or failed to start)
         bool ExitWhenDone() const;      // launch.json "exit_when_done" (valid once Finished())
         bool GuestRunning() const;

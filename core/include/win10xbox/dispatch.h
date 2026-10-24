@@ -198,6 +198,7 @@ void AbortGuest(std::uint32_t exit_code);
 // write-back) and the host then ends the whole process with the guest's exit code. Set before Launch.
 void SetProcessTeardown(bool on);
 void SuspendOtherThreadsForTeardown(DWORD self);   // core use: freezes the guest and its helper threads, once
+void RestoreHostPebAfterFreeze();   // teardown hosts that must call the OS before ending the process: freeze, then PEB back
 // True while the guest's PEB view (ProcessParameters, ActivationContextData, ...) is installed instead of the host's.
 bool GuestOwnsPeb();
 // Guest path of the main image ("C:\\..."), empty before Launch.
