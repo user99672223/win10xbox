@@ -406,10 +406,29 @@ NTSTATUS UseHostD3dkmt(HMODULE win32u, HMODULE user32, HMODULE gdi32, HMODULE gd
     State& s = S();
     if (!s.initialized || !win32u) return st::Unsuccessful;
     AcquireSRWLockExclusive(&s.lock);
-    std::size_t pass = 0, todo = 0;
+    std::size_t pass = 0, todo = 0, display = 0;
+    // The display topology the native dxgi reads next to the adapters: adapter LUIDs and target ids in
+    // QueryDisplayConfig / DisplayConfigGetDeviceInfo must be the ones D3DKMTEnumAdapters2 returned, i.e. the host's
+    // (core/user answers with its own fixed LUID {1,0}, so dxgi's DisplayConfigGetDeviceInfo failed with
+    // STATUS_INVALID_PARAMETER and CreateDXGIFactory1 with E_INVALIDARG, ci 40059462263).
+    static const char* const kDisplayConfig[] = {"NtUserGetDisplayConfigBufferSizes", "NtUserQueryDisplayConfig",
+                                                 "NtUserDisplayConfigGetDeviceInfo"};
     for (Entry& e : s.entries) {
-        if (e.id < kWin32uFirstId || (std::strncmp(e.name, "NtGdiDdDDI", 10) != 0 && std::strncmp(e.name, "NtDxgk", 6) != 0)) continue;
-        e.host_fn = reinterpret_cast<void*>(GetProcAddress(win32u, e.name));
+        if (e.id < kWin32uFirstId) continue;
+        bool dc = false;
+        for (const char* n : kDisplayConfig) dc = dc || !std::strcmp(e.name, n);
+        if (!dc && std::strncmp(e.name, "NtGdiDdDDI", 10) != 0 && std::strncmp(e.name, "NtDxgk", 6) != 0) continue;
+        void* fn = reinterpret_cast<void*>(GetProcAddress(win32u, e.name));
+        if (dc) {
+            if (!fn) continue;   // keep core/user's answer
+            e.host_fn = fn;
+            e.policy = Policy::PassThrough;
+            e.note = "win32u (host display topology)";
+            e.nargs = kMaxArgs;
+            ++display;
+            continue;
+        }
+        e.host_fn = fn;
         e.policy = e.host_fn ? Policy::PassThrough : Policy::Todo;
         e.note = e.host_fn ? "win32u (host dxgkrnl)" : "win32u (no host export)";
         e.nargs = kMaxArgs;
@@ -418,7 +437,7 @@ NTSTATUS UseHostD3dkmt(HMODULE win32u, HMODULE user32, HMODULE gdi32, HMODULE gd
     s.d3dkmt_host = true;
     ReleaseSRWLockExclusive(&s.lock);
     TRACE(dispatch, "d3d native: %zu NtGdiDdDDI* (D3DKMT) syscalls pass through to the host's win32u.dll %p, %zu have no "
-                    "host export (Todo)", pass, win32u, todo);
+                    "host export (Todo); %zu display-config syscalls too", pass, win32u, todo, display);
     return st::Success;
 }
 
