@@ -1,17 +1,20 @@
-win10xbox: gdi32 exports every D3DKMT* thunk the native dxgi/d3d11/dxcore resolve by name
+win10xbox: gdi32 exports every D3DKMT* thunk the native dxgi/d3d11/dxcore resolve by name, and GdiDllInitializeWrapper
 
 The native dxgi/d3d11 (machine-emu-d3d, Wine's gdi32 + win32u over core/user) fetch the D3DKMT* entry points of the real
 gdi32.dll with GetProcAddress at run time; Wine's gdi32 exports only the subset it uses itself, so the first missing one
 (D3DKMTGetSharedResourceAdapterLuid) made CreateDXGIFactory1 fail with STATUS_PROCEDURE_NOT_FOUND. On Windows each export
-is a thin wrapper of the win32u syscall NtGdiDdDDI<same suffix> (one pointer argument), so every NtGdiDdDDI* of
-win32u.spec without a D3DKMT counterpart gets a spec forward `D3DKMTxxx(ptr) win32u.NtGdiDdDDIxxx`. win32u's stubs are
-syscall thunks the dispatcher passes through to the host's win32u by name (UseHostD3dkmt).
+is a thin wrapper of the win32u syscall NtGdiDdDDI<same suffix> (one pointer argument; NtDxgk<suffix> for the newer ones),
+so every such syscall of win32u.spec without a D3DKMT counterpart gets a spec forward `D3DKMTxxx(ptr) win32u.Nt...`. win32u's
+stubs are syscall thunks the dispatcher passes through to the host's win32u by name (UseHostD3dkmt).
+
+dxcore.dll calls ext-ms-win-gdi-internal-uap-init-l1-1-0!GdiDllInitializeWrapper at load; Wine's apiset maps that
+contract to gdi32.dll, which has no such export (EXCEPTION_WINE_STUB). It is the same no-op as GdiDllInitialize.
 
 diff --git a/dlls/gdi32/gdi32.spec b/dlls/gdi32/gdi32.spec
-index 207549f..94a6d26 100644
+index 207549f..bc3da32 100644
 --- a/dlls/gdi32/gdi32.spec
 +++ b/dlls/gdi32/gdi32.spec
-@@ -148,6 +148,148 @@
+@@ -148,6 +148,189 @@
  @ stdcall D3DKMTShareObjects(long ptr ptr long ptr) win32u.NtGdiDdDDIShareObjects
  @ stdcall D3DKMTSignalSynchronizationObjectFromCpu(ptr) win32u.NtGdiDdDDISignalSynchronizationObjectFromCpu
  @ stdcall D3DKMTWaitForSynchronizationObjectFromCpu(ptr) win32u.NtGdiDdDDIWaitForSynchronizationObjectFromCpu
@@ -157,6 +160,47 @@ index 207549f..94a6d26 100644
 +@ stdcall D3DKMTWaitForSynchronizationObjectFromGpu(ptr) win32u.NtGdiDdDDIWaitForSynchronizationObjectFromGpu
 +@ stdcall D3DKMTWaitForVerticalBlankEvent(ptr) win32u.NtGdiDdDDIWaitForVerticalBlankEvent
 +@ stdcall D3DKMTWaitForVerticalBlankEvent2(ptr) win32u.NtGdiDdDDIWaitForVerticalBlankEvent2
++@ stdcall D3DKMTCancelPresents(ptr) win32u.NtDxgkCancelPresents
++@ stdcall D3DKMTCheckSinglePlaneForMultiPlaneOverlaySupport(ptr) win32u.NtDxgkCheckSinglePlaneForMultiPlaneOverlaySupport
++@ stdcall D3DKMTConnectDoorbell(ptr) win32u.NtDxgkConnectDoorbell
++@ stdcall D3DKMTCreateDoorbell(ptr) win32u.NtDxgkCreateDoorbell
++@ stdcall D3DKMTCreateNativeFence(ptr) win32u.NtDxgkCreateNativeFence
++@ stdcall D3DKMTCreateTrackedWorkload(ptr) win32u.NtDxgkCreateTrackedWorkload
++@ stdcall D3DKMTDDisplayEnum(ptr) win32u.NtGdiDdDDIDDisplayEnum
++@ stdcall D3DKMTDestroyDoorbell(ptr) win32u.NtDxgkDestroyDoorbell
++@ stdcall D3DKMTDestroyTrackedWorkload(ptr) win32u.NtDxgkDestroyTrackedWorkload
++@ stdcall D3DKMTDisplayMuxSwitchExecute(ptr) win32u.NtDxgkDisplayMuxSwitchExecute
++@ stdcall D3DKMTDisplayMuxSwitchFinish(ptr) win32u.NtDxgkDisplayMuxSwitchFinish
++@ stdcall D3DKMTDisplayMuxSwitchPrepare(ptr) win32u.NtDxgkDisplayMuxSwitchPrepare
++@ stdcall D3DKMTDisplayPortOperation(ptr) win32u.NtDxgkDisplayPortOperation
++@ stdcall D3DKMTDispMgrCreate(ptr) win32u.NtGdiDdDDIDispMgrCreate
++@ stdcall D3DKMTDispMgrOperation(ptr) win32u.NtDxgkDispMgrOperation
++@ stdcall D3DKMTDispMgrSourceOperation(ptr) win32u.NtGdiDdDDIDispMgrSourceOperation
++@ stdcall D3DKMTDispMgrTargetOperation(ptr) win32u.NtGdiDdDDIDispMgrTargetOperation
++@ stdcall D3DKMTDuplicateHandle(ptr) win32u.NtDxgkDuplicateHandle
++@ stdcall D3DKMTEnumAdapters3(ptr) win32u.NtDxgkEnumAdapters3
++@ stdcall D3DKMTEnumProcesses(ptr) win32u.NtDxgkEnumProcesses
++@ stdcall D3DKMTGetAvailableTrackedWorkloadIndex(ptr) win32u.NtDxgkGetAvailableTrackedWorkloadIndex
++@ stdcall D3DKMTGetNativeFenceLogDetail(ptr) win32u.NtDxgkGetNativeFenceLogDetail
++@ stdcall D3DKMTGetProcessList(ptr) win32u.NtDxgkGetProcessList
++@ stdcall D3DKMTGetProperties(ptr) win32u.NtDxgkGetProperties
++@ stdcall D3DKMTGetTrackedWorkloadStatistics(ptr) win32u.NtDxgkGetTrackedWorkloadStatistics
++@ stdcall D3DKMTIsFeatureEnabled(ptr) win32u.NtDxgkIsFeatureEnabled
++@ stdcall D3DKMTNotifyWorkSubmission(ptr) win32u.NtDxgkNotifyWorkSubmission
++@ stdcall D3DKMTOpenNativeFenceFromNtHandle(ptr) win32u.NtDxgkOpenNativeFenceFromNtHandle
++@ stdcall D3DKMTOutputDuplPresentToHwQueue(ptr) win32u.NtDxgkOutputDuplPresentToHwQueue
++@ stdcall D3DKMTPinResources(ptr) win32u.NtDxgkPinResources
++@ stdcall D3DKMTRegisterVailProcess(ptr) win32u.NtDxgkRegisterVailProcess
++@ stdcall D3DKMTResetTrackedWorkloadStatistics(ptr) win32u.NtDxgkResetTrackedWorkloadStatistics
++@ stdcall D3DKMTSetProperties(ptr) win32u.NtDxgkSetProperties
++@ stdcall D3DKMTSubmitPresentBltToHwQueue(ptr) win32u.NtDxgkSubmitPresentBltToHwQueue
++@ stdcall D3DKMTSubmitPresentToHwQueue(ptr) win32u.NtDxgkSubmitPresentToHwQueue
++@ stdcall D3DKMTUnpinResources(ptr) win32u.NtDxgkUnpinResources
++@ stdcall D3DKMTUpdateTrackedWorkload(ptr) win32u.NtDxgkUpdateTrackedWorkload
++@ stdcall D3DKMTVailConnect(ptr) win32u.NtDxgkVailConnect
++@ stdcall D3DKMTVailDisconnect(ptr) win32u.NtDxgkVailDisconnect
++@ stdcall D3DKMTVailPromoteCompositionSurface(ptr) win32u.NtDxgkVailPromoteCompositionSurface
++@ stdcall GdiDllInitializeWrapper(ptr long ptr) GdiDllInitialize
  @ stdcall DPtoLP(long ptr long)
  @ stdcall DeleteColorSpace(long)
  @ stdcall DeleteDC(long)

@@ -408,7 +408,7 @@ NTSTATUS UseHostD3dkmt(HMODULE win32u, HMODULE user32, HMODULE gdi32, HMODULE gd
     AcquireSRWLockExclusive(&s.lock);
     std::size_t pass = 0, todo = 0;
     for (Entry& e : s.entries) {
-        if (e.id < kWin32uFirstId || std::strncmp(e.name, "NtGdiDdDDI", 10) != 0) continue;
+        if (e.id < kWin32uFirstId || (std::strncmp(e.name, "NtGdiDdDDI", 10) != 0 && std::strncmp(e.name, "NtDxgk", 6) != 0)) continue;
         e.host_fn = reinterpret_cast<void*>(GetProcAddress(win32u, e.name));
         e.policy = e.host_fn ? Policy::PassThrough : Policy::Todo;
         e.note = e.host_fn ? "win32u (host dxgkrnl)" : "win32u (no host export)";
@@ -648,7 +648,7 @@ bool Win32uReturnsNtStatus(const char* name) {
         "NtUserDisplayConfigGetDeviceInfo", "NtUserEnumDisplayDevices", "NtUserInitializeClientPfnArrays",
         "NtUserSetClipboardData",
     };
-    if (!std::strncmp(name, "NtGdiDdDDI", 10)) return true;
+    if (!std::strncmp(name, "NtGdiDdDDI", 10) || !std::strncmp(name, "NtDxgk", 6)) return true;
     for (const char* n : kNames)
         if (!std::strcmp(n, name)) return true;
     return false;
