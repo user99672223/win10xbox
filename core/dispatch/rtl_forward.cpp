@@ -1,6 +1,9 @@
 // Function-level forwarding of guest ntdll exports (list: rtl_forward.inc).
 #include "internal.h"
+#include <atomic>
 #include <cstring>
+
+static std::atomic<void*> g_host_delete_cs{nullptr};   // host ntdll RtlDeleteCriticalSection (w10x_RtlDeleteCriticalSection)
 
 namespace win10xbox::dispatch::detail {
 namespace {
@@ -120,6 +123,9 @@ bool PatchJump(void* from, const void* to) {
 
 ForwardResult ApplyRtlForwarding(const loader::MappedImage& img) {
     ForwardResult r;
+    // Resolved here, while PEB->Ldr still names the host's ntdll: a later lookup could find the guest's patched one.
+    if (!g_host_delete_cs.load(std::memory_order_acquire))
+        g_host_delete_cs.store(HostExport("RtlDeleteCriticalSection"), std::memory_order_release);
     auto* base = static_cast<std::uint8_t*>(img.base);
     auto patch_export = [&](const char* name, std::uint16_t ordinal, const void* target, const char* what) {
         std::string fwd;
@@ -338,8 +344,7 @@ extern "C" NTSTATUS NTAPI w10x_RtlDeleteCriticalSection(RTL_CRITICAL_SECTION* cs
     Fn host = nullptr;
     {
         win10xbox::dispatch::HostModeScope scope;
-        static Fn resolved = reinterpret_cast<Fn>(win10xbox::dispatch::HostExport("RtlDeleteCriticalSection"));
-        host = resolved;
+        host = reinterpret_cast<Fn>(g_host_delete_cs.load(std::memory_order_acquire));
         RTL_CRITICAL_SECTION_DEBUG* dbg = cs ? cs->DebugInfo : nullptr;
         if (dbg && win10xbox::dispatch::detail::FindView(dbg, nullptr) &&
             dbg->ProcessLocksList.Flink == &dbg->ProcessLocksList && dbg->ProcessLocksList.Blink == &dbg->ProcessLocksList) {
