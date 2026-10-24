@@ -582,7 +582,22 @@ LONG WINAPI NtUserQueryDisplayConfig(UINT32 flags, UINT32* paths_count, DISPLAYC
     return ERROR_SUCCESS;
 }
 
+static HostDisplayInfoFn g_host_display_info = nullptr;
+
+static NTSTATUS DisplayConfigGetDeviceInfoImpl(DISPLAYCONFIG_DEVICE_INFO_HEADER* packet, bool* forwarded);
+
 NTSTATUS WINAPI NtUserDisplayConfigGetDeviceInfo(DISPLAYCONFIG_DEVICE_INFO_HEADER* packet) {
+    bool forwarded = false;
+    NTSTATUS r = DisplayConfigGetDeviceInfoImpl(packet, &forwarded);
+    if (packet)
+        TRACE(user, "DisplayConfigGetDeviceInfo type %d size %u adapter %08lx:%08lx id %u -> %#lx%s", static_cast<int>(packet->type),
+              static_cast<unsigned>(packet->size), static_cast<unsigned long>(packet->adapterId.HighPart),
+              static_cast<unsigned long>(packet->adapterId.LowPart), static_cast<unsigned>(packet->id), static_cast<unsigned long>(r),
+              forwarded ? " (forwarded to host)" : "");
+    return r;
+}
+
+static NTSTATUS DisplayConfigGetDeviceInfoImpl(DISPLAYCONFIG_DEVICE_INFO_HEADER* packet, bool* forwarded) {
     namespace st = dispatch::detail::st;
     constexpr NTSTATUS kInvalidParameter = static_cast<NTSTATUS>(0xC000000D), kUnsuccessful = static_cast<NTSTATUS>(0xC0000001);
     if (!packet || packet->size < sizeof(*packet)) return kUnsuccessful;
@@ -659,7 +674,10 @@ NTSTATUS WINAPI NtUserDisplayConfigGetDeviceInfo(DISPLAYCONFIG_DEVICE_INFO_HEADE
         return st::Success;
     }
     default:
-        return kInvalidParameter;   // the other packet types are not answered
+        if (!g_host_display_info) return kInvalidParameter;
+        *forwarded = true;
+        const LONG hr = g_host_display_info(packet);   // the host's answer is the truth for its own LUID / source / target
+        return hr == 0 ? st::Success : hr == ERROR_INVALID_PARAMETER ? kInvalidParameter : kUnsuccessful;
     }
 }
 
@@ -684,6 +702,8 @@ BOOL WINAPI NtUserSetSysColors(INT count, const INT* colors, const COLORREF* val
 BOOL WINAPI NtUserIsMouseInPointerEnabled() { return FALSE; }
 
 }  // namespace sys
+
+void SetHostDisplayInfoForwarder(HostDisplayInfoFn fn) { sys::g_host_display_info = fn; }
 
 void SetHostDisplayTopology(std::uint32_t luid_low, std::int32_t luid_high, std::uint32_t source_id, std::uint32_t target_id) {
     sys::kAdapterLuid.LowPart = luid_low;

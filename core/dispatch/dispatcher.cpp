@@ -406,6 +406,13 @@ const HostD3dModules& HostD3dMods() { return g_d3d_mods; }
 // core/user owns the guest's display (NtUserQueryDisplayConfig & co answer from display::Mode) but the native dxgi has
 // just enumerated the HOST's adapters (NtGdiDdDDIEnumAdapters2), so the adapter LUID / source id / target id in core/user's
 // one path must be the host's primary display path. Asked once, here, from the host win32u.
+LONG (WINAPI* g_host_dc_info)(DISPLAYCONFIG_DEVICE_INFO_HEADER*) = nullptr;
+
+long ForwardHostDisplayInfo(void* packet) {
+    HostModeScope host;
+    return g_host_dc_info(static_cast<DISPLAYCONFIG_DEVICE_INFO_HEADER*>(packet));
+}
+
 void QueryHostDisplayTopology(HMODULE) {
     // The public user32 API, not the win32u syscall: Windows' NtUserQueryDisplayConfig does not take Wine's argument
     // list (the syscall answered STATUS_INVALID_PARAMETER for the same call, ci 40063335277); user32 translates.
@@ -415,6 +422,8 @@ void QueryHostDisplayTopology(HMODULE) {
     auto get_sizes = user32 ? reinterpret_cast<GetSizes>(GetProcAddress(user32, "GetDisplayConfigBufferSizes")) : nullptr;
     auto query = user32 ? reinterpret_cast<Query>(GetProcAddress(user32, "QueryDisplayConfig")) : nullptr;
     if (!get_sizes || !query) { ERR(dispatch, "display topology: host user32 has no display-config exports"); return; }
+    g_host_dc_info = user32 ? reinterpret_cast<decltype(g_host_dc_info)>(GetProcAddress(user32, "DisplayConfigGetDeviceInfo")) : nullptr;
+    if (g_host_dc_info) user::SetHostDisplayInfoForwarder(&ForwardHostDisplayInfo);
     HostModeScope host;
     UINT32 np = 0, nm = 0;
     LONG r = get_sizes(QDC_ONLY_ACTIVE_PATHS, &np, &nm);
