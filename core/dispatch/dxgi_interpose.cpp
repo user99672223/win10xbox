@@ -908,7 +908,31 @@ private:
                 TRACE(dispatch, "dxgi: virtual %s(%u, 0x%x) #%u -> 00000000 %s", what, sync, flags, presents_,
                       sent ? "(back buffer composed)" : "(NOT handed to the compositor)");
         }
+        CountPresent();
         return S_OK;
+    }
+
+    // WIN10XBOX_TEST_PRESENT_LIMIT on the virtual swap chain (as WrapSwap::CountPresent): the limit-th presented frame is
+    // already composed; log one line and end the guest like ExitProcess(42).
+    void CountPresent() {
+        const unsigned lim = g_present_limit.load();
+        if (!lim || g_presents.fetch_add(1) + 1 != lim) return;
+        char adapter[128] = "unknown";
+        IDXGIDevice* dxdev = nullptr;
+        if (SUCCEEDED(dev_->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(&dxdev))) && dxdev) {
+            IDXGIAdapter* ad = nullptr;
+            DXGI_ADAPTER_DESC add{};
+            if (SUCCEEDED(dxdev->GetAdapter(&ad)) && ad) {
+                if (SUCCEEDED(ad->GetDesc(&add))) std::snprintf(adapter, sizeof adapter, "%ls", add.Description);
+                ad->Release();
+            }
+            dxdev->Release();
+        }
+        W10X_TR( "present-limit: %u frames presented, %ux%u, %s", lim, d1_.Width, d1_.Height, adapter);
+        { HostModeScope w10x_host_; std::printf("present-limit: %u frames presented, %ux%u, %s\n", lim,
+                                              d1_.Width, d1_.Height, adapter); std::fflush(stdout); }
+        HostModeScope w10x_host_;   // GuestExit does not return
+        process::GuestExit(42);
     }
 
     LONG ref_ = 1;

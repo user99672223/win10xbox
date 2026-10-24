@@ -24,7 +24,12 @@ Failure codes are listed at the top of the source.
 
 ## Layer fixes
 
-None so far (none known without a Windows run).
+1. core/dispatch/dxgi_interpose.cpp, `VirtSwap::DoPresent`: the virtual swap chain (machine-emu-d3d) did not count presents for
+   `WIN10XBOX_TEST_PRESENT_LIMIT` (only `WrapSwap` did), so the guest on machine-emu-d3d ran to its own 10 s stop (462 frames,
+   exit 42 by itself, no `present-limit:` line). Now `VirtSwap::CountPresent()` runs after the composed frame is handed over,
+   with the same `present-limit:` line and `GuestExit(42)`. First push: `integration.guest_gamelike_native` passed,
+   `integration.guest_gamelike_emu` failed on exactly that (ci run 40104300918); host-uwp run 40104304141 was green with
+   guest_gamelike.exe PASS (via the guest's own 10 s stop).
 
 ## Untested locally
 

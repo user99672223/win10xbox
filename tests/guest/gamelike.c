@@ -13,7 +13,9 @@
  * objects/states, 18 Present, 19 constant buffer, 20 xaudio2_9.dll, 21 XAudio2Create/mastering voice, 22 source voice,
  * 23 SubmitSourceBuffer/Start. Libraries load at run time. */
 #define COBJMACROS
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #include <objbase.h>
 #include <mmsystem.h>
