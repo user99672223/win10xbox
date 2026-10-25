@@ -1,4 +1,4 @@
-status: in progress (push 2: userenv taken out again; the after-sweep is rerun on push 2's wine-pe artifact)
+status: ready https://github.com/user99672223/win10xbox/actions/runs/40146150890
 
 # Slice: laptop-programs
 
@@ -6,6 +6,13 @@ A sweep of real, unmodified Windows programs installed on a laptop (Windows 11 2
 the layer to measure "most programs run" on a real machine. 25 classic x64 Win32 programs from `C:\Program Files` and
 `C:\Program Files (x86)`; names, versions and import tables in `docs/game/laptop-programs.txt`. Nothing of the programs
 enters the repository.
+
+## Result
+
+Run: https://github.com/user99672223/win10xbox/actions/runs/40146150890 (head f5556a2; linux-cross 114/114, windows
+(Debug) 124/124, windows (RelWithDebInfo) 124/124, "nothing skipped" on all three; wine-pe run 40146150892 built every
+new module). Push 1 (673eff7, run 40143672901): both Windows jobs 124/124, linux-cross failed only
+wine_conformance.kernel32.environ and integration.winetest_kernel32 (userenv, see Fix 1).
 
 ## Method
 
@@ -120,66 +127,73 @@ Three separate defects, all on the path from a manifest to a loaded DLL:
 
 ## After
 
-Same 25 programs, same method, head 673eff7 with the wine-pe artifact of that commit (run 40143672887: all 11 new
-modules built) and the machine folders rebuilt by prepare_machine (Windows\WinSxS staged).
+Same 25 programs, same method, head f5556a2 (push 2) with the wine-pe artifact of that commit (run 40146150892) and the
+machine folders rebuilt by prepare_machine (Windows\WinSxS staged; push 1's userenv.dll moved out of them by hand, since
+prepare_machine only adds files).
 
 | Program | Class | Exit | First error | Last trace lines |
 |---|---|---|---|---|
 | 7-Zip File Manager 26.02 | RUNNING | 0x00000103 | - (window painted, version-6 controls now; fixme: unimplemented syscall NtUserBeginDeferWindowPos) | unimplemented syscall NtUserTranslateAccelerator / fixme:dispatch:win10xbox_dispatc... |
 | WinRAR 7.23.0 | FAIL | 0x00000103 | no window in 15 s (up, fixme NtUserSetObjectInformation); riched20.dll (no builtin) never mapped | fixme:gdi:ResolveDrawTarget drawing into a 1 bpp bitmap is not supported / fixme:gdi:ResolveDrawTarget drawing into a... |
-| Audacity 4.0.1 | FAIL | 0x00000103 | Qt's box "no Qt platform plugin could be initialized ... available platform plugins are: windows": qwindows... | trace:process:Xl_NtTerminateThread thread 3a2c: NtTerminateThread(FFFFFFFFFFFFFFFE, 00000000) / trace:process:Xl_NtTe... |
-| Brave Browser 156.1.98.60 | FAIL | 0x00000103 | no window in 15 s; crashpad: "CreateFile: Access denied. (0x5)" (registration pipe to its handler child) | Xl_NtCreateSection section 0000000000000424: chrome.dll (333802064 bytes, host path C:\Program Files\Br... |
-| Google Chrome 155.0.8059.86 | FAIL | 0x00000103 | no window in 15 s; crashpad: "CreateFile: Access denied. (0x5)" (registration pipe to its handler child) | MapOurs map C:\Windows\System32\kernel.appcore.dll at 000001F9D9B00000, 110592 bytes, relocated / trace... |
-| Mozilla Firefox 158.0.1 | FAIL | 0x00000103 | no window in 15 s, no error in the trace (XPCOM now loads) | Xl_NtCreateSection section 0000000000000440: xul.dll (179697792 bytes, host path C:\Program Files\Mozil... |
-| Microsoft Edge 156.0.4314.42 | FAIL | 0x00000103 | no window in 15 s, no error in the trace (msedge_elf.dll now loads) | Xl_NtCreateSection section 0000000000000418: msedge.dll (355157320 bytes, host path C:\Program Files (x... |
-| Internet Explorer 11.00.26100.9168 | FAIL | 0x80000100 | fixme:wine: wine: Unimplemented function iertutil.dll.798 called at address 000000017002F0E8 (thread 125c),... | NoteGuestEntry guest entry: TEB.TlsSlots[19] still holds our ThreadState / fixme:wine: wine: Unimplemen... |
-| CMake GUI 4.4.3 | FAIL | 0xC0000135 | library icuuc.dll not found (every search path; c0000135) | C:\Windows\System32\ole32.dll at 00000209085E0000 vs C:\Windows\S... |
-| HxD Hex Editor 2.5.0.0 | FAIL | 0x00000103 | only a message box, placed mostly above the screen (text not readable); a second HxD process was started | C:\Windows\System32\wininet.dll at 000001BB37E80000 vs C:\Windows... |
-| MediaInfo 26.05.0.0 | FAIL | 0xC0000135 | library MSVFW32.dll not found (every search path; c0000135) | C:\Windows\System32\combase.dll at 00000254E9780000 vs C:\Windows... |
-| Wireshark 4.6.9 | FAIL | 0x00000103 | no window in 15 s; icuuc.dll (no builtin) never mapped | MapImageFromMemory mapped image at 000002BD16F60000 size 0xd6000 (preferred 0x180000000) RELOCATED / tra... |
+| Audacity 4.0.1 | FAIL | 0x00000103 | no window in 15 s (up); USERENV.dll (no builtin, see Fix 1) never mapped; with userenv (push 1) Qt's platfo... | Xl_NtCreateSection section 0000000000000468: Qt6Qml.dll (5335776 bytes, host path C:\Program Files\Auda... |
+| Brave Browser 156.1.98.60 | FAIL | 0x00000103 | no window in 15 s; crashpad: "CreateFile: Access denied. (0x5)" (registration pipe to its handler child) | MapOurs map C:\Windows\System32\kernel.appcore.dll at 000001CE026F0000, 110592 bytes, relocated / trace... |
+| Google Chrome 155.0.8059.86 | FAIL | 0x00000103 | no window in 15 s; crashpad: "CreateFile: Access denied. (0x5)" (registration pipe to its handler child) | MapOurs map C:\Windows\System32\kernel.appcore.dll at 000001E454030000, 110592 bytes, relocated / trace... |
+| Mozilla Firefox 158.0.1 | FAIL | 0x00000103 | no window in 15 s, no error in the trace (XPCOM now loads) | Xl_NtCreateSection section 0000000000000430: xul.dll (179697792 bytes, host path C:\Program Files\Mozil... |
+| Microsoft Edge 156.0.4314.42 | FAIL | 0x00000103 | no window in 15 s, no error in the trace (msedge_elf.dll now loads) | Xl_NtCreateSection section 00000000000003C0: msedge.dll (355157320 bytes, host path C:\Program Files (x... |
+| Internet Explorer 11.00.26100.9168 | FAIL | 0x80000100 | fixme:wine: wine: Unimplemented function iertutil.dll.798 called at address 000000017002F0E8 (thread 2630),... | NoteGuestEntry guest entry: TEB.TlsSlots[19] still holds our ThreadState / fixme:wine: wine: Unimplemen... |
+| CMake GUI 4.4.3 | FAIL | 0xC0000135 | library icuuc.dll not found (every search path; c0000135) | C:\Windows\System32\ole32.dll at 0000018863C60000 vs C:\Windows\S... |
+| HxD Hex Editor 2.5.0.0 | FAIL | 0x00000103 | only a message box, placed mostly above the screen (text not readable); a second HxD process was started | MapOurs map C:\Windows\System32\uxtheme.dll at 000001EA2E580000, 180224 bytes, relocated / fixme:gdi:Pe... |
+| MediaInfo 26.05.0.0 | FAIL | 0xC0000135 | library MSVFW32.dll not found (every search path; c0000135) | C:\Windows\System32\combase.dll at 00000205BE590000 vs C:\Windows... |
+| Wireshark 4.6.9 | FAIL | 0xC0000135 | exit c0000135 after 13.8 s, no window; USERENV.dll, icuuc.dll (no builtin) never mapped | C:\Windows\System32\secur32.dll at 0000014FB8700000 vs C:\Windows... |
 | WizTree 4.32.0.0 | FAIL | 0x00000103 | its own box: "Windows Imaging Component (WIC) is not installed on this PC" | fixme:gdi:ResolveDrawTarget drawing into a 1 bpp bitmap is not supported / fixme:gdi:PenOf styled pens (dash/dot) are... |
-| YUView (no version resource) | FAIL | 0xC0000135 | library dcomp.dll not found (every search path; c0000135) | C:\Windows\System32\oleaut32.dll at 0000023886F40000 vs C:\Window... |
-| iTunes 12.13.10.3 | FAIL | 0xC0000135 | library USP10.dll not found (every search path; c0000135) | C:\Windows\System32\netapi32.dll at 000001A4F6D40000 vs C:\Window... |
-| Windows Media Player 12.0.26100.8457 | EXITED | 0x00000000 | exit 0 after 0.6 s, no window: wmp.dll (no builtin) not found | MapImageFromMemory mapped image at 0000015120A80000 size 0x13000 (preferred 0x180000000) RELOCATED / tra... |
-| Oracle VirtualBox Manager 7.2.16.174877 | FAIL | 0x00000103 | Qt's box "no Qt platform plugin could be initialized ... available platform plugins are: minimal, ...": qwi... | fixme:gdi:ResolveDrawTarget drawing into a 1 bpp bitmap is not supported / fixme:gdi:PenOf styled pens (dash/dot) are... |
-| LocalSend 1.17.0+58 | FAIL | 0x00000103 | no window in 15 s; OPENGL32, UIAutomationCore, d3d9 (no builtin) never mapped | Xl_NtCreateSection section 0000000000000414: flutter_windows.dll (18181632 bytes, host path C:\Program ... |
-| FlutterFlow 6.5.3 | FAIL | 0xC0000135 | library d3d9.dll not found (every search path; c0000135) | MapImageFromMemory mapped image at 000001B6B2750000 size 0x124d000 (preferred 0x180000000) RELOCATED / t... |
-| MuseHub 3.4.3.2360 | CRASH | 0xC0000409 | .NET: Unhandled exception COMException (0x8007007E, module not found) (WinRT activation) | MapImageFromMemory mapped image at 0000018F1D420000 size 0xe3000 (preferred 0x180000000) RELOCATED / tra... |
-| Epic Games Launcher 20.3.6-0+UE5 | FAIL | 0xC0000135 | library msi.dll not found (every search path; c0000135) | C:\Windows\System32\crypt32.dll at 000001F219660000 vs C:\Windows... |
-| Node.js 24.19.0 | CRASH | 0xC0000409 | 0xc0000409 (fail-fast) after "guest export lookup failed: kernelbase.dll FlsGetValue2" (a Windows 11 export) | C:\Windows\System32\dbghelp.dll at 000002306EE40000 vs C:\Windows... |
-| OpenJDK (Eclipse Adoptium) 25.0.4.1 | EXITED | 0x00000001 | - (prints its usage, exit 1) | trace:process:TerminateOtherGuestThreads terminating guest thread 5230 / trace:process:TerminateOtherGuestThreads ter... |
+| YUView (no version resource) | FAIL | 0xC0000135 | library USERENV.dll not found (c0000135); with userenv (push 1): dcomp.dll | MapImageFromMemory mapped image at 0000024B22F10000 size 0x582000 (preferred 0x180000000) RELOCATED / tr... |
+| iTunes 12.13.10.3 | FAIL | 0xC0000135 | library USP10.dll not found (every search path; c0000135) | C:\Windows\System32\netapi32.dll at 000001ECA06B0000 vs C:\Window... |
+| Windows Media Player 12.0.26100.8457 | EXITED | 0x00000000 | exit 0 after 0.6 s, no window: wmp.dll (no builtin) not found | MapImageFromMemory mapped image at 000002410D490000 size 0x13000 (preferred 0x180000000) RELOCATED / tra... |
+| Oracle VirtualBox Manager 7.2.16.174877 | FAIL | 0x00000103 | no window in 15 s (up); USERENV.dll (no builtin, see Fix 1) never mapped; with userenv (push 1) Qt's platfo... | Xl_NtCreateSection section 00000000000003F4: Qt6GuiVBox.dll (8975024 bytes, host path C:\Program Files\... |
+| LocalSend 1.17.0+58 | FAIL | 0x00000103 | no window in 15 s; OPENGL32, UIAutomationCore, d3d9 (no builtin) never mapped | Xl_NtCreateSection section 000000000000040C: flutter_windows.dll (18181632 bytes, host path C:\Program ... |
+| FlutterFlow 6.5.3 | FAIL | 0xC0000135 | library d3d9.dll not found (every search path; c0000135) | MapImageFromMemory mapped image at 00000209512B0000 size 0x124d000 (preferred 0x180000000) RELOCATED / t... |
+| MuseHub 3.4.3.2360 | CRASH | 0xC0000409 | .NET: Unhandled exception COMException (0x8007007E, module not found) (WinRT activation) | MapImageFromMemory mapped image at 000001F89D430000 size 0xe3000 (preferred 0x180000000) RELOCATED / tra... |
+| Epic Games Launcher 20.3.6-0+UE5 | FAIL | 0xC0000135 | library msi.dll not found (every search path; c0000135) | C:\Windows\System32\crypt32.dll at 000002C892420000 vs C:\Windows... |
+| Node.js 24.19.0 | FAIL | 0xC0000135 | library USERENV.dll not found (c0000135); with userenv (push 1) it got further and failed fast on kernelbas... | C:\Windows\System32\nsi.dll at 000001B607BD0000 vs C:\Windows\Sys... |
+| OpenJDK (Eclipse Adoptium) 25.0.4.1 | EXITED | 0x00000001 | - (prints its usage, exit 1) | trace:process:TerminateOtherGuestThreads terminating guest thread 3a70 / trace:process:TerminateOtherGuestThreads ter... |
 | Git for Windows 2.55.0.windows.5 | EXITED | 0x00000001 | - (prints its usage, exit 1) | DumpGuestModules guest module list (guest entry): 18 modules; ntdll=1 kernel32=1 kernelbase=1 / trace:m... |
-| GitHub CLI 2.103.1 | CRASH | 0x00000002 | Go runtime: "fatal error: unexpected signal during runtime execution" [signal 0x80000003], panic before mal... | C:\Windows\System32\ucrtbase.dll at 000001CA3FFE0000 vs C:\Window... |
+| GitHub CLI 2.103.1 | CRASH | 0x00000002 | Go runtime: "fatal error: unexpected signal during runtime execution" [signal 0x80000003], panic before mal... | C:\Windows\System32\ucrtbase.dll at 000001B741920000 vs C:\Window... |
 
-Counts: RUNNING 1, EXITED 3, CRASH 3, FAIL 18 (of 25). Before: RUNNING 1, EXITED 3, CRASH 4, FAIL 17.
+Counts: RUNNING 1, EXITED 3, CRASH 2, FAIL 19 (of 25). Before: RUNNING 1, EXITED 3, CRASH 4, FAIL 17.
 
-The class counts barely move, and that is the honest headline: no further program reached a usable main window. What
-moved is how far the programs get. Stopped by the loader before any of their own code ran (c0000135 / c0150014 at start):
-13 before, 6 after. Still up at 14 s: 5 before (7-Zip, Firefox, Wireshark, LocalSend, FlutterFlow), 12 after (7-Zip,
-WinRAR, Audacity, Brave, Chrome, Firefox, Edge, HxD, Wireshark, WizTree, VirtualBox, LocalSend). Nothing that ran before
-regressed (7-Zip paints the same window, now with Wine's version-6 controls through its manifest). Four programs now show
-their own error box (Audacity and VirtualBox: Qt's platform plugin; WizTree: WIC; HxD: unreadable): their code runs to
-the point where it reports what it lacks. Every row's first error is a different, later one than before except Internet
-Explorer, Epic, CMake GUI and Windows Media Player (DLLs this slice did not add).
+The class counts do not improve, and that is the honest headline: no further program reached a usable main window in
+15 s. What moved is how far the programs get:
+
+* Ended by the loader (exit c0000135 / c0150014): 14 before, 8 after. No c0150014 is left.
+* Still up at 14 s: 5 before (7-Zip, Firefox, Wireshark, LocalSend, FlutterFlow), 11 after (7-Zip, WinRAR, Audacity,
+  Brave, Chrome, Firefox, Edge, HxD, WizTree, VirtualBox, LocalSend). Wireshark and FlutterFlow now end with c0000135
+  after 13 s instead (a later load: userenv/icuuc, d3d9).
+* Two programs now get far enough to show their own error box: WizTree ("WIC is not installed") and HxD (text above the
+  screen edge).
+* Nothing that worked before regressed: 7-Zip paints the same window, now with Wine's version-6 controls through its
+  manifest; git and java print their usage as before.
+* With userenv built (push 1, run 40143672901's artifact; that sweep's table is not reproduced here), Audacity and
+  VirtualBox reached Qt's "no Qt platform plugin could be initialized" box and Node.js got past the loader (then failed
+  fast on kernelbase `FlsGetValue2`). userenv is the single most valuable missing builtin now (Fix 1).
 
 First-error kinds after:
 
 | Kind | Programs | n |
 |---|---|---|
-| DLL not available | CMake GUI (icuuc), MediaInfo (msvfw32), YUView (dcomp), iTunes (usp10), FlutterFlow (d3d9), Epic (msi), Audacity, VirtualBox (Qt's qwindows: d3d9, UIAutomationCore), Wireshark (icuuc), LocalSend (opengl32, d3d9, UIAutomationCore), WinRAR (riched20), Windows Media Player (wmp) | 12 |
-| Missing export | Internet Explorer (iertutil #798), Node.js (kernelbase FlsGetValue2, then fail-fast) | 2 |
+| DLL not available | Node.js, YUView (userenv), Audacity, VirtualBox (userenv, no window), Wireshark (userenv, icuuc), CMake GUI (icuuc), MediaInfo (msvfw32), iTunes (usp10), FlutterFlow (d3d9), LocalSend (opengl32, d3d9, UIAutomationCore), Epic (msi), WinRAR (riched20), Windows Media Player (wmp) | 13 |
 | The program's own refusal | WizTree (WIC check), Chrome, Brave (crashpad registration pipe: Access denied) | 3 |
 | No window, nothing traced | Firefox, Edge | 2 |
+| Missing export | Internet Explorer (iertutil #798) | 1 |
 | Runtime crash | GitHub CLI (Go runtime, breakpoint during runtime init) | 1 |
 | .NET / WinRT activation | MuseHub (COMException 0x8007007E) | 1 |
 | Message box, text off-screen | HxD | 1 |
 | none | 7-Zip File Manager, git, java | 3 |
 | Activation context | (all six past it) | 0 |
 
-The most common first error is still a DLL with no builtin: the next candidates by count are d3d9 (5 programs: Qt's
-qwindows and Flutter), UIAutomationCore (4), icuuc (2), opengl32 (2). d3d9 and opengl32 need a GPU path Wine's PE side
-does not have here (wined3d needs Wine's unix GL/Vulkan); UIAutomationCore is a plain Wine PE DLL (imports oleacc, now
-built) and the cheapest next step.
+The most common first error is still a DLL with no builtin. By count of programs that never mapped it: userenv (7),
+UIAutomationCore (4), d3d9 (3), icuuc (3), opengl32 (3). userenv needs the two things Fix 1 names (Wine's
+LookupAccountSidW for machine.json's user SID, ProfileList in the machine registry); UIAutomationCore is a plain Wine PE
+DLL; d3d9 and opengl32 need a GPU path Wine's PE side does not have here (wined3d needs Wine's unix GL/Vulkan).
 
 ## Not done / next first errors
 
@@ -189,11 +203,13 @@ built) and the cheapest next step.
   patch 0035's effect emulated and no Common-Controls 6 in WinSxS, the three Chromium browsers stopped at a breakpoint
   inside chrome_elf.dll instead; with the whole of Fix 2 they get further.)
 * Audacity, VirtualBox: slow to load, close to the 15 s limit. In a check run right after the core fix (old builtins)
-  both were still mapping their DLLs at 15 s (Audacity with `+relay` reached vorbisfile/FLAC++ only after 60 s); in the
-  after-sweep both reached Qt's platform-plugin error box within 15 s. The layer's per-image mapping cost (Qt6Core is
-  10 MB) is worth a look of its own.
-* Node.js: `FlsGetValue2` (kernelbase, Windows 11) is not exported by Wine's kernelbase; the CRT's fallback then fails
-  fast (0xc0000409). An export with clear semantics, the next candidate for a fix of the "missing export" kind.
+  both were still mapping their DLLs at 15 s (Audacity with `+relay` reached vorbisfile/FLAC++ only after 60 s); with
+  userenv built (push 1) both reached Qt's platform-plugin error box within 15 s, without it (push 2) they show nothing.
+  The layer's per-image mapping cost (Qt6Core is 10 MB) is worth a look of its own.
+* Node.js (seen with userenv built, push 1): `FlsGetValue2` (kernelbase, Windows 11) is not exported by Wine's
+  kernelbase; the CRT's fallback then fails fast (0xc0000409). An export with clear semantics, the next candidate for a
+  fix of the "missing export" kind once userenv is in.
+* The local 120/122 below was measured with push 1's builtins (userenv included); push 2 only takes userenv out.
 * 7-Zip File Manager: `NtUserBeginDeferWindowPos` / `NtUserTranslateAccelerator` unimplemented (fixme only; it paints).
 * Local `ctest -j 4` (this laptop): 121/122 with the core fix on the old builtins, 120/122 with the new builtins and
   WinSxS (realgui_putty, whose manifest names Common-Controls 6, passes with Wine's version-6 controls). The failures
