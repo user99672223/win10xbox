@@ -799,17 +799,6 @@ index 0d8a18f..e6a924d 100644
  
  SOURCES = \
  	button.c \
-diff --git a/dlls/userenv/Makefile.in b/dlls/userenv/Makefile.in
-index 193232e..31ac98c 100644
---- a/dlls/userenv/Makefile.in
-+++ b/dlls/userenv/Makefile.in
-@@ -1,5 +1,6 @@
- EXTRADEFS = -D_USERENV_
- MODULE    = userenv.dll
-+VER_FILEDESCRIPTION_STR = "Userenv"
- IMPORTS   = advapi32
- IMPORTLIB = userenv
- 
 diff --git a/dlls/uxtheme/Makefile.in b/dlls/uxtheme/Makefile.in
 index 9dee82f..3ca3274 100644
 --- a/dlls/uxtheme/Makefile.in

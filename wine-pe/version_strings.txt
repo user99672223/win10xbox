@@ -105,7 +105,6 @@ uxtheme.dll      | host     | Microsoft UxTheme Library
 oleacc.dll       | host     | Active Accessibility Core Component
 shfolder.dll     | host     | Shell Folder Service
 odbc32.dll       | host     | ODBC Driver Manager
-userenv.dll      | host     | Userenv
 bcryptprimitives.dll | host | Windows Cryptographic Primitives Library
 comctl32_v6.dll  | host     | Common Controls Library
 mswsock.dll      | host     | Microsoft Windows Sockets 2.0 Service Provider
