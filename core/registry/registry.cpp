@@ -165,6 +165,7 @@ struct State {
     bool persist = false;                // EnablePersistence ran
     bool persist_warned = false;         // the FIXME for an unwritable machine folder was logged
     std::string persisted;               // the serialized overlay as last loaded or saved
+    std::wstring overlay_file;           // EnablePersistence(file); empty: <root_dir>\registry-overlay.bin
 };
 
 std::mutex g_mu;
@@ -2065,11 +2066,20 @@ std::string SerializeOverlay(const State& st, std::uint32_t* count_out) {
     return std::string(reinterpret_cast<const char*>(all.b.data()), all.b.size());
 }
 
+// The overlay file: <machine>\registry-overlay.bin, or the file EnablePersistence was given (its lock is <file>.lock).
+std::wstring OverlayPath(const State& st) {
+    return st.overlay_file.empty() ? st.root_dir + L"\\registry-overlay.bin" : st.overlay_file;
+}
+
+std::wstring OverlayLockPath(const State& st) {
+    return st.overlay_file.empty() ? st.root_dir + L"\\registry-overlay.lock" : st.overlay_file + L".lock";
+}
+
 // The lock file serialises the processes of one machine folder around loading and replacing the overlay file. It is
 // opened with no sharing, so a second process waits (the OS releases it when a holder dies); the file itself stays.
 // INVALID_HANDLE_VALUE: no lock (the folder is read-only, or a holder did not let go in 10 s); callers go on without it.
 HANDLE LockOverlay(const State& st) {
-    const std::wstring lock = st.root_dir + L"\\registry-overlay.lock";
+    const std::wstring lock = OverlayLockPath(st);
     for (int i = 0; i < 1000; ++i) {
         HANDLE h = CreateFileW(lock.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (h != INVALID_HANDLE_VALUE) return h;
@@ -2086,7 +2096,7 @@ void UnlockOverlay(HANDLE h) {
 
 // Write the temp file, then replace the overlay with it: a reader sees the old or the new file, never half of one.
 NTSTATUS WriteOverlayFile(const State& st, const std::string& bytes) {
-    const std::wstring path = st.root_dir + L"\\registry-overlay.bin";
+    const std::wstring path = OverlayPath(st);
     const std::wstring tmp = path + L".tmp";
     HANDLE lock = LockOverlay(st);
     bool ok = false;
@@ -2123,13 +2133,13 @@ NTSTATUS SaveOverlayLocked(State& st, bool only_if_changed) {
     if (s < 0) {
         if (!st.persist_warned) {
             st.persist_warned = true;
-            FIXME(registry, "cannot write %ls\\registry-overlay.bin (error %lu): registry changes are not persisted",
-                  st.root_dir.c_str(), static_cast<unsigned long>(GetLastError()));
+            FIXME(registry, "cannot write %ls (error %lu): registry changes are not persisted",
+                  OverlayPath(st).c_str(), static_cast<unsigned long>(GetLastError()));
         }
         return s;
     }
     st.persisted = std::move(bytes);
-    TRACE(registry, "saved %u overlay keys to %ls\\registry-overlay.bin", count, st.root_dir.c_str());
+    TRACE(registry, "saved %u overlay keys to %ls", count, OverlayPath(st).c_str());
     return nt::kSuccess;
 }
 
@@ -2143,10 +2153,11 @@ NTSTATUS SaveOverlay() {
     return SaveOverlayLocked(*g_st, false);
 }
 
-NTSTATUS EnablePersistence() {
+NTSTATUS EnablePersistence(const std::wstring& overlay_file) {
     std::lock_guard<std::mutex> lk(g_mu);
     if (!g_st) return nt::kUnsuccessful;
     State& st = *g_st;
+    st.overlay_file = overlay_file;
     st.base.clear();
     CaptureWalk(st, st.root);
     NTSTATUS s = LoadOverlayLocked(st);
@@ -2165,7 +2176,7 @@ void PersistOverlay() {
 namespace {
 
 NTSTATUS LoadOverlayLocked(State& st) {
-    const std::wstring path = st.root_dir + L"\\registry-overlay.bin";
+    const std::wstring path = OverlayPath(st);
     HANDLE lock = LockOverlay(st);
     std::string raw = ReadFileBytes(path, false);
     UnlockOverlay(lock);

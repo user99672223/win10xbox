@@ -153,7 +153,10 @@ NTSTATUS LoadOverlay();
 // it are ever written), loads the file when there is one and arms PersistOverlay. PersistOverlay (NtFlushKey, before a
 // child process starts, at guest exit) saves when the overlay changed since the last load or save; a machine folder
 // that cannot be written logs one FIXME and nothing persists. It never fails the caller.
-NTSTATUS EnablePersistence();
+// `overlay_file` (a host path; empty: <machine>\registry-overlay.bin) is the file to load and save, its lock
+// `<overlay_file>.lock`: the dispatcher passes WIN10XBOX_REGISTRY_OVERLAY, so parallel test runs on one machine folder
+// each keep their own registry.
+NTSTATUS EnablePersistence(const std::wstring& overlay_file = {});
 void PersistOverlay();
 
 }  // namespace win10xbox::registry

@@ -659,7 +659,15 @@ int Launch(const LaunchOptions& opts) {
     registry::SetHostNamespace(reinterpret_cast<registry::OpenDirectoryFn>(HostExport("NtOpenDirectoryObject")),
                                reinterpret_cast<registry::CloseObjectFn>(HostExport("NtClose")));
     if ((s = registry::Initialize(root))) WARN(process, "registry::Initialize failed: %08lx", static_cast<unsigned long>(s));
-    else if ((s = registry::EnablePersistence())) WARN(process, "registry overlay file not loaded: %08lx", static_cast<unsigned long>(s));
+    else {
+        // WIN10XBOX_REGISTRY_OVERLAY=<host file>: the overlay file instead of <machine>\registry-overlay.bin. A
+        // WIN10XBOX_ variable, so a child host inherits it (nt_spawn.cpp IsHostOwnedVariable) and reads the same file.
+        std::wstring overlay(MAX_PATH * 2, L'\0');
+        const DWORD n = GetEnvironmentVariableW(L"WIN10XBOX_REGISTRY_OVERLAY", overlay.data(), MAX_PATH * 2);
+        overlay.resize(n != 0 && n < MAX_PATH * 2 ? n : 0);
+        if (!overlay.empty()) TRACE(process, "registry overlay file %ls (WIN10XBOX_REGISTRY_OVERLAY)", overlay.c_str());
+        if ((s = registry::EnablePersistence(overlay))) WARN(process, "registry overlay file not loaded: %08lx", static_cast<unsigned long>(s));
+    }
 #endif
 #if WIN10XBOX_HAVE_CLOCK
     {

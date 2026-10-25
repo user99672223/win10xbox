@@ -861,6 +861,47 @@ TEST(registry_overlay_persist_atomic_lock) {
     RemoveTree(dir);
 }
 
+// EnablePersistence(file) (WIN10XBOX_REGISTRY_OVERLAY): that file and <file>.lock instead of the machine folder's, so
+// two runs on one machine folder with different files never see (or replace) each other's registry.
+TEST(registry_overlay_persist_named_file) {
+    const std::wstring dir = TempDir(L"persist3");
+    CopyFixture(dir);
+    const std::wstring mine = dir + L"\\overlay.mine.bin", theirs = dir + L"\\overlay.theirs.bin";
+    const std::wstring cv = std::wstring(kSoftware) + L"\\Microsoft\\Windows NT\\CurrentVersion";
+    {
+        Session s(dir);
+        CHECK_EQ(reg::EnablePersistence(mine), nt::kSuccess);   // no file yet
+        HANDLE k = Open(cv, kAll);
+        CHECK_EQ(SetString(k, L"ProductName", L"Mine"), nt::kSuccess);
+        CHECK_EQ(reg::Reg_NtFlushKey(k), nt::kSuccess);
+        reg::Close(k);
+        CHECK(Exists(mine));
+        CHECK(Exists(mine + L".lock"));
+        CHECK(!Exists(dir + L"\\registry-overlay.bin"));
+        CHECK(!Exists(dir + L"\\registry-overlay.lock"));
+    }
+    {
+        Session s(dir);
+        CHECK_EQ(reg::EnablePersistence(theirs), nt::kSuccess);
+        std::wstring str;
+        CHECK_EQ(reg::QueryString(cv, L"ProductName", &str), nt::kSuccess);
+        CHECK(str == L"Windows 10 Pro");                         // the other file's write is not seen
+        HANDLE k = Open(cv, kAll);
+        CHECK_EQ(SetString(k, L"ProductName", L"Theirs"), nt::kSuccess);
+        reg::Close(k);
+        reg::PersistOverlay();
+        CHECK(Exists(theirs));
+    }
+    {
+        Session s(dir);
+        CHECK_EQ(reg::EnablePersistence(mine), nt::kSuccess);
+        std::wstring str;
+        CHECK_EQ(reg::QueryString(cv, L"ProductName", &str), nt::kSuccess);
+        CHECK(str == L"Mine");                                   // not replaced by the other run's save
+    }
+    RemoveTree(dir);
+}
+
 TEST(registry_missing_hives_use_machine_json) {
     const std::wstring dir = TempDir(L"nohive");
     {

@@ -10,8 +10,11 @@
 # output goes to stderr, so assertions about it use the TRACE variants:
 #   [-DSAVE_STDOUT=<file>]   write the guest's stdout there (build/bin/*.log is uploaded by CI)
 #   [-DEXPECT_TRACE_REGEX=<regex;regex...>] [-DFORBID_TRACE_REGEX=<regex>]
-#   [-DKEEP_REGISTRY_OVERLAY=ON]  keep <machine>\registry-overlay.bin (the registry a previous run left, docs/DISPATCHER.md
-#   "Registry persistence"); without it the file is deleted first, so no test sees another's registry writes.
+#   [-DREGISTRY_OVERLAY=<host file>]  the test's own registry overlay file (the layer's WIN10XBOX_REGISTRY_OVERLAY,
+#   docs/DISPATCHER.md "Registry persistence") instead of <machine>\registry-overlay.bin, which every test on the
+#   machine folder would share: under ctest -j another test deleted or replaced it in the middle of this one.
+#   [-DKEEP_REGISTRY_OVERLAY=ON]  keep the overlay file (the registry a previous run left); without it the file is
+#   deleted first, so no test sees another's registry writes.
 # ('@SEMI@' in PROGRAM_ARGS stands for a ';' inside one argument.)
 # -DINPUT_FILE=<host file> is its stdin;
 # -DGUEST_FILE=<path under the machine folder, '/' separated> is deleted before the run and must exist after it.
@@ -69,7 +72,17 @@ string(REPLACE "@SEMI@" "\\;" _args "${PROGRAM_ARGS}")   # '@SEMI@' stands for a
 if(GUEST_FILE)
   file(REMOVE "${MACHINE}/${GUEST_FILE}")
 endif()
-if(NOT KEEP_REGISTRY_OVERLAY)
+if(REGISTRY_OVERLAY)
+  if(NOT KEEP_REGISTRY_OVERLAY)
+    file(REMOVE "${REGISTRY_OVERLAY}")
+  endif()
+  set(_overlay "${REGISTRY_OVERLAY}")
+  if(EMULATOR AND _overlay MATCHES "^/")
+    set(_overlay "Z:${_overlay}")
+  endif()
+  string(REPLACE "/" "\\" _overlay "${_overlay}")
+  set(ENV{WIN10XBOX_REGISTRY_OVERLAY} "${_overlay}")
+elseif(NOT KEEP_REGISTRY_OVERLAY)
   file(REMOVE "${MACHINE}/registry-overlay.bin")
 endif()
 set(_stdin "")

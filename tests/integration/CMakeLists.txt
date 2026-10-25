@@ -110,6 +110,13 @@ function(win10xbox_guest_test name program exit_code)
   if(_guest_console)
     set(_require_user32 OFF)
   endif()
+  # Each test's own registry overlay file (WIN10XBOX_REGISTRY_OVERLAY, docs/DISPATCHER.md "Registry persistence"):
+  # tests running in parallel on one machine folder must not delete or replace each other's. _guest_overlay_name
+  # lets tests that hand a registry on (the regpersist pair) share one.
+  set(_overlay_name ${name})
+  if(_guest_overlay_name)
+    set(_overlay_name ${_guest_overlay_name})
+  endif()
   add_test(NAME integration.${name}
     COMMAND ${CMAKE_COMMAND}
       -DHOST=$<TARGET_FILE:win10xbox>
@@ -125,6 +132,7 @@ function(win10xbox_guest_test name program exit_code)
       "-DSAVE_STDOUT=${_guest_save_stdout}"
       "-DCWD=${_guest_cwd}"
       "-DKEEP_REGISTRY_OVERLAY=${_guest_keep_overlay}"
+      "-DREGISTRY_OVERLAY=${_guest_machine}/registry-overlay.${_overlay_name}.bin"
       -DEXPECT_EXIT=${exit_code}
       "-DEXPECT_REGEX=${ARGN}"
       "-DINPUT_FILE=${_guest_input}" "-DGUEST_FILE=${_guest_file}" "-DRUN_TIMEOUT=${_guest_run_timeout}"
@@ -559,10 +567,11 @@ unset(_guest_machine)
 # tests/guest/regpersist.c twice, each a new host process on the same machine folder: the first run writes a value of each
 # common type under HKCU\Software\win10xbox\persist, RegFlushKey, writes one more, and starts itself as a child that
 # reads the flushed and the unflushed value; the second run (argument "read", after the first exited and so after the
-# exit-time save) reads every value back. run_guest.cmake deletes the overlay file before every other guest run, and
-# keeps it for this one. Console DLL set.
+# exit-time save) reads every value back. run_guest.cmake deletes a test's overlay file before its run, and keeps it
+# for the read run; the pair shares registry-overlay.regpersist.bin, which no other test touches. Console DLL set.
 set(_guest_machine ${WIN10XBOX_BUILTIN_MACHINE_DIR})
 set(_guest_no_user32 ON)
+set(_guest_overlay_name regpersist)
 win10xbox_guest_test(guest_regpersist_write "C:\\guest\\guest_regpersist.exe" 42
   "regpersist: write ok" "regpersist: child ok" "regpersist: done")
 set(_guest_args "read")
@@ -575,6 +584,7 @@ unset(_guest_keep_overlay)
 set_tests_properties(integration.guest_regpersist_write integration.guest_regpersist_read PROPERTIES
   FAIL_REGULAR_EXPRESSION "regpersist: [a-z ]+ FAILED")
 set_tests_properties(integration.guest_regpersist_read PROPERTIES DEPENDS integration.guest_regpersist_write)
+unset(_guest_overlay_name)
 unset(_guest_no_user32)
 unset(_guest_machine)
 # ---- Audio: Wine's mmdevapi over core/dispatch/unix_mmdevapi.cpp (the host's WASAPI) -----------------------------------
