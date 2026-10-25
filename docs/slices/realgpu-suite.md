@@ -1,4 +1,4 @@
-status: in progress (ci pending)
+status: ready. code head d3c7df2, ci https://github.com/user99672223/win10xbox/actions/runs/40146894695 (linux-cross, windows Debug, windows RelWithDebInfo green). Includes the `-swapgpu` merge (0c7da35).
 
 # Slice `-realgpu-suite`: intermittent failures of the native Windows suite on a real GPU
 
