@@ -19,6 +19,8 @@
 #include "win10xbox/token.h"
 #endif
 #include <algorithm>
+#include <set>
+#include <tlhelp32.h>
 #include <cstring>
 #include <cstdlib>
 #include <cwchar>
@@ -70,6 +72,9 @@ struct Globals {
     HANDLE peb_ready = nullptr;             // PEB take-over done, enter the guest
     bool wine_host = false;                 // host ntdll is Wine's (development runs)
     bool leak_actctx = false;               // WIN10XBOX_TEST_LEAK_GUEST_ACTCTX, latched in Launch (test hook)
+    std::set<DWORD> baseline_tids;          // process-level teardown: host threads that exist before the guest starts
+    volatile LONG teardown_frozen = 0;
+    bool process_teardown = false;          // the host ends the whole process after the guest (docs/DECISIONS.md)
 };
 Globals& G() {
     NoteHostStateUnderGuestView("process::G");
@@ -624,6 +629,20 @@ std::wstring NormalizeGuestPath(std::wstring p) {
 
 }  // namespace
 
+// Ids of every thread of this process (a snapshot; threads may come and go while it is taken).
+std::set<DWORD> ProcessThreadIds() {
+    std::set<DWORD> ids;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) return ids;
+    THREADENTRY32 te{};
+    te.dwSize = sizeof(te);
+    const DWORD pid = GetCurrentProcessId();
+    for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te))
+        if (te.th32OwnerProcessID == pid) ids.insert(te.th32ThreadID);
+    CloseHandle(snap);
+    return ids;
+}
+
 int Launch(const LaunchOptions& opts) {
     Globals& g = G();
     AcquireSRWLockExclusive(&g.lock);
@@ -823,6 +842,7 @@ int Launch(const LaunchOptions& opts) {
     g.thread_ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     g.peb_ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     auto* gs = new GuestStart{entry, CurrentPeb(), kThreadMain};
+    if (g.process_teardown) g.baseline_tids = ProcessThreadIds();
     if (opts.run_on_new_thread) {
         // Created before the PEB take-over: the host's per-thread init must see the host PEB.
         gs->wait_for_peb = true;
@@ -874,9 +894,11 @@ int WaitForGuest(DWORD timeout_ms) {
         registry::PersistOverlay();
 #endif
         g.exit_code = static_cast<LONG>(code);
-        RestorePebFields();
+        if (!g.process_teardown) RestorePebFields();
     }
-    WaitForSingleObject(g.main_thread, 5000);   // GuestExit signals, then terminates the thread
+    // GuestExit signals, then terminates the thread. Not with process-level teardown: the main thread may be one of
+    // the suspended ones, and nothing runs after the host has ended the process anyway.
+    if (!g.process_teardown) WaitForSingleObject(g.main_thread, 5000);
     return static_cast<int>(g.exit_code);
 }
 
@@ -894,9 +916,13 @@ void AbortGuest(std::uint32_t exit_code) {
     // Called from a host thread: every guest thread is "other". The main thread is terminated too (it may not be
     // in the guest thread list yet), then the host's PEB view comes back (ActivationContextData included).
     TerminateOtherGuestThreads(static_cast<NTSTATUS>(exit_code));
-    Host().NtTerminateThread(g.main_thread, static_cast<NTSTATUS>(exit_code));
-    WaitForSingleObject(g.main_thread, 5000);
-    RestorePebFields();
+    if (g.process_teardown) {
+        if (g.main_thread) SuspendThread(g.main_thread);   // may already be suspended (it was in the list): harmless
+    } else {
+        Host().NtTerminateThread(g.main_thread, static_cast<NTSTATUS>(exit_code));
+        WaitForSingleObject(g.main_thread, 5000);
+        RestorePebFields();
+    }
     if (g.exit_event) SetEvent(g.exit_event);
 }
 
@@ -912,7 +938,7 @@ void AbortGuest(std::uint32_t exit_code) {
     registry::PersistOverlay();
 #endif
     TerminateOtherGuestThreads(static_cast<NTSTATUS>(exit_code));
-    RestorePebFields();
+    if (!g.process_teardown) RestorePebFields();   // process-level teardown: the process ends with the guest's PEB view
     ThreadState* self = CurrentThreadState();
     const bool caller_owned = self && (self->flags & kThreadCallerOwned);
     if (g.exit_event) SetEvent(g.exit_event);
@@ -921,7 +947,28 @@ void AbortGuest(std::uint32_t exit_code) {
         dispatch::Shutdown();
         ExitProcess(exit_code);
     }
+    // Process-level teardown: this thread does not die either. A dying thread signals its handle, and host thread-pool
+    // waits on guest thread handles (the native D3D runtime's) would run a callback in the middle of the teardown.
+    // It parks until the host ends the process.
+    if (g.process_teardown) for (;;) Sleep(INFINITE);
     for (;;) Host().NtTerminateThread(reinterpret_cast<HANDLE>(-2), static_cast<NTSTATUS>(exit_code));
+}
+
+void SetProcessTeardown(bool on) { G().process_teardown = on; }
+
+// Process-level teardown: freeze every thread that was not there before the guest started (guest threads, and the host
+// thread-pool workers the native D3D runtime started for the guest) except the caller. The host's own threads from
+// before the launch (main, crash capture, watchdog, input injection) keep running to finish up. Once only.
+void SuspendOtherThreadsForTeardown(DWORD self) {
+    Globals& g = G();
+    if (!g.process_teardown || InterlockedExchange(&g.teardown_frozen, 1)) return;
+    for (DWORD tid : ProcessThreadIds()) {
+        if (tid == self || g.baseline_tids.count(tid)) continue;
+        if (HANDLE h = OpenThread(THREAD_SUSPEND_RESUME, FALSE, tid)) {
+            SuspendThread(h);
+            CloseHandle(h);
+        }
+    }
 }
 
 std::uint32_t GuestExitCode() { return static_cast<std::uint32_t>(G().exit_code); }
@@ -994,10 +1041,13 @@ std::vector<std::wstring> HostEnvironmentEntries() {
 
 void TerminateOtherGuestThreads(NTSTATUS code) {
     const DWORD self = GetCurrentThreadId();
+    process::SuspendOtherThreadsForTeardown(self);
     for (ThreadState* t : GuestThreads()) {
         if (t->tid == self) continue;
         TRACE(process, "terminating guest thread %04lx", t->tid);
-        if (t->thread) Host().NtTerminateThread(t->thread, code);
+        // Process-level teardown (docs/DECISIONS.md E9): the threads were frozen above and the host ends the process
+        // next. A thread killed inside a host heap / ntdll operation leaves state a surviving host thread trips over.
+        if (t->thread && !process::G().process_teardown) Host().NtTerminateThread(t->thread, code);
         ForgetGuestThread(t->tid);
     }
 }
